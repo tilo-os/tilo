@@ -30,7 +30,7 @@ use crate::error::RuntimeError;
 use crate::handles::{ActionState, FrameKind, Invocation, QueuedBlock, RunState};
 use crate::host_res::unboxed;
 use crate::ids::{Actor, AppId, ModuleHash, RunId};
-use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
+use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty};
 use crate::registry::Package;
 use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, Suggestion};
 use crate::store::{Applied, ChangeNote, Mutation, Txn};
@@ -215,7 +215,10 @@ impl Core {
         want == r.target.ty || crate::foreign::foreign_type(&r.target.ty).as_ref() == Some(key)
     }
 
+    /// Check a handle-represented argument before allocating it in the call frame.
+    /// Called only from the `Repr::Handle` arm of [`Self::marshal`].
     fn check_param(&self, ty: &Ty, v: &Value, into_action: bool) -> Result<(), String> {
+        debug_assert_eq!(ty.abi_repr(), Some(Repr::Handle));
         let ok = match (ty, v) {
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
@@ -293,21 +296,32 @@ impl Core {
                 // is passed to: the box is the place it lands, never a value of its own. Only a
                 // parameter of a scalar type unboxes: an option of one is a value as it is.
                 let scalar = || unboxed(v.clone());
-                match repr(&ty) {
-                    Repr::I64 => scalar().as_int().map(Wasm::I64).ok_or_else(mismatch),
-                    Repr::F64 => match scalar() {
+                match ty.abi_repr() {
+                    // `Duration` takes whole seconds (`Value::Int`) only, never a flag; `Int`
+                    // and `Choice` keep `Value::as_int` (which reads a `Bool` as 0 or 1).
+                    Some(Repr::I64) if ty == Ty::Duration => match scalar() {
+                        Value::Int(i) => Ok(Wasm::I64(i)),
+                        _ => Err(mismatch()),
+                    },
+                    Some(Repr::I64) => scalar().as_int().map(Wasm::I64).ok_or_else(mismatch),
+                    Some(Repr::F64) => match scalar() {
                         Value::Float(f) => Ok(Wasm::F64(f)),
                         _ => Err(mismatch()),
                     },
-                    Repr::Bool => scalar()
+                    Some(Repr::Bool) => scalar()
                         .as_int()
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
-                    Repr::Handle => {
+                    Some(Repr::Handle) => {
                         self.check_param(&ty, v, into_action)
                             .map_err(|e| format!("argument `{}`: {e}", p.name))?;
                         self.frames.borrow_mut().alloc(v.clone()).map(Wasm::I32)
                     }
+                    None => Err(format!(
+                        "argument `{}`: a {} does not fit a parameter of type {ty:?}",
+                        p.name,
+                        v.kind_name()
+                    )),
                 }
             })
             .collect()
@@ -318,14 +332,12 @@ impl Core {
             return Ok(Value::Unit);
         };
         let ty = parse_ty(ty, app)?;
-        if ty == Ty::Unit {
-            return Ok(Value::Unit);
-        }
-        match (repr(&ty), w) {
-            (Repr::I64, Some(Wasm::I64(i))) => Ok(Value::Int(i)),
-            (Repr::F64, Some(Wasm::F64(f))) => Ok(Value::Float(f)),
-            (Repr::Bool, Some(Wasm::I32(i))) => Ok(Value::Bool(i != 0)),
-            (Repr::Handle, Some(Wasm::I32(h))) => Ok(self.frames.borrow().get(h)?.clone()),
+        match (ty.abi_repr(), w) {
+            (None, _) => Ok(Value::Unit),
+            (Some(Repr::I64), Some(Wasm::I64(i))) => Ok(Value::Int(i)),
+            (Some(Repr::F64), Some(Wasm::F64(f))) => Ok(Value::Float(f)),
+            (Some(Repr::Bool), Some(Wasm::I32(i))) => Ok(Value::Bool(i != 0)),
+            (Some(Repr::Handle), Some(Wasm::I32(h))) => Ok(self.frames.borrow().get(h)?.clone()),
             _ => Err("the export returned a value of the wrong type".to_owned()),
         }
     }
@@ -738,7 +750,24 @@ impl Core {
             return trap("expected the arguments of a call as a list");
         };
         let Some(pkg) = self.registry.borrow().fn_package(&id) else {
-            return trap(format!("no app here declares the function `{id}`"));
+            // A package compiled against a library this runtime does not hold calls a function
+            // of it: the id says nothing to the person reading the failure, so name the function
+            // where the compiler here knows it.
+            let known = tilolang::stdlib::meta()
+                .fns
+                .iter()
+                .find(|f| f.id == id)
+                .map(|f| f.name.as_str());
+            return trap(match known {
+                Some(name) => format!(
+                    "`std.{name}` is not in the standard library loaded here: this app was built \
+                     against another version of it"
+                ),
+                None => format!(
+                    "no package loaded here declares the function `{id}`: the app that declares \
+                     it is not loaded"
+                ),
+            });
         };
         if !pkg.code {
             return trap(format!(
@@ -747,7 +776,11 @@ impl Core {
             ));
         }
         let Some(func) = pkg.fn_(&id) else {
-            return trap(format!("no app here declares the function `{id}`"));
+            return trap(format!(
+                "the package {} here declares no function `{id}`, which this app calls: the two \
+                 were built against different versions",
+                pkg.meta.app
+            ));
         };
         if self.frames.borrow().calls() >= MAX_CALL_DEPTH {
             return trap(format!(
@@ -1674,7 +1707,22 @@ impl Core {
             } else {
                 self.decide(&ctx, &aref)?
             };
+            // A person allowed this run, and what it reaches it reaches through the calls its own
+            // code makes: an action that calls an outside one is outside for that call, so it was
+            // asked about as a whole. The call that would ask again is the one they allowed,
+            // unless code they were not asked about stands in its chain.
+            let allowed = journal
+                .approved_by
+                .clone()
+                .filter(|_| d == Decision::Ask && self.asked_about(journal, &ctx.chain));
             match d {
+                Decision::Ask if allowed.is_some() => {
+                    let ctx = ExecCtx {
+                        approved_by: allowed,
+                        ..ctx
+                    };
+                    self.run_step(run, journal, &ctx, &aref)
+                }
                 Decision::Allow => self.run_step(run, journal, &ctx, &aref),
                 Decision::Deny => {
                     journal.entries.push(JournalEntry::Denied {
@@ -1686,6 +1734,20 @@ impl Core {
                 Decision::Ask => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
             }
         }
+    }
+
+    /// Whether the code in `chain` is all code the person who allowed `journal`'s run was asked
+    /// about: the chain the run was asked about, and the package of the action they allowed.
+    fn asked_about(&self, journal: &Journal, chain: &[ModuleHash]) -> bool {
+        let own = journal.action.as_ref().and_then(|action| {
+            self.registry
+                .borrow()
+                .action_package(action)
+                .map(|pkg| pkg.hash.clone())
+        });
+        chain
+            .iter()
+            .all(|m| journal.chain.contains(m) || own.as_ref() == Some(m))
     }
 
     /// Record that `run` waits for a person's answer to `aref`, and hand the suggestion out.
@@ -1987,9 +2049,15 @@ impl Core {
             app: AppId::from(pkg.meta.app.as_str()),
             action: aref.action.clone(),
             // What the app's action API takes it by: a compiled package's action by its name, an
-            // action of a description of an app's surface (no module) by the verb it describes.
+            // action of a description of an app's surface (no module) by the verb it describes,
+            // without the app its id is named by (`so.tilo.vision#cancel` is published as
+            // `cancel`).
             name: if pkg.meta.module_hash.is_empty() {
-                meta.id.clone()
+                meta.id
+                    .strip_prefix(pkg.meta.app.as_str())
+                    .and_then(|verb| verb.strip_prefix('#'))
+                    .unwrap_or(&meta.id)
+                    .to_owned()
             } else {
                 meta.name.clone()
             },
@@ -2071,16 +2139,19 @@ impl Core {
     /// there ([`crate::delegate::Invoked::Sent`]): its result type's empty value, a scalar's
     /// zero, and nothing for any other.
     fn unanswered(&self, action: &str) -> Value {
-        let result = self
+        let ty = self
             .registry
             .borrow()
             .action_package(action)
-            .and_then(|pkg| pkg.action(action).and_then(|meta| meta.result.clone()));
-        match result.as_deref() {
-            Some("Int") => Value::Int(0),
-            Some("Float") => Value::Float(0.0),
-            Some("Bool") => Value::Bool(false),
-            _ => Value::Unit,
+            .and_then(|pkg| {
+                let result = pkg.action(action)?.result.as_deref()?;
+                parse_ty(result, &pkg.meta.app).ok()
+            });
+        match ty.and_then(|ty| ty.abi_repr()) {
+            Some(Repr::I64) => Value::Int(0),
+            Some(Repr::F64) => Value::Float(0.0),
+            Some(Repr::Bool) => Value::Bool(false),
+            Some(Repr::Handle) | None => Value::Unit,
         }
     }
 

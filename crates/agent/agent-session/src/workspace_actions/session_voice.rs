@@ -350,11 +350,11 @@ impl super::Worker {
         );
     }
 
-    /// `caller`'s session arrived in `workspace_id`: an agent a person's device handed its session
-    /// to is added to the workspace's list of its agents before its first request, and the
+    /// `caller`'s session arrived in `workspace_id`: an agent a person's own device runs is
+    /// added to the workspace's list of its agents before its first request, and the
     /// session is said present there.
     pub(super) fn arrived(&mut self, workspace_id: WorkspaceId, caller: &Caller) {
-        if caller.is_session_delegated()
+        if caller.is_device_agent()
             && let Some(link) = self.shared.link.get()
         {
             link.workspace_agent(workspace_id, caller);

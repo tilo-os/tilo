@@ -224,6 +224,6 @@ are stored, verified and served.
 
 - The SDK source: [`crates/sdk/tilo-app`](../crates/sdk/tilo-app); browse the
   API with `cargo doc --locked -p tilo-app --no-deps --open`.
-- The [interface guidelines](../crates/sdk/ui-core/HIG.md): layout,
+- The [interface guidelines](../crates/ui/ui-core/HIG.md): layout,
   navigation, text and the shared controls.
 - [Architecture](architecture/README.md): how apps fit the system.

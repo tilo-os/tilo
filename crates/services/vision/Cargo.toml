@@ -1,0 +1,42 @@
+[package]
+name = "tilo-vision-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The device's image model: bounds and encodes a picture, calls the model, and publishes describe, read text, name what a picture shows, find faces and the library analysis the system index reads"
+
+[dependencies]
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../../session/service" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-content = { path = "../../system/content" }
+tilo-content-device = { path = "../../system/content-device" }
+tilo-image-codec = { path = "../../engines/tilo-image-codec" }
+tilo-model-client = { path = "../../sdk/model-client", default-features = false }
+tilo-ocr = { path = "../../engines/ocr" }
+# The system index a picture's words are written back into.
+tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }
+agent-provider-config = { path = "../../integrations/provider-config" }
+base64.workspace = true
+hex.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The connection this device's service holds to the model gateway, made as
+# the launcher makes one for an app it starts.
+launcher = { path = "../../packaging/launcher" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

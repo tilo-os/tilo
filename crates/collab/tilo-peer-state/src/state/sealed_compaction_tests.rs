@@ -45,6 +45,16 @@ pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
+/// The person whose certified device `key` is in `peer`'s workspace.
+pub(super) fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
+}
+
 pub(super) fn fixture() -> Fixture {
     let (owner, authority) = device(1, 2);
     let (other, other_cert) = device(1, 3);
@@ -2107,6 +2117,85 @@ pub(super) fn sealer(
     }
 }
 
+/// A reader takes a compaction without deciding it again as a change of its own, so a sealed
+/// write that only calls itself a compaction is refused where it is admitted: what it carries is
+/// no compaction of the record's history.
+#[test]
+fn a_write_dressed_as_a_compaction_is_refused() {
+    let f = fixture();
+    let keys = f.keys();
+    let mut sealing = f.replica.clone();
+    let mut document = AutoCommit::load(&sealing.document(APP, RECORD).unwrap()).unwrap();
+    let heads = document.get_heads();
+    document.put(ROOT, "value", "sealed").unwrap();
+    document.commit_edit("fixture", "value", &person(&sealing, &f.owner));
+    let first = sealing
+        .publication_mut()
+        .publish_sealed_incremental(
+            APP,
+            RECORD,
+            document.save_after(&heads),
+            &mut sealer(&keys, RECORD),
+            &f.owner,
+            f.now,
+        )
+        .unwrap();
+    let mut reader = f.replica.clone();
+    admit(&mut reader, &f.owner, first, f.now);
+
+    let heads = document.get_heads();
+    document.put(ROOT, "value", "dressed").unwrap();
+    document.commit_edit("fixture", "value", &person(&sealing, &f.owner));
+    let written = envelope_of(
+        &sealing
+            .publication_mut()
+            .publish_sealed_incremental(
+                APP,
+                RECORD,
+                document.save_after(&heads),
+                &mut sealer(&keys, RECORD),
+                &f.owner,
+                f.now,
+            )
+            .unwrap(),
+    );
+    let dressed = signed(
+        &f.owner,
+        next_seq(&reader, &f.owner),
+        OpKind::Compaction,
+        written.payload,
+        written.encryption,
+        f.now,
+    );
+    refused(&mut reader, &f.owner, message(dressed), f.now);
+}
+
+/// What a reader skips deciding again is decided where a compaction is admitted: a whole,
+/// verified compaction of the record's history, signed by a member whose role reads and writes
+/// nothing, is refused there and changes nothing.
+#[test]
+fn a_compaction_by_a_member_who_may_not_write_is_refused() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.replica);
+    let write = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+    admit(&mut f.replica, &f.other, write, now);
+    let viewer = SigningKey::from_bytes(&[110; 32])
+        .verifying_key()
+        .to_bytes();
+    assert!(
+        f.replica
+            .governance_mut()
+            .set_member_role(viewer, Role::Viewer, &f.owner, now)
+            .unwrap()
+    );
+    let valid = wrapper(&f.replica, &keys, &held(&f.replica));
+    let compaction = forged(&f.replica, &f.editor, &valid, now);
+    let editor = f.editor.clone();
+    refused_with(&mut f.replica, &editor, compaction, now, "not granted");
+}
+
 tilo_test_env::scenario! {
     fn the_key_holder_seals_a_record_and_it_stays_sealed;
 
@@ -2119,7 +2208,7 @@ tilo_test_env::scenario! {
         let mut document = AutoCommit::load(&sealing.document(APP, RECORD).unwrap()).unwrap();
         let heads = document.get_heads();
         document.put(ROOT, "value", "sealed").unwrap();
-        document.commit_edit("fixture", "value");
+        document.commit_edit("fixture", "value", &person(&sealing, &f.owner));
         let message = sealing
             .publication_mut()
             .publish_sealed_incremental(
@@ -2173,7 +2262,7 @@ tilo_test_env::scenario! {
         let keys = group.content_keys().unwrap();
         let mut genesis = AutoCommit::new();
         genesis.put(ROOT, "value", "born sealed").unwrap();
-        genesis.commit_edit("fixture", "value");
+        genesis.commit_edit("fixture", "value", &person(&f.replica, &f.owner));
         let mut host = f.replica.clone();
         host.publication_mut()
             .publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
@@ -2262,7 +2351,7 @@ tilo_test_env::scenario! {
         let mut named = |key: &str, value: &str| {
             let heads = author.0.get_heads();
             author.0.put(ROOT, key, value).unwrap();
-            author.0.commit_edit("fixture", key);
+            author.0.commit_edit("fixture", key, &person(&f.replica, &f.owner));
             DocumentMutation::Incremental(author.0.save_after(&heads))
                 .encode()
                 .unwrap()

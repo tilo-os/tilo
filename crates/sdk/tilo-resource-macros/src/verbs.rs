@@ -17,6 +17,9 @@ pub(crate) struct ResourceOptions {
     /// `catalogue = "dir"`: where the catalogue its words are keys of is,
     /// relative to the crate.
     catalogue: Option<String>,
+    /// `readers = "author"`, `"author until sent"` or a field's name: who
+    /// reads a record of the kind, when not every member.
+    readers: Option<String>,
     /// The app that publishes records of this kind, which its typed
     /// references name their actions by (`#[resource(app = "…")]`); the
     /// framework app's id where the record names none.
@@ -54,7 +57,7 @@ pub(crate) struct ResourceOptions {
     item_views: Option<syn::Path>,
 }
 
-const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app = \"...\"`, `params = name`, `search = path`, \
+const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app = \"...\"`, `readers = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `child = path`, `initialize = path`, `seed = path`, `available = path`, \
      `read = false`, `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
@@ -78,6 +81,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         label: String::new(),
         named: None,
         catalogue: None,
+        readers: None,
         app: None,
         params: None,
         search: None,
@@ -157,6 +161,26 @@ fn set_option(options: &mut ResourceOptions, meta: &Meta) -> syn::Result<()> {
             "label" => options.named = Some(text),
             "app" => options.app = Some(text),
             "catalogue" => options.catalogue = Some(text),
+            "readers" => {
+                let words: Vec<&str> = text.split_whitespace().collect();
+                let field = |word: &str| {
+                    !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                };
+                let well_formed = match words.as_slice() {
+                    ["author"] => true,
+                    ["author", "until", until] => field(until),
+                    [name] => field(name),
+                    _ => false,
+                };
+                if !well_formed {
+                    return Err(syn::Error::new(
+                        pair.value.span(),
+                        "expected `readers = \"author\"`, `\"author until field\"` or a \
+                         `Set<Actor>` field's name",
+                    ));
+                }
+                options.readers = Some(words.join(" "));
+            }
             _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
         }
         return Ok(());
@@ -1954,6 +1978,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             const VERSION: u32 = #version;
         }
     });
+    let readers = options.readers.as_ref().map(|readers| {
+        quote! {
+            const READERS: &'static str = #readers;
+        }
+    });
     let migration = options.migrate.as_ref().map(|migrate| {
         quote! {
             fn migrate(
@@ -2549,6 +2578,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #seed_fn
             #by_app_resource_fns
             #version
+            #readers
             #migration
             #load
             #locate

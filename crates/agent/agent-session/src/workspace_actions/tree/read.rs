@@ -344,7 +344,7 @@ impl Worker {
         }))
     }
 
-    /// Answer one of Files' reads of the folder of the workspace `named`
+    /// Answer one of Files' reads of the folder of the workspace
     /// ([`fs_protocol::tree::is_tree_read`]): what a folder holds, or what a file says.
     ///
     /// # Errors
@@ -361,7 +361,6 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        _named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         if !self.may_on_tree(workspace_id, caller, &[]) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));

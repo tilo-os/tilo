@@ -52,7 +52,7 @@ fn row(row: &Row, requests: &Requests) -> Element {
         list_row = list_row.meta(crate::tr_count("snippets-variables", count));
     }
     let requests = Rc::clone(requests);
-    Box::new(list_row.on_view(move || requests.borrow_mut().push(open.clone())))
+    Box::new(list_row.on_open(move || requests.borrow_mut().push(open.clone())))
 }
 
 enum Body {
@@ -105,12 +105,12 @@ impl ListPane {
         })
         .filling()
         .selection_follows_focus()
-        .on_view("snippets.list", move |id| {
+        .on_choose("snippets.list", move |id| {
             if let Ok(mut core) = follow.try_borrow_mut() {
                 core.open = Some(id);
             }
         })
-        .on_activate_view("snippets.list-open", move |id| {
+        .on_activate(move |id| {
             activate.borrow_mut().push(Action::OpenSnippet(id));
         })
         .with_accessible_name(name)

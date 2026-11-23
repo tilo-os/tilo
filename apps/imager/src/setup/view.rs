@@ -784,7 +784,7 @@ impl SetupApp {
         let sink = Rc::clone(&self.commands);
         Button::new(id, &label)
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || sink.borrow_mut().push(command))
+            .on_click(move || sink.borrow_mut().push(command))
     }
 
     fn desktop_install_card(&self) -> Section {
@@ -2715,7 +2715,7 @@ mod tests {
 
     impl ResourceApp for SetupFlow {
         type Resource = Imager;
-        const ID: &'static str = tilo_app_id::apps::IMAGER;
+        const ID: &'static str = crate::resource::APP_ID;
         const TITLE: &'static str = "Disk Imager";
 
         fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {

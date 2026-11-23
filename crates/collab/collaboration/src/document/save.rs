@@ -171,34 +171,3 @@ pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
     autosave.seed(&doc);
     (doc, autosave)
 }
-
-/// Open the document `store` holds, as a workspace another host governs reads it:
-/// the broker's committed read of the workspace (`read`) merged into the on-disk
-/// copy, which keeps the merged graph from then on.
-pub fn open_with_committed_read(
-    mut store: DocStore,
-    read: &crate::CommittedDocument,
-) -> Result<(AutoCommit, DocWriter), String> {
-    let stored = store.load_complete().map_err(|e| e.to_string())?;
-    let had_stored = stored.is_some();
-    let mut doc = stored.unwrap_or_else(|| {
-        // The workspace's record carries its own genesis, schema version and
-        // all: a stamp made here would be a second, unnamed creation of it.
-        let mut fresh = store.new_document();
-        fresh.rollback();
-        fresh
-    });
-    let mut writer = store.writer();
-    // Only the previously stored heads are durable. The captured graph must
-    // remain a pending local-cache write even without a subsequent user edit.
-    if had_stored {
-        writer.seed(&doc);
-    }
-    if !read.is_whole() {
-        return Err("native initial snapshot missing".to_string());
-    }
-    read.take_into(&mut doc)
-        .ok_or_else(|| "the workspace's copy of the document could not be read".to_string())?;
-    writer.request(&doc);
-    Ok((doc, writer))
-}

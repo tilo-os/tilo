@@ -120,8 +120,13 @@ impl ViewStates {
     }
 
     /// Change a slot the person set in a view: kept as [`ViewStates::set`] keeps it, and once
-    /// for the host to write under the person's entries of the workspace's record.
+    /// for the host to write under the person's entries of the workspace's record. A slot that
+    /// already has `value` changed nothing — a view that sets the value it has while it runs is
+    /// no change of the person's — so nothing is handed over for it.
     pub fn write(&mut self, key: StateKey, value: Value) {
+        if matches!(self.slots.get(&key), Some((slot, _)) if *slot == value) {
+            return;
+        }
         self.set(key.clone(), value.clone());
         self.writes.push((key, value));
     }
@@ -186,6 +191,22 @@ mod tests {
             states.set(present.clone(), Value::text("ada"));
             assert_eq!(states.take_writes(), Vec::new());
             assert_eq!(states.get(&present), Some(&Value::text("ada")));
+        }
+
+        phase a_slot_set_to_the_value_it_already_holds_is_no_change;
+        {
+            let mut states = ViewStates::default();
+            states.write(view("filter"), Value::text("Today"));
+            assert_eq!(
+                states.take_writes(),
+                vec![(view("filter"), Value::text("Today"))]
+            );
+            // A view that sets what its slot has while it runs changed nothing: the slot's
+            // generation stands, and nothing is handed over to be kept in a record.
+            let generation = states.generation(&view("filter"));
+            states.write(view("filter"), Value::text("Today"));
+            assert_eq!(states.generation(&view("filter")), generation);
+            assert_eq!(states.take_writes(), Vec::new(), "the slot already had it");
         }
 
         phase restoring_a_slot_that_already_holds_its_value_leaves_it_alone;

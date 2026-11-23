@@ -23,6 +23,8 @@ rustc-demangle = "0.1"
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Bounded request lines on the liveness socket.
+wire-frame = { path = "../../platform/wire-frame" }
 
 [dependencies]
 # A judged hang ends the process at once, without unwinding or flushing.

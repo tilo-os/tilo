@@ -1356,9 +1356,6 @@ fn tilo_source(with_grant: bool) -> TiloSource {
     account.config = serde_json::json!({"provider":"spotify"});
     let record = imager_backend::account_store::Accounts::empty();
     record.keep(&account).unwrap();
-    let mut foreign = accounts::Account::new(accounts::AccountId::new("someone-else"), "nextcloud");
-    foreign.owner = Some("another-person".into());
-    record.keep(&foreign).unwrap();
     record.project(&source).unwrap();
     if with_grant {
         account_credentials::CredentialStore::for_root(Some(source))

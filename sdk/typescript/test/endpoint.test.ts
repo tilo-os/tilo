@@ -9,6 +9,8 @@ import {
   ProtocolError,
   Refused,
   Tilo,
+  Unreachable,
+  UnsupportedVersion,
 } from "../src/index.ts";
 import { FakeApi } from "./fakeApi.ts";
 
@@ -96,9 +98,32 @@ describe("a request", () => {
     const api = new FakeApi();
     api.version = "2";
 
-    await expect(open(api).answer("GET", "/v1", { idempotent: false })).rejects.toMatchObject({
-      name: "ProtocolError",
+    const failure = open(api).answer("GET", "/v1", { idempotent: false });
+    await expect(failure).rejects.toBeInstanceOf(UnsupportedVersion);
+    const error = await failure.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProtocolError);
+    expect(error).toMatchObject({
+      name: "UnsupportedVersion",
       code: "api_version_unsupported",
+      status: null,
+      version: "2",
+      speaking: "1",
+      message: "this SDK speaks Tilo API 1; the server answers 2: update tilo-sdk",
+    });
+  });
+
+  it("rejects with Unreachable when the endpoint cannot be reached", async () => {
+    const failing = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    const endpoint = new Endpoint(new HttpTransport("https://api.test", "tilo_sk_test", failing), null, 0);
+
+    const failure = endpoint.answer("GET", USAGE, { idempotent: false });
+    await expect(failure).rejects.toBeInstanceOf(Unreachable);
+    const error = await failure.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProtocolError);
+    expect(error).toMatchObject({
+      name: "Unreachable",
     });
   });
 

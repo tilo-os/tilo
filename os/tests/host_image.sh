@@ -8,8 +8,9 @@
 #
 # With --dev, the development server image (os/Containerfile.host-dev, sealed by
 # seal-host-dev) is held to all of that but the one difference it is for:
-# systemd-sysext merges layers at boot. Beside the server it carries tilo-vmd
-# and its CLI, the component manifest the daemon reads, its boot units, and a
+# systemd-sysext merges layers at boot. Beside the server it carries the
+# runtime that runs the device's steps and the dev-VM CLI, the component
+# manifest the steps read, their boot units, and a
 # base.json naming the check image, target, toolchain and Cargo.lock the
 # server's own programs were built with.
 #
@@ -73,15 +74,6 @@ if said=$(inside /usr/libexec/tilo/tilolang-process 2>&1); then
 fi
 grep -q 'tilolang-process: exiting: no api' <<<"$said" \
   || die "tilolang-process on the server image's base said: $said"
-# A server declares the two ways in it has: the token made for it, and the code
-# it shows. Nobody is at it to confirm a device it found on the network.
-methods=$root/usr/lib/tilo/enrollment-methods
-[[ -f $methods ]] || die 'the image declares no enrollment methods'
-grep -qx token "$methods" || die 'the server image offers no enrollment token'
-grep -qx code "$methods" || die 'the server image offers no enrollment code'
-if grep -qx local-network "$methods"; then
-  die 'the server image offers local-network pairing'
-fi
 # Scripts call these bare; the esp writer answers to the UKI editor's name too.
 [[ -x $root/usr/bin/tilo-image-trust ]] || die 'tilo-image-trust is not on PATH for the boot tools'
 [[ $(readlink "$root/usr/libexec/tilo-uki-cmdline") == tilo-esp-write ]] \
@@ -254,8 +246,8 @@ done
 [[ ! -e $root/usr/bin/greetd && ! -e $root/usr/libexec/tilo/tilo-greeter ]] \
   || die 'the server image carries a sign-in stack'
 if (( ! dev )); then
-  [[ ! -e $root/usr/libexec/tilo/tilo-vmd && ! -e $root/usr/share/tilo-vm/base.json ]] \
-    || die 'the server image carries the dev-VM daemon'
+  [[ ! -e $root/usr/libexec/tilo/tilo-vm && ! -e $root/usr/share/tilo-vm/base.json ]] \
+    || die 'the server image carries the dev-VM tools'
   echo 'the server image holds what a server runs'
   exit 0
 fi
@@ -275,19 +267,18 @@ for unit in "$wants"/*.wants/tilo-vm-*.service; do
   program=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$root/usr/lib/systemd/system/$unit")
   inside test -x "$program" || die "$unit runs $program, which the image does not have"
 done
-[[ $(readlink "$root/usr/bin/tilo-vmd") == ../libexec/tilo/tilo-vmd ]] || die 'tilo-vmd is not on PATH'
-grep -q '^tilo-vmd ' <<<"$(inside tilo-vmd --version)" || die 'tilo-vmd does not start on the server'
+[[ -x $root/usr/libexec/tilo/tilo-runtime ]] || die 'no tilo-runtime, which runs the device steps'
 grep -q '^tilo-vm ' <<<"$(inside tilo-vm --version)" || die 'tilo-vm does not start on the server'
 cmp -s "$root/usr/share/tilo/components.toml" "$repo_root/os/components.toml" \
   || die "the image's component manifest is not this tree's"
-# The daemon refuses a layer built for another target or by another check
+# The device refuses a layer built for another target or by another check
 # image, so base.json names the ones that built the server's own programs and
-# the daemon beside them.
+# the runtime beside them.
 base=$root/usr/share/tilo-vm/base.json
 builder=$(awk '/^\[/ { exit } /^image = "/ { gsub(/^image = "|"$/, ""); print; exit }' "$repo_root/t.toml")
 field() { inside python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]] or "")' \
   /usr/share/tilo-vm/base.json "$1"; }
-[[ -f $base ]] || die 'no /usr/share/tilo-vm/base.json, so tilo-vmd checks no layer'
+[[ -f $base ]] || die 'no /usr/share/tilo-vm/base.json, so the device checks no layer'
 [[ $(field builder_image_digest) == "${builder#*@}" ]] \
   || die "base.json names builder $(field builder_image_digest), not t's check image ${builder#*@}"
 [[ $(field target) == x86_64-unknown-linux-gnu ]] || die "base.json names target $(field target)"

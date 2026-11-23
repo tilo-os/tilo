@@ -489,5 +489,23 @@ tilo_test_env::scenario! {
         assert!(roster.valid(), "a bridged call names the service it reaches");
         roster.bridges = vec!["Discord ".into()];
         assert!(!roster.valid(), "a service is named by its id");
+
+        // A bridged participant is a person of the call, shown by their name there.
+        roster.bridges = vec!["discord".into()];
+        roster.bridged = vec![BridgedPerson {
+            person: person(2),
+            service: "discord".into(),
+            account: "7001".into(),
+            name: "Dana".into(),
+            avatar: Some("ab".repeat(32)),
+        }];
+        let json = serde_json::to_string(&roster).unwrap();
+        assert!(json.contains("\"bridged\"") && json.contains("Dana"));
+        assert!(roster.valid());
+        roster.bridged[0].person = person(3);
+        assert!(!roster.valid(), "a bridged person is in the call's people");
+        roster.bridged[0].person = person(2);
+        roster.bridged[0].name = "  ".into();
+        assert!(!roster.valid(), "a bridged person is shown by a name");
     }
 }

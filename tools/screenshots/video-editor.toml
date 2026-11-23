@@ -11,10 +11,10 @@ invoke = { resource = "video-editor.project", action = "set-frame-size", args = 
 invoke = { resource = "video-editor.project", action = "set-frame-rate", args = { fps = 25 } }
 
 [[situation.steps]]
-invoke = { resource = "video-editor.project", action = "add-track", args = { kind = "Video" } }
+invoke = { resource = "video-editor.project", action = "add-track", args = { kind = "video" } }
 
 [[situation.steps]]
-invoke = { resource = "video-editor.project", action = "add-track", args = { kind = "Audio" } }
+invoke = { resource = "video-editor.project", action = "add-track", args = { kind = "audio" } }
 
 [[situation.steps]]
 invoke = { resource = "video-editor.project", action = "add-title", args = { text = "Kastanienallee Garden, one year on" } }

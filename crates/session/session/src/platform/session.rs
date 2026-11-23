@@ -468,11 +468,9 @@ impl Session {
                 Some((app, kind, held, outcome))
             })
         };
-        // The agent sessions served here: one per connection the person admits at the MCP server
-        // and one per conversation an agent is asked a turn in. What the shell and the bar show,
-        // and what the broker admits each session on.
+        // The agent sessions served here: one per connection the person admits at the MCP server.
+        // What the shell and the bar show, and what the broker admits each session on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
-        agent_sessions.wake_on_spend(options.wake.handle());
         // Where each workspace's folder on this computer stands, as the files daemon says it over
         // the tree socket: what the shell shows, so a person knows what reached the server.
         let folders = tilo_workspace_service::files::Folders::new(options.wake.handle());
@@ -647,6 +645,8 @@ impl Session {
             notices: notices.clone(),
             overview: overview.open_flag(),
             handle: handle.clone(),
+            emoji: Rc::new(std::cell::Cell::new(false)),
+            about: Rc::new(std::cell::Cell::new(false)),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -1210,13 +1210,32 @@ impl Session {
         // The shortcuts the person saved and the triggers that start them
         // without anyone invoking them: armed on the shell this device shows,
         // and started on the broker below. A run executes here, on a runtime
-        // of its own; the shortcuts themselves are saved and run by the
-        // device's own broker.
+        // of its own; the shortcuts themselves are saved into, and run from,
+        // this device's own workspace service, by the library the daemon
+        // installs too.
         let automation_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("tilo-automation")
             .enable_all()
             .build()
+            .map_err(crate::Error::host)?;
+        let shortcut_library: Option<
+            std::sync::Arc<dyn tilo_workspace_service::apps::services::ShortcutLibraryServices>,
+        > = crate::sync::device_identity()
+            .map(|identity| {
+                tilo_runtime::device::shortcuts::Shortcuts::when_installed(
+                    workspace_service.clone(),
+                    identity.device_cert,
+                    identity.signer,
+                )
+                .map(|library| {
+                    std::sync::Arc::new(library)
+                        as std::sync::Arc<
+                            dyn tilo_workspace_service::apps::services::ShortcutLibraryServices,
+                        >
+                })
+            })
+            .transpose()
             .map_err(crate::Error::host)?;
         // What each of this device's workspaces revokes, read from the
         // workspaces the engine holds: the broker's decisions and the
@@ -1233,6 +1252,7 @@ impl Session {
             &options,
             &live_activities,
             &handle,
+            shortcut_library,
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
@@ -1297,7 +1317,6 @@ impl Session {
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
-                std::sync::Arc::clone(&agent_sessions),
                 app_wire.as_ref().map(|app_wire| {
                     std::sync::Arc::clone(&app_wire.layout)
                         as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>
@@ -1385,9 +1404,6 @@ impl Session {
                     .as_ref()
                     .and_then(|app_wire| app_wire.hosting.clone()),
             );
-            if let Some(devices) = sync.as_ref().and_then(|sync| sync.device_actions()) {
-                server.hear_device_agents(devices);
-            }
             server
         });
         let automation = crate::automation::Automation::new(
@@ -1486,6 +1502,49 @@ impl Session {
                 &options.person,
                 options.wake.handle(),
             )));
+
+        // The person's other devices, and the files the studio and Files hand
+        // them, as a resource the shell's quick settings, an agent and a script
+        // read and press: the same engine Files reaches, as the same certified
+        // route, in the workspace in front. A share the resource asks for waits
+        // here for the pass that opens the invitation sheet.
+        let nearby_shares: Rc<RefCell<Vec<String>>> = Rc::default();
+        if let (Some(nearby), Some(app_wire)) = (&nearby, &app_wire) {
+            let layout = std::sync::Arc::clone(&app_wire.layout);
+            let shares = Rc::clone(&nearby_shares);
+            services
+                .borrow_mut()
+                .add(Box::new(crate::nearby_send::Served::new(
+                    tilo_workspace_service::apps::nearby_send::NearbySend::new(
+                        std::sync::Arc::clone(nearby)
+                            as std::sync::Arc<
+                                dyn tilo_workspace_service::apps::services::NearbyTransferServices,
+                            >,
+                        options.person.clone(),
+                        move || {
+                            let mut active = String::new();
+                            // A workspace that cannot be read is no workspace: the engine
+                            // refuses a send with none, and the person is told why in the log.
+                            if let Err(error) =
+                                tilo_broker_core::services::WorkspaceAuthority::with_tree(
+                                    &*layout,
+                                    &mut |tree| active = tree.active.to_string(),
+                                )
+                            {
+                                tracing::warn!(
+                                    %error,
+                                    "nearby send cannot tell which workspace is in front"
+                                );
+                            }
+                            active
+                        },
+                        move |resource| {
+                            shares.borrow_mut().push(resource.to_owned());
+                            Ok(())
+                        },
+                    ),
+                )));
+        }
         // The shell's own records reach the API as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_services);
@@ -1503,6 +1562,8 @@ impl Session {
             &handle,
             shell_surfaces,
             Rc::clone(&shortcuts),
+            super_peek.clone(),
+            emoji.link(),
         );
         services
             .borrow_mut()
@@ -1612,8 +1673,17 @@ impl Session {
                 wake: Some(options.wake.handle()),
             })
         });
+        // Where the sheet's ticket comes from, for a workspace no host on the web keeps: the ticket
+        // service Settings' Add a device asks too, on this session's endpoint and device actions.
         let adding = crate::pair_device::Adding::new(
-            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>
+            Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
+            sync.as_deref().map(|sync| {
+                crate::device_tickets::DeviceTickets::new(
+                    Some(sync.endpoint_handle()),
+                    Some(sync.actions_handle()),
+                    workspace_service.clone(),
+                )
+            }),
         );
         let landings = Rc::new(crate::landing::Landings::new(options.wake.handle()));
         // A share's write into a workspace's governance answers through the same landings.
@@ -1671,6 +1741,7 @@ impl Session {
             tilolang_shell: options.shell,
             services,
             sends,
+            nearby_shares,
             table,
             window_shares,
             pages: crate::page_track::PageTracks::new(),
@@ -2071,7 +2142,16 @@ impl Session {
             self.surfaces
                 .start_or_log(&mut self.compositor, surface, &workspace);
         }
+        self.publish_surface_windows();
         Ok(())
+    }
+
+    /// Publish the windows of the surface apps started since the last call as every window the
+    /// session shows is: their controls are found and pressed through the session's API.
+    fn publish_surface_windows(&mut self) {
+        for window in self.surfaces.take_unpublished() {
+            self.shared.published.add(window);
+        }
     }
 
     /// Bring the displays in line with the person's layout and the way up
@@ -2266,8 +2346,11 @@ impl Session {
         surface: &crate::surfaces::Surface,
     ) -> Result<(), crate::surfaces::StartError> {
         let workspace = self.shared.active_workspace_id();
-        self.surfaces
-            .start(&mut self.compositor, surface, &workspace)
+        let started = self
+            .surfaces
+            .start(&mut self.compositor, surface, &workspace);
+        self.publish_surface_windows();
+        started
     }
 
     /// Stop the surface app `name`, if it runs.
@@ -2414,14 +2497,6 @@ impl Session {
     pub fn device_actions(&self) -> Option<tilo_peer_state::actions::ActionService> {
         let devices = self.shared.sync.as_ref()?.device_actions()?;
         Some(devices.action_service())
-    }
-
-    /// Whether an agent in `workspace` acts here only in one of its sessions: true once the session
-    /// read the workspace's conversations, which is when it holds the workspace.
-    #[must_use]
-    pub fn confines_agents(&self, workspace: &str) -> bool {
-        use tilo_broker_core::services::AgentSessions as _;
-        self.shared.agent_sessions.confines(workspace)
     }
 
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the

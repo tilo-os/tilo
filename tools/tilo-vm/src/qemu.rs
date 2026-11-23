@@ -571,7 +571,7 @@ pub struct MachineArgs {
     /// The TPM's state directory (default: <run>/tpm).
     #[arg(long)]
     pub tpm_dir: Option<PathBuf>,
-    /// Keep the pristine variable store across boots, so an enrolment in the
+    /// Keep the pristine variable store across boots, so an joining in the
     /// guest (`/usr/libexec/tilo-secureboot enroll`) sticks.
     #[arg(long)]
     pub secboot: bool,
@@ -628,6 +628,10 @@ pub struct MachineArgs {
     /// `ssh.authorized_keys.root` in an SMBIOS type 11 OEM string.
     #[arg(long)]
     pub root_key: Option<PathBuf>,
+    /// A `tilo device add` ticket the guest spends at its first boot, as the systemd credential
+    /// `tilo.ticket`.
+    #[arg(long)]
+    pub ticket: Option<String>,
     /// The serial line as a socket (<run>/serial.sock) something can type
     /// into, beside the serial log. Nothing has to be attached, but a client
     /// that connects must keep reading: QEMU blocks on a connected socket
@@ -676,6 +680,7 @@ pub struct Machine {
     pub console: bool,
     pub virtio_ports: Vec<(String, PathBuf)>,
     pub root_key: Option<PathBuf>,
+    pub ticket: Option<String>,
     pub serial_socket: bool,
     pub serial_log: Option<PathBuf>,
     pub vnc: Option<PathBuf>,
@@ -780,6 +785,7 @@ impl TryFrom<&MachineArgs> for Machine {
             console: args.console,
             virtio_ports,
             root_key: args.root_key.clone(),
+            ticket: args.ticket.clone().filter(|ticket| !ticket.is_empty()),
             serial_socket: args.serial_socket,
             serial_log: args.serial_log.clone(),
             vnc: args.vnc.clone(),
@@ -888,7 +894,12 @@ impl Machine {
         }
         let mut nic = String::from("user,model=virtio-net-pci");
         if let Some(port) = self.ssh_port {
-            let _ = write!(nic, ",hostfwd=tcp:127.0.0.1:{port}-:22");
+            // The device's daemon answers on UDP behind the same port number.
+            let _ = write!(
+                nic,
+                ",hostfwd=tcp:127.0.0.1:{port}-:22,hostfwd=udp:127.0.0.1:{port}-:{}",
+                crate::config::DAEMON_PORT
+            );
         }
         for forward in &self.forwards {
             nic.push_str(",hostfwd=");
@@ -1009,6 +1020,7 @@ impl Machine {
         if let Some(credential) = &resolved.credential {
             args.extend(["-smbios".into(), credential.clone()]);
         }
+        args.extend(crate::hypervisor::smbios_args(self.ticket.as_deref()));
         if self.serial_socket {
             // QEMU writes everything the guest says on the line to the log
             // too, whether or not anything is connected; with nothing
@@ -1991,7 +2003,7 @@ mod tests {
                 "--tpm",
             ]);
             let text = line(&m, false, Some("type=11,value=x".into()));
-            assert!(text.contains("-nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2299-:22,hostfwd=tcp:127.0.0.1:3341-:3340"), "{text}");
+            assert!(text.contains("-nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2299-:22,hostfwd=udp:127.0.0.1:2299-:7703,hostfwd=tcp:127.0.0.1:3341-:3340"), "{text}");
             assert!(text.contains("-netdev socket,id=tilolan,udp=127.0.0.1:23902,localaddr=127.0.0.1:23901 -device e1000,netdev=tilolan,mac=52:54:00:23:83:0a"));
             assert!(text.contains("-device virtio-serial-pci -chardev socket,id=tiloconsole,path=/run/t/console.sock,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0"));
             assert!(text.contains("-chardev file,id=tiloport0,path=/run/t/install-proof.txt -device virtserialport,chardev=tiloport0,name=org.tilo.vm-install-proof"));

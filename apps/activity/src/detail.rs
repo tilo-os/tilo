@@ -131,11 +131,11 @@ fn offers(provider: &Provider, nav: &Nav, range: &wire::Range, detail: &wire::De
                 let compare = nav.compare.clone();
                 button
                     .toggled(nav.compare.get())
-                    .on_view(move || compare.update(|on| *on = !*on))
+                    .on_open(move || compare.update(|on| *on = !*on))
             }
             wire::DetailAction::Open => {
                 let (provider, target) = (provider.clone(), detail.resources.first().cloned());
-                button.on_view(move || {
+                button.on_open(move || {
                     if let Some(target) = &target {
                         provider.ask(wire::OPEN, target);
                     }
@@ -143,7 +143,7 @@ fn offers(provider: &Provider, nav: &Nav, range: &wire::Range, detail: &wire::De
             }
             action => {
                 let (provider, range) = (provider.clone(), range.clone());
-                button.on_view(move || provider.ask(action.action(), &range))
+                button.on_open(move || provider.ask(action.action(), &range))
             }
         };
         row = row.push(Box::new(button));
@@ -198,7 +198,7 @@ fn agent_session(provider: &Provider, range: &wire::Range, run: &wire::Session) 
                         .push(Box::new(row))
                         .push(Box::new(
                             Button::new(&format!("activity-run-record-{index}-undo"), &offer.label)
-                                .on_view(move || provider.ask(action.action(), &query)),
+                                .on_open(move || provider.ask(action.action(), &query)),
                         )),
                 )
             })
@@ -223,7 +223,7 @@ fn name(
         .with_id("activity-name")
         .with_placeholder("activity-name-placeholder");
     let (provider, range) = (provider.clone(), range.clone());
-    let save = Button::new("activity-name-save", "activity-name-save").on_view(move || {
+    let save = Button::new("activity-name-save", "activity-name-save").on_open(move || {
         provider.ask(
             wire::NAME,
             &wire::Name {

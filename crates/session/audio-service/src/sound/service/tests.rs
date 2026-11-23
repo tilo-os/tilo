@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
         assert_eq!(sound["input"], json!(50));
         assert_eq!(sound["hardware"][0]["label"], json!("Headset"));
         assert_eq!(sound["hardware"][0]["profile"], json!(1));
-        assert_eq!(sound["streams"][0]["app"], json!("Music"));
+        assert_eq!(sound["streams"][0]["application"], json!("Music"));
 
         service
             .invoke(SOUND, "set-volume", &arguments(json!({"level": 0.8})))

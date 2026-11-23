@@ -68,7 +68,7 @@ impl Staged {
     /// The app `app` of `packages` as the window's bar names it: its icon and its title, as the
     /// launcher and the desktop's bar wear them.
     fn name_window(harness: &mut FrameHarness, app: &str, packages: &Rc<Packages>) {
-        let meta = packages.1.iter().find(|meta| meta.app == app);
+        let meta = packages.platform.iter().find(|meta| meta.app == app);
         let title = meta.map_or_else(String::new, |meta| meta.title.clone());
         let icon = meta
             .and_then(|meta| meta.icon.as_deref())
@@ -182,6 +182,7 @@ impl Staged {
                 store: tilolang_tilo::resources::ResourceStore::in_memory(),
                 root: tilolang_tilo::host::RootView { root, view: None },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+                link_home: None,
             },
             Rc::clone(packages) as Rc<dyn Platform>,
             // The person the layout opens as is called as a person is, `Ada`, and everyone else as
@@ -751,7 +752,7 @@ mod tests {
         let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
         let (built, platform) =
             crate::layout_check::build(&dir, &search).expect("the app compiles");
-        Rc::new(Packages(
+        Rc::new(Packages::new(
             Rc::new(built.into_iter().map(|b| b.compiled).collect()),
             platform,
         ))
@@ -867,7 +868,7 @@ mod tests {
     fn the_window_shows_each_control_once() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (960, 1080);
         let mut staged = Staged::over(
             &app,
@@ -923,7 +924,7 @@ mod tests {
     fn a_mail_window_with_no_account_offers_no_new_message() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("mail");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let shown = |scenario: &str, (width, height): (u32, u32), text: f32| {
             let theme = ui::Theme::light().with_text_scale(text);
             let mut staged = Staged::over(
@@ -970,7 +971,7 @@ mod tests {
     fn a_window_on_its_own_root_offers_no_way_back() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tube");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let back = |scenario: &str| -> bool {
             let (width, height) = (1280, 800);
             let theme = ui::Theme::light();
@@ -1026,7 +1027,7 @@ mod tests {
         tilo_app_window::i18n::ensure();
         ui::clock::freeze_for_capture();
         let packages = app_packages("mail");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let notice = |style: ui::clock::TimeStyle| -> String {
             ui::format::region::install(ui::format::region::RegionFormats {
                 time: style,
@@ -1157,7 +1158,7 @@ mod tests {
     fn a_press_on_the_button_an_app_binds_runs_its_action_once_through_the_api() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("counter");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (900, 600);
         let mut staged = Staged::over(
             &app,
@@ -1270,7 +1271,7 @@ mod tests {
     fn open_reminder_form(staged: &mut Staged, packages: &Rc<Packages>) {
         // The task stands open as its page: the reminder's menu is part of the document, and a page
         // takes the presses the controls of a row's document do not (yet) reach.
-        let meta = &packages.0.last().expect("the app's meta").meta;
+        let meta = &packages.compiled.last().expect("the app's meta").meta;
         let task_type = &meta
             .types
             .iter()
@@ -1330,7 +1331,7 @@ mod tests {
     fn a_quick_choice_answers_a_one_question_form_in_one_press() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (390, 844);
         let mut staged = Staged::over(
             &app,
@@ -1391,7 +1392,7 @@ mod tests {
     fn a_moment_typed_into_the_form_is_confirmed_by_its_button() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (390, 844);
         let mut staged = Staged::over(
             &app,
@@ -1490,9 +1491,9 @@ mod tests {
     fn a_press_on_a_menu_row_the_app_binds_runs_its_action_once_through_the_api() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let task_type = packages
-            .0
+            .compiled
             .last()
             .expect("the app's meta")
             .meta
@@ -1503,7 +1504,7 @@ mod tests {
             .id
             .clone();
         let page_view = packages
-            .0
+            .compiled
             .last()
             .expect("the app's meta")
             .meta
@@ -1600,7 +1601,7 @@ mod tests {
     fn a_press_on_a_sections_add_the_app_binds_runs_its_action_once_through_the_api() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (1280, 800);
         let mut staged = Staged::over(
             &app,
@@ -1662,7 +1663,7 @@ mod tests {
     fn a_press_on_a_rows_check_box_runs_the_actions_the_app_binds_to_it() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let mut staged = Staged::over(
             &app,
             &packages,
@@ -1701,7 +1702,7 @@ mod tests {
     fn a_press_on_a_tasks_row_opens_it_where_it_stands() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         // The task the scenario answers with is the one open;
         // another row of the same list takes its place when
         // pressed.
@@ -1809,7 +1810,7 @@ mod tests {
     fn a_scenario_that_answers_with_a_task_shows_its_row_open_in_its_place() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let label = "Call the landlord about the boiler";
         for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
             let mut staged = Staged::over(
@@ -1920,7 +1921,7 @@ mod tests {
     fn a_tasks_steps_that_fold_nothing_stand_on_their_sections_column() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let task = "Call the landlord about the boiler";
         let steps = ["Find the last service date", "Book the engineer's visit"];
         for (width, height) in [(1280_u32, 800_u32), (390, 844)] {
@@ -2042,9 +2043,9 @@ mod tests {
     fn a_row_opens_as_a_page_and_back_returns_to_the_list_with_the_row_open() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let task_type = packages
-            .0
+            .compiled
             .last()
             .expect("the app's meta")
             .meta
@@ -2055,7 +2056,7 @@ mod tests {
             .id
             .clone();
         let page_view = packages
-            .0
+            .compiled
             .last()
             .expect("the app's meta")
             .meta
@@ -2259,7 +2260,7 @@ mod tests {
     fn a_staged_window_settles_on_the_workspace_before_its_frame_is_read() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         for scenario in ["a task that is late", "a busy week"] {
             let mut staged = Staged::over(
                 &app,
@@ -2311,7 +2312,7 @@ mod tests {
     fn a_tasks_check_box_is_a_target_at_every_layout_a_finger_reaches_it_in() {
         tilo_app_window::i18n::ensure();
         let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let mut short = Vec::new();
         for (width, height) in [(320_u32, 568_u32), (768, 1024)] {
             let layouts: Vec<crate::layout_check::Layout> = crate::layout_check::layouts()
@@ -2397,7 +2398,7 @@ mod tests {
     fn a_service_notice_keeps_one_gutter_over_and_under_it() {
         tilo_app_window::i18n::ensure();
         let gaps = |packages: &Rc<Packages>, scenario: &str, (width, height): (u32, u32)| {
-            let id = packages.0.last().expect("the app").meta.app.clone();
+            let id = packages.compiled.last().expect("the app").meta.app.clone();
             let theme = ui::Theme::light();
             let mut staged = Staged::over(
                 &id,

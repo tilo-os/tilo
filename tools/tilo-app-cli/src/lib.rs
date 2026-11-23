@@ -3257,7 +3257,7 @@ mod tests {{
                     ui::row![
                         Text::new(&format!("Item {{index}}")),
                         Button::new(&format!("open-{{key}}"), "Open")
-                            .on_view(move || activated.set(Some(key.clone()))),
+                            .on_open(move || activated.set(Some(key.clone()))),
                     ],
                 )))
             }},
@@ -3413,7 +3413,7 @@ mod tests {{
                     let activated = cells_activated.clone();
                     Box::new(
                         Button::new(&format!("open-{{index}}"), "Open")
-                            .on_view(move || activated.set(Some(index.to_string())))
+                            .on_open(move || activated.set(Some(index.to_string())))
                             .control_size(if index == 0 {{ ControlSize::Large }} else {{ ControlSize::Small }}),
                     )
                 }}),
@@ -6663,6 +6663,7 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Optio
         let mut kept: Vec<std::os::fd::OwnedFd> =
             attach_model_gateway(command, app_dir).into_iter().collect();
         kept.extend(attach_session_chooser(command, app_dir));
+        kept.extend(attach_session_clipboard(command, app_dir));
         Some(kept)
     }
     #[cfg(not(target_os = "linux"))]
@@ -6783,6 +6784,30 @@ fn attach_session_chooser(
     }
     command.env(
         launcher::sandbox::svc_env_var(&chooser.name),
+        fd.as_raw_fd().to_string(),
+    );
+    Some(fd)
+}
+
+/// Hand the app the person's clipboard the way the launcher does in a login: the one service both
+/// languages copy and paste through. Nothing is attached when the session serves none.
+#[cfg(target_os = "linux")]
+fn attach_session_clipboard(
+    command: &mut ProcessCommand,
+    _app_dir: &Path,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let clipboard = launcher::services::resolve_clipboard_bind(false)?;
+    let fd = clipboard.host;
+    let inheritable = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
+    };
+    if !inheritable {
+        return None;
+    }
+    command.env(
+        launcher::sandbox::svc_env_var(&clipboard.name),
         fd.as_raw_fd().to_string(),
     );
     Some(fd)
@@ -9401,6 +9426,12 @@ fn validate_app_id(id: &str) -> Result<()> {
     if !valid {
         bail!("invalid app id {id:?}; use at least three dot-separated DNS-style components");
     }
+    if !tilo_app_id::Grammar::CANONICAL.matches(id) {
+        bail!(
+            "invalid app id {id:?}; app ids must be at most {} bytes",
+            tilo_app_id::MAX_APP_ID_BYTES
+        );
+    }
     Ok(())
 }
 
@@ -9443,14 +9474,14 @@ fn title_from_name(name: &str) -> String {
 
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|path| {
-        (path.join("crates/sdk/ui-core/Cargo.toml").is_file() && path.join("apps").is_dir())
+        (path.join("crates/ui/ui-core/Cargo.toml").is_file() && path.join("apps").is_dir())
             .then(|| path.to_path_buf())
     })
 }
 
 fn ui_dir_from_ancestor(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|root| {
-        let ui = root.join("crates/sdk/ui-core");
+        let ui = root.join("crates/ui/ui-core");
         ui.join("Cargo.toml").is_file().then_some(ui)
     })
 }
@@ -9466,7 +9497,7 @@ fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
         return Some(candidate);
     }
     if let Some(root) = repo {
-        return Some(root.join("crates/sdk/ui-core"));
+        return Some(root.join("crates/ui/ui-core"));
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(ui) = ui_dir_from_ancestor(&executable)
@@ -9495,10 +9526,10 @@ fn resolve_ui_dir(
     );
     let Some(candidate) = candidate else {
         bail!(
-            "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/sdk/ui-core`"
+            "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/ui/ui-core`"
         );
     };
-    let toolkit = candidate.join("crates/sdk/ui-core");
+    let toolkit = candidate.join("crates/ui/ui-core");
     let candidate = if !is_sdk_crate_path(&candidate) && toolkit.join("Cargo.toml").is_file() {
         toolkit
     } else {
@@ -9604,7 +9635,7 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         AppSdk::Workspace { ui_path } => {
             let sdk_path = sdk_path_for_ui(ui_path);
             let runtime_path = sdk_path.parent().and_then(Path::parent).map_or_else(
-                || PathBuf::from("../../crates/runtime/runtime-dylib"),
+                || PathBuf::from("../../crates/sdk/runtime-dylib"),
                 |crates| crates.join("runtime/runtime-dylib"),
             );
             // CI rejects a workspace member that cargo-hakari has not been told about. The hack's
@@ -9645,7 +9676,7 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
 }
 
 fn is_sdk_crate_path(ui_path: &Path) -> bool {
-    ui_path.ends_with("crates/sdk/ui-core") || ui_path.ends_with("crates/sdk/tilo-app")
+    ui_path.ends_with("crates/ui/ui-core") || ui_path.ends_with("crates/sdk/tilo-app")
 }
 
 fn checkout_root_for_ui(ui_path: &Path) -> &Path {
@@ -9660,14 +9691,7 @@ fn checkout_root_for_ui(ui_path: &Path) -> &Path {
 }
 
 fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
-    if is_sdk_crate_path(ui_path) {
-        ui_path
-            .parent()
-            .unwrap_or_else(|| Path::new(".."))
-            .join("tilo-app")
-    } else {
-        checkout_root_for_ui(ui_path).join("crates/sdk/tilo-app")
-    }
+    checkout_root_for_ui(ui_path).join("crates/sdk/tilo-app")
 }
 
 fn app_lib(spec: &AppSpec) -> String {

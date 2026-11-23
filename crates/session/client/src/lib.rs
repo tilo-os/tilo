@@ -48,6 +48,7 @@ pub mod states;
 pub mod surfaces;
 pub mod way_in;
 pub mod workspace_keys;
+pub mod workspace_view;
 
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};

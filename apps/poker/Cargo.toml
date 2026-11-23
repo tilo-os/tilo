@@ -26,7 +26,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 # The resource the app draws: the table, its verbs and the rules of the game.
 poker-model = { path = "../poker-model" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]

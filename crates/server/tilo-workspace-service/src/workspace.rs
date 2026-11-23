@@ -12,40 +12,11 @@ use crate::transport::Envelope;
 use crate::workspace_files::WorkspaceFiles;
 use tilo_server_protocol::WorkspaceId;
 
-/// Membership set for a workspace on this server, as the workspace's governance
-/// or an explicit admission set it. Peers listed here get
-/// store-and-forward; peers not listed get their subscribe rejected with
-/// `NotAuthorised`.
-#[derive(Clone, Debug, Default)]
-pub struct Membership {
-    /// Device public keys that are known members of this workspace.
-    pub devices: Vec<[u8; 32]>,
-}
-
-impl Membership {
-    /// Is `device` a member of this workspace?
-    pub fn contains(&self, device: &[u8; 32]) -> bool {
-        self.devices.contains(device)
-    }
-
-    /// Replace the membership with a new set. A set that leaves out a device
-    /// of the old one wakes the sessions admitted under it to re-check
-    /// (`crate::authority_epoch`). One that only adds devices narrows
-    /// nobody's access and wakes nobody: a public workspace admitting a crowd
-    /// re-audited every member's session for every newcomer.
-    pub fn set(&mut self, devices: Vec<[u8; 32]>) {
-        if self.devices != devices {
-            let narrowed = leaves_out(&self.devices, &devices);
-            self.devices = devices;
-            if narrowed {
-                crate::authority_epoch::bump();
-            }
-        }
-    }
-}
-
-/// Whether `next` leaves out a device `previous` lists.
-fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
+/// Whether `next` leaves out a device `previous` lists: only such a list narrows anyone's
+/// access, and wakes the sessions admitted under it to re-check
+/// (`crate::authority_epoch`). One that only adds devices wakes nobody: a public workspace
+/// admitting a crowd would otherwise re-audit every member's session for every newcomer.
+pub(crate) fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
     let kept: std::collections::HashSet<&[u8; 32]> = next.iter().collect();
     previous.iter().any(|device| !kept.contains(device))
 }
@@ -104,13 +75,9 @@ pub struct WorkspaceRuntime {
     /// The in-process authority serving this workspace, if any: it answers
     /// the workspace's calls.
     pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
-    /// Whether this server's own device governs the workspace: it made it
-    /// here. A workspace another server hands over is governed where it was
-    /// made, and this server carries its calls.
-    pub(crate) governs_here: bool,
-    /// The access of each member device, as the workspace's governor projects
-    /// it: what the server decides each change's claimed action against.
-    /// `None` until a governor projects one; the server then decides changes
+    /// The access of each member device, as the workspace's signed member list
+    /// gives it: what the server decides each change's claimed action against.
+    /// `None` until the list settled here; the server then decides changes
     /// against their app surface alone.
     pub(crate) device_access: Option<Arc<DeviceAccess>>,
     /// The workspace's files on this host.
@@ -118,35 +85,15 @@ pub struct WorkspaceRuntime {
     /// The workspace left the host's registry ([`crate::workspace_io::evict`]):
     /// its files stay, and this runtime writes them no more.
     pub(crate) evicted: bool,
-    /// Which of the user's devices are workspace members. Used to
-    /// check subscribes AND to decide who gets store-and-forward
-    /// on delta receive.
-    pub membership: Membership,
-    /// Orders this workspace's access-file work independently of state IO.
-    pub(crate) authorization: crate::workspace_io::AccessTurns,
-    /// Failed/pending replacements cap what an old external file may grant.
-    pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
-    pub(crate) membership_revision: u64,
+    /// Who the workspace's signed member list has now: its members by their roots
+    /// and their devices, with the browser environments this server placed in it
+    /// ([`crate::environment`]). Set when the list settles here and rebuilt from the
+    /// durable list when the workspace is bound; never kept on disk. Both lists are
+    /// sorted.
+    pub(crate) members: Arc<tilo_peer_state::GovernedAccess>,
     /// The devices this workspace keeps as keys its person revoked: refused with how to approve
     /// another wherever they ask, until their person's approval admits a new key.
     pub(crate) revoked_keys: HashSet<[u8; 32]>,
-    /// The daemon's watch on this workspace's membership files, attached on the
-    /// first fresh read once a watch covers the state root.
-    pub(crate) disk_generation: Option<crate::membership_watch::DiskGeneration>,
-    /// The watched generation `membership` was last loaded at. `None` until a
-    /// live watch vouched for a load, so every read goes to the disk.
-    pub(crate) loaded_generation: Option<u64>,
-    /// How the workspace admits devices beyond its exact membership:
-    /// explicitly, or under native governance. Read only through
-    /// [`crate::workspace_access::decide`].
-    pub(crate) admission: crate::workspace_access::AdmissionMode,
-    /// The people this native-governed workspace has as members, by their
-    /// roots, whatever devices of theirs it lists now: the one answer to
-    /// whether a person is a member here, which the server-wide handshake and
-    /// the certification queue read. Exact workspace admission still uses
-    /// `membership`, so an ungoverned sibling device under the same root
-    /// does not join.
-    pub governed_user_roots: HashSet<[u8; 32]>,
     /// The live subscribed connections of each device, oldest first
     /// ([`Session`]).
     sessions: HashMap<[u8; 32], Vec<Session>>,
@@ -189,16 +136,62 @@ impl WorkspaceRuntime {
         self.workspace_id
     }
 
-    /// Whether the person whose root is `user` is admitted to this workspace as
-    /// a member its governance names, or as the one a workspace of this host's
-    /// own is kept for. What [`crate::workspace_access`] admits their devices by.
+    /// Whether the person whose root is `user` is a member of this workspace: what
+    /// [`crate::workspace_access`] enrols their devices by.
     #[must_use]
     pub fn admits_person(&self, user: &[u8; 32]) -> bool {
-        self.governed_user_roots.contains(user)
-            || self
-                .workspace_authority
-                .as_ref()
-                .is_some_and(|authority| authority.keeps_for(user))
+        self.members.member_user_roots.binary_search(user).is_ok()
+    }
+
+    /// Whether the workspace's member list has `device`.
+    #[must_use]
+    pub fn lists(&self, device: &[u8; 32]) -> bool {
+        self.members.member_devices.binary_search(device).is_ok()
+    }
+
+    /// Take `members` as who the workspace has now, `revoked` as the keys its people revoked,
+    /// and `device_access` as what each member device may do. A list that leaves a device out
+    /// refuses that device's live sessions and wakes every session to re-check.
+    pub(crate) fn settle_members(
+        &mut self,
+        mut members: tilo_peer_state::GovernedAccess,
+        revoked: impl IntoIterator<Item = [u8; 32]>,
+        device_access: Option<DeviceAccess>,
+    ) {
+        members.member_devices.sort_unstable();
+        members.member_devices.dedup();
+        members.member_user_roots.sort_unstable();
+        members.member_user_roots.dedup();
+        self.revoked_keys.extend(revoked);
+        self.revoked_keys
+            .retain(|device| members.member_devices.binary_search(device).is_err());
+        let removed: Vec<[u8; 32]> = self
+            .members
+            .member_devices
+            .iter()
+            .copied()
+            .filter(|device| members.member_devices.binary_search(device).is_err())
+            .collect();
+        let roots_left = leaves_out(&self.members.member_user_roots, &members.member_user_roots);
+        self.members = Arc::new(members);
+        if let Some(device_access) = device_access {
+            self.device_access = Some(Arc::new(device_access));
+        }
+        if !removed.is_empty() || roots_left {
+            self.refuse_removed_live_members(&removed);
+            crate::authority_epoch::bump();
+        }
+    }
+
+    /// List `device`, an environment this server placed in the workspace, beside its members,
+    /// or take it out again once the environment stopped.
+    pub(crate) fn list_environment(&mut self, device: [u8; 32], listed: bool) {
+        let mut members = self.members.as_ref().clone();
+        members.member_devices.retain(|listed| *listed != device);
+        if listed {
+            members.member_devices.push(device);
+        }
+        self.settle_members(members, [], None);
     }
 
     /// Build a runtime for a bound workspace from the files its host keeps.
@@ -210,44 +203,14 @@ impl WorkspaceRuntime {
     pub fn open(
         state_root: &std::path::Path,
         workspace_id: WorkspaceId,
-        membership: Membership,
     ) -> Result<Self, crate::workspace_files::FilesError> {
         let files = WorkspaceFiles::open(state_root, workspace_id)?;
-        let governed_access_record = files.load_governed_access()?;
-        // A record governance owns keeps the workspace governed; one that
-        // only lists the devices this host admitted leaves explicit
-        // membership deciding who else joins.
-        let admission = if governed_access_record
-            .as_ref()
-            .is_some_and(|access| access.governed)
-        {
-            crate::workspace_access::AdmissionMode::Governed
-        } else {
-            crate::workspace_access::AdmissionMode::Explicit
-        };
-        let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
-            access.member_user_roots.into_iter().collect()
-        });
-        let mut membership = membership;
-        let kept = files.load_membership()?;
-        for device in kept {
-            if !membership.contains(&device) {
-                membership.devices.push(device);
-            }
-        }
         Ok(Self {
             workspace_id,
             files,
             evicted: false,
-            membership,
-            authorization: crate::workspace_io::AccessTurns::default(),
-            membership_ceiling: None,
-            membership_revision: 0,
+            members: Arc::default(),
             revoked_keys: HashSet::new(),
-            disk_generation: None,
-            loaded_generation: None,
-            admission,
-            governed_user_roots,
             sessions: HashMap::new(),
             attached_hosts: HashSet::new(),
             extensions: Extensions::default(),
@@ -255,7 +218,6 @@ impl WorkspaceRuntime {
             live_members: HashSet::new(),
             followed: false,
             workspace_authority: None,
-            governs_here: false,
             device_access: None,
             invocations: tilo_server_protocol::invocation::InvocationReplay::default(),
         })
@@ -348,52 +310,6 @@ impl WorkspaceRuntime {
         if let Some(session) = self.session_mut(&device, tx) {
             session.presence = Some(mailbox);
         }
-    }
-
-    /// Whether `membership` reflects the files on disk without reading them:
-    /// a live watch has seen no change to them since they were last loaded.
-    pub(crate) fn membership_is_current(&self) -> bool {
-        self.loaded_generation.is_some()
-            && self.loaded_generation
-                == self
-                    .disk_generation
-                    .as_ref()
-                    .and_then(crate::membership_watch::DiskGeneration::current)
-    }
-
-    /// Decide this workspace's actions against `device_access` from now on.
-    pub(crate) fn project_access(&mut self, device_access: DeviceAccess) {
-        self.device_access = Some(Arc::new(device_access));
-    }
-
-    /// Remember an authenticated device before sharing this runtime. Live
-    /// sessions use the serialized async admission in `workspace_io`.
-    pub fn admit_device(
-        &mut self,
-        device: [u8; 32],
-    ) -> Result<(), crate::workspace_files::FilesError> {
-        if !self.membership.contains(&device) {
-            let mut devices = self.membership.devices.clone();
-            devices.push(device);
-            self.files.save_membership(&devices)?;
-            self.membership.set(devices);
-        }
-        Ok(())
-    }
-
-    /// Stop listing `device` in this workspace ([`Self::admit_device`]'s
-    /// other half): a device the host started for the workspace and stopped.
-    pub fn forget_device(
-        &mut self,
-        device: &[u8; 32],
-    ) -> Result<(), crate::workspace_files::FilesError> {
-        if self.membership.contains(device) {
-            let mut devices = self.membership.devices.clone();
-            devices.retain(|listed| listed != device);
-            self.files.save_membership(&devices)?;
-            self.membership.set(devices);
-        }
-        Ok(())
     }
 
     /// Add subscriber `device` to the live session and tell the other live
@@ -498,9 +414,9 @@ impl WorkspaceRuntime {
     }
 
     /// Tell live devices that just lost membership they are no longer
-    /// authorised, while their connection is still open. Removals publish
-    /// this before durable IO so a concurrent audit cannot close the session
-    /// without an authenticated refusal. The subscriber is then unregistered
+    /// authorised, while their connection is still open, so a concurrent audit
+    /// cannot close the session without an authenticated refusal. The
+    /// subscriber is then unregistered
     /// so a follow-up write closes instead of emitting a second refusal.
     pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
         let (revoked, others): (Vec<[u8; 32]>, Vec<[u8; 32]>) = removed
@@ -696,9 +612,7 @@ mod tests {
         const AUTHOR: [u8; 32] = [1; 32];
         const RECIPIENT: [u8; 32] = [2; 32];
         let tmp = tempfile::tempdir().unwrap();
-        let mut rt =
-            WorkspaceRuntime::open(tmp.path(), WorkspaceId::from_u128(9), Membership::default())
-                .unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), WorkspaceId::from_u128(9)).unwrap();
         let (tx, mut rx) = mpsc::channel(8);
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {
@@ -736,7 +650,7 @@ mod tests {
         const TO: [u8; 32] = [3; 32];
         const WS: WorkspaceId = WorkspaceId::from_u128(9);
         let tmp = tempfile::tempdir().unwrap();
-        let mut rt = WorkspaceRuntime::open(tmp.path(), WS, Membership::default()).unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), WS).unwrap();
         let (tx, mut rx) = mpsc::channel(2);
         let (disconnect, _disconnect_rx) = mpsc::channel(1);
         rt.add_subscriber(Subscriber {

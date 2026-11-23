@@ -914,8 +914,9 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    /// `.name`, `.media`, `.size` and `.url` of a `File`: what it is called, the media type it holds, how
-    /// many bytes it is, and where its bytes are (`.text()` reads them).
+    /// `.name`, `.media`, `.size`, `.url` and `.path` of a `File`: what it is called, the media
+    /// type it holds, how many bytes it is, where its bytes are (`.text()` reads them), and where
+    /// it stands in what the person chose.
     pub(super) fn file_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
         if name.name == "size" {
             return Ex::host(Imp::FileSize, vec![v], Ty::Int);
@@ -924,12 +925,15 @@ impl Checker<'_> {
             "name" => 0,
             "media" => 1,
             "url" => 2,
+            "path" => 3,
             other => {
                 self.err(
                     "E021",
                     name.span,
                     format!(
-                        "a `File` has the fields `name`, `media`, `size` and `url`, not `{other}`; `.text()` reads its content and `.files()` the files an archive holds"
+                        "a `File` has the fields `name`, `media`, `size`, `url` and `path`, not \
+                         `{other}`; `.text()` reads its content and `.files()` the files an \
+                         archive holds"
                     ),
                 );
                 return Ex::error();

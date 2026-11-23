@@ -20,8 +20,8 @@ pub const RESOURCE_READ_REFUSED: &str = "not allowed to read this record";
 
 /// What a caller that is neither a person nor an agent acting for its person is told.
 pub const RESOURCE_READS_FOR_AGENTS: &str = "only a person, an app acting for its person, or an agent \
-     acting for the person who admitted it, reads records outside their app; a person's device \
-     hands its agents nothing here";
+     acting for the person who admitted it, reads records outside their app; a session a person's \
+     device handed to an agent reads nothing here";
 
 /// One record of a workspace, by its app (the id whose records it is) and its id there (empty for
 /// the app's record of the workspace).

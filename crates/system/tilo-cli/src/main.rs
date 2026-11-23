@@ -48,7 +48,6 @@ mod os;
 mod person;
 mod sdk;
 mod server;
-mod service;
 mod settings;
 mod status;
 
@@ -398,6 +397,12 @@ enum Cmd {
         /// hostname when not given.
         #[arg(long, conflicts_with_all = ["new_identity", "recovery_key"])]
         label: Option<String>,
+        /// Instead, on a computer that holds your Tilo identity: log in at the server whose
+        /// `web-host.json` line this is (the JSON itself, or the file's path). Your identity here
+        /// certifies this computer, so no ticket is needed; the computer then takes in every
+        /// workspace of yours that server keeps, and serves the files it holds of them.
+        #[arg(long, conflicts_with_all = ["ticket", "new_identity", "recovery_key", "agent"])]
+        server: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
     /// (an agent adds it to its own MCP configuration).
@@ -509,10 +514,6 @@ enum DeviceCmd {
         /// The ticket a browser's sign-in prompt carried: sign that browser in as you, instead
         /// of printing a ticket for a computer.
         ticket: Option<String>,
-        /// What the new computer is: an ordinary member device, or one that administers your
-        /// other devices.
-        #[arg(long, value_enum, default_value_t = device::Adding::Member)]
-        capability: device::Adding,
         /// Print the ticket and the device's certificate as JSON lines.
         #[arg(long)]
         json: bool,
@@ -535,6 +536,11 @@ enum DeviceCmd {
         #[arg(long)]
         json: bool,
     },
+    /// This computer's device key, the person it is certified for and its label, as one JSON
+    /// line, read from its login without reaching any host; with no login, the workspace its
+    /// daemon founded.
+    #[command(hide = true)]
+    Key,
     /// End the login of one of your devices, everywhere it reaches.
     Revoke {
         /// The device, by its key (a prefix of it) or its name.
@@ -546,11 +552,6 @@ enum DeviceCmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// This computer's device key, as hex, made now when it has none. A command that then
-    /// talks to this computer's daemon asks it of a child, as reading the key makes the process
-    /// that reads it one the daemon refuses.
-    #[command(hide = true)]
-    PublicKey,
     /// Which account on this device is the person its identity belongs to: the one whose
     /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
     /// several prove it. The system asks this as root when it prepares the store.
@@ -1020,9 +1021,9 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Clean { .. }
             | DeviceCmd::Add { .. }
             | DeviceCmd::Ls { .. }
+            | DeviceCmd::Key
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
-            | DeviceCmd::PublicKey
     ) {
         require_system_provider()?;
     }
@@ -1329,6 +1330,12 @@ fn recovery_words() -> Result<zeroize::Zeroizing<String>> {
 /// `tilo login` with no ticket, or with an invitation link. `None` for every other command.
 fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     if let Cmd::Login {
+        server: Some(host), ..
+    } = &cli.cmd
+    {
+        return Some(login::login_at_server(host));
+    }
+    if let Cmd::Login {
         ticket: None,
         new_identity: false,
         recovery_key,
@@ -1605,26 +1612,18 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
         DeviceCmd::Add {
             ticket,
-            capability,
             json,
             no_wait,
             plan,
             server,
-        } => device::add(
-            ticket.as_deref(),
-            json,
-            capability,
-            no_wait,
-            plan.as_deref(),
-            server,
-        ),
+        } => device::add(ticket.as_deref(), json, no_wait, plan.as_deref(), server),
         DeviceCmd::Ls { json } => device::list(json),
+        DeviceCmd::Key => device::key(),
         DeviceCmd::Revoke {
             device: which,
             reason,
             yes,
         } => device::revoke(&which, reason, yes),
-        DeviceCmd::PublicKey => login::print_public_key(),
         DeviceCmd::LocalPerson {
             identity_root,
             passwd,

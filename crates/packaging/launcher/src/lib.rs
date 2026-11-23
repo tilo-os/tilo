@@ -3,6 +3,10 @@
 //! The launcher is implemented mostly as pure functions so the binary in `main.rs` is
 //! just argv parsing + orchestration.
 
+/// What starts each line the launcher itself writes to the app's error output, apart from what
+/// the app says there: whoever shows those lines to a person takes it off.
+pub const SAYS: &str = "tilo-launcher: ";
+
 pub mod app_cgroup;
 pub mod appdir;
 #[cfg(target_os = "linux")]

@@ -469,6 +469,7 @@ mod admitted_history_tests {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 5,
                     records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
+                    items: tilo_desktop_model::shared_resource::device::Writer::NOTHING_ITEMED,
                 },
             )
             .unwrap();

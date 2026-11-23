@@ -10,9 +10,6 @@
 // person stops, and is only then set to the server's, if that differs.
 
 const CLIENT_TAG = new TextEncoder().encode('tilo-server-auth-v2/client\0');
-const DEVICES = 'tilo-browser-devices';
-// The name the store of device keys had before (`device-key.mjs`).
-const STORE_BEFORE = 'custody';
 const MAX_FRAME = 8 * 1024 * 1024;
 // The element number the question sheet a host asks this person stands under:
 // an app numbers its own elements from one, and the sheet is no app's
@@ -112,7 +109,7 @@ class Writer {
   done() { return Uint8Array.from(this.bytes); }
 }
 
-const EXTENDED = {foreign: 1, can_administer_devices: 2, agent: 4, stand_in: 8, issued: 16, server_key: 32, browser_pages: 64, workspace_service: 128};
+const EXTENDED = {foreign: 1, agent: 4, stand_in: 8, issued: 16, server_key: 32, browser_pages: 64, workspace_service: 128};
 
 function uuidBytes(text) {
   const hex = text.replaceAll('-', '');
@@ -234,36 +231,14 @@ function frames(readable) {
 
 // ---- This browser's devices ----
 
-const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-
 /** The device keys this browser holds that it kept a certificate of: each
  * `{cert, sign}`, newest certificate first. */
 async function devices() {
-  let exact = {};
-  try { exact = JSON.parse(localStorage.getItem(DEVICES) ?? 'null')?.exact ?? {}; } catch { /* none kept */ }
-  if (!Object.keys(exact).length) return [];
-  const keys = await new Promise(resolve => {
-    const request = indexedDB.open('tilo-device');
-    // A browser that never had a device gets no database from this page.
-    request.onupgradeneeded = () => request.transaction.abort();
-    request.onerror = () => resolve([]);
-    request.onsuccess = () => {
-      const db = request.result;
-      const store = ['device-key', STORE_BEFORE].find(name => db.objectStoreNames.contains(name));
-      if (!store) { resolve([]); return; }
-      const all = db.transaction(store).objectStore(store).getAll();
-      all.onsuccess = () => resolve(all.result ?? []);
-      all.onerror = () => resolve([]);
-    };
-  });
-  const found = [];
-  for (const key of keys) {
-    if (key?.kind !== 'webcrypto-ed25519') continue;
-    const text = exact[hex(key.publicKey)];
-    if (!text) continue;
-    const cert = parseExact(text).cert;
-    found.push({cert, sign: async digest => new Uint8Array(await crypto.subtle.sign({name: 'Ed25519'}, key.privateKey, digest))});
-  }
+  const {certifiedDeviceKeys} = await siteModule('device-key.mjs');
+  const found = (await certifiedDeviceKeys()).map(({certificate, privateKey}) => ({
+    cert: parseExact(certificate).cert,
+    sign: async digest => new Uint8Array(await crypto.subtle.sign({name: 'Ed25519'}, privateKey, digest)),
+  }));
   return found.sort((a, b) => (BigInt(b.cert.issued_at_ns) > BigInt(a.cert.issued_at_ns) ? 1 : -1));
 }
 
@@ -299,21 +274,24 @@ async function session(config, device) {
 // ---- This browser's person ----
 // The site's own modules are served above the page's address (`<entry>w/<workspace>`), under the
 // version directory `version.json` names: the person's root lives there (`identity.mjs`), which
-// is what approves a browser waiting to be signed in. A page pressed before it is in waits on it.
-let identityLoading = null;
-function identityModule() {
-  identityLoading ??= (async () => {
-    const at = location.pathname.indexOf('/w/');
-    const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
-    const response = await fetch(new URL('version.json', base), {cache: 'no-store'});
-    if (!response.ok) throw new Error(`the site answered ${response.status}`);
-    const {version} = await response.json();
-    return import(new URL(`v/${version}/identity.mjs`, base).href);
-  })().catch(error => {
-    identityLoading = null;
-    throw error;
-  });
-  return identityLoading;
+// is what approves a browser waiting to be signed in, and the browser's device keys do too
+// (`device-key.mjs`). A page pressed before it is in waits on it.
+const modules = new Map();
+function siteModule(name) {
+  if (!modules.has(name)) {
+    modules.set(name, (async () => {
+      const at = location.pathname.indexOf('/w/');
+      const base = new URL(at < 0 ? '/' : location.pathname.slice(0, at + 1), location.href);
+      const response = await fetch(new URL('version.json', base), {cache: 'no-store'});
+      if (!response.ok) throw new Error(`the site answered ${response.status}`);
+      const {version} = await response.json();
+      return import(new URL(`v/${version}/${name}`, base).href);
+    })().catch(error => {
+      modules.delete(name);
+      throw error;
+    }));
+  }
+  return modules.get(name);
 }
 
 // ---- The page ----
@@ -783,7 +761,7 @@ function start() {
     // The bar says how it ended in place of the answer, then goes.
     for (const button of bar?.querySelectorAll('button') ?? []) button.hidden = true;
     try {
-      const id = await identityModule();
+      const id = await siteModule('identity.mjs');
       const host = await id.approvalHost(peer);
       await id.answerSignIn(host, personHeld, request.digest, approved);
       signInAsked = null;
@@ -806,7 +784,7 @@ function start() {
   const lookForSignIns = async () => {
     if (!peer || signInAsked || personAbsent) return;
     try {
-      const id = await identityModule();
+      const id = await siteModule('identity.mjs');
       if (!personHeld) {
         // Opening the person reads the runtime; a browser that keeps nobody stops here, cheaply.
         if (!(await id.keptIdentity().catch(() => null))?.rootPublicKey) { personAbsent = true; return; }
@@ -827,7 +805,7 @@ function start() {
 
   const connect = async () => {
     if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }
-    const found = await devices();
+    const found = await devices().catch(error => { console.warn("the site's modules", error); return []; });
     if (!found.length) {
       say('refused', 'Sign in to Tilo in this browser to open this page.');
       return;

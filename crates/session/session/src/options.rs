@@ -344,8 +344,7 @@ fn collaborating(
     ) {
         Ok(sync) => {
             // What is the person's alone is kept in their own workspace: the answers they gave
-            // about this device's camera, screen and the rest, and the machines that ask to join,
-            // which every device of theirs shows and any of them answers.
+            // about this device's camera, screen and the rest.
             if let Some(store) = sync.person_resources() {
                 let store = std::sync::Arc::new(store);
                 if let Some(consents) = options
@@ -353,15 +352,7 @@ fn collaborating(
                     .as_ref()
                     .and_then(|desktop| desktop.consents())
                 {
-                    consents.grants().keep_in(store.clone());
-                }
-                if let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() {
-                    sync.keep_machine_links(crate::enrollment::serve(
-                        (*store).clone(),
-                        paths.root,
-                        paths.dir,
-                        options.wake.handle(),
-                    ));
+                    consents.grants().keep_in(store);
                 }
             }
             Some(Rc::new(sync))

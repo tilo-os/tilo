@@ -156,35 +156,24 @@ impl TwoDevices {
             .expect("this device's person is known");
         let store = DeviceFleetStore::from_env().expect("the device fleet");
         let now = tilo_clock::unix_now_ns();
-        let mint = || {
-            store
-                .mint_enrollment(
-                    &profile.id,
-                    DeviceCapabilities::member(),
-                    now,
-                    now.saturating_add(3_600_000_000_000),
-                    &[],
-                )
-                .expect("this device may enroll another of the person's")
-        };
         let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
         let phone_public = phone_key.verifying_key().to_bytes();
         let phone_cert = store
-            .complete_enrollment(
+            .certify_device(
                 &profile.id,
-                &mint(),
-                phone_key.verifying_key().to_bytes(),
+                phone_public,
                 "The phone",
+                DeviceCapabilities::member(),
                 now,
             )
             .expect("the second device is enrolled");
         let enrollee = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32]);
         store
-            .complete_enrollment(
+            .certify_device(
                 &profile.id,
-                &mint(),
                 enrollee.verifying_key().to_bytes(),
                 "The laptop",
+                DeviceCapabilities::member(),
                 now,
             )
             .expect("the third device is enrolled");

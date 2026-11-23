@@ -100,13 +100,18 @@ impl StatePeer {
             governance_now: None,
         })
     }
-    /// Add a root-certified viewer to existing governed history, as a member
-    /// device of this workspace.
+    /// Add a root-certified device to existing governed history, as a device
+    /// of its owner or of a member the signed member list names and has not
+    /// blocked ([`crate::PeerGovernanceMut::admit_member_device`]'s rule). Any
+    /// member's device that may write governance records it: the person's
+    /// root signed the certificate, which gives the device only what that
+    /// person already holds.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not a member's device, the certificate is invalid,
-    /// revoked or conflicts with a recorded one, or governance cannot be updated.
+    /// Returns an error if `key` is not a member's device, the certificate's
+    /// person is not a member, the certificate is invalid, revoked or
+    /// conflicts with a recorded one, or governance cannot be updated.
     pub fn admit_certificate(
         &mut self,
         cert: DeviceCert,
@@ -114,9 +119,6 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;
-        if cert.user_public_key != self.core.owner {
-            return Err("enrollment root mismatch".into());
-        }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
         if self.core.revocations.refuses(&cert) {
             return Err("device revoked".into());
@@ -132,6 +134,14 @@ impl StatePeer {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
+        if cert.user_public_key != self.core.owner
+            && doc
+                .workspace_policy(&self.core.workspace)
+                .active_role(&hex::encode(cert.user_public_key))
+                .is_none()
+        {
+            return Err("the device's person is not a member".into());
+        }
         let id = hex::encode(cert.device_public_key);
         if workspace::governance_of(Some(&doc))
             .identities

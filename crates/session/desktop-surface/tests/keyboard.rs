@@ -169,7 +169,7 @@ impl Widget for Root {
             let pressed = Rc::clone(&self.pressed);
             self.children.push(Box::new(
                 ui::widget::Button::new(&format!("late-{}", self.tab), "Add")
-                    .on_effect(move || pressed.set(pressed.get().saturating_add(1))),
+                    .on_click(move || pressed.set(pressed.get().saturating_add(1))),
             ));
         }
         for child in &mut self.children {

@@ -135,7 +135,7 @@ pub(crate) fn request_actions(sink: &Sink, sending: bool) -> Element {
     )
     .tooltip("Save this request to a collection")
     // It opens the save form; the save it leads to is its own action.
-    .on_own_device_effect(pusher(
+    .on_click(pusher(
         sink,
         Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
     ));
@@ -221,7 +221,7 @@ pub(crate) fn section(
             .collect(),
         RequestTab::ALL.iter().position(|t| *t == tab).unwrap_or(0),
     )
-    .on_view("api.request-tabs", move |i| {
+    .on_choose("api.request-tabs", move |i| {
         tab_sink.borrow_mut().push(Cmd::SetTab(i));
     });
     let first = panel(request, tab, blanks, sink);
@@ -409,7 +409,7 @@ fn auth_panel(request: &Request, sink: &Sink) -> Panel {
             .collect(),
         auth_kind_index(&request.auth),
     )
-    .on_view("api.auth-kind", move |i| {
+    .on_choose("api.auth-kind", move |i| {
         kind_sink.borrow_mut().push(Cmd::SetAuthKind(i));
     });
     let (part, handle) = Part::new(auth_fields(&request.auth, sink));
@@ -478,7 +478,7 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
             .position(|mode| *mode == request.body_mode)
             .unwrap_or(0),
     )
-    .on_view("api.body-mode", move |i| {
+    .on_choose("api.body-mode", move |i| {
         mode_sink.borrow_mut().push(Cmd::SetBodyMode(i));
     });
     let (inner, table) = body_inner(request, blanks, sink);

@@ -384,15 +384,36 @@ tilo_test_env::scenario! {
         assert!(!apps.layout().payload(runtime.meta.id).exists());
     }
 
-    phase system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_integrity;
+    phase a_system_image_on_a_plain_filesystem_is_served_in_place_with_current_trust_and_integrity;
     {
+        // A tmpfs is a filesystem that is not itself an overlay, so the system
+        // tree may be an overlay lower as it is: that is the branch a device
+        // takes instead of copying the image into this account's store.
+        let Ok(system) = tempfile::tempdir_in("/dev/shm") else {
+            return;
+        };
         let ci = SigningIdentity::generate();
         let (_source, runtime) = sealed_runtime(&ci);
-        let (_system, user, store) = system_installed(&runtime);
+        PackageStore::at(system.path())
+            .install_image(
+                full_tapp(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
         let source = materialized_tree(&store, &runtime.meta.id).unwrap();
         let local = package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap();
-        assert!(local.starts_with(user.path()));
-        assert_ne!(local, source);
+        assert_eq!(
+            local, source,
+            "a system tree on a plain filesystem is served where it is"
+        );
+        assert!(
+            !store.user().layout().payload(runtime.meta.id).exists(),
+            "nothing is copied into this account's store"
+        );
         assert_eq!(
             std::fs::read(local.join("usr/bin/bash")).unwrap(),
             std::fs::read(source.join("usr/bin/bash")).unwrap()
@@ -433,10 +454,28 @@ tilo_test_env::scenario! {
         .unwrap();
         std::fs::write(local.join("etc/os-release"), b"corrupted cached bytes").unwrap();
         assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
-        assert_eq!(
-            std::fs::read(source.join("etc/os-release")).unwrap(),
-            b"NAME=Fedora\n"
-        );
+    }
+
+    phase an_image_this_account_installed_itself_is_verified_where_it_is;
+    {
+        // An image installed here has no system tree to serve: its own copy is
+        // checked against the signed manifest every time it is handed out.
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        let user = scratch();
+        PackageStore::at(user.path())
+            .install_image(
+                full_tapp(&runtime).as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .unwrap();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_trust(ImageTrust::new().with_publisher(ci.public_key_bytes()));
+        let local = package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap();
+        assert_eq!(local, store.user().layout().payload(runtime.meta.id));
+        std::fs::write(local.join("etc/unsigned"), b"injected config").unwrap();
+        assert!(package_store::local_materialized_tree(&store, &runtime.meta.id).is_err());
     }
 
     phase modified_system_image_is_not_imported_as_a_signed_overlay_lower;
@@ -757,6 +796,31 @@ fn sparse_system_runtime(
     (system, host)
 }
 
+/// That this process is the child of the import test below, when it is.
+const IMPORT_ROLE: &str = "TILO_TEST_PACKAGE_STORE_IMPORT_ROLE";
+
+/// The first import of a sparse system image, run in a process of its own so
+/// the test can stop it part-way. Run as a test by itself it does nothing.
+#[test]
+fn import_child() {
+    if std::env::var(IMPORT_ROLE).as_deref() != Ok("import") {
+        return;
+    }
+    let store = Store::new(PackageStore::at(
+        std::env::var("IMPORT_USER").expect("the child's user store"),
+    ))
+    .with_system(package_store::Layout::new(
+        std::env::var("IMPORT_SYSTEM").expect("the child's system store"),
+    ));
+    let id: PackageId = std::env::var("IMPORT_ID")
+        .expect("the child's image")
+        .parse()
+        .unwrap();
+    println!("IMPORT-START");
+    let _ = package_store::local_materialized_tree(&store, &id);
+    println!("IMPORT-END");
+}
+
 tilo_test_env::scenario! {
     fn host_files_of_a_sparse_system_image;
 
@@ -797,6 +861,95 @@ tilo_test_env::scenario! {
             .with_system(package_store::Layout::new(system.path()));
         assert!(materialized_tree(&store, &runtime.meta.id).is_err());
         assert!(!store.user().layout().payload(runtime.meta.id).exists());
+    }
+
+    phase an_import_stopped_part_way_is_finished_by_the_next_one;
+    {
+        use std::io::{BufRead as _, BufReader};
+        use std::os::unix::process::ExitStatusExt as _;
+        use std::process::{Command, Stdio};
+        use tilo_test_env::SpawnUnderEnvLock as _;
+        let ci = SigningIdentity::generate();
+        let (_source, runtime) = sealed_runtime(&ci);
+        // Sparse, so every start must rebuild it: the in-place path never
+        // writes a copy and has nothing to interrupt.
+        let (system, _host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
+        // Stopped at a few different points inside the first import: whichever
+        // one it is, the next start must finish the job and hand out the whole,
+        // verified tree.
+        let mut stopped = false;
+        for pause_us in [0_u64, 200, 1_000, 5_000, 20_000] {
+            let user = scratch();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::import_child",
+                    "--nocapture",
+                    "--test-threads",
+                    "1",
+                ])
+                .env(IMPORT_ROLE, "import")
+                .env("IMPORT_USER", user.path())
+                .env("IMPORT_SYSTEM", system.path())
+                .env("IMPORT_ID", runtime.meta.id.to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn_locked()
+                .unwrap();
+            let mut said = String::new();
+            let mut from_child = BufReader::new(child.stdout.take().unwrap());
+            let began = tilo_test_env::hang_deadline();
+            let mut started = false;
+            while std::time::Instant::now() < began {
+                let mut line = String::new();
+                if from_child.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                said.push_str(&line);
+                if line.contains("IMPORT-START") {
+                    started = true;
+                    break;
+                }
+            }
+            assert!(started, "the child begins its import: {said:?}");
+            std::thread::sleep(std::time::Duration::from_micros(pause_us));
+            let pid = libc::pid_t::try_from(child.id()).unwrap();
+            // SAFETY: the child this test started, still its own process.
+            assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+            let deadline = tilo_test_env::hang_deadline();
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "a stopped import ends at once"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            // A stop arrives before or inside the import depending on how fast
+            // this machine is; at least one of the stops below must be inside it
+            // for the property to have been tried.
+            stopped |= status.signal() == Some(libc::SIGTERM);
+            assert!(
+                status.success() || status.signal() == Some(libc::SIGTERM),
+                "a stopped import ends at once: {status:?}"
+            );
+            let store = Store::new(PackageStore::at(user.path()))
+                .with_system(package_store::Layout::new(system.path()));
+            let tree = package_store::local_materialized_tree(&store, &runtime.meta.id)
+                .unwrap_or_else(|error| {
+                    panic!("the next import completes a stopped one at {pause_us} us: {error}")
+                });
+            assert_eq!(
+                std::fs::read(tree.join("usr/lib64/libc.so.6")).unwrap(),
+                bytes(2, 60_000)
+            );
+        }
+        assert!(
+            stopped,
+            "a kill from outside lands inside the import at least once"
+        );
     }
 
     phase a_host_sources_file_names_only_signed_files_by_plain_absolute_paths;

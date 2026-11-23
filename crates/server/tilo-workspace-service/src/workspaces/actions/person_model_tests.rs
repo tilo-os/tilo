@@ -466,7 +466,7 @@ async fn her_yes_replaces_the_key(
     assert_eq!(allowing.count(), 1, "one question for one change");
 }
 
-/// A member of another workspace and a device of nobody (`strangers`), a bare turn, a local agent
+/// A member of another workspace and a device of nobody (`strangers`), a local agent
 /// and an app are answered nothing by `ada`'s store: no listing, no key either way, and none of
 /// the `changes`.
 async fn nobody_else_is_answered(
@@ -478,11 +478,6 @@ async fn nobody_else_is_answered(
 ) {
     let person = hex::encode(ada.user_public_key);
     let nobodies = [
-        Caller::agent_turn(
-            "helper",
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
         Caller::local_agent("helper"),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];
@@ -1256,7 +1251,7 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
 }
 
 /// An agent no member's device stands behind asks the workspace's model
-/// nothing: not a turn's own, not one the server admitted itself, not an
+/// nothing: not one the server admitted itself, not an
 /// app, and not an agent whose device is no member's.
 #[tokio::test]
 async fn an_agent_no_members_device_stands_behind_asks_nothing() {
@@ -1277,15 +1272,6 @@ async fn an_agent_no_members_device_stands_behind_asks_nothing() {
     );
     let asked = serde_json::to_value(asking("Spend the workspace's key")).unwrap();
     for (who, device, nobody) in [
-        (
-            "a turn's agent",
-            &ada,
-            Caller::agent_turn(
-                "helper",
-                person.clone(),
-                tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-            ),
-        ),
         (
             "an agent the server admitted itself",
             &ada,

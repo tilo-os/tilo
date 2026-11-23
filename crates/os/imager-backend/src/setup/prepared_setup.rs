@@ -1,0 +1,1169 @@
+//! Authenticated prepared setup ownership. Import is explicit and runs as the
+//! target user; this never activates an identity or writes another user's vault.
+use super::{
+    account_transfer::{Connector, PasswordSealedAccounts},
+    destination_security,
+    migration::PinnedDirectory,
+    migration_durability,
+    portable_transfer::{ImportReview, Limits, Purpose},
+};
+use accounts::AccountId;
+use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::BTreeSet,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
+};
+use zeroize::Zeroizing;
+#[cfg(target_os = "linux")]
+mod capacity;
+#[cfg(target_os = "linux")]
+pub use capacity::{
+    completed_setup_ciphertext_reservation, completed_setup_free_bytes,
+    completed_setup_write_reservation,
+};
+#[cfg(target_os = "linux")]
+pub mod completion;
+#[cfg(target_os = "linux")]
+mod original_selection;
+pub use crate::prepared_setup::PublicInstallProfile;
+#[cfg(target_os = "linux")]
+pub use original_selection::OfflineApplicationsPlan;
+#[cfg(target_os = "linux")]
+pub use original_selection::OriginalSelectionPlan;
+
+pub const MANIFEST_FILE: &str = "manifest.json";
+#[cfg(target_os = "linux")]
+mod computer_applications;
+#[cfg(target_os = "linux")]
+mod installed_original_copy;
+#[cfg(target_os = "linux")]
+mod installed_person;
+#[cfg(target_os = "linux")]
+mod installed_retained;
+#[cfg(target_os = "linux")]
+mod original_copy;
+#[cfg(target_os = "linux")]
+pub use computer_applications::{ComputerApplicationsScope, SharedHomeApplicationsDeclaration};
+#[cfg(target_os = "linux")]
+pub use installed_original_copy::AuthenticatedInstalledOriginalCopy;
+#[cfg(target_os = "linux")]
+pub use installed_person::{
+    InstalledPersonAnchor, publish_original_copy_owner, publish_retained_primary_owner,
+};
+#[cfg(target_os = "linux")]
+pub use installed_retained::AuthenticatedInstalledRetained;
+#[cfg(target_os = "linux")]
+pub use original_copy::OriginalCopyDeclaration;
+mod planned_btrfs_resize;
+pub use planned_btrfs_resize::PlannedBtrfsResize;
+mod units;
+pub use units::{ApplicationsCarriage, HomeCarriage, Kind, Route, Unit, UnitKey, Units};
+
+pub const IDENTITY_FILE: &str = "identity.sealed";
+pub const ACCOUNTS_FILE: &str = "accounts.sealed";
+pub const SERVICE_SESSIONS_FILE: &str = "service-sessions.sealed";
+pub const MAIL_FILE_PREFIX: &str = "mail-";
+pub const MAIL_FILE_SUFFIX: &str = ".sealed";
+/// Authenticated retained-files metadata, never authority to mount an
+/// arbitrary path. Installation must re-attest the original volume and home.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct RetainedHomePlan(super::migration_handoff::Plan);
+impl RetainedHomePlan {
+    pub fn as_plan(&self) -> &super::migration_handoff::Plan {
+        &self.0
+    }
+    pub fn new(plan: super::migration_handoff::Plan) -> io::Result<Self> {
+        let value = Self(plan);
+        value.validate()?;
+        Ok(value)
+    }
+    fn validate(&self) -> io::Result<()> {
+        self.0.bytes()?;
+        let shared_home = self.0.categories.home
+            && self.0.home_policy == super::migration_handoff::HomePolicy::AccessReadWrite;
+        let applications_only = !self.0.categories.home
+            && self.0.categories.flatpak
+            && self.0.home_policy == super::migration_handoff::HomePolicy::Copy;
+        if !(shared_home || applications_only) {
+            return Err(invalid());
+        }
+        if self.0.categories.flatpak {
+            let inventory = super::flatpak_transfer::HandoffInventory::parse(&serde_json::to_vec(
+                self.0.flatpak_inventory.as_ref().ok_or_else(invalid)?,
+            )?)
+            .map_err(io::Error::other)?;
+            inventory
+                .validate_operation(&self.0.operation_id)
+                .map_err(io::Error::other)?;
+        } else if self.0.flatpak_inventory.is_some() {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+pub const LIMITS: Limits = Limits {
+    plaintext_bytes: 32 * 1024 * 1024,
+    entries: 2048,
+    metadata_bytes: 2 * 1024 * 1024,
+};
+// The retained Plan has its own 64 KiB bound; existing identity/account/profile
+// metadata keeps its original 32 KiB allowance alongside it. A direct-only
+// resize adds a bounded 16 KiB reviewed plan and its closed binding envelope.
+// Optional retained caller declarations are separately bounded to 12 KiB; the
+// existing total 128 KiB manifest cap still applies without truncation.
+const MANIFEST_LIMIT: u64 = 128 * 1024;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub schema: u32,
+    pub setup_binding: String,
+    pub identity_public_key: [u8; 32],
+    #[serde(default, skip_serializing_if = "IdentityKind::is_single")]
+    pub identity_kind: IdentityKind,
+    pub account_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_credentials_protocol: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_profile: Option<PublicInstallProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_btrfs_resize: Option<PlannedBtrfsResize>,
+    /// The data this setup carries, one unit per kind and route.
+    #[serde(default, skip_serializing_if = "Units::is_empty")]
+    pub units: Units,
+}
+/// One selected-mail artifact in the prepared package.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MailHandoff {
+    pub filename: String,
+    pub selection: super::account_transfer::ThunderbirdSelection,
+    pub sealed_bytes: u64,
+    pub ciphertext_sha256: [u8; 32],
+}
+impl MailHandoff {
+    fn validate(&self) -> io::Result<()> {
+        self.selection.validate_shape().map_err(|_| invalid())?;
+        let name = self.filename.as_bytes();
+        if !name.starts_with(MAIL_FILE_PREFIX.as_bytes())
+            || !name.ends_with(MAIL_FILE_SUFFIX.as_bytes())
+            || self.filename.len() > 96
+            || self
+                .filename
+                .bytes()
+                .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.')))
+            || self.sealed_bytes == 0
+            || self.sealed_bytes > super::account_transfer::MAX_ARTIFACT_BYTES
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    fn verify_ciphertext(
+        &self,
+        artifact: &super::account_transfer::PasswordSealedThunderbird,
+    ) -> io::Result<()> {
+        self.validate()?;
+        if self.sealed_bytes != artifact.len()
+            || self.ciphertext_sha256 != artifact.sha256().map_err(|_| invalid())?
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+pub use crate::prepared_media::{IdentityKind, PortableHomePlan, PortableHomeSelection};
+pub use prepared_setup_model::BrowserHandoff;
+/// Password-authenticated pending request, not source-group authority,
+/// a mount grant or a completed Home receipt. A future producer must bind
+/// actual source and target grants before sealing; delivery reattests media.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OfflineHomePlan {
+    schema: u32,
+    source: super::migration_handoff::Plan,
+    export_operation: String,
+    setup_binding: String,
+    identity_public_key: [u8; 32],
+    media: crate::media_layout::MediaPartitionBinding,
+    caller: super::home_capture::OriginalCallerFacts,
+    sealed_reservation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_proof: Option<super::home_capture::SourceProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mounted_proof: Option<super::home_capture::MountedProof>,
+}
+impl OfflineHomePlan {
+    pub fn new(
+        source: super::migration_handoff::Plan,
+        setup_binding: String,
+        identity_public_key: [u8; 32],
+        media: crate::media_layout::MediaPartitionBinding,
+        caller: super::home_capture::OriginalCallerFacts,
+        sealed_reservation: u64,
+    ) -> io::Result<Self> {
+        let value = Self {
+            schema: 1,
+            export_operation: source.operation_id.clone(),
+            source,
+            setup_binding,
+            identity_public_key,
+            media,
+            caller,
+            sealed_reservation,
+            source_proof: None,
+            mounted_proof: None,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+    pub fn with_source_proof(
+        mut self,
+        proof: super::home_capture::SourceProof,
+    ) -> io::Result<Self> {
+        proof.validate_plan(&self.source)?;
+        self.source_proof = Some(proof);
+        self.validate()?;
+        Ok(self)
+    }
+    pub fn source_proof(&self) -> Option<&super::home_capture::SourceProof> {
+        self.source_proof.as_ref()
+    }
+    pub fn with_mounted_proof(
+        mut self,
+        proof: super::home_capture::MountedProof,
+    ) -> io::Result<Self> {
+        proof.matches_source(self.source_proof.as_ref().ok_or_else(invalid)?)?;
+        self.mounted_proof = Some(proof);
+        self.validate()?;
+        Ok(self)
+    }
+    pub fn mounted_proof(&self) -> Option<&super::home_capture::MountedProof> {
+        self.mounted_proof.as_ref()
+    }
+    fn validate(&self) -> io::Result<()> {
+        self.source.validate()?;
+        self.caller.validate(self.source.home.original_uid())?;
+        if let Some(proof) = &self.source_proof {
+            proof.validate_plan(&self.source)?;
+        }
+        if let Some(proof) = &self.mounted_proof {
+            proof.matches_source(self.source_proof.as_ref().ok_or_else(invalid)?)?;
+        }
+        let uuid = |value: &str| {
+            uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
+        };
+        if self.schema != 1
+            || self.caller.uid() != self.source.home.original_uid()
+            || self.source.home_policy != super::migration_handoff::HomePolicy::Copy
+            || !self.source.categories.home
+            || (self.source.categories.flatpak && self.source.flatpak_inventory.is_none())
+            || self.source.operation_id != self.export_operation
+            || !crate::is_operation_id(&self.export_operation)
+            || self.setup_binding.is_empty()
+            || self.setup_binding.len() > 256
+            || self.setup_binding.chars().any(char::is_control)
+            || self.media.schema != 1
+            || self.media.target_stable_id.is_empty()
+            || self.media.target_stable_id.len() > 256
+            || self.media.target_stable_id.chars().any(char::is_control)
+            || !uuid(&self.media.disk_guid)
+            || !uuid(&self.media.partition_guid)
+            || self.media.number == 0
+            || self.sealed_reservation == 0
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    pub fn requested_caller(&self) -> &super::home_capture::OriginalCallerFacts {
+        &self.caller
+    }
+    pub fn source(&self) -> &super::migration_handoff::Plan {
+        &self.source
+    }
+    pub fn media(&self) -> &crate::media_layout::MediaPartitionBinding {
+        &self.media
+    }
+    /// Reconstruct the producer's complete geometry from the authenticated
+    /// declaration and, for selected installations, its genuine source ownership.
+    /// Protected marker JSON alone never supplies an installation inventory.
+    #[cfg(target_os = "linux")]
+    pub fn authenticated_source_plans(&self) -> io::Result<Vec<Vec<u8>>> {
+        let geometry = crate::setup::source_geometry::original_source_plans;
+        if !self.source.categories.flatpak && self.mounted_proof.is_none() {
+            return geometry(&self.source);
+        }
+        if rustix::process::geteuid().as_raw() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Original installation geometry requires root ownership",
+            ));
+        }
+        let proof = self.source_proof().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Original installation geometry lacks source proof",
+            )
+        })?;
+        let source = super::migration_handoff::mount_read_only(&self.source)?;
+        // Retain the actual owned resolver while record authentication runs:
+        // a construction error must not fall through an unobserved mount Drop.
+        let original =
+            match super::home_capture::SourceReadContext::review_proof(source.clone(), proof) {
+                Ok(original) => {
+                    drop(source);
+                    original
+                }
+                Err(error) => {
+                    source.retire()?;
+                    return Err(error);
+                }
+            };
+        let result = (|| {
+            original.verify_requested(&self.source, proof, &self.caller)?;
+            let mut plans = if self.source.categories.flatpak {
+                let inventory =
+                    super::flatpak_transfer::offline_original::OriginalInventoryGrant::review(
+                        &original,
+                    )?
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "Selected original installation geometry lacks protected inventory",
+                        )
+                    })?;
+                inventory.matches_plan(&self.source)?;
+                let mut expanded = self.source.clone();
+                expanded.flatpak_inventory = Some(serde_json::to_value(inventory.inventory())?);
+                let plans = geometry(&expanded)?;
+                inventory.matches_plan(&self.source)?;
+                plans
+            } else {
+                geometry(&self.source)?
+            };
+            if let Some(mounted) = self.mounted_proof() {
+                // This API is a bounded metadata-only review with no job token.
+                // The export path uses its live token and retained epoch instead.
+                let cancel = std::sync::atomic::AtomicBool::new(false);
+                original.append_mounted_source_geometry(mounted, &mut plans, &cancel)?;
+            }
+            original.verify_requested(&self.source, proof, &self.caller)?;
+            Ok(plans)
+        })();
+        // All borrowed inventory descriptors are gone before mount retirement.
+        // Both successful and failed geometry reviews confirm owned cleanup.
+        original.retire()?;
+        result
+    }
+    pub fn sealed_reservation(&self) -> u64 {
+        self.sealed_reservation
+    }
+}
+impl Manifest {
+    pub fn new(
+        setup_binding: String,
+        identity_public_key: [u8; 32],
+        account_ids: Vec<String>,
+    ) -> io::Result<Self> {
+        let manifest = Self {
+            schema: 1,
+            setup_binding,
+            identity_public_key,
+            identity_kind: IdentityKind::SingleDeviceBackup,
+            account_ids,
+            account_credentials_protocol: None,
+            install_profile: None,
+            planned_btrfs_resize: None,
+            units: Units::default(),
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+    fn validate(&self) -> io::Result<()> {
+        let units = &self.units;
+        let accounts_declared = !self.account_ids.is_empty()
+            || units.service_sessions().is_some()
+            || !units.mail().is_empty();
+        #[cfg(target_os = "linux")]
+        if let Some(composite) = units.computer_applications() {
+            composite.validate(self)?;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(copy) = units.original_copy() {
+            copy.bytes()?;
+            if copy.setup_binding() != self.setup_binding
+                || copy.identity_public_key() != self.identity_public_key
+                || matches!(self.identity_kind, IdentityKind::CurrentDevice { .. })
+                || units.contains(UnitKey::RETAINED_HOME)
+                || self.planned_btrfs_resize.is_some()
+                || units.contains(UnitKey::MEDIUM_HOME)
+                || units.contains(UnitKey::MEDIUM_APPLICATIONS)
+            {
+                return Err(invalid());
+            }
+        }
+        if matches!(self.identity_kind, IdentityKind::CurrentDevice { .. })
+            && (units.contains(UnitKey::MEDIUM_HOME)
+                || units.contains(UnitKey::RETAINED_HOME)
+                || units.portable_flatpak().is_some()
+                || self.planned_btrfs_resize.is_some())
+        {
+            return Err(invalid());
+        }
+        if let Some(caller) = units.retained_caller() {
+            caller.validate_binding(
+                units.retained_home().ok_or_else(invalid)?.as_plan(),
+                &self.setup_binding,
+                &self.identity_public_key,
+            )?;
+        }
+        if let Some(resize) = &self.planned_btrfs_resize {
+            resize.validate(units.retained_home().ok_or_else(invalid)?)?;
+            if self.install_profile.is_none() {
+                return Err(invalid());
+            }
+        }
+        if units.completed_applications_only()
+            && (units.contains(UnitKey::MEDIUM_HOME) || units.contains(UnitKey::RETAINED_HOME))
+        {
+            return Err(invalid());
+        }
+        if let Some(Unit::MediumHome { plan, carriage }) = units.get(UnitKey::MEDIUM_HOME) {
+            if plan.schema != 1 || units.contains(UnitKey::RETAINED_HOME) {
+                return Err(invalid());
+            }
+            match carriage {
+                HomeCarriage::Planned => {}
+                HomeCarriage::Sealed(home) => {
+                    home.validate()?;
+                    if home.setup_binding != self.setup_binding
+                        || (units.portable_flatpak().is_some() && !plan.applications)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                HomeCarriage::Offline(offline) => {
+                    offline.validate()?;
+                    if offline.setup_binding != self.setup_binding
+                        || offline.identity_public_key != self.identity_public_key
+                        || offline.source.categories.flatpak != plan.applications
+                        || (!offline.source.categories.accounts && accounts_declared)
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
+        if let Some(Unit::MediumApplications(carriage)) = units.get(UnitKey::MEDIUM_APPLICATIONS) {
+            match carriage {
+                #[cfg(target_os = "linux")]
+                ApplicationsCarriage::Offline(applications) => {
+                    applications.validate()?;
+                    if units.contains(UnitKey::MEDIUM_HOME)
+                        || units.contains(UnitKey::RETAINED_HOME)
+                        || applications.setup_binding != self.setup_binding
+                        || applications.identity_public_key != self.identity_public_key
+                        || (!applications.source().categories.accounts && accounts_declared)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                ApplicationsCarriage::Sealed { expectation, .. } => {
+                    expectation.validate()?;
+                    if expectation.setup_binding != self.setup_binding
+                        || units.contains(UnitKey::RETAINED_HOME)
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
+        if let Some(sessions) = units.service_sessions() {
+            sessions.validate()?;
+            if sessions
+                .sessions
+                .iter()
+                .any(|session| self.account_ids.contains(&session.id))
+            {
+                return Err(invalid());
+            }
+        }
+        let mut mail_files = BTreeSet::new();
+        for mail in units.mail() {
+            mail.validate()?;
+            if !mail_files.insert(mail.filename.as_str()) {
+                return Err(invalid());
+            }
+        }
+        if let Some(browser) = units.browser() {
+            browser.payload.validate_plan(&browser.plan)?;
+            if browser.plan.setup_binding != self.setup_binding
+                || browser.plan.identity_public_key != self.identity_public_key
+            {
+                return Err(invalid());
+            }
+        }
+        if let Some(profile) = &self.install_profile {
+            profile.validate()?;
+        }
+        if let Some(plan) = units.retained_home() {
+            plan.validate()?;
+        }
+        crate::prepared_media::validate_manifest_binding(
+            self.schema,
+            &self.setup_binding,
+            &self.account_ids,
+            self.account_credentials_protocol,
+        )
+    }
+    /// Create a fresh private manifest in an explicitly granted staging root.
+    pub fn write(&self, directory: &Path) -> io::Result<()> {
+        self.validate()?;
+        let pin = PinnedDirectory::open_absolute(directory)?;
+        pin.validate_destination()?;
+        destination_security::check_private_file(&pin.file)?;
+        let bytes = serde_json::to_vec(self).map_err(|_| invalid())?;
+        if bytes.len() > MANIFEST_LIMIT as usize {
+            return Err(invalid());
+        }
+        let mut options = OpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .follow(FollowSymlinks::No);
+        let mut file = cap_primitives::fs::open(&pin.file, Path::new(MANIFEST_FILE), &options)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        pin.validate()?;
+        migration_durability::sync_directory(&pin.file)
+    }
+    fn ids(&self) -> Vec<AccountId> {
+        self.account_ids.iter().map(AccountId::new).collect()
+    }
+}
+fn now_ns() -> io::Result<u64> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_err(|_| invalid())?;
+    u64::try_from(elapsed.as_nanos()).map_err(|_| invalid())
+}
+
+fn invalid() -> io::Error {
+    io::Error::other("Prepared setup ownership is invalid or changed")
+}
+fn bounded_file(pin: &Arc<PinnedDirectory>, name: &str, limit: u64) -> io::Result<Vec<u8>> {
+    pin.validate()?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No).nonblock(true);
+    let file = cap_primitives::fs::open(&pin.file, Path::new(name), &options)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() > limit {
+        return Err(invalid());
+    }
+    destination_security::check_private_file(&file)?;
+    let bytes = crate::record::read_bounded(file, limit, invalid)?;
+    pin.validate()?;
+    Ok(bytes)
+}
+/// The mail artifact as an open file: it is streamed at import, never held whole.
+fn bounded_artifact_file(pin: &Arc<PinnedDirectory>, name: &str) -> io::Result<std::fs::File> {
+    pin.validate()?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No).nonblock(true);
+    let file = cap_primitives::fs::open(&pin.file, Path::new(name), &options)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() > super::account_transfer::MAX_ARTIFACT_BYTES {
+        return Err(invalid());
+    }
+    destination_security::check_private_file(&file)?;
+    pin.validate()?;
+    Ok(file)
+}
+
+fn members(pin: &Arc<PinnedDirectory>, manifest: &Manifest) -> io::Result<()> {
+    let directory = cap_std::fs::Dir::from_std_file(pin.file.try_clone()?);
+    let mut expected: BTreeSet<_> = [MANIFEST_FILE.into(), IDENTITY_FILE.into()]
+        .into_iter()
+        .collect();
+    if !manifest.account_ids.is_empty() {
+        expected.insert(std::ffi::OsString::from(ACCOUNTS_FILE));
+    }
+    if manifest.units.service_sessions().is_some() {
+        expected.insert(std::ffi::OsString::from(SERVICE_SESSIONS_FILE));
+    }
+    for mail in manifest.units.mail() {
+        expected.insert(std::ffi::OsString::from(mail.filename.as_str()));
+    }
+    let mut found = BTreeSet::new();
+    for entry in directory.entries()? {
+        found.insert(entry?.file_name());
+        if found.len() > 4 + manifest.units.mail().len() {
+            return Err(invalid());
+        }
+    }
+    if found != expected {
+        return Err(invalid());
+    }
+    pin.validate()
+}
+
+pub struct PreparedSetupReview {
+    root: PathBuf,
+    pin: Arc<PinnedDirectory>,
+    manifest: Manifest,
+    identity_hash: [u8; 32],
+    account_artifact: Option<PasswordSealedAccounts>,
+    session_artifact: Option<PasswordSealedAccounts>,
+    mail_artifacts: Vec<(
+        MailHandoff,
+        super::account_transfer::PasswordSealedThunderbird,
+    )>,
+}
+impl PreparedSetupReview {
+    /// Authenticate the whole outer package, extract exclusively into a fresh
+    /// quarantine, then verify exact root members and both inner artifacts.
+    pub fn open(
+        package: &Path,
+        password: &[u8],
+        quarantine: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<Self> {
+        let tree = ImportReview::review(package, password, Purpose::PreparedSetup, LIMITS, cancel)?
+            .extract(Zeroizing::new(password.to_vec()), quarantine, cancel)?;
+        super::migration::check_cancel(cancel)?;
+        let pin = PinnedDirectory::open_absolute(&tree.root)?;
+        destination_security::check_private_file(&pin.file)?;
+        let manifest: Manifest =
+            serde_json::from_slice(&bounded_file(&pin, MANIFEST_FILE, MANIFEST_LIMIT)?)
+                .map_err(|_| invalid())?;
+        manifest.validate()?;
+        members(&pin, &manifest)?;
+        let identity = bounded_file(&pin, IDENTITY_FILE, LIMITS.plaintext_bytes)?;
+        let identity_hash = Sha256::digest(&identity).into();
+        match manifest.identity_kind {
+            IdentityKind::SingleDeviceBackup => {
+                if tilo_identity::store::verify_portable_backup(
+                    tree.root.join(IDENTITY_FILE),
+                    password,
+                )?
+                .group_public_key
+                    != manifest.identity_public_key
+                {
+                    return Err(invalid());
+                }
+            }
+            IdentityKind::CurrentDevice { device_public_key } => {
+                let current =
+                    tilo_identity::enrolled_transport::AuthenticatedCurrentDeviceReference::open(
+                        &tree.root.join(IDENTITY_FILE),
+                        password,
+                        &manifest.setup_binding,
+                        manifest.identity_public_key,
+                        device_public_key,
+                        now_ns()?,
+                    )?;
+                if manifest
+                    .install_profile
+                    .as_ref()
+                    .is_none_or(|profile| profile.device_label != current.device_label())
+                {
+                    return Err(invalid());
+                }
+            }
+            IdentityKind::EnrolledDevice { device_public_key } => {
+                let enrolled =
+                    tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice::open(
+                        &tree.root.join(IDENTITY_FILE),
+                        password,
+                        &manifest.setup_binding,
+                        manifest.identity_public_key,
+                        device_public_key,
+                        now_ns()?,
+                    )?;
+                if manifest
+                    .install_profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.device_label != enrolled.device_label())
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+        let account_artifact = if manifest.account_ids.is_empty() {
+            None
+        } else {
+            let artifact = PasswordSealedAccounts::from_bytes(&bounded_file(
+                &pin,
+                ACCOUNTS_FILE,
+                LIMITS.plaintext_bytes,
+            )?)
+            .map_err(|_| invalid())?;
+            let protected = artifact
+                .requires_protected_consumer(
+                    password,
+                    manifest.setup_binding.as_bytes(),
+                    &manifest.ids(),
+                )
+                .map_err(|_| invalid())?;
+            if protected != manifest.account_credentials_protocol.is_some() {
+                return Err(invalid());
+            }
+            Some(artifact)
+        };
+        let mut mail_artifacts = Vec::with_capacity(manifest.units.mail().len());
+        for declaration in manifest.units.mail() {
+            let artifact = super::account_transfer::PasswordSealedThunderbird::open(
+                bounded_artifact_file(&pin, &declaration.filename)?,
+                super::account_transfer::MAX_ARTIFACT_BYTES,
+            )
+            .map_err(|_| invalid())?;
+            declaration.verify_ciphertext(&artifact)?;
+            mail_artifacts.push((declaration.clone(), artifact));
+        }
+        let session_artifact = if let Some(declaration) = manifest.units.service_sessions() {
+            let artifact = PasswordSealedAccounts::from_bytes(&bounded_file(
+                &pin,
+                SERVICE_SESSIONS_FILE,
+                LIMITS.plaintext_bytes,
+            )?)
+            .map_err(|_| invalid())?;
+            super::service_sessions::validate_artifact(
+                &artifact,
+                declaration,
+                password,
+                manifest.identity_public_key,
+                &manifest.setup_binding,
+            )?;
+            Some(artifact)
+        } else {
+            None
+        };
+        super::migration::check_cancel(cancel)?;
+        pin.validate()?;
+        Ok(Self {
+            root: tree.root,
+            pin,
+            manifest,
+            identity_hash,
+            account_artifact,
+            session_artifact,
+            mail_artifacts,
+        })
+    }
+    /// Authenticate retained pending metadata for source read admission only.
+    /// This deliberately does not admit identity/account adoption or completion.
+    pub fn pending_offline_declaration(&self) -> io::Result<OfflineHomePlan> {
+        self.validate()?;
+        let declaration = self.manifest.units.offline_home().ok_or_else(invalid)?;
+        if declaration.source_proof().is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Pending export has no independently reopenable source proof",
+            ));
+        }
+        Ok(declaration.clone())
+    }
+    #[cfg(target_os = "linux")]
+    pub fn pending_original_declaration(&self) -> io::Result<OriginalSelectionPlan> {
+        self.validate()?;
+        match (
+            self.manifest.units.offline_home(),
+            self.manifest.units.offline_applications(),
+        ) {
+            (Some(_), None) => Ok(OriginalSelectionPlan::Home(
+                self.pending_offline_declaration()?,
+            )),
+            (None, Some(plan)) if plan.source_proof().is_some() => {
+                plan.validate()?;
+                Ok(OriginalSelectionPlan::Applications(plan.clone()))
+            }
+            _ => Err(invalid()),
+        }
+    }
+    /// Pending offline declarations are reviewable, but the ordinary native
+    /// installer/first-use importer cannot treat them as finished. There is
+    /// deliberately no public-JSON receipt bypass: a future offline consumer
+    /// must authenticate the actual completed Home before admitting ownership.
+    pub fn require_completed_export(&self) -> io::Result<()> {
+        self.validate()?;
+        if self.manifest.units.offline_home().is_some() || self.pending_applications_export() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Prepared home export awaits explicit offline completion",
+            ));
+        }
+        Ok(())
+    }
+    fn pending_applications_export(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.manifest.units.offline_applications().is_some()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+    pub fn validate(&self) -> io::Result<()> {
+        self.pin.validate()?;
+        members(&self.pin, &self.manifest)?;
+        let manifest: Manifest =
+            serde_json::from_slice(&bounded_file(&self.pin, MANIFEST_FILE, MANIFEST_LIMIT)?)
+                .map_err(|_| invalid())?;
+        if manifest != self.manifest
+            || <[u8; 32]>::from(Sha256::digest(bounded_file(
+                &self.pin,
+                IDENTITY_FILE,
+                LIMITS.plaintext_bytes,
+            )?)) != self.identity_hash
+        {
+            return Err(invalid());
+        }
+        if let Some(artifact) = &self.account_artifact {
+            if bounded_file(&self.pin, ACCOUNTS_FILE, LIMITS.plaintext_bytes)?
+                != artifact.as_bytes()
+            {
+                return Err(invalid());
+            }
+        }
+        if let Some(artifact) = &self.session_artifact {
+            if bounded_file(&self.pin, SERVICE_SESSIONS_FILE, LIMITS.plaintext_bytes)?
+                != artifact.as_bytes()
+            {
+                return Err(invalid());
+            }
+        }
+        for (declaration, artifact) in &self.mail_artifacts {
+            declaration.verify_ciphertext(artifact)?;
+        }
+        Ok(())
+    }
+    fn target(&self, target: &Path) -> io::Result<()> {
+        self.target_privacy(target, true)
+    }
+    fn target_privacy(&self, target: &Path, private: bool) -> io::Result<()> {
+        let existing = match std::fs::symlink_metadata(target) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        let (pin, candidate) = if existing {
+            (
+                PinnedDirectory::open_absolute(target)?,
+                target.canonicalize()?,
+            )
+        } else {
+            let parent = target.parent().ok_or_else(invalid)?;
+            let name = target.file_name().ok_or_else(invalid)?;
+            (
+                PinnedDirectory::open_absolute(parent)?,
+                parent.canonicalize()?.join(name),
+            )
+        };
+        pin.validate_destination()?;
+        if private {
+            destination_security::check_private_file(&pin.file)?;
+        }
+        if candidate.starts_with(&self.root) || self.root.starts_with(&candidate) {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    /// Check both explicit grants before accepting any identity/account credentials.
+    pub fn validate_destinations(&self, identity: &Path, accounts: &Path) -> io::Result<()> {
+        self.require_completed_export()?;
+        self.target(identity)?;
+        self.target(accounts)
+    }
+    fn enrolled(
+        &self,
+        password: &[u8],
+    ) -> io::Result<tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice> {
+        self.validate()?;
+        let IdentityKind::EnrolledDevice { device_public_key } = self.manifest.identity_kind else {
+            return Err(invalid());
+        };
+        tilo_identity::enrolled_transport::AuthenticatedEnrolledDevice::open(
+            &self.root.join(IDENTITY_FILE),
+            password,
+            &self.manifest.setup_binding,
+            self.manifest.identity_public_key,
+            device_public_key,
+            now_ns()?,
+        )
+    }
+    /// Resolve exact existing current-owner ownership without importing or replacing it.
+    pub fn resolve_current_identity(
+        &self,
+        system: &Path,
+        target: &Path,
+        password: &[u8],
+    ) -> io::Result<tilo_identity::enrolled_transport::ResolvedCurrentIdentity> {
+        self.require_completed_export()?;
+        self.validate()?;
+        let IdentityKind::CurrentDevice { device_public_key } = self.manifest.identity_kind else {
+            return Err(invalid());
+        };
+        let reference =
+            tilo_identity::enrolled_transport::AuthenticatedCurrentDeviceReference::open(
+                &self.root.join(IDENTITY_FILE),
+                password,
+                &self.manifest.setup_binding,
+                self.manifest.identity_public_key,
+                device_public_key,
+                now_ns()?,
+            )?;
+        let identity = reference.resolve_current(system, target)?;
+        identity.validate()?;
+        self.validate()?;
+        Ok(identity)
+    }
+    /// Root-owned installer phase; legacy backups authenticate without machine writes.
+    pub fn publish_enrolled_system(&self, system_root: &Path, password: &[u8]) -> io::Result<()> {
+        self.require_completed_export()?;
+        if matches!(
+            self.manifest.identity_kind,
+            IdentityKind::CurrentDevice { .. }
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Current device reuse is a same-user desktop preparation",
+            ));
+        }
+        if matches!(
+            self.manifest.identity_kind,
+            IdentityKind::EnrolledDevice { .. }
+        ) {
+            self.target_privacy(system_root, false)?;
+            let enrolled = self.enrolled(password)?;
+            enrolled.import_system(system_root)?;
+            #[cfg(target_os = "linux")]
+            installed_person::publish_namespace(&enrolled, system_root)?;
+        } else if tilo_identity::store::verify_portable_backup(
+            self.root.join(IDENTITY_FILE),
+            password,
+        )?
+        .group_public_key
+            != self.manifest.identity_public_key
+        {
+            return Err(invalid());
+        }
+        #[cfg(target_os = "linux")]
+        installed_retained::publish_namespace(self, system_root)?;
+        #[cfg(target_os = "linux")]
+        installed_original_copy::publish_namespace(self, system_root)?;
+        Ok(())
+    }
+
+    /// Import joined-device identity for a host Desktop login into its configured
+    /// private device tree. This never publishes the OS-wide device namespace.
+    /// # Errors
+    /// Refuses non-enrolled or OS-only payloads, insecure or overlapping grants,
+    /// conflicting existing device/persona files, and invalid encrypted ownership.
+    pub fn import_host_identity(
+        &self,
+        system: &Path,
+        target: &Path,
+        password: &[u8],
+    ) -> io::Result<PathBuf> {
+        self.require_completed_export()?;
+        #[cfg(target_os = "linux")]
+        if self
+            .manifest
+            .installed_original_copy_declaration()?
+            .is_some()
+        {
+            return Err(invalid());
+        }
+        if !matches!(
+            self.manifest.identity_kind,
+            IdentityKind::EnrolledDevice { .. }
+        ) || self.manifest.units.portable_home().is_some()
+            || self.manifest.units.portable_flatpak().is_some()
+            || self.manifest.units.retained_home().is_some()
+        {
+            return Err(invalid());
+        }
+        self.target(system)?;
+        self.target(target)?;
+        // The shell prepares this exact private tree before first-use import.
+        // Existing canonical transport checks every file before publication.
+        let pin = PinnedDirectory::open_absolute(system)?;
+        destination_security::check_private_file(&pin.file)?;
+        let imported = self.enrolled(password)?.import_into(system, target)?;
+        pin.validate_destination()?;
+        self.validate()?;
+        Ok(imported.identity_record)
+    }
+    /// Import into explicit target-user ownership; no active persona is switched.
+    pub fn import_identity(&self, target: &Path, password: &[u8]) -> io::Result<PathBuf> {
+        self.require_completed_export()?;
+        self.target(target)?;
+        if matches!(
+            self.manifest.identity_kind,
+            IdentityKind::CurrentDevice { .. }
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Current device identity requires retained activation ownership",
+            ));
+        }
+        if matches!(
+            self.manifest.identity_kind,
+            IdentityKind::EnrolledDevice { .. }
+        ) {
+            return self
+                .enrolled(password)?
+                .import_public_identity(Path::new("/var/lib/tilo"), target);
+        }
+        let imported = tilo_identity::store::import_portable_backup_matching(
+            self.root.join(IDENTITY_FILE),
+            password,
+            target,
+            "primary",
+            self.manifest.identity_public_key,
+        );
+        match imported {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                // The canonical importer already authenticated this password
+                // before refusing the existing id. Resume only the same usable
+                // signing ownership; never replace another persona or remint it.
+                let target_pin = PinnedDirectory::open_absolute(target)?;
+                target_pin.validate_destination()?;
+                destination_security::check_private_file(&target_pin.file)?;
+                let path = target.join("primary.json");
+                let signer =
+                    tilo_identity::store::load_from_path(path.clone()).map_err(|_| invalid())?;
+                if !signer.is_single_device()
+                    || signer.group_public_key() != self.manifest.identity_public_key
+                {
+                    return Err(error);
+                }
+                target_pin.validate()?;
+                self.validate()?;
+                Ok(path)
+            }
+            other => other,
+        }
+    }
+    /// Reseal explicitly selected website sessions. This does not authenticate a service.
+    pub fn import_service_sessions(&self, config_root: &Path, password: &[u8]) -> io::Result<()> {
+        self.require_completed_export()?;
+        self.target(config_root)?;
+        match (
+            &self.session_artifact,
+            self.manifest.units.service_sessions(),
+        ) {
+            (Some(artifact), Some(declaration)) => super::service_sessions::import(
+                artifact,
+                declaration,
+                password,
+                self.manifest.identity_public_key,
+                &self.manifest.setup_binding,
+                config_root,
+            ),
+            (None, None) => Ok(()),
+            _ => Err(invalid()),
+        }
+    }
+    /// Import exactly the reviewed Thunderbird selection into the target
+    /// user's canonical Mail accounts and cache below `target_home`. The
+    /// password authenticates each artifact, the setup binding ties it to this
+    /// package, and the authenticated declaration is the exact expected
+    /// selection, so a caller cannot widen it.
+    pub fn import_mail(
+        &self,
+        target_home: &Path,
+        password: &[u8],
+    ) -> io::Result<Vec<super::account_transfer::ThunderbirdImportReceipt>> {
+        self.require_completed_export()?;
+        if self.mail_artifacts.len() != self.manifest.units.mail().len() {
+            return Err(invalid());
+        }
+        if self.manifest.units.mail().is_empty() {
+            return Ok(Vec::new());
+        }
+        // The package itself lives below this Home, so an ancestor-overlap
+        // refusal would reject the real layout. The canonical import below
+        // re-checks the actual target roots, ownership and non-redirection.
+        PinnedDirectory::open_absolute(target_home)?.validate_destination()?;
+        let mut receipts = Vec::with_capacity(self.mail_artifacts.len());
+        for (declaration, artifact) in &self.mail_artifacts {
+            declaration.verify_ciphertext(artifact)?;
+            let receipt = artifact
+                .import(
+                    target_home,
+                    password,
+                    self.manifest.setup_binding.as_bytes(),
+                    &declaration.selection,
+                    &AtomicBool::new(false),
+                )
+                .map_err(|_| invalid())?;
+            receipts.push(receipt);
+        }
+        self.validate()?;
+        Ok(receipts)
+    }
+    /// Reseal exact consented credentials under the target user's canonical
+    /// vault. `config_root` is their private `.config/tilo`, never a live source.
+    pub fn import_accounts(
+        &self,
+        config_root: &Path,
+        password: &[u8],
+    ) -> io::Result<Vec<AccountId>> {
+        self.require_completed_export()?;
+        self.target(config_root)?;
+        match &self.account_artifact {
+            Some(artifact) => {
+                artifact
+                    .verify_selection(
+                        password,
+                        self.manifest.setup_binding.as_bytes(),
+                        &self.manifest.ids(),
+                    )
+                    .map_err(|_| invalid())?;
+                // Canonical account storage may create a publicly searchable
+                // config root. Preparation promises private target ownership,
+                // including verified retries, so create only this fresh grant
+                // privately after authentication and retain its descriptor.
+                let target = match std::fs::symlink_metadata(config_root) {
+                    Ok(_) => PinnedDirectory::open_absolute(config_root)?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        let parent = PinnedDirectory::open_absolute(
+                            config_root.parent().ok_or_else(invalid)?,
+                        )?;
+                        parent.validate_destination()?;
+                        destination_security::check_private_file(&parent.file)?;
+                        parent.create_child(config_root.file_name().ok_or_else(invalid)?)?
+                    }
+                    Err(error) => return Err(error),
+                };
+                destination_security::check_private_file(&target.file)?;
+                let imported = Connector::new(config_root.to_owned())
+                    .import_password_sealed_accounts_matching(
+                        artifact,
+                        password,
+                        self.manifest.setup_binding.as_bytes(),
+                        &self.manifest.ids(),
+                    )
+                    .map_err(|_| invalid())?;
+                target.validate()?;
+                Ok(imported)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+}
+#[cfg(test)]
+mod tests;

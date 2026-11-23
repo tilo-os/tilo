@@ -21,7 +21,7 @@ class RuntimeFontPayload(unittest.TestCase):
         repo = SOURCE.parents[2]
         with tempfile.TemporaryDirectory(prefix='runtime-fonts-') as name:
             fonts = ASSEMBLER.prepare_runtime_fonts(repo, Path(name))
-            source = repo / 'crates/sdk/ui-core/assets/fonts/manifest.toml'
+            source = repo / 'crates/ui/ui-core/assets/fonts/manifest.toml'
             self.assertEqual((fonts / 'manifest.toml').read_bytes(), source.read_bytes())
             catalogs = Path(name) / 'font-catalogs'
             catalog = ASSEMBLER.publish_runtime_fonts(repo, fonts, catalogs)

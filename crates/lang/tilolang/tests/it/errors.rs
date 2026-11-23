@@ -783,7 +783,8 @@ tilo_test_env::scenario! {
 action add(t: Task, title: Text = \"\") {\n    t.title = title\n}\n\
 action twice(t: Task, one: Text = \"\", two: Text = \"\") {\n    t.title = one + two\n}\n\
 action close(t: Task) {\n    t.title = \"x\"\n}\n\
-view places<T>(t: T, entry: Option<Action> = .none) {\n    ui.Text(\"x\")\n}\n";
+view places<T>(t: T, entry: Option<Action> = .none) {\n    if let create = entry {\n        std.add_entry(\"x\", create)\n    }\n}\n\
+view card<T>(t: T, on_confirm: Option<Action> = .none) {\n    if let confirm = on_confirm {\n        ui.Button(\"Go\") {\n            on press: confirm\n        }\n    }\n}\n";
         let entry = |made: &str| {
             crate::common::codes(&format!(
                 "{task}view home(t: Task) {{\n    places(t, entry: .some({made}))\n}}\n"
@@ -804,6 +805,18 @@ view places<T>(t: T, entry: Option<Action> = .none) {\n    ui.Text(\"x\")\n}\n";
             ["E068"],
             "an action with two `Text` parameters leaves the words no one of them"
         );
+        let callback = |made: &str| {
+            crate::common::codes(&format!(
+                "{task}view home(t: Task) {{\n    card(t, on_confirm: .some({made}))\n}}\n"
+            ))
+        };
+        for made in ["close(t)", "twice(t)", "add(t)"] {
+            assert_eq!(
+                callback(made),
+                Vec::<String>::new(),
+                "a sub-view's maybe-action that no entry submits is a callback, which takes any action: {made}"
+            );
+        }
         let marked = crate::common::compile_with(
             &format!("app t.x \"X\"\n{task}action note(t: Task, title: Text (entry) = \"\") {{\n    t.title = title\n}}\n"),
             &[],
@@ -889,17 +902,20 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// E144: a type that says who reads its records names a `List<Actor>` field of them.
-    fn readers_e144;
+    /// E144: the fields a type's readers are named by: a `Bool` that hands a record to every
+    /// member, a `Set<Actor>` of the people who read it.
+    fn reader_fields_e144;
 
-    phase the_readers_are_a_list_of_actors_the_type_holds;
+    phase a_reader_rule_names_a_field_of_the_right_type;
     {
-        let compiled = crate::common::compile_body(
-            "type Direct (readers: people) {\n    people: List<Actor>\n    said: Text\n}\n",
-        );
-        let direct = compiled.meta.type_named("Direct").unwrap();
-        assert_eq!(direct.readers.as_deref(), Some("people"));
-        expect("E144", "type Direct (readers: said) {\n    people: List<Actor>\n    said: Text\n}\n");
-        expect("E144", "type Direct (readers: who) {\n    people: List<Actor>\n}\n");
+        let typed = |readers: &str| {
+            format!("type Draft (readers: {readers}) {{\n    sent: Bool\n    to: Set<Actor>\n    note: Text\n}}\n")
+        };
+        for fine in ["author", "author until sent", "to"] {
+            assert!(!codes(&typed(fine)).contains(&"E144".to_owned()), "{fine} reads");
+        }
+        for wrong in ["author until note", "author until gone", "note", "gone"] {
+            expect("E144", &typed(wrong));
+        }
     }
 }

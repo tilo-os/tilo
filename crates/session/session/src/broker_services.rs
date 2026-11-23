@@ -152,6 +152,7 @@ broker_services! {
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,
     hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
+    shell: Arc<tilo_workspace_service::apps::shell::ShellServices>,
 }
 
 /// The resources of the workspaces this device's own workspace service holds, as the broker reads

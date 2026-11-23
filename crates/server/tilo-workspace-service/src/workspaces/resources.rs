@@ -504,6 +504,19 @@ impl GovernedWorkspace {
         self.resources.document(doc)
     }
 
+    /// What the change `hash` of the store's document `doc` wrote ([`Store::wrote`]).
+    pub(super) fn store_wrote(
+        &mut self,
+        doc: &str,
+        hash: ChangeHash,
+    ) -> Vec<tilo_resource_store::Wrote> {
+        // In memory, as a written document is.
+        if self.resources.document(doc).is_none() {
+            return Vec::new();
+        }
+        self.resources.store_mut().wrote(doc, hash)
+    }
+
     /// The workspace's store, with the types and verbs of every app surface the device knows
     /// (`surfaces`) declared: what this device's writes and the members' are judged by.
     #[cfg(any(feature = "apps", feature = "agents"))]
@@ -1107,7 +1120,7 @@ impl Workspaces {
                 "{app} runs only its own actions once, not {address}"
             ));
         }
-        let turn = Turn::Once { address, inputs };
+        let turn = Turn::once(address, inputs);
         if let Some(answer) = answer {
             crate::work::keep_done(self, workspace, &turn, answer).await?;
             self.write_lease(workspace, &turn.lease(), 0).await?;

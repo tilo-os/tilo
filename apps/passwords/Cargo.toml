@@ -19,10 +19,10 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 # The resource the app publishes: the empty record the vault's verbs hang off.
 passwords-model = { path = "../passwords-model" }
-accounts = { path = "../../crates/system/accounts" }
+accounts = { path = "../../crates/integrations/accounts" }
 # The permission requests the messaging service makes for Messages.
-tilo-messaging = { path = "../../crates/platform/tilo-messaging", features = ["service-client"] }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-messaging = { path = "../../crates/integrations/tilo-messaging", features = ["service-client"] }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 zeroize.workspace = true
 tracing.workspace = true

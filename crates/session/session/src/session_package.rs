@@ -313,6 +313,7 @@ fn entry(
             label: String::new(),
             version: 0,
             person: false,
+            readers: None,
             verbs,
             fields: Vec::new(),
             types: types.into_types(),

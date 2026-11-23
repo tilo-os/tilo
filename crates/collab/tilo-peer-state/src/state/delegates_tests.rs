@@ -72,15 +72,21 @@ fn delegation(
     .unwrap()
 }
 
-/// An edit of the seeded record by `key`, as `writer` publishes it.
-fn edit(writer: &mut StatePeer, key: &SigningKey, now: SystemTime) -> crate::NeighbourMsg {
+/// An edit of the seeded record by `key`, made by the person whose root key is
+/// `person`, as `writer` publishes it.
+fn edit(
+    writer: &mut StatePeer,
+    key: &SigningKey,
+    person: &[u8; 32],
+    now: SystemTime,
+) -> crate::NeighbourMsg {
     let mut doc = AutoCommit::load(&writer.document("test.app", "tab:1").unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let before = doc.get_heads();
     doc.put(ROOT, "by agent", true).unwrap();
-    doc.commit_edit("fixture", "by agent");
+    doc.commit_edit("fixture", "by agent", person);
     writer
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), key, now)
@@ -263,8 +269,8 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 
     // Its edit is signed by its own key, and the governor admits it.
     let mut own = member.clone();
-    let message = edit(&mut own, &key, now);
-    let late = edit(&mut own, &key, now);
+    let message = edit(&mut own, &key, &person.verifying_key().to_bytes(), now);
+    let late = edit(&mut own, &key, &person.verifying_key().to_bytes(), now);
     assert!(
         governor
             .receive_from(TransportOrigin::ServerDelta(device), message, now)
@@ -365,7 +371,7 @@ tilo_test_env::scenario! {
             .admit_agent(cert.clone(), granted, &authority, now)
             .unwrap();
         let mut member = governor.clone();
-        let before = edit(&mut member, &key, now);
+        let before = edit(&mut member, &key, &person.verifying_key().to_bytes(), now);
         // What it wrote and the governor took in before the withdrawal stays
         // its own.
         assert!(
@@ -374,7 +380,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .changed
         );
-        let unseen = edit(&mut member, &key, now);
+        let unseen = edit(&mut member, &key, &person.verifying_key().to_bytes(), now);
 
         assert!(
             governor
@@ -424,7 +430,7 @@ tilo_test_env::scenario! {
                 .receive_from(TransportOrigin::ServerDelta(device), unseen, withdrawn)
                 .is_err()
         );
-        let after = edit(&mut member, &key, withdrawn);
+        let after = edit(&mut member, &key, &person.verifying_key().to_bytes(), withdrawn);
         assert!(
             governor
                 .receive_from(TransportOrigin::ServerDelta(device), after, withdrawn)

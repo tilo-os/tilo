@@ -28,7 +28,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 registry-types = { path = "../registry-types" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Installs share the bundle root's collection lock; a collection holds it alone.
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

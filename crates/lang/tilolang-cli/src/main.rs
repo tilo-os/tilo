@@ -102,6 +102,16 @@ usage:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Run in a checkout, the tool compiles against the checkout's standard library, as it does
+    // against the packages beside the one it builds: an edit of it takes effect without
+    // rebuilding the tool.
+    let tree = std::env::current_dir()
+        .ok()
+        .and_then(|dir| tilolang::stdlib::in_tree(&dir));
+    if let Some(Err(error)) = tree.map(|dir| tilolang::stdlib::load_from(&dir)) {
+        eprintln!("tilolang: {error}");
+        return ExitCode::FAILURE;
+    }
     let rest = args.get(1..).unwrap_or_default();
     let result = match args.first().map(String::as_str) {
         Some("build") => build(rest),

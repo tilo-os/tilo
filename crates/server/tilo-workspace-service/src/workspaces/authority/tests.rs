@@ -1,6 +1,6 @@
-//! A workspace this server governs decides its own administration: what another
-//! person's device may do is what the workspace's governance lets that person,
-//! and what no workspace decides stays the server's person's.
+//! A workspace this server holds decides its own administration: what a
+//! person's device may do there is what the workspace's signed member list and
+//! grants let that person, the server's own person included.
 
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
@@ -1294,8 +1294,13 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     server.shutdown().await;
 }
 
+/// A member holding every governance action the workspace has does through this server what the
+/// workspace lets her, and nothing it does not: making a workspace on the server stays its
+/// person's, making administrators the owner's. A device of a member enters as theirs, and
+/// anyone else's by no entry. A workspace this server does not hold lets no one in, the server's
+/// own person included.
 #[tokio::test]
-async fn what_no_workspace_decides_stays_the_server_persons() {
+async fn what_a_workspace_lets_a_member_this_server_carries_out() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1303,61 +1308,87 @@ async fn what_no_workspace_decides_stays_the_server_persons() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    // Ada holds every governance action the workspace has.
     for action in governance::ALL {
         grant(workspaces, &workspace, &owner, &ada, action).await;
     }
+
+    // A device of a member enters as theirs: the owner's and Ada's are in already. Someone the
+    // workspace does not have comes in by an invitation, never this way.
+    assert!(!workspaces.enter(&workspace, &owner).await.unwrap());
+    assert!(!workspaces.enter(&workspace, &ada).await.unwrap());
+    let (_, stranger) = guest_device();
+    assert!(workspaces.enter(&workspace, &stranger).await.is_err());
+    // A Viewer the owner added by their root, before any device of theirs arrived, enters from
+    // one and holds no more there than a Viewer does.
+    let cy = SigningKey::from_bytes(&rand::random());
+    workspaces
+        .add_member(
+            &workspace,
+            &owner,
+            crate::workspaces::AddMemberRequest {
+                request_id: rand::random(),
+                user_public_key: cy.verifying_key().to_bytes(),
+                place: crate::workspaces::MemberPlace::Role(Role::Viewer),
+                name: Some("Cy".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let phone = device_of(&cy, "Cy's phone", DeviceCapabilities::member());
+    assert!(workspaces.enter(&workspace, &phone).await.unwrap());
+    assert!(
+        workspaces
+            .issue(&workspace, &phone, invitation(34, Role::Viewer))
+            .await
+            .is_err()
+    );
+
+    // What the workspace lets her, she does.
     workspaces
         .issue(&workspace, &ada, invitation(30, Role::Viewer))
         .await
         .unwrap();
+    workspaces
+        .pre_admit(
+            &ada,
+            PreAdmitRequest {
+                request_id: [33; 32],
+                grant: signed_pre_admission(&workspace, b"token"),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    // Her grants are the workspace's to change, so she may take them all back too.
+    workspaces
+        .put_workspace_grants(&workspace, &ada, [32; 32], Vec::new())
+        .await
+        .unwrap();
 
-    assert!(
-        workspaces.enter(&workspace, &ada).await.is_err(),
-        "entering makes an owner"
-    );
-    for request in [
-        WorkspacesRequest::List,
-        WorkspacesRequest::Create {
-            name: "Another".into(),
-        },
-        WorkspacesRequest::Enter {
-            workspace: workspace.clone(),
-        },
-    ] {
-        let reply = workspaces.page_workspaces(&ada, request.clone()).await;
-        assert!(
-            matches!(reply, WorkspacesReply::Refused(_)),
-            "{request:?}: {reply:?}"
-        );
-    }
+    // What it does not, she does not.
+    let reply = workspaces
+        .page_workspaces(
+            &ada,
+            WorkspacesRequest::Create {
+                name: "Another".into(),
+            },
+        )
+        .await;
+    assert!(matches!(reply, WorkspacesReply::Refused(_)), "{reply:?}");
     assert!(
         workspaces
             .set_member_administrator(&workspace, &ada, [31; 32], bo.user_public_key, None)
             .await
             .is_err()
     );
-    assert!(
-        workspaces
-            .put_workspace_grants(&workspace, &ada, [32; 32], Vec::new())
-            .await
-            .is_err()
-    );
-    assert!(
-        workspaces
-            .pre_admit(
-                &ada,
-                PreAdmitRequest {
-                    request_id: [33; 32],
-                    grant: signed_pre_admission(&workspace, b"token"),
-                    recipient_user_public_key: None,
-                    inviter_name: None,
-                },
-            )
-            .await
-            .is_err()
-    );
     assert_eq!(workspaces.list().await.len(), 1);
+
+    // A workspace the server does not hold decides nothing, so no one enters it.
+    let elsewhere = tilo_server_protocol::WorkspaceId::new().to_string();
+    for device in [&owner, &ada] {
+        assert!(workspaces.enter(&elsewhere, device).await.is_err());
+    }
     server.shutdown().await;
 }
 

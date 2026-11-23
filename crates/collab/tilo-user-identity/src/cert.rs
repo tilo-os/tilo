@@ -83,17 +83,21 @@ pub const MAX_AGENT_GRANT_LIFETIME_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
 /// First byte of a foreign device's capabilities in binary encodings.
 const FOREIGN_BINARY_MARKER: u8 = 2;
 
-/// First byte of capabilities that grant administration or an agent's grant
-/// in binary encodings, followed by one byte of [`EXTENDED_FOREIGN`] |
-/// [`EXTENDED_ADMINISTER`] | [`EXTENDED_AGENT`] | [`EXTENDED_STAND_IN`] |
+/// First byte of capabilities that grant an agent's grant or more than being
+/// foreign in binary encodings, followed by one byte of [`EXTENDED_FOREIGN`] |
+/// [`EXTENDED_AGENT`] | [`EXTENDED_STAND_IN`] |
 /// [`EXTENDED_ISSUED`] | [`EXTENDED_SERVER_KEY`] | [`EXTENDED_BROWSER_PAGES`] |
 /// [`EXTENDED_WORKSPACE_SERVICE`], the agent's scope when
 /// [`EXTENDED_AGENT`] is set (a
 /// tag byte, then a workspace's 16 bytes for one workspace), and then the
-/// four flags. A bit this build does not know is refused.
+/// four flags. A bit this build does not know is refused, except bit 2
+/// ([`RETIRED_ADMINISTER`]).
 const EXTENDED_BINARY_MARKER: u8 = 3;
 const EXTENDED_FOREIGN: u8 = 1;
-const EXTENDED_ADMINISTER: u8 = 2;
+/// Bit 2 let a device drive the person's other devices. Grants on a device's resource decide that
+/// now, so the bit is never written; a certificate an earlier build signed with it still reads, as
+/// one without it.
+const RETIRED_ADMINISTER: u8 = 2;
 const EXTENDED_AGENT: u8 = 4;
 const EXTENDED_STAND_IN: u8 = 8;
 /// Only inside a certificate: its issuer's certificate follows its
@@ -343,20 +347,15 @@ pub struct DeviceCapabilities {
     /// workspaces already assigned to it.
     pub can_own_workspaces: bool,
 
-    /// May mint enrollment tokens for new devices. Typically only
-    /// the user's primary device — a phone should not be able to
-    /// admit another phone into the fleet.
+    /// May add a device to the person's fleet by approving the ticket it
+    /// brings. Typically only the user's primary device — a phone should not
+    /// be able to admit another phone into the fleet.
     pub can_admit_devices: bool,
 
     /// The device runs a Tilo runtime on an operating system Tilo does not
     /// control (stock macOS, another Linux desktop). Workspace policy caps
     /// the role such a device may act with.
     pub foreign: bool,
-
-    /// May administer the person's other devices: open their device-admin
-    /// route (`tilo-device-admin/1`) and drive the dev daemon behind it.
-    /// Granted on purpose to a developer's machine, never by a preset.
-    pub can_administer_devices: bool,
 
     /// The key belongs to an agent's grant, not to a machine of the person:
     /// a service (the person's hosting provider's MCP server, say) holds it
@@ -441,8 +440,6 @@ struct CapabilitiesJson {
     can_admit_devices: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     foreign: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    can_administer_devices: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<AgentScope>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -467,7 +464,6 @@ impl Serialize for DeviceCapabilities {
                 can_own_workspaces: self.can_own_workspaces,
                 can_admit_devices: self.can_admit_devices,
                 foreign: self.foreign,
-                can_administer_devices: self.can_administer_devices,
                 agent: self.agent,
                 stand_in: self.stand_in,
                 server_key: self.server_key,
@@ -511,7 +507,6 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
     };
     let bit = |set: bool, bit: u8| if set { bit } else { 0 };
     let extended = bit(capabilities.foreign, EXTENDED_FOREIGN)
-        | bit(capabilities.can_administer_devices, EXTENDED_ADMINISTER)
         | bit(capabilities.agent.is_some(), EXTENDED_AGENT)
         | bit(capabilities.stand_in, EXTENDED_STAND_IN)
         | bit(issued, EXTENDED_ISSUED)
@@ -550,7 +545,6 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 can_own_workspaces: json.can_own_workspaces,
                 can_admit_devices: json.can_admit_devices,
                 foreign: json.foreign,
-                can_administer_devices: json.can_administer_devices,
                 agent: json.agent,
                 stand_in: json.stand_in,
                 server_key: json.server_key,
@@ -613,23 +607,25 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
         let (extended, agent, flags) = match first {
             FOREIGN_BINARY_MARKER => (EXTENDED_FOREIGN, None, [next()?, next()?, next()?, next()?]),
             EXTENDED_BINARY_MARKER => {
-                let extended = next()?;
-                // Only administration, an agent's grant, a stand-in and an
-                // issuer need the extended form; anything else has exactly
+                let written = next()?;
+                let extended = written & !RETIRED_ADMINISTER;
+                // Only an agent's grant, a stand-in, an issuer, a server key,
+                // Browser pages and a workspace service need the extended form; anything else has exactly
                 // one encoding already.
                 let known = EXTENDED_FOREIGN
-                    | EXTENDED_ADMINISTER
                     | EXTENDED_AGENT
                     | EXTENDED_STAND_IN
                     | EXTENDED_ISSUED
                     | EXTENDED_SERVER_KEY
                     | EXTENDED_BROWSER_PAGES
                     | EXTENDED_WORKSPACE_SERVICE;
-                if extended & !known != 0 || extended & !EXTENDED_FOREIGN == 0 {
+                if extended & !known != 0
+                    || (written == extended && extended & !EXTENDED_FOREIGN == 0)
+                {
                     return Err(A::Error::invalid_value(
                         serde::de::Unexpected::Unsigned(extended.into()),
-                        &"extended capabilities that grant administration, an agent's grant \
-                          or a stand-in, or name an issuer",
+                        &"extended capabilities that grant an agent's grant or a stand-in, \
+                          or name an issuer",
                     ));
                 }
                 let agent = if extended & EXTENDED_AGENT == 0 {
@@ -686,7 +682,6 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 can_own_workspaces: flag(flags[0])?,
                 can_admit_devices: flag(flags[1])?,
                 foreign: extended & EXTENDED_FOREIGN != 0,
-                can_administer_devices: extended & EXTENDED_ADMINISTER != 0,
                 agent,
                 stand_in: extended & EXTENDED_STAND_IN != 0,
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
@@ -711,7 +706,6 @@ impl DeviceCapabilities {
             can_own_workspaces: false,
             can_admit_devices: false,
             foreign: false,
-            can_administer_devices: false,
             agent: None,
             stand_in: false,
             server_key: false,
@@ -732,7 +726,6 @@ impl DeviceCapabilities {
         let within = |renewed: bool, held: bool| !renewed || held;
         within(self.can_own_workspaces, held.can_own_workspaces)
             && within(self.can_admit_devices, held.can_admit_devices)
-            && within(self.can_administer_devices, held.can_administer_devices)
             && (self.foreign || !held.foreign)
             && self.agent == held.agent
             && self.stand_in == held.stand_in
@@ -799,7 +792,6 @@ impl DeviceCapabilities {
             || !(self.can_own_workspaces
                 || self.can_admit_devices
                 || self.foreign
-                || self.can_administer_devices
                 || self.stand_in
                 || self.workspace_service
                 || self.retired.any())
@@ -862,15 +854,6 @@ impl DeviceCapabilities {
     pub fn member() -> Self {
         Self {
             can_own_workspaces: true,
-            ..Self::nothing()
-        }
-    }
-
-    /// Capability set for a developer's machine that administers the
-    /// person's devices and does nothing else: it owns and admits nothing.
-    pub fn administrator() -> Self {
-        Self {
-            can_administer_devices: true,
             ..Self::nothing()
         }
     }

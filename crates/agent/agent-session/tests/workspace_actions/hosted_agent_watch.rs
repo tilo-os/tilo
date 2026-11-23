@@ -1,14 +1,12 @@
 //! What a turn on a workspace's server follows besides its own calls: an agent's `tilo_watch`
 //! there wakes when a person writes in the workspace and reports the change, and it is never
 //! told of what its rules keep from it.
-use super::search::{narrow_agent, reading};
-use super::shares::asks_scout;
+use super::search::{chat_in, narrow_agent, reading};
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionProvider as _, Caller};
 use tilo_mcp::McpServer;
 use tilo_workspace_service::agents::WorkspaceActionProvider;
-use tilo_workspace_service::asks;
 
 /// How long a watch here holds: far longer than the change takes to reach it, so an answer
 /// inside [`PROMPTLY`] came on the change and not from the hold running out.
@@ -70,30 +68,26 @@ async fn tool(
     )
 }
 
-/// Where the turn of the test is, and what asked it.
-const TURN: (&str, &str) = ("plans", "ask");
-
-/// The session of `root`'s person handed to her agent on a turn in `conversation`, held to
-/// `rules`: what the tools of such a turn act as on a server.
+/// The roster agent on a turn in `conversation`, held to `rules`: what the tools of such a turn
+/// act as on a server.
 fn on_turn(
     root: &SigningKey,
     browser: &crate::support::Device,
     workspace: &str,
-    (conversation, cause): (&str, &str),
+    (conversation, cause): (&Id, &Id),
     rules: Vec<tilo_action_policy::Rule>,
 ) -> Caller {
-    Caller::authenticated(
-        root.verifying_key().to_bytes(),
-        browser.cert.device_public_key,
-    )
-    .in_workspace(workspace)
-    .delegated_to(SCOUT.to_owned())
-    .named("Scout")
-    .in_agent_session("agent-session:watch".to_owned())
-    .on_turn(
-        tilo_action_policy::turn::Turn::new(conversation.to_owned(), cause.to_owned()),
-        rules,
-    )
+    let person = root.verifying_key().to_bytes();
+    Caller::delegated_agent(SCOUT, person, browser.cert.device_public_key)
+        .in_workspace(workspace)
+        .named("Scout")
+        .in_agent_session("agent-session:watch".to_owned())
+        .on_roster(0, person)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(conversation),
+            cause.to_string(),
+        ))
+        .held_to(rules)
 }
 
 /// Every change one watch answered with: the app of each resource it names.
@@ -132,14 +126,35 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
     let page = Browser::open_at(&served, &browser, &server, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-    // What she first asks the agent in the workspace's chat.
-    let chat = asks::chat_packages().unwrap().app().to_owned();
-    asks_scout(&workspaces, &workspace, &root, "what is planned?").await;
+    // The workspace's chat, and what her person first tells the agent there.
+    let catalogue = crate::common::catalogue();
+    let governor = workspaces.device_cert().clone();
+    workspaces
+        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
+        .await
+        .unwrap();
+    let written = (&root, &browser);
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "what is planned?",
+    )
+    .await;
+    let conversation =
+        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let id = WorkspaceId::parse(&workspace).unwrap();
 
     // Nothing narrows the agent. Its watch holds until its person writes again, and then
     // reports her message: a change of the workspace, not one of the watch's own calls.
-    let caller = on_turn(&root, &browser, &workspace, TURN, Vec::new());
+    let caller = on_turn(
+        &root,
+        &browser,
+        &workspace,
+        (&conversation, &first),
+        Vec::new(),
+    );
     let tools = McpServer::for_turn(
         WorkspaceActionProvider::new(actions.clone(), id),
         caller.clone(),
@@ -167,7 +182,14 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
         ),
         async {
             tokio::time::sleep(BEFORE).await;
-            asks_scout(&workspaces, &workspace, &root, "and who owns it?").await;
+            write_to_agent(
+                &actions,
+                &workspaces,
+                &workspace,
+                written,
+                "and who owns it?",
+            )
+            .await
         }
     );
     let watched = watched
@@ -175,7 +197,7 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
     let (watched, failed) = answered(watched);
     assert!(!failed, "the watch answers: {watched}");
     assert!(
-        changed_apps(&watched).contains(&chat),
+        changed_apps(&watched).iter().any(|app| app == CHAT),
         "the watch reports the person's message: {watched}"
     );
 
@@ -187,27 +209,27 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
         &workspaces,
         &workspace,
         &person,
-        vec![reading(format!("workspace:{workspace}/app:{chat}"), "deny")],
+        vec![reading(chat_in(&workspace), "deny")],
     )
     .await;
     let narrowed = {
-        let asking = Caller::authenticated(
-            root.verifying_key().to_bytes(),
-            browser.cert.device_public_key,
-        )
-        .in_workspace(&workspace)
-        .delegated_to(SCOUT.to_owned())
-        .named("Scout")
-        .in_agent_session("agent-session:watch".to_owned());
+        let person_key = root.verifying_key().to_bytes();
+        let asking = Caller::delegated_agent(SCOUT, person_key, browser.cert.device_public_key)
+            .in_workspace(&workspace)
+            .named("Scout")
+            .in_agent_session("agent-session:watch".to_owned());
         let rules = tilo_workspace_service::agents::workspace_agent(&workspaces, id, &asking).await;
         assert!(
             !rules.is_empty(),
             "the agent is held to the rules kept for it"
         );
-        asking.on_turn(
-            tilo_action_policy::turn::Turn::new(TURN.0.to_owned(), TURN.1.to_owned()),
-            rules,
-        )
+        asking
+            .on_roster(0, person_key)
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
+                chat::summons::conversation_address(&conversation),
+                first.to_string(),
+            ))
+            .held_to(rules)
     };
     let feed = WorkspaceActionProvider::new(actions.clone(), id)
         .change_feed()
@@ -217,7 +239,14 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
         .await
         .expect("the feed answers")
         .expect("the agent reads its workspace");
-    asks_scout(&workspaces, &workspace, &root, "only I need this one").await;
+    write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        written,
+        "only I need this one",
+    )
+    .await;
     let herself = Caller::authenticated(
         root.verifying_key().to_bytes(),
         browser.cert.device_public_key,
@@ -230,7 +259,7 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
             .await
             .expect("the feed answers")
             .expect("her device reads the workspace");
-        if read.changes.iter().any(|change| change.app == chat) {
+        if read.changes.iter().any(|change| change.app == CHAT) {
             break;
         }
         assert!(
@@ -246,7 +275,7 @@ async fn a_turn_on_the_server_wakes_on_a_persons_write_and_is_told_only_what_it_
         .expect("the feed answers")
         .expect("the agent reads its workspace");
     assert!(
-        theirs.changes.iter().all(|change| change.app != chat),
+        theirs.changes.iter().all(|change| change.app != CHAT),
         "the agent is told nothing of what Chat keeps: {:?}",
         theirs.changes
     );

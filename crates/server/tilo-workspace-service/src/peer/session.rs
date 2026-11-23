@@ -49,7 +49,6 @@ impl<R: tokio::io::AsyncRead + Unpin> Reading<'_, '_, R> {
         loop {
             // Prefer an already-readable frame over the membership audit: a
             // refused frame still gets its refusal rather than a bare close.
-            self.access_audit.cover(self.subscribed);
             let audit_due = self.access_audit.due();
             tokio::select! {
                 biased;
@@ -85,10 +84,8 @@ impl<R: tokio::io::AsyncRead + Unpin> Reading<'_, '_, R> {
                     }
                 },
                 () = crate::peer::access_audit::until(audit_due) => {
-                    let watched =
-                        Box::pin(audit_subscriber_access(self.peer, self.session, self.subscribed)).await?;
-                    self.access_audit
-                        .audited(self.peer, self.session.agents, self.subscribed, watched);
+                    Box::pin(audit_subscriber_access(self.peer, self.session, self.subscribed)).await?;
+                    self.access_audit.audited(self.peer, self.session.agents);
                 }
                 // The epoch's sender is a process-wide static and never
                 // closes, so this cannot spin on an error.
@@ -237,8 +234,11 @@ where
     let mut authority = crate::authority_epoch::subscribe();
     authority.mark_unchanged();
     // The host's own device, connected in process, is audited only on change.
-    let mut access_audit =
-        AccessAudit::new(peer.device_public_key == own_device_cert.device_public_key);
+    let mut access_audit = AccessAudit::new(
+        peer.device_public_key == own_device_cert.device_public_key,
+        &peer,
+        &agents,
+    );
 
     // Presence is batched per connection, in the order it was posted.
     let presence = Arc::new(crate::presence_mailbox::PresenceMailbox::default());

@@ -13,9 +13,9 @@ used in code.
   ciphertext. A device setting says which work it takes, from whom, and when (charging, energy
   mode, free resources).
 - **Server**: a device running Tilo Server, the headless edition of the OS. It has no screen
-  session and no local login, joins its person's identity by enrollment token or code approval
-  (no local-network pairing), and is configured only through its entry in their Servers
-  workspace. It unlocks its disk unattended (TPM, then a sibling server, then one of its person's
+  session and no local login, joins its person's identity with a ticket, and is configured only
+  through its entry in their Servers workspace. It unlocks its disk unattended (TPM, then a
+  sibling server, then one of its person's
   devices), updates one server at a time with a health check and rollback, can run workspaces'
   Linux machines, and can serve the API. Per workspace it stores ciphertext or holds the keys and
   takes work; holding a workspace never makes it a member, though the member list names it as

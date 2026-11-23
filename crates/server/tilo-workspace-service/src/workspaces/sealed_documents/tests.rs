@@ -36,7 +36,7 @@ pub(super) async fn set_title(
     member
         .writes(workspaces, workspace, |document| {
             document.put(ROOT, "title", value).unwrap();
-            document.commit_edit("fixture", "title");
+            document.commit_edit("fixture", "title", &member.person());
         })
         .await;
 }
@@ -396,7 +396,7 @@ pub(super) fn seal_and_send_title(
 ) {
     let ((), message) = member.seal(workspace, |doc| {
         doc.put(ROOT, "title", line).unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &member.person());
     });
     send_sealed(client, workspace_id, key, &message);
 }
@@ -678,7 +678,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
     for index in 0..WRITES {
         let ((), message) = member.seal(&workspace, |doc| {
             doc.put(ROOT, "title", format!("line {index}")).unwrap();
-            doc.commit_edit("fixture", "title");
+            doc.commit_edit("fixture", "title", &member.person());
         });
         let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
         client
@@ -974,7 +974,7 @@ async fn a_record_that_does_not_read_whole_leaves_the_others_read() {
     // A write the node never gets: the member's next one waits on it.
     let _never_sent = lounge.member.seal(workspace, |document| {
         document.put(ROOT, "title", "Lost").unwrap();
-        document.commit_edit("fixture", "title");
+        document.commit_edit("fixture", "title", &lounge.member.person());
     });
     set_title(&lounge.member, workspaces, workspace, "After").await;
 
@@ -1128,7 +1128,7 @@ async fn a_write_from_another_device_over_the_link_wakes_the_write_watch() {
     .await;
     let ((), message) = sealing.seal(&lounge.workspace, |doc| {
         doc.put(ROOT, "title", "from a device").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &sealing.person());
     });
     writer.link.send(message).unwrap();
     let write = tilo_test_env::within("the write wakes the workspace's followers", async {
@@ -1253,7 +1253,7 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
         let ((), message) = sealing.seal(&lounge.workspace, |doc| {
             doc.put(ROOT, "title", format!("from a device {line}"))
                 .unwrap();
-            doc.commit_edit("fixture", "title");
+            doc.commit_edit("fixture", "title", &sealing.person());
         });
         assert!(
             matches!(&message, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()),
@@ -1394,7 +1394,7 @@ async fn readers_that_fell_behind_read_every_write_once() {
         let ((), message) = sealing.seal(&lounge.workspace, |doc| {
             doc.put(ROOT, "title", format!("from a device {line}"))
                 .unwrap();
-            doc.commit_edit("fixture", "title");
+            doc.commit_edit("fixture", "title", &sealing.person());
         });
         peer.link.send(message).unwrap();
     }
@@ -1481,7 +1481,7 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         let part = member.part(&workspaces, &workspace, &record).await;
         let ((), message) = part.seal(&workspace, |doc| {
             doc.put(ROOT, "title", format!("part {index}")).unwrap();
-            doc.commit_edit("fixture", "title");
+            doc.commit_edit("fixture", "title", &part.person());
         });
         send_sealed(&page, workspace_id, &member_key, &message);
         written.push(record);
@@ -1588,7 +1588,7 @@ async fn a_page_reads_a_part_only_the_link_kept() {
         .await;
     let ((), message) = device.founds(&workspace, |doc| {
         doc.put(ROOT, "title", "the device's older part").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &device.person());
     });
     let frame = tilo_peer_state::store::Frame::of(&message).unwrap();
     workspaces.inner.store.retain(workspace_id, &frame).unwrap();
@@ -1641,7 +1641,7 @@ async fn a_store_holding_a_stuck_write_is_repaired_when_its_server_starts() {
         SealingMember::join(&workspaces, &workspace, (APP, RESOURCE), member_key.clone()).await;
     let ((), stuck) = member.seal(&workspace, |doc| {
         doc.put(ROOT, "title", "from its store").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &member.person());
     });
     let NeighbourMsg::AppDocument { envelope, .. } = &stuck else {
         panic!("a document write")

@@ -72,6 +72,7 @@ pub fn holding_hint(
         label: String::new(),
         cloud: false,
         moderates: false,
+        origin: None,
         workspace_id,
         endpoint_addr,
         user_public_key: cert.user_public_key,
@@ -121,7 +122,12 @@ impl TestGovernor {
             automerge::ObjType::Map,
         )
         .unwrap();
-        collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
+        collab_types::CommitNamed::commit_edit(
+            &mut chat,
+            "chat",
+            "channels",
+            &governor.user_public_key,
+        );
         peer.install_seed(
             SeedState {
                 workspace_changes: seed_workspace(

@@ -44,8 +44,6 @@ pub(crate) struct Opening<'a> {
     pub(crate) identity: DeviceIdentity,
     /// The endpoint, bound under the device's key, every link of the device runs on.
     pub(crate) endpoint: iroh::Endpoint,
-    /// Whether the service founds and governs workspaces here: on a computer with no login.
-    pub(crate) governs: bool,
     /// What the groups' members seal is checked against: the apps' channels.
     pub(crate) seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     /// What answers the person's keys' record actions in a workspace governed here.
@@ -86,7 +84,6 @@ impl ServiceWorkspaces {
             key,
             identity,
             endpoint,
-            governs,
             seal_checks,
             apps,
         } = opening;
@@ -106,7 +103,6 @@ impl ServiceWorkspaces {
             },
             endpoint.clone(),
             keys.groups(),
-            governs,
             |config| tilo_workspace_service::service::ServiceConfig { apps, ..config },
         )
         .await
@@ -263,6 +259,11 @@ impl ServiceWorkspaces {
     pub(crate) fn holds(&self, workspace: WorkspaceId) -> bool {
         let copies = self.copies().clone();
         block_on_owned(async move { copies.member_ids().await.contains(&workspace) })
+    }
+
+    /// Whether this device keeps `workspace`: its member copy, or the workspace founded here.
+    pub(crate) async fn keeps(&self, workspace: WorkspaceId) -> bool {
+        copy_of(self.copies(), workspace).await.is_some()
     }
 
     /// What reads `workspace`'s policy as this device's copy of it holds it now, `None` while the
@@ -789,7 +790,6 @@ impl ServiceWorkspaces {
                 None,
                 None,
             ),
-            true,
             // The fixture's endpoint names no address anywhere: nothing will,
             // so opening does not wait for one.
             |config| tilo_workspace_service::service::ServiceConfig {
@@ -844,7 +844,6 @@ impl ServiceWorkspaces {
             key: &key,
             identity,
             endpoint,
-            governs: true,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
@@ -872,7 +871,6 @@ impl ServiceWorkspaces {
             key,
             identity: DeviceIdentity::kept(cert.clone(), key.clone()),
             endpoint,
-            governs: false,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
         })

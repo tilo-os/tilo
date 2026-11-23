@@ -341,7 +341,18 @@ imports! {
     FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
     FileAt = "file_at" ([H, H] -> [H]);
     FileZip = "file_zip" ([H, H] -> [H]);
+    // A file's pixels: what its container says (an `Option` of the host's `ImageInfo`), and the
+    // crop, turn, resize and encode a program applies, each a `Result` of the new file.
+    FileImageInfo = "file_image_info" ([H] -> [H]);
+    FileCrop = "file_crop" ([H, F64, F64, F64, F64] -> [H]);
+    FileTurn = "file_turn" ([H, I64] -> [H]);
+    FileResize = "file_resize" ([H, I64, I64] -> [H]);
+    FileEncode = "file_encode" ([H, H, I64] -> [H]);
+    // A file's preview, no larger than the size asked, from the device's preview cache (an
+    // `Option` of the new file).
+    FileThumbnail = "file_thumbnail" ([H, I64] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
+    ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);
 
     // The clipboard: text or an image file offered as the person's copy, and the text or the image

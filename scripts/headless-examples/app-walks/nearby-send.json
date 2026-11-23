@@ -46,8 +46,8 @@
    ]
   },
   {
-   "id": "send",
-   "said": "Send the trip plan to the phone from its row's menu",
+   "id": "menu-offers-the-phone",
+   "said": "The trip plan's row offers the phone from its menu too",
    "ops": [
     {
      "right_click": "trip-plan.txt"
@@ -70,7 +70,23 @@
      }
     },
     {
-     "click": "Send to phone"
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "id": "send-by-catalogue",
+   "said": "An agent picks the device the catalogue offers and sends the trip plan there",
+   "ops": [
+    {
+     "use": {
+      "kind": "files.entry",
+      "action": "send-to",
+      "label": "trip-plan.txt",
+      "args": {
+       "target": "{choice:target}"
+      }
+     }
     }
    ]
   },

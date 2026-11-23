@@ -349,7 +349,7 @@ fn build_table(shape: &Shape, theme: &Theme, events: &Events) -> DataTable<Track
         .selectable(true)
         .host_scrolled()
         .with_row_height(shape.row_height)
-        .on_row_click_view(shape.id.clone(), move |row, ctrl, shift| {
+        .on_row_click(move |row, ctrl, shift| {
             // A press plays the song; Ctrl or Shift selects instead, for dragging several at once.
             play.borrow_mut().push(if ctrl || shift {
                 RowEvent::Select(row)
@@ -532,7 +532,7 @@ fn action_buttons(
         let sink = Rc::clone(events);
         Button::icon_only(&format!("{table}.{index}.{name}"), icon, label)
             .control_size(ControlSize::Small)
-            .on_effect(move || sink.borrow_mut().push(event))
+            .on_click(move || sink.borrow_mut().push(event))
     };
     let mut cluster = Row::new().no_wrap().with_gap(0.0);
     if actions != Actions::Download {

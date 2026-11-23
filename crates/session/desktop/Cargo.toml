@@ -43,13 +43,15 @@ tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 # Where each person here stands, as following reads them.
 tilo-session-core = { path = "../core" }
 tilo-desktop-search = { path = "../desktop-search" }
+# A report's transport and the profile ownership a desktop installs.
+tilo-feedback-transport = { path = "../../sdk/feedback-transport" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-app-id = { path = "../../platform/tilo-app-id" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-failure = { path = "../../platform/tilo-failure" }
 # The models an agent may plan with: the person's own provider settings.
-agent-provider-config = { path = "../../agent/provider-config" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 ed25519-dalek.workspace = true
 # The bar's clock reads the weekday of the local time.
 jiff.workspace = true
@@ -67,9 +69,9 @@ sheets = { path = "../../../apps/sheets" }
 calendar = { path = "../../../apps/calendar" }
 calculator = { path = "../../../apps/calculator" }
 slides = { path = "../../../apps/slides" }
-tilo-tts = { path = "../../system/tts" }
+tilo-tts = { path = "../../engines/tts" }
 tilo-activities = { path = "../activities" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["test-support"] }
 
 # The palette's proof that it stands over the windows: the compositor's own
 # host of a widget tree, with the pixels it drew.
@@ -81,10 +83,10 @@ tilo-compositor = { path = "../compositor" }
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 # The browser runtime builds the desktop in wasm32 on the portable toolkit.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }

@@ -1,0 +1,1623 @@
+//! Fetching a package the machine does not have yet: find it in the catalogue, download the `.tapp`
+//! to a staging file, and hand it to the package service's install action ([`commit`]).
+//!
+//! Trust is decided there, not here: the installer recomputes the package id and checks the
+//! publisher signature fail-closed before extracting. Nothing here allows a self-signed package: an
+//! install started by typing a name into search is the last place to relax a signature check.
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use package_service_client::wire::{ChangeReport, Replacement, Trust, Uploaded};
+
+use crate::CatalogueApp;
+
+/// How long a .tapp download may take before it's abandoned;
+/// overridable via `TILO_APP_DOWNLOAD_TIMEOUT` (seconds).
+const DEFAULT_DOWNLOAD_TIMEOUT_SECS: u64 = 120;
+
+fn download_timeout() -> Duration {
+    std::env::var("TILO_APP_DOWNLOAD_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map_or(
+            Duration::from_secs(DEFAULT_DOWNLOAD_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
+}
+
+fn safe_download_url(raw: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw).map_err(|error| format!("invalid package URL: {error}"))?;
+    if !tilo_net::secure_endpoint(&url) || url.fragment().is_some() {
+        return Err(
+            "package URL must be credential-free HTTPS (or loopback HTTP for development)"
+                .to_string(),
+        );
+    }
+    Ok(url)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallError {
+    NotOffered {
+        package_id: String,
+    },
+    NoStagingDir,
+    Download {
+        detail: String,
+    },
+    /// The package service did not install it: its refusal, or why it could not be reached.
+    Refused {
+        detail: String,
+    },
+    Integrity {
+        detail: String,
+    },
+    NotEnoughSpace {
+        needed: u64,
+        available: u64,
+    },
+    RuntimeUnavailable {
+        package_id: String,
+        runtime: String,
+        registry: String,
+    },
+}
+
+impl InstallError {
+    pub fn user_message(&self) -> String {
+        match self {
+            InstallError::NotOffered { package_id } => {
+                format!("no configured registry offers {package_id}")
+            }
+            InstallError::NoStagingDir => "there is nowhere writable to download it to".to_string(),
+            InstallError::Download { detail } => format!("the download failed: {detail}"),
+            InstallError::Refused { detail } => {
+                let trimmed = detail.trim();
+                if trimmed.is_empty() {
+                    "it was not installed".to_owned()
+                } else {
+                    format!("it was not installed: {trimmed}")
+                }
+            }
+            InstallError::Integrity { detail } => {
+                format!("the downloaded package failed its registry check: {detail}")
+            }
+            InstallError::NotEnoughSpace { needed, available } => format!(
+                "not enough space: it needs {}, {} is free",
+                readable_size(*needed),
+                readable_size(*available)
+            ),
+            InstallError::RuntimeUnavailable {
+                package_id,
+                runtime,
+                registry,
+            } => format!(
+                "{package_id} needs runtime {runtime}, the exact runtime build it was made for; \
+                 this device does not have it and the {registry} registry does not offer it, so \
+                 nothing was changed"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.user_message())
+    }
+}
+
+/// Room an install needs beyond the package itself: the store unpacks what
+/// it installs, and the person's other work keeps a little headroom.
+const INSTALL_HEADROOM: u64 = 256 * 1024 * 1024;
+
+/// Whether `available` bytes leave room to stage and install a package of
+/// `package_bytes`. Staging keeps the package, installing unpacks a copy, so
+/// both count, plus [`INSTALL_HEADROOM`].
+fn room_for_install(package_bytes: u64, available: u64) -> Result<(), InstallError> {
+    let needed = package_bytes
+        .saturating_mul(2)
+        .saturating_add(INSTALL_HEADROOM);
+    if available < needed {
+        return Err(InstallError::NotEnoughSpace { needed, available });
+    }
+    Ok(())
+}
+
+/// Free space where `dir` lives, or `None` when the host can't say (then the
+/// download goes ahead and a full disk still fails it cleanly).
+fn available_space(dir: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let stat = rustix::fs::statvfs(dir).ok()?;
+        Some(stat.f_bavail.saturating_mul(stat.f_frsize))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
+
+fn readable_size(bytes: u64) -> String {
+    const MB: u64 = 1000 * 1000;
+    const GB: u64 = 1000 * MB;
+    if bytes >= GB {
+        let tenths = bytes.saturating_mul(10) / GB;
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    } else {
+        format!("{} MB", bytes.div_ceil(MB))
+    }
+}
+
+pub fn staging_dir() -> Option<PathBuf> {
+    let base = crate::config::cache_dir()?;
+    let staged = base.join("staged-tapp");
+    std::fs::create_dir_all(&staged).ok()?;
+    Some(staged)
+}
+
+pub const INSTALL_BIN_ENV: &str = "TILO_INSTALL_BIN";
+
+/// The installer binary. [`INSTALL_BIN_ENV`] overrides it in a developer
+/// build only (see [`package_store::dev_env`]), matching the compositor's
+/// launcher resolution; a release build runs Tilo OS's own, else the one on
+/// `PATH`.
+pub fn tilo_install_bin() -> String {
+    tilo_install_bin_from(package_store::dev_env::dev_override(INSTALL_BIN_ENV))
+}
+
+/// [`tilo_install_bin`] given the override the build's check let through.
+fn tilo_install_bin_from(allowed_override: Option<std::ffi::OsString>) -> String {
+    allowed_override
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(installed_install_bin)
+}
+
+/// Where Tilo OS keeps `tilo-install`; elsewhere (another distribution, a
+/// development build) it is found on `PATH`.
+fn installed_install_bin() -> String {
+    const INSTALLED: &str = "/usr/libexec/tilo/tilo-install";
+    if Path::new(INSTALLED).is_file() {
+        INSTALLED.to_owned()
+    } else {
+        "tilo-install".to_owned()
+    }
+}
+
+/// The change [`install`] asks the package service for. Split out so a test can assert on it
+/// without a network or a service: in particular, that it never allows a self-signed package.
+#[must_use]
+pub fn install_change(
+    staged_tapp: &Path,
+    publisher_pubkey_hex: &str,
+    tapp_root_hash_hex: &str,
+    payload_from: Option<&str>,
+) -> package_service_client::wire::Change {
+    package_service_client::wire::Change::Install {
+        file: Uploaded {
+            source: staged_tapp.display().to_string(),
+        },
+        // A valid tapp from another publisher is not the package the signed registry entry
+        // vouched for.
+        trust: Trust {
+            require_package_root: Some(tapp_root_hash_hex.to_owned()),
+            require_publisher: Some(publisher_pubkey_hex.to_owned()),
+            ..Trust::default()
+        },
+        pinned: false,
+        // Replace an older copy of the same id rather than failing: opening an app the person
+        // asked for shouldn't stall on a stale install of it.
+        replacement: Replacement::Replace,
+        ignore_missing_runtime: false,
+        dry_run: false,
+        // A thin package's payload comes from the registry that offered it; every blob is still
+        // checked against the signed collection.
+        payload_from: payload_from.map(str::to_owned),
+    }
+}
+
+/// Makes a change to the package store, with the file it names.
+pub type Commit = dyn Fn(package_service_client::wire::Change, &Path) -> Result<ChangeReport, String>
+    + Send
+    + Sync;
+
+static IN_PROCESS: Mutex<Option<Arc<Commit>>> = Mutex::new(None);
+
+/// Make every change this process asks for with `commit`, in this process. Only the package
+/// service calls this: it runs this library for its own catalogue and language-pack actions, and
+/// its `commit` is its change action. Everyone else's changes go to that action
+/// ([`package_service_client::person::change`]).
+pub fn commit_in_process(commit: Arc<Commit>) {
+    *IN_PROCESS.lock().unwrap_or_else(PoisonError::into_inner) = Some(commit);
+}
+
+/// Make `change`, which names the staged `file`: in this process when it is the package service,
+/// else through the service's action.
+///
+/// # Errors
+///
+/// The service's refusal, or why it could not be reached.
+pub fn commit(
+    change: package_service_client::wire::Change,
+    file: &Path,
+) -> Result<ChangeReport, String> {
+    let in_process = IN_PROCESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    match in_process {
+        Some(commit) => commit(change, file),
+        None => package_service_client::person::change(change, Some(file)),
+    }
+}
+
+/// The base URL of the registry that offered `app`, which also serves the
+/// payload blobs of the packages it reviewed.
+pub fn payload_source(app: &CatalogueApp) -> Option<String> {
+    crate::config::load_registries_no_seed()
+        .registries
+        .into_iter()
+        .find(|registry| registry.name == app.registry)
+        .map(|registry| registry.base_url)
+}
+
+/// Largest runtime `.tapp` fetched as one file. A runtime's large libraries
+/// travel as content-addressed payload blobs from the registry, so the
+/// package itself is its signed metadata and small files.
+const MAX_RUNTIME_TAPP_BYTES: u64 = 64 * 1024 * 1024;
+
+fn tapp_limit(app: &CatalogueApp) -> u64 {
+    if registry_types::is_runtime_package_id(&app.package_id) {
+        MAX_RUNTIME_TAPP_BYTES
+    } else {
+        tilo_app_package::MAX_APP_TAPP_BYTES
+    }
+}
+
+fn validate_offer_metadata(app: &CatalogueApp) -> Result<(), InstallError> {
+    let limit = tapp_limit(app);
+    if app.tapp_size_bytes == 0 || app.tapp_size_bytes > limit {
+        return Err(InstallError::Integrity {
+            detail: format!(
+                "advertised size {} is outside the tapp limit (1..={limit} bytes)",
+                app.tapp_size_bytes,
+            ),
+        });
+    }
+    let expected = hex::decode(&app.tapp_root_hash_hex).map_err(|e| InstallError::Integrity {
+        detail: format!("registry supplied an invalid package root: {e}"),
+    })?;
+    if expected.len() != 32 {
+        return Err(InstallError::Integrity {
+            detail: "registry supplied a package root that is not 32 bytes".to_string(),
+        });
+    }
+    let expected_tapp = hex::decode(&app.tapp_blake3_hex).map_err(|e| InstallError::Integrity {
+        detail: format!("registry supplied an invalid tapp content hash: {e}"),
+    })?;
+    if expected_tapp.len() != 32 {
+        return Err(InstallError::Integrity {
+            detail: "registry supplied a tapp content hash that is not 32 bytes".to_string(),
+        });
+    }
+    let publisher =
+        hex::decode(&app.publisher_pubkey_hex).map_err(|e| InstallError::Integrity {
+            detail: format!("registry supplied an invalid publisher key: {e}"),
+        })?;
+    if publisher.len() != 32 {
+        return Err(InstallError::Integrity {
+            detail: "registry supplied a publisher key that is not 32 bytes".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn verify_download_metadata(app: &CatalogueApp, received: u64) -> Result<(), InstallError> {
+    validate_offer_metadata(app)?;
+    if received != app.tapp_size_bytes {
+        return Err(InstallError::Integrity {
+            detail: format!(
+                "size mismatch (received {received} bytes, expected {})",
+                app.tapp_size_bytes
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// How much has to arrive before another progress report. A report
+/// per read syscall would be thousands of lines for a few MB; 64 KiB
+/// is about a percent of a small .tapp.
+const PROGRESS_STEP_BYTES: u64 = 64 * 1024;
+
+/// What a caller learns while a package is fetched. `total` is the
+/// server's Content-Length when declared; otherwise the caller shows
+/// an indeterminate indication instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadProgress {
+    pub received: u64,
+    pub total: Option<u64>,
+    pub phase: InstallPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallPhase {
+    Downloading,
+    Installing { elapsed: Duration },
+}
+
+/// HTTP-download `url` to `dest`, reporting as the bytes arrive. Blocking.
+///
+/// `on_progress` fires once when headers land, then at most once per
+/// `PROGRESS_STEP_BYTES`, and once more on the last byte — possible
+/// because the body is streamed rather than buffered whole, which
+/// also keeps a large package off the heap.
+///
+/// The bytes are not trusted here — see the module header.
+///
+/// # Errors
+///
+/// Returns an error (as a display-ready string) if the HTTP client
+/// can't be built, the request/response fails, `dest`'s parent can't
+/// be created, the file can't be written, or the server closes the
+/// connection with nothing received.
+pub fn download_reporting(
+    url: &str,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, String> {
+    download_reporting_limited(url, dest, u64::MAX, on_progress)
+}
+
+fn download_reporting_limited(
+    url: &str,
+    dest: &Path,
+    max_bytes: u64,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, String> {
+    let url = safe_download_url(url)?;
+    let response = package_client()?
+        .get(url)
+        .send()
+        .map_err(|e| format!("{e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "package endpoint returned HTTP {} (redirects are not followed)",
+            response.status()
+        ));
+    }
+    save(response, dest, Body::Raw { limit: max_bytes }, on_progress)
+}
+
+/// Download the package at the signed `url`, whose signed length is
+/// `signed_bytes`, to `dest`, and return how many bytes it holds.
+///
+/// A publisher keeps a compressed twin beside a package, at `<url>.zst`
+/// ([`tilo_app_package::compressed`]); this asks for that first and
+/// decompresses it to `dest`, never past `signed_bytes`. A host without one
+/// answers 404 and the raw package is fetched instead. Either way `dest`
+/// then holds plain package bytes, which the caller checks against the
+/// signed length and hash exactly as before; progress counts the bytes on
+/// the wire.
+fn download_package(
+    url: &str,
+    dest: &Path,
+    signed_bytes: u64,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, String> {
+    let parsed = safe_download_url(url)?;
+    if let Some(twin) = twin_url(&parsed) {
+        let response = package_client()?
+            .get(twin)
+            .send()
+            .map_err(|e| format!("{e}"))?;
+        if response.status().is_success() {
+            return save(
+                response,
+                dest,
+                Body::Compressed {
+                    limit: signed_bytes,
+                },
+                on_progress,
+            );
+        }
+    }
+    download_reporting_limited(url, dest, signed_bytes, on_progress)
+}
+
+/// `url` with the compressed-twin suffix on its path, or `None` for a URL
+/// whose query would end up after it.
+fn twin_url(url: &reqwest::Url) -> Option<reqwest::Url> {
+    if url.query().is_some() || url.path().ends_with('/') {
+        return None;
+    }
+    let mut twin = url.clone();
+    twin.set_path(&format!(
+        "{}{}",
+        url.path(),
+        tilo_app_package::compressed::SUFFIX
+    ));
+    Some(twin)
+}
+
+/// The process's one client for package downloads. Its connection pool
+/// lets the downloads of a run share connections: a far-away store charges a
+/// TCP and TLS handshake, several round trips, for every new one, which an
+/// update of many apps otherwise paid once per package. Its timeout
+/// ([`download_timeout`]) bounds each step of a download, not the whole
+/// transfer.
+fn package_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::http::blocking_client()
+                .user_agent("tilo-app/0.1")
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(download_timeout())
+                // The publisher-signed URL is the only endpoint authorized to serve
+                // these bytes. Following a redirect would silently widen that trust
+                // and can cross from a public origin into a private network.
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| format!("http client: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+#[derive(Clone, Copy)]
+enum Body {
+    Raw { limit: u64 },
+    Compressed { limit: u64 },
+}
+
+/// Stream `response` into `dest` as plain package bytes, returning their
+/// count. The body is refused past its wire limit — the package limit, or
+/// for a twin the most a twin of that many bytes can take — and a twin is
+/// refused once it would decompress past the package limit, so neither a
+/// long body nor a small bomb gets more than `limit + 1` bytes onto disk.
+fn save(
+    response: reqwest::blocking::Response,
+    dest: &Path,
+    body: Body,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, String> {
+    let wire_limit = match body {
+        Body::Raw { limit } => limit,
+        Body::Compressed { limit } => tilo_app_package::compressed::compressed_bound(limit),
+    };
+    let total = response.content_length();
+    if let Some(size) = total
+        && size > wire_limit
+    {
+        return Err(format!(
+            "server declared {size} bytes, above the {wire_limit}-byte limit"
+        ));
+    }
+    on_progress(DownloadProgress {
+        received: 0,
+        total,
+        phase: InstallPhase::Downloading,
+    });
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+    }
+    let file = std::fs::File::create(dest).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut wire = Wire {
+        response,
+        limit: wire_limit,
+        total,
+        received: 0,
+        reported: 0,
+        on_progress,
+    };
+    let written = match body {
+        Body::Raw { .. } => std::io::copy(&mut wire, &mut writer),
+        Body::Compressed { limit } => {
+            tilo_app_package::compressed::decompress_bounded(&mut wire, limit, &mut writer)
+        }
+    }
+    .map_err(|e| format!("{e}"))?;
+    writer
+        .flush()
+        .map_err(|e| format!("write {}: {e}", dest.display()))?;
+    drop(writer);
+
+    if written == 0 {
+        return Err("the server returned an empty file".to_string());
+    }
+    let received = wire.received;
+    (wire.on_progress)(DownloadProgress {
+        received,
+        total,
+        phase: InstallPhase::Downloading,
+    });
+    Ok(written)
+}
+
+/// A response body as it crosses the network: refused past `limit` bytes,
+/// and reported at most once per [`PROGRESS_STEP_BYTES`].
+struct Wire<'a> {
+    response: reqwest::blocking::Response,
+    limit: u64,
+    total: Option<u64>,
+    received: u64,
+    reported: u64,
+    on_progress: &'a mut dyn FnMut(DownloadProgress),
+}
+
+impl Read for Wire<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.response.read(buf)?;
+        let received = self.received.saturating_add(n as u64);
+        if received > self.limit {
+            return Err(std::io::Error::other(format!(
+                "download exceeded the {}-byte limit",
+                self.limit
+            )));
+        }
+        self.received = received;
+        if received.saturating_sub(self.reported) >= PROGRESS_STEP_BYTES {
+            self.reported = received;
+            (self.on_progress)(DownloadProgress {
+                received,
+                total: self.total,
+                phase: InstallPhase::Downloading,
+            });
+        }
+        Ok(n)
+    }
+}
+
+/// Download `app`'s package to `dest` and check it against the signed
+/// registry entry: its length, then its BLAKE3. Returns the package length.
+/// Whether it travelled compressed changes nothing here — `dest` holds the
+/// plain bytes either way. On any failure `dest` is removed.
+pub(crate) fn fetch_verified(
+    app: &CatalogueApp,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<u64, InstallError> {
+    if let Some(available) = dest.parent().and_then(available_space) {
+        room_for_install(app.tapp_size_bytes, available)?;
+    }
+    let refuse = |error: InstallError| {
+        let _ = std::fs::remove_file(dest);
+        error
+    };
+    let downloaded = download_package(&app.download_url, dest, app.tapp_size_bytes, on_progress)
+        .map_err(|detail| refuse(InstallError::Download { detail }))?;
+    verify_download_metadata(app, downloaded).map_err(refuse)?;
+    let downloaded_bytes = std::fs::read(dest).map_err(|error| {
+        refuse(InstallError::Integrity {
+            detail: format!("read staged tapp for content verification: {error}"),
+        })
+    })?;
+    let actual_hash = blake3::hash(&downloaded_bytes).to_hex().to_string();
+    if !actual_hash.eq_ignore_ascii_case(&app.tapp_blake3_hex) {
+        return Err(refuse(InstallError::Integrity {
+            detail: "downloaded tapp content hash does not match the signed registry entry".into(),
+        }));
+    }
+    Ok(downloaded)
+}
+
+pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
+    download_reporting(url, dest, &mut |_| {})
+}
+
+/// Download and install `app`, blocking until `tilo-install` exits.
+/// The staged file is removed either way: on success the bytes now
+/// live in the installed payload tree; on failure a half-written
+/// download isn't worth keeping.
+pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
+    install_app_reporting(app, &mut |_| {})
+}
+
+/// [`install_app`], reporting download progress. Reporting stops at
+/// the download — `tilo-install` verifies+extracts as one opaque step,
+/// and inventing a fraction for it would be a bar that lies.
+pub fn install_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    install_or_update_app_reporting(app, on_progress, Change::Install)
+}
+
+/// Install an exact runtime from a configured repository without replacing an app.
+/// The normal downloader and installer retain registry, signature, payload and
+/// runtime publisher checks; an installed version follows the normal update policy.
+pub fn install_runtime_reporting(
+    runtime: &str,
+    registry: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<CatalogueApp, InstallError> {
+    let offer = crate::runtime_offer(runtime, registry)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(|| InstallError::NotOffered {
+            package_id: runtime.to_string(),
+        })?;
+    let installed = crate::installed_version(&offer.package_id)
+        .map_err(|detail| InstallError::Integrity { detail })?;
+    if installed.is_some() {
+        update_app_reporting(&offer, on_progress)?;
+    } else {
+        install_app_reporting(&offer, on_progress)?;
+    }
+    Ok(offer)
+}
+
+/// Install the runtime `runtime` from the first enabled repository that
+/// offers exactly that build, through the same verified pipeline an app's
+/// own runtime takes. The caller names only the runtime: which repository,
+/// which signed package and which publisher key are the device's decision.
+/// Nothing is done when it is already installed.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] when no enabled repository offers
+/// the build, or the first error of the repository that did.
+pub fn install_runtime_from_enabled(
+    runtime: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    if crate::runtime_installed(runtime) {
+        return Ok(());
+    }
+    let not_offered = || InstallError::NotOffered {
+        package_id: runtime.to_owned(),
+    };
+    let offer = crate::runtime_offer_from_enabled(runtime)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(not_offered)?;
+    install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+    if crate::runtime_installed(runtime) {
+        Ok(())
+    } else {
+        Err(not_offered())
+    }
+}
+
+/// Install the language pack of the language `tag` names (`de`, `de-DE`) from
+/// the first enabled repository that offers it, through the verified pipeline
+/// apps and runtimes take; nothing is done when the newest version of it is
+/// installed already.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] when no enabled repository offers
+/// the locale, or the error of the install.
+pub fn install_language_pack_from_enabled(
+    locale: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    let package_id = crate::language_pack_id(locale);
+    let not_offered = || InstallError::NotOffered {
+        package_id: package_id.clone(),
+    };
+    let offers =
+        crate::language_pack_offers().map_err(|detail| InstallError::Download { detail })?;
+    let offer = offers
+        .into_iter()
+        .find(|offer| offer.offer.package_id == package_id)
+        .ok_or_else(not_offered)?
+        .offer;
+    match crate::installed_language_pack(locale) {
+        Some(installed) if installed == offer.version => Ok(()),
+        Some(_) => update_app_reporting(&offer, on_progress),
+        None => install_or_update_app_reporting(&offer, on_progress, Change::Install),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Install,
+    Update,
+    Rollback,
+}
+
+/// [`commit`] `change`, reporting that the install is under way once a second until it answers.
+fn commit_with_progress(
+    change: package_service_client::wire::Change,
+    file: &Path,
+    downloaded: u64,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<ChangeReport, String> {
+    std::thread::scope(|scope| {
+        let (answered, answer) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = answered.send(commit(change, file));
+        });
+        let started = Instant::now();
+        loop {
+            match answer.recv_timeout(Duration::from_secs(1)) {
+                Ok(answer) => return answer,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    on_progress(DownloadProgress {
+                        received: downloaded,
+                        total: Some(downloaded),
+                        phase: InstallPhase::Installing {
+                            elapsed: started.elapsed(),
+                        },
+                    });
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("the install stopped without an answer".to_owned());
+                }
+            }
+        }
+    })
+}
+
+fn install_or_update_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+    change: Change,
+) -> Result<(), InstallError> {
+    validate_offer_metadata(app)?;
+    // The runtime first: an app whose runtime is missing does not start, so
+    // replacing a working build with it would break the app, and there is no
+    // point downloading it.
+    ensure_app_runtime(app, on_progress)?;
+    let staged = stage(app, on_progress)?;
+    install_staged(app, staged, on_progress, change)
+}
+
+fn ensure_app_runtime(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    match app.runtime.as_deref() {
+        Some(runtime) if !registry_types::is_runtime_package_id(&app.package_id) => {
+            ensure_runtime(app, runtime, on_progress)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// A file in the staging directory that this process is downloading into or
+/// installing from. It goes when this is dropped; and since the process holds
+/// the file's lock for as long as it lives, a file nobody holds is one a
+/// process that died (killed, crashed, the machine switched off) left behind,
+/// and the next download removes it ([`sweep_abandoned_downloads`]).
+#[derive(Debug)]
+pub struct StagingFile {
+    path: PathBuf,
+    _lock: advisory_lock::FileLock,
+}
+
+impl StagingFile {
+    pub fn claim(staging: &Path, stem: &str) -> std::io::Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = staging.join(format!("{stem}.{}.{serial}.tapp", std::process::id()));
+            let file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            };
+            let lock = match advisory_lock::FileLock::try_exclusive(file) {
+                Ok(lock) => lock,
+                Err(advisory_lock::TryLockError::WouldBlock) => continue,
+                Err(advisory_lock::TryLockError::Error(error)) => return Err(error),
+            };
+            if still_named(&lock, &path) {
+                return Ok(Self { path, _lock: lock });
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagingFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(unix)]
+fn still_named(lock: &advisory_lock::FileLock, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (lock.file().metadata(), std::fs::symlink_metadata(path)) {
+        (Ok(held), Ok(named)) => held.dev() == named.dev() && held.ino() == named.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn still_named(_lock: &advisory_lock::FileLock, path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Remove every file in `staging` no living process holds: downloads a
+/// process left behind when it died before it could remove them. Returns the
+/// bytes removed.
+pub fn sweep_abandoned_downloads(staging: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return 0;
+    };
+    let mut removed = 0u64;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        let bytes = file.metadata().map_or(0, |meta| meta.len());
+        if let Ok(lock) = advisory_lock::FileLock::try_exclusive(file)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            removed = removed.saturating_add(bytes);
+            drop(lock);
+        }
+    }
+    removed
+}
+
+/// A package downloaded and checked against its signed offer, waiting in the
+/// staging directory for the installer. The file goes when this is dropped:
+/// once installed, its bytes live in the package store; after a failure it is
+/// not worth keeping.
+#[derive(Debug)]
+pub struct StagedPackage {
+    file: StagingFile,
+    bytes: u64,
+}
+
+impl StagedPackage {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.file.path()
+    }
+}
+
+/// Download `app`'s package into the staging directory and check it against
+/// the signed offer: its length, then its BLAKE3.
+pub fn stage(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<StagedPackage, InstallError> {
+    validate_offer_metadata(app)?;
+    let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
+    // The package id comes from a signed registry entry, but it still
+    // becomes a filename here — refuse anything that could escape the
+    // staging directory rather than trusting it.
+    let safe_id: String = app
+        .package_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    sweep_abandoned_downloads(&staging);
+    let stem = format!("{safe_id}-{}", app.version.replace('/', "_"));
+    let file = StagingFile::claim(&staging, &stem).map_err(|error| InstallError::Download {
+        detail: format!("{}: {error}", staging.display()),
+    })?;
+    let bytes = fetch_verified(app, file.path(), on_progress)?;
+    Ok(StagedPackage { file, bytes })
+}
+
+pub const PARALLEL_DOWNLOADS: usize = 8;
+
+/// Download the package of every app in `apps`, [`PARALLEL_DOWNLOADS`] at a
+/// time, and hand each to `ready` on the calling thread as soon as it is
+/// staged and checked (or has failed), with its index in `apps`, in the order
+/// they finish. `ready` runs while the rest are still downloading.
+///
+/// Updating many apps waits on the network, not on the installs: fetched one
+/// after another, every package costs at least a round trip to the store
+/// before its first byte, so a run of twenty apps waited twenty round trips
+/// in a row. The installer still runs one package at a time, as the store's
+/// lock requires.
+pub fn stage_each(
+    apps: &[&CatalogueApp],
+    mut ready: impl FnMut(usize, Result<StagedPackage, InstallError>),
+) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let (sender, staged) = std::sync::mpsc::channel();
+        for _ in 0..PARALLEL_DOWNLOADS.min(apps.len()) {
+            let sender = sender.clone();
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(app) = apps.get(index) else { break };
+                    if sender.send((index, stage(app, &mut |_| {}))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for (index, result) in staged {
+            ready(index, result);
+        }
+    });
+}
+
+pub fn update_staged_reporting(
+    app: &CatalogueApp,
+    staged: StagedPackage,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    ensure_app_runtime(app, on_progress)?;
+    install_staged(app, staged, on_progress, Change::Update)
+}
+
+/// Hand a staged package to the package service's install action, which verifies it again and
+/// installs, updates or rolls back to it.
+fn install_staged(
+    app: &CatalogueApp,
+    staged: StagedPackage,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+    change: Change,
+) -> Result<(), InstallError> {
+    let dest = staged.file.path().to_path_buf();
+    let downloaded = staged.bytes;
+    install_required_runtimes(app, &dest, on_progress)?;
+    let payload_from = payload_source(app);
+    let request = if change == Change::Install {
+        install_change(
+            &dest,
+            &app.publisher_pubkey_hex,
+            &app.tapp_root_hash_hex,
+            payload_from.as_deref(),
+        )
+    } else {
+        package_service_client::wire::Change::Update {
+            app: Some(app.package_id.clone()),
+            file: Some(Uploaded {
+                source: dest.display().to_string(),
+            }),
+            version: None,
+            allow_downgrade: change == Change::Rollback,
+            dry_run: false,
+            trust: Trust {
+                require_package_root: Some(app.tapp_root_hash_hex.clone()),
+                require_publisher: Some(app.publisher_pubkey_hex.clone()),
+                ..Trust::default()
+            },
+            ignore_missing_runtime: false,
+            payload_from,
+        }
+    };
+    on_progress(DownloadProgress {
+        received: downloaded,
+        total: Some(downloaded),
+        phase: InstallPhase::Installing {
+            elapsed: Duration::ZERO,
+        },
+    });
+    let answer = commit_with_progress(request, &dest, downloaded, on_progress);
+    drop(staged);
+    answer.map(drop).map_err(|detail| InstallError::Refused {
+        detail: installer_complaint(&detail),
+    })
+}
+
+/// Make the runtime build `runtime` that `app` needs available: installed
+/// already, or fetched from the registry that offers the app.
+fn ensure_runtime(
+    app: &CatalogueApp,
+    runtime: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    if crate::runtime_installed(runtime) {
+        return Ok(());
+    }
+    let unavailable = || InstallError::RuntimeUnavailable {
+        package_id: app.package_id.clone(),
+        runtime: runtime.to_string(),
+        registry: app.registry.clone(),
+    };
+    let offer = crate::runtime_offer(runtime, &app.registry)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(unavailable)?;
+    install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+    if crate::runtime_installed(runtime) {
+        Ok(())
+    } else {
+        Err(unavailable())
+    }
+}
+
+/// Make the further runtimes the downloaded app requires (`optional-runtimes`
+/// in its manifest: a browser's engine) available, as [`ensure_runtime`]
+/// does for its runtime.
+///
+/// They are part of the app: it pins them by exact version, and replacing a
+/// working build with one whose engine is absent would leave it saying "not
+/// installed" until someone fetched the engine by hand. So an engine that
+/// cannot be fetched refuses the install or update, and nothing changes.
+fn install_required_runtimes(
+    app: &CatalogueApp,
+    staged: &Path,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    let file = std::fs::File::open(staged).map_err(|error| InstallError::Download {
+        detail: format!("{}: {error}", staged.display()),
+    })?;
+    let tapp = tilo_app_package::tapp::read(
+        std::io::BufReader::new(file),
+        &mut tilo_app_package::DiscardBlobs,
+    )
+    .map_err(|error| InstallError::Integrity {
+        detail: error.to_string(),
+    })?;
+    for runtime in tilo_app_package::desktop::required_runtime_dependencies(&tapp.meta.manifest) {
+        ensure_runtime(app, runtime, on_progress)?;
+    }
+    Ok(())
+}
+
+/// Download and atomically update an installed app from a verified offer.
+pub fn update_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    install_or_update_app_reporting(app, on_progress, Change::Update)
+}
+
+/// Download and atomically replace an installed app with an older version
+/// from a verified offer, keeping its saved state.
+pub fn rollback_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    install_or_update_app_reporting(app, on_progress, Change::Rollback)
+}
+
+pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
+    install_reporting(package_id, &mut |_| {})
+}
+
+/// [`install`], reporting the download's progress as it happens.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] if no configured registry
+/// offers `package_id`, or the same errors as
+/// [`install_app_reporting`] once resolved.
+pub fn install_reporting(
+    package_id: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<CatalogueApp, InstallError> {
+    let listing = crate::available();
+    let app = listing
+        .apps
+        .into_iter()
+        .find(|a| a.package_id == package_id)
+        .ok_or_else(|| InstallError::NotOffered {
+            package_id: package_id.to_string(),
+        })?;
+    install_app_reporting(&app, on_progress)?;
+    Ok(app)
+}
+
+/// How much of the installer's complaint survives into a
+/// notification; the toast is two lines tall, so more than this
+/// clips mid-word, which reads worse than a short sentence.
+const DETAIL_MAX_CHARS: usize = 110;
+
+/// The installer's actual complaint, reduced to one readable line.
+///
+/// Only the **last** non-empty line survives (the lines above are
+/// context the card has no room for); anything over [`DETAIL_MAX_CHARS`]
+/// is elided rather than cut off mid-word.
+fn installer_complaint(text: &str) -> String {
+    let Some(line) = text.lines().map(str::trim).rfind(|l| !l.is_empty()) else {
+        return String::new();
+    };
+    if line.chars().count() <= DETAIL_MAX_CHARS {
+        return line.to_owned();
+    }
+    let kept: String = line.chars().take(DETAIL_MAX_CHARS).collect();
+    format!("{}…", kept.trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+    tilo_test_env::scenario! {
+        fn package_downloads_are_staged_bounded_and_verified;
+
+        phase a_download_a_dead_process_left_goes_and_one_in_progress_stays;
+        {
+            let staging = tempfile::tempdir().expect("staging dir");
+            let abandoned = staging.path().join("so.tilo.runtime-0.1.0.4242.0.tapp");
+            std::fs::write(&abandoned, vec![7_u8; 4096]).expect("abandoned download");
+            let current = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
+            std::fs::write(current.path(), b"partial").expect("write");
+
+            assert_eq!(sweep_abandoned_downloads(staging.path()), 4096);
+            assert!(!abandoned.exists());
+            assert!(
+                current.path().exists(),
+                "a download in progress was removed"
+            );
+
+            let again = StagingFile::claim(staging.path(), "so.tilo.notes-1.0.0").expect("claim");
+            assert_ne!(again.path(), current.path());
+
+            let path = current.path().to_path_buf();
+            drop(current);
+            assert!(!path.exists());
+        }
+
+        phase an_install_that_would_fill_the_disk_is_refused_before_downloading;
+        {
+            let package = 1_000_000_000;
+            assert!(room_for_install(package, 3_000_000_000).is_ok());
+            let refused = room_for_install(package, 1_500_000_000).expect_err("too little room");
+            assert_eq!(
+                refused.user_message(),
+                "not enough space: it needs 2.2 GB, 1.5 GB is free"
+            );
+        }
+
+        phase package_service_stages_verified_downloads_in_private_state_without_writable_home;
+        {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
+
+            let unit = include_str!("../../../packaging/package-service/systemd/tilo-package-service.service");
+            let setting = unit
+                .lines()
+                .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
+                .expect("the hardened host must explicitly locate writable download state");
+            assert_eq!(setting, "%S/tilo-package-service/cache");
+            assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
+            let writes = unit
+                .lines()
+                .find_map(|line| line.strip_prefix("ReadWritePaths="))
+                .expect("scoped broker writes");
+            assert!(
+                writes
+                    .split_whitespace()
+                    .any(|path| path == "%S/tilo-package-service")
+            );
+            assert!(
+                !writes
+                    .split_whitespace()
+                    .any(|path| path == "%h" || path == "%h/.cache/tilo-store")
+            );
+
+            let mut home = tilo_test_env::TestHome::new().expect("isolated home");
+            let state = home.root().join("private-state");
+            let cache = PathBuf::from(setting.replace("%S", &state.to_string_lossy()));
+            home.env().set("TILO_STORE_CACHE_DIR", &cache);
+            let staging = staging_dir().expect("private staging directory");
+            assert_eq!(staging, cache.join("staged-tapp"));
+            assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("download request");
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntapp")
+                    .expect("package bytes");
+            });
+            let dest = staging.join("package.tapp");
+            let result = download_reporting_limited(
+                &format!("http://{address}/app.tapp"),
+                &dest,
+                4,
+                &mut |_| {},
+            );
+            server.join().expect("server cleanup");
+            assert_eq!(result.expect("actual canonical staging write"), 4);
+            verify_download_metadata(&registry_app_for(b"tapp"), 4).expect("exact registry bytes");
+            assert_eq!(std::fs::read(&dest).unwrap(), b"tapp");
+            assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+            std::fs::remove_file(&dest).expect("disposable staging cleanup");
+        }
+
+        phase compressed_tapps_are_bounded_and_verified_as_the_signed_bytes;
+        {
+            use tilo_app_package::compressed;
+            let package = b"signed package bytes, compressed for the wire ".repeat(256);
+            let twin = compressed::compress(&package).expect("compress");
+            let temp = tempfile::tempdir().expect("temp dir");
+            let dest = temp.path().join("staged.tapp");
+
+            {
+                let (base, asked) = package_host(std::collections::HashMap::from([
+                    ("/app.tapp.zst".to_string(), twin.clone()),
+                    ("/app.tapp".to_string(), b"never fetched".to_vec()),
+                ]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                let mut wire = 0;
+                let len = fetch_verified(&app, &dest, &mut |progress| wire = progress.received)
+                    .expect("the twin decompresses to the signed package");
+                assert_eq!(len, package.len() as u64);
+                assert_eq!(std::fs::read(&dest).expect("staged"), package);
+                assert_eq!(wire, twin.len() as u64, "progress is wire bytes");
+                assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst"]);
+            }
+            {
+                let mut longer = package.clone();
+                longer.push(b'!');
+                let (base, _) = package_host(std::collections::HashMap::from([(
+                    "/app.tapp.zst".to_string(),
+                    compressed::compress(&longer).expect("compress"),
+                )]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                let error = fetch_verified(&app, &dest, &mut |_| {}).expect_err("refused");
+                assert!(
+                    matches!(&error, InstallError::Download { detail } if detail.contains("bound")),
+                    "{error:?}"
+                );
+                assert!(!dest.exists(), "a refused download leaves nothing staged");
+
+                let (base, _) = package_host(std::collections::HashMap::from([(
+                    "/bomb.tapp.zst".to_string(),
+                    compressed::compress(&vec![0; 64 << 20]).expect("compress"),
+                )]));
+                app.download_url = format!("{base}/bomb.tapp");
+                assert!(fetch_verified(&app, &dest, &mut |_| {}).is_err());
+                assert!(!dest.exists());
+            }
+            {
+                let mut other = package.clone();
+                other[0] ^= 1;
+                let (base, _) = package_host(std::collections::HashMap::from([(
+                    "/app.tapp.zst".to_string(),
+                    compressed::compress(&other).expect("compress"),
+                )]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                let error = fetch_verified(&app, &dest, &mut |_| {}).expect_err("refused");
+                assert!(
+                    matches!(&error, InstallError::Integrity { detail } if detail.contains("hash")),
+                    "{error:?}"
+                );
+                assert!(!dest.exists());
+            }
+            {
+                let (base, asked) = package_host(std::collections::HashMap::from([(
+                    "/app.tapp".to_string(),
+                    package.clone(),
+                )]));
+                let mut app = registry_app_for(&package);
+                app.download_url = format!("{base}/app.tapp");
+                fetch_verified(&app, &dest, &mut |_| {}).expect("raw fallback");
+                assert_eq!(std::fs::read(&dest).expect("staged"), package);
+                assert_eq!(*asked.lock().unwrap(), ["/app.tapp.zst", "/app.tapp"]);
+            }
+            {
+                let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp?token=1").unwrap();
+                assert_eq!(twin_url(&parsed), None);
+                let parsed = reqwest::Url::parse("https://apps.tilo.so/a/app.tapp").unwrap();
+                assert_eq!(
+                    twin_url(&parsed).map(String::from).as_deref(),
+                    Some("https://apps.tilo.so/a/app.tapp.zst")
+                );
+            }
+        }
+    }
+
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn the_installer_is_invoked_and_reported_exactly;
+
+        phase the_installer_invocation_is_fixed_and_never_relaxes_signatures;
+        {
+            {
+                use package_store::dev_env::dev_override_from;
+                let guarded = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
+                assert_eq!(tilo_install_bin_from(guarded), installed_install_bin());
+                let honoured =
+                    dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
+                assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");
+            }
+            {
+                let publisher = "ab".repeat(32);
+                let root = "cd".repeat(32);
+                let change = install_change(
+                    Path::new("/tmp/staged.tapp"),
+                    &publisher,
+                    &root,
+                    Some("https://registry.example"),
+                );
+                let package_service_client::wire::Change::Install {
+                    file,
+                    trust,
+                    replacement,
+                    payload_from,
+                    dry_run,
+                    ..
+                } = change
+                else {
+                    panic!("an install asks for an install: {change:?}");
+                };
+                assert_eq!(file.source, "/tmp/staged.tapp");
+                assert!(
+                    !trust.allow_self_signed,
+                    "an install started from a search box must not opt out of \
+                     the publisher signature check: {trust:?}"
+                );
+                assert_eq!(
+                    trust.require_package_root.as_deref(),
+                    Some(root.as_str()),
+                    "the installer must pin the signed registry package root"
+                );
+                assert_eq!(
+                    trust.require_publisher.as_deref(),
+                    Some(publisher.as_str()),
+                    "the installer must pin the signed registry publisher"
+                );
+                assert_eq!(
+                    trust.require_attestor, None,
+                    "attestor policy is the person's to set, not this path's"
+                );
+                assert_eq!(replacement, Replacement::Replace);
+                assert!(!dry_run);
+                assert_eq!(
+                    payload_from.as_deref(),
+                    Some("https://registry.example"),
+                    "a thin package's payload comes from the offering registry"
+                );
+            }
+        }
+
+        phase installer_errors_render_one_actionable_line;
+        {
+            assert!(
+                InstallError::Refused {
+                    detail: "publisher signature did not verify".into()
+                }
+                .user_message()
+                .contains("publisher signature"),
+                "the installer's own reason has to survive to the user"
+            );
+            {
+                let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
+                assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");
+                assert_eq!(installer_complaint(""), "");
+                assert_eq!(installer_complaint("   \n\n  "), "");
+            }
+            {
+                let msg = InstallError::Refused {
+                    detail: installer_complaint("reading header\ntapp parse: unexpected EOF during skip"),
+                }
+                .user_message();
+                assert_eq!(
+                    msg,
+                    "it was not installed: tapp parse: unexpected EOF during skip"
+                );
+            }
+            {
+                let long = "x".repeat(400);
+                let out = installer_complaint(&long);
+                assert!(
+                    out.chars().count() <= DETAIL_MAX_CHARS + 1,
+                    "elided to {} chars",
+                    out.chars().count()
+                );
+                assert!(out.ends_with('…'));
+            }
+        }
+    }
+
+    fn registry_app_for(bytes: &[u8]) -> CatalogueApp {
+        CatalogueApp {
+            package_id: "so.tilo.test".into(),
+            display_name: "Test".into(),
+            description: String::new(),
+            tagline: String::new(),
+            images: Vec::new(),
+            supported_languages: vec!["en".into()],
+            category: None,
+            version: "1.0.0".into(),
+            registry: "test".into(),
+            download_url: "https://example.invalid/test.tapp".into(),
+            tapp_root_hash_hex: "cd".repeat(32),
+            tapp_size_bytes: bytes.len() as u64,
+            tapp_blake3_hex: blake3::hash(bytes).to_hex().to_string(),
+            architecture: "x86_64".into(),
+            isa: "x86_64-v3".into(),
+            runtime: None,
+            publisher_pubkey_hex: "ab".repeat(32),
+            trust: "verified".into(),
+        }
+    }
+
+    #[test]
+    fn package_downloads_are_explicit_bounded_and_match_signed_metadata() {
+        {
+            let bytes = b"signed package bytes";
+            let app = registry_app_for(bytes);
+            verify_download_metadata(&app, bytes.len() as u64).expect("matching metadata");
+
+            let mut malformed_root = app.clone();
+            malformed_root.tapp_root_hash_hex = "00".repeat(31);
+            assert!(matches!(
+                verify_download_metadata(&malformed_root, bytes.len() as u64),
+                Err(InstallError::Integrity { detail }) if detail.contains("not 32 bytes")
+            ));
+            assert!(matches!(
+                verify_download_metadata(&app, bytes.len() as u64 + 1),
+                Err(InstallError::Integrity { detail }) if detail.contains("size mismatch")
+            ));
+
+            let mut oversized = app;
+            oversized.tapp_size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
+            assert!(matches!(
+                validate_offer_metadata(&oversized),
+                Err(InstallError::Integrity { detail }) if detail.contains("outside")
+            ));
+        }
+        {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let address = listener.local_addr().expect("listener address");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n12345678")
+                    .expect("write response");
+            });
+            let temp = tempfile::tempdir().expect("temp dir");
+            let destination = temp.path().join("bounded.tapp");
+
+            let error = download_reporting_limited(
+                &format!("http://{address}/app.tapp"),
+                &destination,
+                4,
+                &mut |_| {},
+            )
+            .expect_err("an undeclared oversized body must stop mid-stream");
+            server.join().expect("server thread");
+            assert!(error.contains("exceeded"), "{error}");
+            assert_eq!(
+                std::fs::metadata(destination).expect("staging file").len(),
+                0,
+                "the over-limit chunk is rejected before it reaches disk"
+            );
+        }
+        {
+            assert!(
+                safe_download_url("https://apps.tilo.so/artifacts/app.tapp?token=signed").is_ok()
+            );
+            assert!(safe_download_url("http://127.0.0.1:8080/app.tapp").is_ok());
+            for unsafe_url in [
+                "http://apps.tilo.so/artifacts/app.tapp",
+                "https://user:secret@apps.tilo.so/artifacts/app.tapp", // example credential
+                "file:///tmp/app.tapp",
+                "https://apps.tilo.so/artifacts/app.tapp#alternate",
+            ] {
+                assert!(
+                    safe_download_url(unsafe_url).is_err(),
+                    "unsafe package origin was accepted: {unsafe_url}"
+                );
+            }
+        }
+        {
+            use std::io::{Read as _, Write as _};
+            use std::net::TcpListener;
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let address = listener.local_addr().expect("listener address");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .expect("write redirect");
+            });
+            let temp = tempfile::tempdir().expect("temp dir");
+            let error = download_reporting_limited(
+                &format!("http://{address}/app.tapp"),
+                &temp.path().join("redirect.tapp"),
+                64,
+                &mut |_| {},
+            )
+            .expect_err("redirect must not become a second authorized origin");
+            server.join().expect("server thread");
+            assert!(error.contains("redirects are not followed"), "{error}");
+        }
+    }
+
+    #[test]
+    fn safe_download_url_allows_local_http_and_query_and_refuses_credentials_and_fragment() {
+        for safe in [
+            "https://apps.tilo.so/artifacts/app.tapp?token=signed",
+            "http://127.0.0.1:8080/app.tapp",
+            "http://[::1]:8080/",
+            "http://[::1]:8080/app.tapp?token=signed",
+            "http://tilo.localhost:8080/app.tapp",
+        ] {
+            assert!(
+                safe_download_url(safe).is_ok(),
+                "safe package origin was refused: {safe}"
+            );
+        }
+        for unsafe_url in [
+            "http://apps.tilo.so/artifacts/app.tapp",
+            "http://localhost.apps.tilo.so/artifacts/app.tapp",
+            "https://placeholder:placeholder@apps.tilo.so/artifacts/app.tapp",
+            "http://placeholder:placeholder@[::1]:8080/app.tapp",
+            "file:///tmp/app.tapp",
+            "https://apps.tilo.so/artifacts/app.tapp#alternate",
+        ] {
+            assert!(
+                safe_download_url(unsafe_url).is_err(),
+                "unsafe package origin was accepted: {unsafe_url}"
+            );
+        }
+    }
+
+    /// A loopback host answering `GET <path>` from `objects` and 404 for
+    /// anything else, recording every path asked for.
+    fn package_host(
+        objects: std::collections::HashMap<String, Vec<u8>>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let address = listener.local_addr().expect("listener address");
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut request = [0u8; 2048];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let text = String::from_utf8_lossy(&request[..read]).to_string();
+                let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let reply = match objects.get(&path) {
+                    Some(body) => {
+                        let mut reply = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .into_bytes();
+                        reply.extend_from_slice(body);
+                        reply
+                    }
+                    None => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
+                };
+                let _ = stream.write_all(&reply);
+            }
+        });
+        (format!("http://{address}"), asked)
+    }
+}

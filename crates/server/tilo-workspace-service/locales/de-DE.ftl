@@ -34,7 +34,7 @@ workspace-default-name = Mein Arbeitsbereich
 
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.
-model-none-linked = Für diese Art von Arbeit ist kein Modell verknüpft. Verknüpfe eines in den Einstellungen.
+model-none-linked = Für diese Art von Arbeit ist kein Modell verknüpft. Wähle eines in den Einstellungen unter Agentenmodelle.
 model-choice-unusable = { $model } von { $provider } kann nicht mehr verwendet werden. Wähle in den Einstellungen ein anderes Modell.
 model-choice-gone = { $model } kann nicht mehr verwendet werden. Wähle in den Einstellungen ein anderes Modell.
 model-no-key = Für { $provider } ist hier noch kein API-Schlüssel hinterlegt. Füge ihn in den Einstellungen hinzu.
@@ -47,6 +47,14 @@ model-settings-unreadable = Deine Modelleinstellungen konnten nicht gelesen werd
 model-cannot-take-picture = { $model } liest keine Bilder. Wähle in den Einstellungen ein Modell, das es kann.
 model-workspace-refuses = Dieser Arbeitsbereich lässt seine Inhalte nicht an { $provider } gehen.
 model-day-limit = { $agent } hat das heutige Limit von { $limit } aufgebraucht. Erhöhe das Limit, damit es weitergeht.
+model-timed-out = Das Modell hat nicht rechtzeitig geantwortet.
+model-cancelled = Der Aufruf des Modells wurde gestoppt.
+model-truncated = Die Antwort des Modells wurde abgeschnitten.
+model-refused = Das Modell hat diese Anfrage abgelehnt.
+model-context-limit = Das Gespräch ist länger, als das Modell aufnehmen kann. Wähle in den Einstellungen unter Agentenmodelle ein Modell mit mehr Platz.
+model-rate-limited = Das Modell ist gerade ausgelastet. Versuche es gleich noch einmal.
+model-unsupported = Das kann das Modell nicht. Wähle in den Einstellungen unter Agentenmodelle ein anderes Modell.
+model-nothing-to-work-with = Für die Agenten dieses Arbeitsbereichs ist kein Modell verknüpft. Wähle eines in den Einstellungen unter Agentenmodelle.
 tilo-devices = Deine Geräte
 tilo-devices-keep-device = Ein Gerät der Person behalten
 tilo-devices-keep-fact = Behalten, was ein Gerät über sich sagt
@@ -58,7 +66,7 @@ so-tilo-device-nearby-send-send = Dateien an ein Gerät in der Nähe senden
 so-tilo-device-nearby-send-accept = Eine angebotene Datei behalten
 so-tilo-device-nearby-send-decline = Eine angebotene Datei ablehnen
 so-tilo-device-nearby-send-cancel = Eine Übertragung stoppen
-so-tilo-device-nearby-send-retry = Eine fehlgeschlagene Übertragung erneut anbieten
+so-tilo-device-nearby-send-retry-transfer = Eine fehlgeschlagene Übertragung erneut anbieten
 so-tilo-device-nearby-send-share = Eine Ressource mit Personen teilen, über das Einladungsblatt
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.

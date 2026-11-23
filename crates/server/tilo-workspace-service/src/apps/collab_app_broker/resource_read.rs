@@ -14,8 +14,8 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionCallError, Caller, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, ResourceAddress,
-    ResourceChange, ResourceChanges, ResourceCopy, ResourceReads, ResourceWake,
+    ActionCallError, Caller, InvokeRequest, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
+    ResourceAddress, ResourceChange, ResourceChanges, ResourceCopy, ResourceReads, ResourceWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
@@ -53,6 +53,50 @@ impl AppBrokerState {
             }),
             None => Err(ActionCallError::NotPermitted),
         }
+    }
+}
+
+/// What a call made from a resource its caller may not read is refused with.
+pub const MADE_FROM_UNREADABLE: &str =
+    "This was asked about something you may not read, so it did not run";
+/// What a call made from a resource it names without its app is refused with: nobody can say
+/// who may read it.
+pub const MADE_FROM_UNNAMED: &str =
+    "This was asked about something it does not say the app of, so it did not run";
+
+impl AppBrokerState {
+    /// Whether `caller` may make `request` from the resource it names as made from
+    /// ([`InvokeRequest::made_from`]): only a caller who may read that resource, decided at its
+    /// node as every read of it is ([`Self::may_read_resource`]). A call made from nothing has
+    /// nothing to decide here.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionCallError::Refused`] with [`MADE_FROM_UNREADABLE`] when the workspace does not
+    /// let the caller read it, with [`MADE_FROM_UNNAMED`] when its kind names no app
+    /// (`tl.<app>.<Type>`), and [`ActionCallError::NotPermitted`] when the caller may not act
+    /// in a workspace at all.
+    pub(super) fn may_make_from(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(), ActionCallError> {
+        let Some(from) = request.made_from() else {
+            return Ok(());
+        };
+        let Some(app) = from.app() else {
+            return Err(ActionCallError::Refused {
+                reason: MADE_FROM_UNNAMED.into(),
+            });
+        };
+        let workspace = caller.workspace().ok_or(ActionCallError::NotPermitted)?;
+        self.may_read_resource(caller, workspace, (app, &from.kind, &from.resource))
+            .map_err(|refused| match refused {
+                ActionCallError::Refused { .. } => ActionCallError::Refused {
+                    reason: MADE_FROM_UNREADABLE.into(),
+                },
+                other => other,
+            })
     }
 }
 
@@ -180,11 +224,11 @@ fn apply_document_change(
 /// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
 /// acting for its person, confined to a workspace.
 fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
-    // A device's own agents read nothing here; an agent answering a person's turn is the
-    // host's, admitted for that turn (`Caller::agent_turn`, which marks it session-delegated as
-    // it rides the person's authority), and reads and changes what the person may, each read and
-    // change still decided at the record's node like every other caller's.
-    if !caller.acting().is_agent() || (caller.is_session_delegated() && caller.turn().is_none()) {
+    // An agent a person's device handed its session to reads nothing here. An agent acting under
+    // a key of its own, or a roster agent answering a person's turn, reads and changes what both
+    // its grants and its person's allow, each read and change decided at the record's node like
+    // every other caller's.
+    if !caller.acting().is_agent() || caller.is_session_delegated() {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))

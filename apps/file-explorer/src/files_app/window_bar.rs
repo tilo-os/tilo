@@ -21,6 +21,9 @@ pub(super) enum BarCommand {
 }
 
 pub(super) type BarEntries = BarCommands<BarCommand>;
+const CLOUD_ROOT: &str = "tilo-files-cloud-root";
+const CLOUD_FOLDER: &str = "tilo-files-cloud-folder";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -34,6 +37,7 @@ pub(super) struct BarKey {
     hidden: bool,
     query: Option<String>,
     sidebar: bool,
+    cloud: Option<(String, Option<String>)>,
 }
 
 impl FilesState {
@@ -72,6 +76,9 @@ impl FilesState {
     }
 
     pub(super) fn window_toolbar(&self, chrome: &Chrome) -> WindowToolbar {
+        if let Some((account, folder)) = self.cloud_title() {
+            return Self::cloud_window_toolbar(chrome, account, folder);
+        }
         let recent = self.is_recent_view();
         let home = self.home_path.as_deref();
         let trail = crate::breadcrumbs::breadcrumb_components(
@@ -117,6 +124,33 @@ impl FilesState {
                 section: false,
             }),
             actions,
+            ..WindowToolbar::default()
+        }
+    }
+
+    fn cloud_window_toolbar(
+        chrome: &Chrome,
+        account: String,
+        folder: Option<String>,
+    ) -> WindowToolbar {
+        let mut segments = vec![LocationSegment {
+            label: account.clone(),
+            value: CLOUD_ROOT.to_owned(),
+        }];
+        if let Some(folder) = &folder {
+            segments.push(LocationSegment {
+                label: folder.clone(),
+                value: CLOUD_FOLDER.to_owned(),
+            });
+        }
+        WindowToolbar {
+            sidebar: Some(chrome.nav.is_sidebar_open()),
+            location: Some(ToolbarLocation {
+                label: folder.unwrap_or(account),
+                name: t("files-location"),
+                segments,
+                ..ToolbarLocation::default()
+            }),
             ..WindowToolbar::default()
         }
     }
@@ -227,6 +261,7 @@ impl FilesState {
             hidden: self.show_hidden,
             query: self.bar_query.clone(),
             sidebar: chrome.nav.is_sidebar_open(),
+            cloud: self.cloud_title(),
         }
     }
 
@@ -262,6 +297,12 @@ impl FilesState {
             }
             ToolbarEvent::Back => Some(FileCommand::Back),
             ToolbarEvent::Forward => Some(FileCommand::Forward),
+            ToolbarEvent::Commit { text } if self.cloud.active => (text == CLOUD_ROOT).then(|| {
+                FileCommand::Cloud(crate::effects::FilesEffect::BrowseCloud {
+                    account: self.cloud.account.clone(),
+                    folder: None,
+                })
+            }),
             ToolbarEvent::Commit { text } => {
                 self.bar_query = None;
                 let path: PathBuf = crate::path_bar::resolve_location(

@@ -127,6 +127,10 @@ impl DevicesAccessEffect {
 
 crate::area::pane_area! {
     DevicesAccessArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(DevicesAccess);
     fn poll(&self) {
         DevicesAccessArea::poll(self);
     }
@@ -1235,7 +1239,7 @@ impl Removal {
                     &format!("settings.access.{id}.ask-remove"),
                     &t("settings-access-remove"),
                 )
-                .on_view(move || ask.ask_removal(Some(asked.clone()))),
+                .on_open(move || ask.ask_removal(Some(asked.clone()))),
             );
         }
         let cancel = state.clone();
@@ -1251,7 +1255,7 @@ impl Removal {
                             &format!("settings.access.{id}.cancel"),
                             &t("settings-access-cancel"),
                         )
-                        .on_view(move || cancel.ask_removal(None)),
+                        .on_open(move || cancel.ask_removal(None)),
                     ))
                     .push(Box::new(self.confirm)),
             )),
@@ -1319,7 +1323,7 @@ fn rename_control(
                 &format!("settings.access.{id}.rename"),
                 &t("settings-access-rename"),
             )
-            .on_view(move || ask.ask_rename(Some(asked.clone()), &current)),
+            .on_open(move || ask.ask_rename(Some(asked.clone()), &current)),
         );
     }
     let input = TextInput::from_state(&state.name_draft)
@@ -1343,7 +1347,7 @@ fn rename_control(
         &format!("settings.access.{id}.cancel-name"),
         &t("settings-access-cancel"),
     )
-    .on_view(move || ask.ask_rename(None, ""));
+    .on_open(move || ask.ask_rename(None, ""));
     Box::new(
         Row::new()
             .no_wrap()

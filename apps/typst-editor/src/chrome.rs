@@ -124,7 +124,7 @@ impl Chrome {
                 Icon::X,
                 &crate::resource::CATALOG.t("typst-close-problems"),
             )
-            .on_view({
+            .on_open({
                 let queue = Rc::clone(&queue);
                 move || queue.borrow_mut().push(Command::ToggleProblems)
             }),

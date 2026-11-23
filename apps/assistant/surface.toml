@@ -39,6 +39,22 @@ fields = [
   { path = "agents.*.sub.line", type = "text" },
   { path = "agents.*.sub.notes", type = { list = { named = "Note" } } },
   { path = "agents.*.sub.produced", type = { list = { named = "Produced" } } },
+  { path = "agents.*.sub.coding", type = { option = { named = "Coding" } }, stored = "record" },
+  { path = "agents.*.sub.coding.harness", type = "text" },
+  { path = "agents.*.sub.coding.harness_name", type = "text" },
+  { path = "agents.*.sub.coding.repository", type = "text" },
+  { path = "agents.*.sub.coding.directory", type = "text" },
+  { path = "agents.*.sub.coding.branch", type = "text" },
+  { path = "agents.*.sub.coding.base", type = "text" },
+  { path = "agents.*.sub.coding.session", type = "text" },
+  { path = "agents.*.sub.coding.process", type = { option = { named = "CodingProcess" } }, stored = "record" },
+  { path = "agents.*.sub.coding.process.started_ms", type = "int" },
+  { path = "agents.*.sub.coding.process.ended_ms", type = { option = "int" } },
+  { path = "agents.*.sub.coding.process.ended", type = "text" },
+  { path = "agents.*.sub.coding.process.exit", type = { option = "int" } },
+  { path = "agents.*.sub.coding.process.words", type = "text" },
+  { path = "agents.*.sub.coding.process.stopped_by", type = "text" },
+  { path = "agents.*.sub.coding.spent_micros", type = "int" },
   { path = "agents.*.sub_depth", type = { option = "int" } },
   { path = "agents.*.sub_at_once", type = { option = "int" } },
 ]
@@ -121,6 +137,7 @@ params = [
   { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "task", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "coding", type = { option = { named = "NewCoding" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { base = { type = ["string", "null"] }, branch = { type = ["string", "null"] }, harness = { type = ["string", "null"] }, repository = { type = "string" } }, required = ["repository"] } },
 ]
 
 [[resources.verbs]]
@@ -156,6 +173,17 @@ params = [
   { name = "label", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "url", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "at", type = { option = { named = "ProducedAt" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, document = { type = "string" }, resource = { type = "string" } }, required = ["app", "resource"] } },
+]
+
+[[resources.verbs]]
+id = "sub-agent-coding"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "process", type = { option = { named = "CodingProcess" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { ended = { type = "string" }, ended_ms = { type = ["integer", "null"] }, exit = { type = ["integer", "null"], maximum = 2147483647, minimum = -2147483648 }, started_ms = { type = "integer" }, stopped_by = { type = "string" }, words = { type = "string" } }, required = ["started_ms"] } },
+  { name = "session", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "spent_micros", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "harness", type = { option = { named = "CodingHarness" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" } }, required = ["id", "name"] } },
 ]
 
 [[resources.verbs]]
@@ -202,6 +230,47 @@ fields = [
 ]
 
 [[resources.types]]
+name = "Coding"
+fields = [
+  { name = "harness", type = "text" },
+  { name = "harness_name", type = "text" },
+  { name = "repository", type = "text" },
+  { name = "directory", type = "text" },
+  { name = "branch", type = "text" },
+  { name = "base", type = "text" },
+  { name = "session", type = "text" },
+  { name = "process", type = { option = { named = "CodingProcess" } } },
+  { name = "spent_micros", type = "int" },
+]
+
+[[resources.types]]
+name = "CodingHarness"
+fields = [
+  { name = "id", type = "text" },
+  { name = "name", type = "text" },
+]
+
+[[resources.types]]
+name = "CodingProcess"
+fields = [
+  { name = "started_ms", type = "int" },
+  { name = "ended_ms", type = { option = "int" } },
+  { name = "ended", type = "text" },
+  { name = "exit", type = { option = "int" } },
+  { name = "words", type = "text" },
+  { name = "stopped_by", type = "text" },
+]
+
+[[resources.types]]
+name = "NewCoding"
+fields = [
+  { name = "harness", type = { option = "text" } },
+  { name = "repository", type = "text" },
+  { name = "branch", type = { option = "text" } },
+  { name = "base", type = { option = "text" } },
+]
+
+[[resources.types]]
 name = "NewSubAgent"
 fields = [
   { name = "name", type = "text" },
@@ -212,6 +281,7 @@ fields = [
   { name = "model", type = { option = "text" } },
   { name = "task", type = { option = "text" } },
   { name = "id", type = { option = "text" } },
+  { name = "coding", type = { option = { named = "NewCoding" } } },
 ]
 
 [[resources.types]]
@@ -273,5 +343,6 @@ fields = [
   { name = "line", type = "text" },
   { name = "notes", type = { list = { named = "Note" } } },
   { name = "produced", type = { list = { named = "Produced" } } },
+  { name = "coding", type = { option = { named = "Coding" } } },
 ]
 

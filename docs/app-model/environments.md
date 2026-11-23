@@ -331,7 +331,7 @@ A launch from a terminal: `code .` resolves to a shim in the environment's
 the supervisor asks the Linux VM service to ensure the VM; the guest agent runs
 `code .` in the same directory; the window appears in the current strip.
 
-The Windows appliance (`crates/windows/windows-vm`) is that service's `windows` guest;
+The Windows appliance (`crates/compat/windows-vm`) is that service's `windows` guest;
 its guest bridge moves to the same vsock agent protocol.
 
 ## Hosted workspace VMs
@@ -340,7 +340,7 @@ On a host that serves other people's workspaces, a workspace's shell, its own
 commands and Tilo's actions run as everywhere else, and need no VM. A Linux
 program the shell hands on (tier 3: `cargo`, `npm`, `python`) runs in a VM of
 that workspace environment's own, never in a guest sharing the host's kernel
-(`crates/runtime/linux-vm/src/hosted`).
+(`crates/vm/linux-vm/src/hosted`).
 
 - **One VM per workspace environment,** with a size (`small` 2 vCPU / 4 GB,
   `default` 4 / 8, `large` 8 / 16, `xlarge` 16 / 32) and a persistent disk of
@@ -477,7 +477,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   hands it to the workspace's server with the workspace, environment and
   session it came from (`ush::hosted_vm::MachineAgents`), which decides what
   it is. It ends with the program
-  ([`agent_socket.rs`](../../crates/runtime/linux-vm-agent/src/agent_socket.rs)).
+  ([`agent_socket.rs`](../../crates/vm/linux-vm-agent/src/agent_socket.rs)).
   The server asks the person whose Terminal `run` the workspace admitted for
   that session, on their approving devices, whether the program may work in
   the workspace as `<client>@<environment>#n` (numbered from one in each
@@ -525,7 +525,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   start as copy-on-write clones of a warm template of their size. The exact
   contract — argv, the `TILO_HOSTED_BROWSER` mark, one line of material on
   its stdin, `ready`, `up` and `used` on its stdout — is documented in
-  [`crates/runtime/linux-vm/src/hosted/browser.rs`](../../crates/runtime/linux-vm/src/hosted/browser.rs),
+  [`crates/vm/linux-vm/src/hosted/browser.rs`](../../crates/vm/linux-vm/src/hosted/browser.rs),
   and the whole of it in [`hosted-browser.md`](../hosted-browser.md).
 - **Linux apps with windows:** opening one (`app.so.tilo.linux#open`, naming
   its desktop file) starts a second headless session in the same VM, as the

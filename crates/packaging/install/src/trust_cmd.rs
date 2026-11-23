@@ -1,32 +1,7 @@
 //! The attestors this device trusts, the publisher keys it refuses, and the verdict `check` prints
-//! for a package.
+//! for a package: reads. Changing them is the package service's action.
 
-use tilo_app_package::trust::{AttestorScope, RevokedKey, TrustFile, TrustedAttestor};
-
-use super::{
-    Error, TrustFlags, decode_hex_32, installer, load_revocation_list, load_trusted_attestors,
-    revoked_keys_path, trusted_attestors_path,
-};
-
-pub(super) fn trust_add(id: &str, pubkey_hex: &str, scope: &str) -> Result<(), Error> {
-    // Validate scope and pubkey before touching the file.
-    let scope_parsed = AttestorScope::parse(scope).map_err(|e| Error::Trust(e.to_string()))?;
-    let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
-    let mut attestors = load_trusted_attestors()?;
-    attestors.attestor.retain(|a| a.id != id);
-    attestors.attestor.push(TrustedAttestor {
-        id: id.into(),
-        pubkey_hex: pubkey_hex.into(),
-        scope: scope_parsed,
-    });
-    let path = trusted_attestors_path()?;
-    attestors
-        .save(&path)
-        .map_err(|e| Error::Trust(e.to_string()))?;
-    println!("trust: added {id} (scope: {scope})");
-    println!("  file: {}", path.display());
-    Ok(())
-}
+use super::{Error, TrustFlags, installer, load_revocation_list, load_trusted_attestors};
 
 pub(super) fn trust_list() -> Result<(), Error> {
     let attestors = load_trusted_attestors()?;
@@ -38,39 +13,6 @@ pub(super) fn trust_list() -> Result<(), Error> {
     for a in &attestors.attestor {
         println!("{:<24}  {:<12}  {}", a.id, a.scope.render(), a.pubkey_hex);
     }
-    Ok(())
-}
-
-pub(super) fn trust_remove(id: &str) -> Result<(), Error> {
-    let mut attestors = load_trusted_attestors()?;
-    let before = attestors.attestor.len();
-    attestors.attestor.retain(|a| a.id != id);
-    if attestors.attestor.len() == before {
-        return Err(Error::Trust(format!("no trusted attestor with id {id:?}")));
-    }
-    let path = trusted_attestors_path()?;
-    attestors
-        .save(&path)
-        .map_err(|e| Error::Trust(e.to_string()))?;
-    println!("trust: removed {id}");
-    Ok(())
-}
-
-pub(super) fn revoke(pubkey_hex: &str, reason: &str) -> Result<(), Error> {
-    let _ = decode_hex_32(pubkey_hex).map_err(Error::Trust)?;
-    let mut list = load_revocation_list()?;
-    list.revoked.retain(|k| k.pubkey_hex != pubkey_hex);
-    list.revoked.push(RevokedKey {
-        pubkey_hex: pubkey_hex.into(),
-        reason: reason.into(),
-    });
-    let path = revoked_keys_path()?;
-    list.save(&path).map_err(|e| Error::Trust(e.to_string()))?;
-    println!("revoked: ed25519:{pubkey_hex}");
-    if !reason.is_empty() {
-        println!("  reason: {reason}");
-    }
-    println!("  file: {}", path.display());
     Ok(())
 }
 

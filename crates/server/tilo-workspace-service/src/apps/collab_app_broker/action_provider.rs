@@ -1792,6 +1792,10 @@ impl AppBrokerState {
         if let Err(error) = self.signed_by_agent(caller, request) {
             return Pending::ready(Err(error));
         }
+        // A call made from a resource is its caller's only where they may read that resource.
+        if let Err(error) = self.may_make_from(caller, request) {
+            return Pending::ready(Err(error));
+        }
         // An agent asks the person it works for something in its own words:
         // the question goes on this device's sheet, and their answer is the
         // invocation's outcome.
@@ -2163,7 +2167,7 @@ impl AppBrokerState {
                     )
                     .map_err(refusal)?;
                 }
-                Some(current.admitted.delegated_to(original.delegated.as_deref()))
+                Some(current.admitted)
             }
             Some(super::published_invocation::InvocationCaller::Local {
                 route,

@@ -153,7 +153,7 @@ impl Navigator {
         let opened = link.clone();
         let mut list = NavList::new(sections(&[], None))
             .with_accessible_name(t("db-navigator"))
-            .on_view("db.sidebar", move |id| {
+            .on_choose("db.sidebar", move |id| {
                 if let Some(id) = parse_connection(&id) {
                     let open = opened.read(|model| model.connected && model.active == Some(id));
                     if !open {

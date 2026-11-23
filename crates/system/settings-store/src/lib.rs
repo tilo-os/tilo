@@ -82,7 +82,6 @@ pub mod keyboard_sources;
 pub mod live;
 pub mod lockdown;
 pub mod magnifier;
-pub mod mcp_server;
 pub mod notification_policy;
 pub mod paste_shortcut;
 pub mod person_displays;
@@ -193,6 +192,29 @@ pub fn document_changed(
     current: Option<SettingsStamp>,
 ) -> bool {
     !seen || cached != current
+}
+
+/// What a follower of the settings document keeps between passes: whether it
+/// has looked yet and the [`SettingsStamp`] it last saw.
+///
+/// The first check reads even when no settings store is present (`None`); later
+/// checks skip the read while the stamp holds, including staying `None`, until
+/// a stamp appears or changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SettingsFollower {
+    seen: bool,
+    stamp: Option<SettingsStamp>,
+}
+
+impl SettingsFollower {
+    /// Whether the settings document must be read again at `current`, recording
+    /// `current` as what this follower has now seen.
+    pub fn changed(&mut self, current: Option<SettingsStamp>) -> bool {
+        let changed = document_changed(self.seen, self.stamp, current);
+        self.seen = true;
+        self.stamp = current;
+        changed
+    }
 }
 
 pub fn stamp() -> Option<SettingsStamp> {
@@ -489,5 +511,55 @@ mod tests {
             let read = f64_in(&parse(r#"{"d":{"s":"x"}}"#), "d", "s", 0.0..=1.0, 0.5);
             assert!((read - 0.5).abs() < f64::EPSILON);
         }
+    }
+
+    #[test]
+    fn settings_follower_reads_once_without_a_stamp_and_only_when_it_moves() {
+        let mut follower = SettingsFollower::default();
+        assert!(
+            follower.changed(None),
+            "first look with no stamp must read once"
+        );
+        assert!(
+            !follower.changed(None),
+            "later look with still no stamp must not read again"
+        );
+
+        assert!(
+            follower.changed(Some(SettingsStamp(1))),
+            "a stamp appearing must read once"
+        );
+        assert!(
+            !follower.changed(Some(SettingsStamp(1))),
+            "the same stamp must not read again"
+        );
+
+        assert!(
+            follower.changed(Some(SettingsStamp(2))),
+            "a stamp that changed must read once"
+        );
+        assert!(
+            !follower.changed(Some(SettingsStamp(2))),
+            "the unchanged new stamp must not read again"
+        );
+
+        assert!(
+            follower.changed(None),
+            "a stamp disappearing must read once"
+        );
+        assert!(
+            !follower.changed(None),
+            "staying without a stamp again must not read again"
+        );
+
+        let mut started_stamped = SettingsFollower::default();
+        assert!(
+            started_stamped.changed(Some(SettingsStamp(9))),
+            "first look with a stamp must read once"
+        );
+        assert!(
+            !started_stamped.changed(Some(SettingsStamp(9))),
+            "repeating that stamp must not read again"
+        );
     }
 }

@@ -28,9 +28,6 @@ native = ["tilo-process/native", "dep:tokio", "dep:jni", "dep:ndk-context", "dep
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
 # `tilo-location`), selected per target without a feature.
 portal = ["native", "dep:ashpd"]
-# The X11 clipboard, for development builds on an X11 host (see the
-# toolkit's `x11`).
-x11 = ["tilo-clipboard/x11"]
 # Desktop media integration: the system's now-playing controls on macOS,
 # MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
 # runs on the workspace's tokio backend; the server lives on its own thread
@@ -38,8 +35,8 @@ x11 = ["tilo-clipboard/x11"]
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
 
 [dependencies]
-tilo-model-client = { default-features = false, features = ["runtime-client"], version = "0.1.0", path = "../../agent/model-client", optional = true }
-agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
+tilo-model-client = { default-features = false, features = ["runtime-client"], version = "0.1.0", path = "../model-client", optional = true }
+agent-provider-config = { version = "0.1.0", path = "../../integrations/provider-config" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The authenticated host updates the app process's portable network hints.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
@@ -55,11 +52,10 @@ tokio = { workspace = true, optional = true, features = ["full"] }
 # The `time` module: the clock types and reads on every target.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tracing.workspace = true
-tilo-tts = { version = "0.1.0", path = "../../system/tts" }
+tilo-tts = { version = "0.1.0", path = "../../engines/tts" }
 # The process inputs (`process::environment`): who the process is and where its
 # files live, kept with the current process.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
-winit.workspace = true
 # The clipboard vocabulary and each target's clipboard.
 tilo-clipboard.workspace = true
 # File choosers and URI opening, with each target's backend.
@@ -69,7 +65,7 @@ tilo-notify.workspace = true
 # Device location, with each target's backend.
 tilo-location.workspace = true
 # The system's now-playing controls where the platform has its own (macOS).
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", optional = true }
+tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", optional = true }
 # App-scoped secrets, with each target's store.
 tilo-secrets.workspace = true
 
@@ -88,8 +84,6 @@ workspace = true
 # `ndk-context` holds for the process (android-activity installs it).
 jni = { version = "0.21.1", optional = true }
 ndk-context = { version = "0.1.1", optional = true }
-# winit's Android backend refuses to compile without an activity flavour.
-winit = { workspace = true, features = ["android-native-activity"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -2,7 +2,7 @@
 """Assemble the existing apps+runtime component in private final-path mounts.
 
 No OS/kernel build and no host /usr writes. The caller owns the normal native
-build admission. The result is only a staged component; tilo-vmd still owns
+build admission. The result is only a staged component; the device's steps still own
 source authority, import, activation and the account lifecycle.
 """
 import argparse
@@ -314,7 +314,7 @@ def prepare_runtime_fonts(repo, directory):
     """Ship the reviewed standalone catalog inside the signed SDK payload."""
     fonts = directory / 'fonts'
     run(['python3', str(repo / 'tools/font-catalog.py'), 'prepare',
-         str(repo / 'crates/sdk/ui-core/assets/fonts'), str(fonts),
+         str(repo / 'crates/ui/ui-core/assets/fonts'), str(fonts),
          '--scope', 'product'])
     return fonts
 
@@ -330,7 +330,7 @@ def fetch_runtime_fonts(repo, target):
     if not os.environ.get('TILO_FONT_ASSET_CACHE') and not os.environ.get('TILO_TEST_CACHE_DIR'):
         os.environ['TILO_FONT_ASSET_CACHE'] = str(target / 'font-artifacts')
     run(['python3', str(repo / 'tools/font-catalog.py'), 'root',
-         str(repo / 'crates/sdk/ui-core/assets/fonts'), '--scope', 'product'], capture=True)
+         str(repo / 'crates/ui/ui-core/assets/fonts'), '--scope', 'product'], capture=True)
 
 
 def publish_runtime_fonts(repo, fonts, catalogs):
@@ -610,7 +610,7 @@ def package_inside(args):
     if tilolang:
         env['TILOLANG_BIN'] = str(target / 'release/tilolang')
     # A complete cohort carries each app once, as its installed tree and signed
-    # record; tilo-vmd rebuilds the archive it installs from those.
+    # record; the device's steps rebuild the archive it installs from those.
     if args.app is not None:
         env.update(TAPP_OUT=str(stage / 'work/selected.tapp'),
                    STAGE=str(stage / 'work/selected-pack'))

@@ -71,7 +71,7 @@ pub fn disk_row(disk: &Disk, control: &Control, selected: bool) -> Bound {
         .selected(selected)
         .checked(selected)
         .with_enabled(!unavailable(disk))
-        .on_effect(move || fire.fire());
+        .on_click(move || fire.fire());
     Bound::new(Box::new(row), [(control.effect().console_id(), control)]).activated_by_keys(control)
 }
 

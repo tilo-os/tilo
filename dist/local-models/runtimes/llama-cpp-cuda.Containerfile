@@ -1,6 +1,6 @@
 # llama.cpp's server for GGUF models on NVIDIA GPUs through CUDA, a local model
 # runtime (tools/release/local-model-runtime.sh builds it;
-# crates/agent/local-model-service/RELEASE.md, "Signed runtimes"). Built in
+# crates/engines/local-model-service/RELEASE.md, "Signed runtimes"). Built in
 # NVIDIA's CUDA development image and run in its runtime image, both pinned by
 # digest. The development image has the compilers; CMake is Kitware's release
 # build, pinned by hash (local-model-runtime.sh fetches it), so the build

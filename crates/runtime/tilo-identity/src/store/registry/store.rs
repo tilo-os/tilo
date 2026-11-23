@@ -591,17 +591,14 @@ mod tests {
     use crate::store::IdentityRecord;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
-    use threshold_identity::ThresholdIdentity;
 
     fn record(name: &str, seed: u8) -> IdentityRecord {
-        let identity = ThresholdIdentity::from_single_device_seed(&[seed; 32]);
-        IdentityRecord::from_threshold_identity(
-            &identity,
+        IdentityRecord::from_root(
+            &ed25519_dalek::SigningKey::from_bytes(&[seed; 32]),
             name,
             [10, 20, 30],
             std::time::SystemTime::UNIX_EPOCH,
         )
-        .expect("record")
     }
 
     fn temp_dir(label: &str) -> PathBuf {

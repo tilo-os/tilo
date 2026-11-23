@@ -104,7 +104,7 @@ impl Workspaces {
         changed
     }
 
-    /// The workspaces this server governs.
+    /// The workspaces this server's person administers.
     async fn governed_ids(&self) -> Vec<String> {
         let held: Vec<_> = self
             .inner
@@ -116,7 +116,7 @@ impl Workspaces {
             .collect();
         let mut governed = Vec::with_capacity(held.len());
         for (id, workspace) in held {
-            if self.governs(&*workspace.lock().await) {
+            if self.administers(&*workspace.lock().await) {
                 governed.push(id);
             }
         }
@@ -135,7 +135,7 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let read = {
             let governed = state.lock().await;
-            if !self.governs(&governed) {
+            if !self.administers(&governed) {
                 return;
             }
             governed

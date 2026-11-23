@@ -16,11 +16,11 @@ autologin_cleanup="$repo_root/os/usr/libexec/tilo-firstboot-autologin-cleanup"
 autologin_cleanup_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/apps/imager/src/setup/destination/installer_app.rs"
-installer_disks="$repo_root/crates/platform/imager-backend/src/destination/disks.rs"
-block_devices_lsblk="$repo_root/crates/system/block-devices/src/lsblk.rs"
-installer_timezones="$repo_root/crates/platform/imager-backend/src/destination/timezones.rs"
-media_profile="$repo_root/crates/platform/imager-backend/src/destination/media_profile.rs"
-installer_probes="$repo_root/crates/platform/imager-backend/src/destination/probes.rs"
+installer_disks="$repo_root/crates/os/imager-backend/src/destination/disks.rs"
+block_devices_lsblk="$repo_root/crates/os/block-devices/src/lsblk.rs"
+installer_timezones="$repo_root/crates/os/imager-backend/src/destination/timezones.rs"
+media_profile="$repo_root/crates/os/imager-backend/src/destination/media_profile.rs"
+installer_probes="$repo_root/crates/os/imager-backend/src/destination/probes.rs"
 preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
 secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
@@ -352,9 +352,8 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq 'sign-target-prediction.sh" "$TILO_IMAGE"' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
-   && grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
-      "$repo_root/.forgejo/workflows/release-imager.yml"; then
-  ok "release prediction path uses systemd-measure and a broker signer without private-key storage"
+   && ! grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING=1' "$repo_root/t.toml"; then
+  ok "release prediction path uses systemd-measure and a signer without private-key storage, and no check signs media with a local key"
 else
   bad "release PCR prediction path can bypass authoritative measurement or protected signing"
 fi
@@ -656,7 +655,7 @@ if grep -Fq -- '--install-plan) INSTALL_PLAN=1' "$backend" \
    && grep -Fq 'only a Tilo Server installs from a staged plan without a person' \
       "$repo_root/apps/imager/src/setup/staging/helper.rs" \
    && grep -Fq 'pub install_plan: bool' \
-      "$repo_root/crates/platform/imager-backend/src/destination/install.rs"; then
+      "$repo_root/crates/os/imager-backend/src/destination/install.rs"; then
   ok "a staged plan installs a server unattended, enrolls it and unlocks its disk"
 else
   bad "a staged plan can install with a person, without one, without enrolling, or with its ticket exposed"

@@ -16,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_clock::unix_now_ms;
 use ui::time::{Duration, Instant, SystemTime};
 
-use os_actions::Dispatcher;
 use provider_settings_ui::bound::SettingRows as _;
 use tracing::warn;
 use ui::LocalState;
@@ -26,7 +25,6 @@ use ui::widget::{Dropdown, Slider, Toggle};
 
 use self::shared_displays::DeviceDisplay;
 use crate::area::AreaContext;
-use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, NightLightPrefs, PendingDisplayChange};
@@ -45,6 +43,10 @@ crate::effects::effect_family!(DisplayEffect => answer);
 
 crate::area::pane_area! {
     DisplayArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Displays);
     fn poll(&self) {
         DisplayArea::poll(self);
     }
@@ -803,29 +805,59 @@ fn output_brightness_from(
         .collect()
 }
 
+/// The session's displays: Quick Settings, the brightness keys, a script and an agent set a
+/// display's brightness through the same actions.
+const DISPLAYS: &str = "session:displays";
+
+/// Where a brightness change is asked: the session's displays, or a test's stand-in for them.
 pub trait BrightnessControl: Send + Sync {
-    fn set_brightness(&self, percent: f32) -> Result<(), String>;
-    fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String>;
+    /// Ask the displays to carry out `action` with `arguments`.
+    fn invoke(
+        &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String>;
 }
 
-struct SystemBrightness(Arc<dyn Dispatcher + Send + Sync>);
+/// Set `display` (its connector) to `level` (`0.0..=1.0`); without one, the display the person
+/// works on.
+fn ask_brightness(
+    control: &dyn BrightnessControl,
+    display: Option<&str>,
+    level: f32,
+) -> Result<(), String> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("level".into(), f64::from(level).into());
+    let action = match display {
+        Some(display) => {
+            arguments.insert("display".into(), display.into());
+            "set-display-brightness"
+        }
+        None => "set-brightness",
+    };
+    control.invoke(action, &arguments)
+}
+
+struct SystemBrightness;
 
 impl BrightnessControl for SystemBrightness {
-    fn set_brightness(&self, percent: f32) -> Result<(), String> {
-        self.0.set_brightness(percent)
-    }
-    fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
-        self.0.set_display_brightness(connector, percent)
+    fn invoke(
+        &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        ui::collaboration::SessionResource::invoke_without_watching(DISPLAYS, action, arguments)
     }
 }
 
 struct NoBrightness;
 
 impl BrightnessControl for NoBrightness {
-    fn set_brightness(&self, _: f32) -> Result<(), String> {
-        Ok(())
-    }
-    fn set_display_brightness(&self, _: &str, _: f32) -> Result<(), String> {
+    fn invoke(
+        &self,
+        _: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
         Ok(())
     }
 }
@@ -933,7 +965,7 @@ pub struct DisplayModel {
     levels_landed: Arc<AtomicBool>,
     hardware_probe: Option<crate::channel::Receiver<HardwareProbe>>,
     brightness_error: Option<String>,
-    brightness_tx: Option<crate::channel::Sender<f32>>,
+    brightness_tx: Option<crate::channel::Sender<(Option<String>, f32)>>,
     brightness_result_rx: Option<crate::channel::Receiver<Result<f32, String>>>,
     pending_brightness: Option<f32>,
     notice: Option<String>,
@@ -971,17 +1003,16 @@ impl DisplayModel {
                 &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
             )
         });
-        let control: Arc<dyn BrightnessControl> =
-            Arc::new(SystemBrightness(dispatcher_or_real(None)));
-        let (brightness_tx, brightness_rx) = crate::channel::channel::<f32>();
+        let control: Arc<dyn BrightnessControl> = Arc::new(SystemBrightness);
+        let (brightness_tx, brightness_rx) = crate::channel::channel::<(Option<String>, f32)>();
         let (result_tx, result_rx) = crate::channel::channel();
         let worker = Arc::clone(&control);
         crate::device_read::thread(
             "settings-brightness-apply",
             Box::new(move || {
-                while let Ok(percent) = brightness_rx.recv() {
-                    let _ =
-                        result_tx.send(worker.set_brightness(percent).map(|()| percent / 100.0));
+                while let Ok((display, level)) = brightness_rx.recv() {
+                    let asked = ask_brightness(&*worker, display.as_deref(), level);
+                    let _ = result_tx.send(asked.map(|()| level));
                 }
             }),
         )
@@ -1650,8 +1681,7 @@ impl DisplayModel {
                     .filter(|_| self.output_brightness.contains_key(display))
                     .map(|output| output.connector_label.clone())
                     .ok_or_else(|| "that monitor's brightness cannot be set".to_string())?;
-                self.brightness_control
-                    .set_display_brightness(&label, level * 100.0)
+                ask_brightness(&*self.brightness_control, Some(&label), level)
                     .map_err(|error| {
                         warn!(target: "tilo::settings", op = "set_display_brightness", %error, "display brightness failed");
                         format!("Brightness could not be changed: {error}")
@@ -1820,15 +1850,21 @@ impl DisplayModel {
     fn set_brightness(&mut self, brightness: f64) -> Result<String, String> {
         let level = (brightness as f32).clamp(0.0, 1.0);
         let percent = level * 100.0;
+        // The Brightness card is the built-in panel's; before the displays are read, the session
+        // sets the one the person works on.
+        let panel = self
+            .outputs
+            .iter()
+            .find(|output| output.connected && output.builtin)
+            .map(|output| output.connector_label.clone());
         if let Some(sender) = &self.brightness_tx {
-            sender.send(percent).map_err(|_| {
+            sender.send((panel, level)).map_err(|_| {
                 "Brightness worker is unavailable; the display was not changed.".to_string()
             })?;
             self.pending_brightness = Some(level);
             return Ok(format!("Setting the brightness to {}%.", percent.round()));
         }
-        self.brightness_control
-            .set_brightness(percent)
+        ask_brightness(&*self.brightness_control, panel.as_deref(), level)
             .map_err(|error| format!("Brightness could not be changed: {error}"))?;
         self.brightness = level;
         Ok(format!("Brightness set to {}%.", percent.round()))

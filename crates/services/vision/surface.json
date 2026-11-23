@@ -1,0 +1,261 @@
+{
+  "resources": [
+    {
+      "kind": "vision.image-model",
+      "label": "Image model",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "describe",
+          "label": "Describe a picture",
+          "description": "Describe a picture What it shows, in a sentence, with the model and revision that said it. The picture is sent to the provider the AI settings hub chose, which keeps the key this device uses.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "ocr",
+          "label": "Read the text in a picture",
+          "description": "Read the text in a picture The words it holds, read on this device. Needs no language model, so it answers on a device with none.",
+          "kind": "read",
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "language",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "tags",
+          "label": "Name what a picture shows",
+          "description": "Name what a picture shows The objects and pets in it, from the same model `describe` asks.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "image",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "faces",
+          "label": "Find pictures of the same face",
+          "description": "Find pictures of the same face The groups of pictures a face model found the same face in. The model never receives a name, a person or a photograph's own id: each picture is named by its address here, and a cluster names the pictures it joined.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "images",
+              "required": true,
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "available",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "provider",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "model",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "revision",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "faces",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "detail",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "vision.analysis",
+      "label": "Photo analysis",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "start",
+          "label": "Analyze the library's pictures",
+          "description": "Analyze the library's pictures Analyze every picture the system index holds and add what each shows to its entry in search. Pixels stay on this device; only the bounded result is shared.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "pause",
+          "label": "Pause the analysis",
+          "description": "Pause the analysis Stop after the picture in progress; `resume` continues it.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "resume",
+          "label": "Resume the analysis",
+          "description": "Resume the analysis Continue a paused run without widening its queue.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "retry",
+          "label": "Retry the pictures that failed",
+          "description": "Retry the pictures that failed Analyze only the pictures whose last analysis failed, without starting the whole library again.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "cancel",
+          "label": "Stop the analysis",
+          "description": "Stop the analysis Stop before the next picture. What was analyzed stays analyzed.",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "phase",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "total",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "completed",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "succeeded",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "failed",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "remaining",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "current",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "model",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "revision",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "progress",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "failures",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "AnalysisFailure"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "AnalysisFailure",
+          "doc": "One picture the analysis could not do, and why.",
+          "fields": [
+            {
+              "name": "resource",
+              "type": "text"
+            },
+            {
+              "name": "reason",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

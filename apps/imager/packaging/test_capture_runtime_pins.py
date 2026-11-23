@@ -124,7 +124,8 @@ class InstalledRuntimePins(unittest.TestCase):
                     recipe = BROWSER.stage(root, output, base / 'pins.json', cohort, qualification=True)
             finally:
                 os.umask(previous)
-            installs = [line for line in recipe.splitlines() if 'tilo-install install' in line]
+            installs = [line for line in recipe.splitlines()
+                        if 'tilo-install --offline-store /usr/share/tilo-apps install' in line]
             self.assertEqual(len(installs), 2)
             for line in installs:
                 self.assertTrue(line.startswith('RUN --mount=type=bind,'

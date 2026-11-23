@@ -1,0 +1,88 @@
+[package]
+autotests = false
+name = "app-cli"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "What software this machine can open but has not installed yet, and how to get it."
+
+[lib]
+name = "app_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
+
+[features]
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
+dev-overrides = ["package-store/dev-overrides"]
+
+[dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-formats = { path = "../../ui/tilo-formats" }
+# The person's interface language, for the catalogue's localized names: the
+# same one answer every surface resolves its language from.
+settings-store = { path = "../../system/settings-store" }
+# The registry wire format + the per-entry publisher signature check.
+registry-types = { path = "../../packaging/registry-types" }
+# Read side of the `tilo-install` registry — the same list the desktop
+# enumerates installed apps from, so "available" is exactly "not in
+# there".
+package-store = { path = "../../packaging/package-store" }
+# The desktop's applications that Tilo did not package (Flatpaks, the
+# system's, downloaded programs), listed beside the installed packages.
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+# Canonical application tapp wire-size ceiling; catalogue downloads enforce
+# the same boundary as the installer rather than duplicating a number.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+clap.workspace = true
+clap_complete.workspace = true
+tilo-paths.workspace = true
+# `app open`: the desktop's applications, through the control protocol's one
+# client (shared with `tilo open` and tilo-control).
+tilo-control = { path = "../../session/control-cli" }
+hex.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+# The model runtime an app's model module links against, taken out of the
+# runtime package the registry offers: the bundle's signed manifest vouches
+# for its files, and the registry serves only the payload blobs it needs.
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
+app-registry = { path = "../../packaging/app-registry" }
+# Every change to the package store is the package service's action: `app`
+# calls it, and the service, which runs this library too, makes it in-process.
+package-service-client = { path = "../../packaging/package-service-client" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+# The tests confine a checkpoint write with the launcher's Landlock plan and
+# resolve an installed app's service binds the way a launch does. The library
+# reads manifests through tilo-app-package and never links the launcher.
+launcher = { path = "../../packaging/launcher" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

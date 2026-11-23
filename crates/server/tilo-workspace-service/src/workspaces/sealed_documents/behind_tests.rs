@@ -83,7 +83,7 @@ async fn a_copy_without_the_second_write(
     let ((), second) = lounge.member.seal(&lounge.workspace, |doc| {
         doc.put(ROOT, "title", "two").unwrap();
         doc.put(ROOT, "second", "kept").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &lounge.member.person());
     });
     kept_untold(lounge, &second);
     seal_and_send_title(
@@ -419,15 +419,15 @@ async fn a_copy_takes_a_compaction_that_arrives_before_any_of_its_writes() {
     let ((), first) = lounge.member.seal(&lounge.workspace, |doc| {
         doc.put(ROOT, "title", "one").unwrap();
         doc.put(ROOT, "first", "kept").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &lounge.member.person());
     });
     let ((), second) = lounge.member.seal(&lounge.workspace, |doc| {
         doc.put(ROOT, "title", "two").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &lounge.member.person());
     });
     let ((), third) = lounge.member.seal(&lounge.workspace, |doc| {
         doc.put(ROOT, "title", "three").unwrap();
-        doc.commit_edit("fixture", "title");
+        doc.commit_edit("fixture", "title", &lounge.member.person());
     });
     let writes = [first.clone(), second.clone(), third.clone()]
         .into_iter()

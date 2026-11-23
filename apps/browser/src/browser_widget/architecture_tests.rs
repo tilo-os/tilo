@@ -714,16 +714,8 @@ fn hosted_browser_affordances_are_canonical_peer_local_actions() {
                 name: "file.txt".into(),
             });
         compose(&mut widget);
-        let result = widget
-            .start_encoded(
-                OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
-                &mut AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
+        let result = ui::framework::press_control(&mut widget, "browser.decision.false.1.true", &mut AutoCommit::new(), &automerge::ROOT);
+        assert!(result);
         assert!(
             capture
                 .commands()

@@ -64,7 +64,7 @@ async fn subscription_refusal(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
-    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
+    let runtime = ws.lock().await;
     Ok(
         match session.decide(&runtime, peer, WorkspaceOperation::Subscribe) {
             Decision::Deny(reason) => Some(reason.refusal()),

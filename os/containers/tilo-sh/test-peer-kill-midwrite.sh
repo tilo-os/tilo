@@ -7,17 +7,19 @@
 # replacing a holder that was there, and the server's tree reading whole.
 #
 # The script starts inside a user namespace where it is root, because a folder is mounted with
-# FUSE, as test-peer-handover.sh says.
+# FUSE: the job sandbox gives the check no capability to mount, and no_new_privs keeps fusermount3's
+# setuid bit from helping.
 #
 # usage: test-peer-kill-midwrite.sh WORK [files|git|long]
 #
 # With `git`, the write is a checkout of this repository instead (peer-git-midwrite.sh): timed,
-# and ended halfway by SIGKILL, a newer program's holder and SIGTERM. With `long`, one holder
+# and ended halfway by SIGKILL and by SIGTERM. With `long`, one holder
 # lives under a change that goes on for many minutes (peer-long-change.sh), and `tilo status` and
 # `tilo ls` must answer within seconds the whole time.
 #
 # WORK keeps the stack's state (WORK/state) and its logs (WORK/state/logs, the write's among
-# them). From the environment: what test-peer-handover.sh reads.
+# them). From the environment: TILO_SH_PROGRAMS (tilo-sh-programs' output), TILO_SH_CADDY
+# (tilo-sh-caddy's) and TILO_SH_FONTS (lounge-fonts' catalog).
 set -euo pipefail
 usage='usage: test-peer-kill-midwrite.sh WORK [files|git|long]'
 work=${1:?$usage}

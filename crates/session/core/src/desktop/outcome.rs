@@ -232,7 +232,7 @@ impl OutcomeCard {
                 card = card
                     .with_action(label)
                     .with_action_id(RETRY_ID)
-                    .on_effect(retry);
+                    .on_click(retry);
             }
             return Self {
                 title: outcome.what.clone(),
@@ -253,7 +253,7 @@ impl OutcomeCard {
                 Button::new(RETRY_ID, label)
                     .role(ButtonRole::Primary)
                     .with_enabled(!outcome.busy)
-                    .on_effect(retry),
+                    .on_click(retry),
             ));
         }
         Self {
@@ -485,31 +485,39 @@ mod tests {
                 Outcome::not_built_because(
                     "Settings",
                     crate::desktop::i18n::t("answer-why-no-sandbox"),
-                    "tilo-launcher: so.tilo.settings ended: exit status: 1\n\
-                     tilo-launcher: this computer allows no user namespaces, which every app's \
-                     sandbox is made in",
+                    "kernel.apparmor_restrict_unprivileged_userns turns off user namespaces, \
+                     which every app's sandbox is made in.\n\
+                     Turn them on:\n    \
+                     sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0\n\
+                     Keep them on after a restart with this line in a file under \
+                     /etc/sysctl.d/:\n    \
+                     kernel.apparmor_restrict_unprivileged_userns = 0\n\
+                     so.tilo.settings ended: exit status: 1",
                 ),
             ),
         ];
-        for ((scheme, theme), (name, outcome)) in
+        // A window on a laptop, and a phone held upright.
+        let sizes = [("", (720, 480)), ("-phone", (390, 760))];
+        for ((scheme, theme), (name, outcome), (size_name, size)) in
             [("dark", ui::Theme::dark()), ("light", ui::Theme::light())]
                 .into_iter()
                 .flat_map(|scheme| cards.iter().map(move |card| (scheme.clone(), card)))
+                .flat_map(|(scheme, card)| {
+                    sizes.iter().map(move |size| (scheme.clone(), card, *size))
+                })
         {
             let card = OutcomeCard::new(outcome, || {});
-            let mut frame = ui::headless::FrameHarness::new(
-                ui::state::State::new(),
-                Box::new(card),
-                (720, 480),
-            );
+            let mut frame =
+                ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), size);
             frame.set_theme(theme);
             frame.relayout();
-            frame.render_png(&directory.join(format!("{name}-{scheme}.png")));
+            frame.render_png(&directory.join(format!("{name}{size_name}-{scheme}.png")));
             // The same card with its Details open, as a press on the control opens it.
             if let Some((x, y)) = centre_of_control(frame.root_widget(), "Details") {
                 frame.click_at(x, y);
                 frame.relayout();
-                frame.render_png(&directory.join(format!("{name}-details-{scheme}.png")));
+                frame
+                    .render_png(&directory.join(format!("{name}-details{size_name}-{scheme}.png")));
             }
         }
     }

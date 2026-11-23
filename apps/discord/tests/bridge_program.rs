@@ -819,6 +819,7 @@ fn triggers() -> Vec<TriggerSpec> {
         actions: MEMBER_VERBS.map(str::to_owned).to_vec(),
         fields: Vec::new(),
         by: ActorFilter::Anyone,
+        filter: tilo_automation::ChangeFilter::default(),
     });
     // The workspace's emoji, which the bridge uploads to the server.
     triggers.push(TriggerSpec::ResourceChanged {
@@ -826,12 +827,14 @@ fn triggers() -> Vec<TriggerSpec> {
         actions: Vec::new(),
         fields: Vec::new(),
         by: ActorFilter::Anyone,
+        filter: tilo_automation::ChangeFilter::default(),
     });
     triggers.push(TriggerSpec::ResourceChanged {
         kind: KIND.into(),
         actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
         fields: Vec::new(),
         by: ActorFilter::Anyone,
+        filter: tilo_automation::ChangeFilter::default(),
     });
     triggers.extend(
         discord_wire::event::source::ALL

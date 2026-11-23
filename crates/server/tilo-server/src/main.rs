@@ -223,16 +223,14 @@ fn load_identity(
     let paths = IdentityPaths::under(root);
     let device_signing_key = persist::read_device_key(&paths.device_privkey)
         .with_context(|| format!("read device secret {}", paths.device_privkey.display()))?;
-    // A volume that joined with a ticket keeps the certificate the ticket's login answered with,
-    // and the person it names, with the login; a volume that founded its own identity keeps them
-    // in the identity root.
-    let joined = tilo_device_identity::login::Place::here(IdentityPaths::under(root))
-        .and_then(|place| tilo_device_identity::login::load(&place))
-        .ok()
-        .flatten()
-        .filter(|(key, _)| key.verifying_key() == device_signing_key.verifying_key());
+    // A volume that joined with a ticket serves as the certificate the ticket's login filed, for
+    // the person it names; a volume that founded its own identity keeps them in the identity root.
+    let joined = tilo_device_identity::login::ticket_cert(
+        &paths,
+        &device_signing_key.verifying_key().to_bytes(),
+    );
     let (user_public_key, device_cert) = match joined {
-        Some((_, device)) => (device.cert.user_public_key, device.cert),
+        Some(cert) => (cert.user_public_key, cert),
         None => (
             persist::read_public_key(&paths.user_pubkey)
                 .with_context(|| format!("read user pubkey {}", paths.user_pubkey.display()))?,

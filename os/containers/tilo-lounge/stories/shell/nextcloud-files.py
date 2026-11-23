@@ -7,7 +7,7 @@ she keeps her files in from the Files window, and the files are there. A file th
 changed in Nextcloud, as another Nextcloud client would change it, changes in the
 workspace too.
 
-The Nextcloud is the check's own (crates/system/cloud-source-dav/tests/servers.sh,
+The Nextcloud is the check's own (crates/integrations/cloud-source-dav/tests/servers.sh,
 seeded with Ada's Documents and Photos), so what she picks and what changes
 afterwards are a real server's. Every step is decided off the shell itself (the
 controls it draws, the folders it shows, the bytes it keeps) or off the server,

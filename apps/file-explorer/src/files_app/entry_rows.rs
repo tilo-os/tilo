@@ -19,6 +19,7 @@ use crate::model::Entry;
 pub(super) struct RowContext {
     recent: bool,
     trash: bool,
+    import_mounts: Vec<PathBuf>,
     native_trash: Option<PathBuf>,
     airdrop: bool,
     nearby: Vec<NearbyTransferTarget>,
@@ -27,6 +28,7 @@ pub(super) struct RowContext {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct EntryRowFacts {
+    converted: Option<String>,
     open_with: Option<OpenWithFacts>,
     airdrop_file: bool,
     app_removal: Option<runtime_portal::tools::AppRemoval>,
@@ -44,6 +46,17 @@ struct KeptRow {
     row: LiveRow,
 }
 
+pub(super) fn importable_under(path: &Path, mounts: &[PathBuf]) -> bool {
+    let placeholder = path.extension().is_some_and(|extension| {
+        [
+            "gdoc", "gsheet", "gslides", "gdraw", "gform", "gsite", "url",
+        ]
+        .iter()
+        .any(|suffix| extension.eq_ignore_ascii_case(suffix))
+    });
+    !placeholder && mounts.iter().any(|mount| path.starts_with(mount))
+}
+
 pub(super) fn in_native_trash(path: &Path, trash: Option<&Path>) -> bool {
     trash.is_some_and(|root| path.parent() == Some(root))
 }
@@ -53,6 +66,7 @@ impl FilesState {
         RowContext {
             recent: self.is_recent_view(),
             trash: self.is_trash_view(),
+            import_mounts: self.import_mounts(),
             native_trash: self.native_trash_dir(),
             airdrop: self.nearby_send.airdrop_available(),
             nearby: self
@@ -69,12 +83,14 @@ impl FilesState {
     pub(super) fn entry_row_facts(&self, context: &RowContext, entry: &Entry) -> EntryRowFacts {
         if crate::applications::is_app(&entry.path) {
             return EntryRowFacts {
+                converted: None,
                 open_with: None,
                 airdrop_file: false,
                 app_removal: Some(self.app_removal(&entry.path)),
             };
         }
         EntryRowFacts {
+            converted: self.converted_description(&entry.path),
             open_with: self.open_with_facts(entry),
             airdrop_file: context.airdrop && entry.path.is_file(),
             app_removal: None,
@@ -127,7 +143,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Live
     } else {
         LiveRow::typed_with::<crate::row_types::Entry>(resource_id, label, &bindings)
     };
-    match entry_presentation(entry) {
+    match entry_presentation(facts, entry) {
         Some(presentation) => row.presentation(presentation),
         None => row,
     }
@@ -158,6 +174,9 @@ fn entry_bindings(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) ->
             )],
         );
     }
+    if facts.converted.is_some() {
+        bindings = bindings.bind(FilesEffect::IMPORT_CONVERTED, [("entry", id())]);
+    }
     if facts.open_with.is_some() {
         bindings = bindings.bind(FilesEffect::OPEN_WITH, [("entry", id())]);
     }
@@ -175,6 +194,9 @@ fn entry_bindings(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) ->
             .bind(FilesEffect::PROPERTIES, [("entry", id())])
             .bind(FilesEffect::HISTORY, [("entry", id())])
             .bind(FilesEffect::COPY_TO, [("entry", id())]);
+        if importable_under(&entry.path, &context.import_mounts) {
+            bindings = bindings.bind(FilesEffect::IMPORT_ONCE, [("entry", id())]);
+        }
         if facts.airdrop_file {
             bindings = bindings.bind(FilesEffect::SEND_AIR_DROP, [("entry", id())]);
         }
@@ -224,7 +246,18 @@ fn entry_bindings(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) ->
 /// What the row's hand-off says of itself, and the badge a file whose bytes no
 /// device delivered wears: a conversion that reads alone, or content that is
 /// not here.
-fn entry_presentation(entry: &Entry) -> Option<ResourcePresentation> {
+fn entry_presentation(facts: &EntryRowFacts, entry: &Entry) -> Option<ResourcePresentation> {
+    if let Some(description) = facts.converted.clone() {
+        return Some(ResourcePresentation {
+            detail: Some(description.clone()),
+            badge: Some(t("files-mounted-readonly")),
+            preview: Some(format!(
+                "{} {}",
+                description,
+                t("files-mounted-independent")
+            )),
+        });
+    }
     entry
         .availability
         .as_ref()
@@ -272,7 +305,16 @@ pub(super) fn entry_row_status(
     let id = resource_id.as_str();
     let mut statuses =
         vec![EffectStatus::labelled(FilesEffect::READ, t("files-action-read")).on(id)];
-    if entry
+    if let Some(description) = facts.converted.clone() {
+        statuses.push(
+            EffectStatus::labelled(FilesEffect::OPEN, t("files-mounted-open"))
+                .with_description(description)
+                .on(id),
+        );
+        statuses.push(
+            EffectStatus::labelled(FilesEffect::IMPORT_CONVERTED, t("files-mounted-copy")).on(id),
+        );
+    } else if entry
         .availability
         .as_ref()
         .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)

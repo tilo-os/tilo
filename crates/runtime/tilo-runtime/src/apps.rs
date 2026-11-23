@@ -47,6 +47,8 @@ pub struct Apps {
     catalog: Option<package_store::Catalog>,
     workspace: String,
     root: PathBuf,
+    /// The directory the daemon's sockets are in, which a launch attaches the app to.
+    sockets: PathBuf,
     /// Where app containers live on macOS, beside the runtime profile.
     #[cfg(target_os = "macos")]
     data_home: PathBuf,
@@ -54,6 +56,9 @@ pub struct Apps {
     #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
+    /// The apps this runtime started on a host's behalf with their connections handed to them
+    /// (`crate::Host::launch`): apps the broker knows by those connections, never the shell.
+    handed: Launched,
     /// The apps this runtime's own process is the windowless endpoint of,
     /// by app and workspace.
     own: Mutex<std::collections::BTreeSet<(String, String)>>,
@@ -70,22 +75,30 @@ pub struct Apps {
 pub(crate) trait LaunchGrantsSource: Send + Sync {
     /// What a launch into `workspace` hands its apps
     /// ([`tilo_desktop_model::Workspace::launch_grants`]).
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+        )
+    )]
     fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants;
 }
 
 impl Apps {
-    /// The apps of the profile at `profile`, serving `workspace`, from the stores
-    /// the environment names.
+    /// The apps of the profile at `profile`, serving `workspace` with the daemon's sockets in
+    /// `sockets`, from the stores the environment names.
     #[must_use]
-    pub fn from_env(profile: &Path, workspace: &str) -> Self {
+    pub fn from_env(profile: &Path, sockets: &Path, workspace: &str) -> Self {
         let home = tilo_paths::home();
-        let apps = Self::new(
+        let mut apps = Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
             workspace,
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
         );
+        sockets.clone_into(&mut apps.sockets);
         apps.register_installed_surfaces();
         apps
     }
@@ -108,11 +121,13 @@ impl Apps {
             catalog,
             workspace: workspace.to_owned(),
             root: profile.to_path_buf(),
+            sockets: profile.to_path_buf(),
             #[cfg(target_os = "macos")]
             data_home,
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched: Arc::default(),
+            handed: Launched::default(),
             own: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
@@ -132,6 +147,25 @@ impl Apps {
         self.own
             .lock_recover()
             .remove(&(app.to_owned(), workspace.to_owned()));
+    }
+
+    /// Whether `pid` is an app this runtime started, or a process one of them started: the process
+    /// it launched or any of its descendants, and on Linux any process in an app's own scope,
+    /// which a reused pid never is.
+    pub(crate) fn started_as_app(&self, pid: u32) -> bool {
+        in_app_scope(pid)
+            || ancestry(pid)
+                .any(|process| self.launched.is_live(process) || self.handed.is_live(process))
+    }
+
+    /// Note `pid` as `app`, started with its connections handed to it: never the shell. Records
+    /// of processes gone since are let go.
+    pub(crate) fn handed_connections(&self, pid: u32, app: &str) {
+        self.handed
+            .0
+            .lock_recover()
+            .retain(|process, record| process_start_time(*process) == Some(record.start_time));
+        self.handed.record(pid, app, &self.workspace);
     }
 
     /// Whether `pid` is this runtime's own process serving `app` in
@@ -157,6 +191,13 @@ impl Apps {
 
     /// What a launch into this runtime's workspace is granted: the
     /// workspace's own sandbox, and nothing until a source is open.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+        )
+    )]
     fn launch_grants(&self) -> collab_types::caps::LaunchGrants {
         self.grants
             .get()
@@ -167,6 +208,13 @@ impl Apps {
 
     /// What this runtime's launch of `app` hands it: the workspace's grants
     /// that name the app, as `tilo-launcher`'s capability file carries them.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            dead_code,
+            reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+        )
+    )]
     fn app_grants(&self, app: &InstalledApp) -> collab_types::caps::LaunchGrants {
         self.launch_grants().for_app(app.app_id.as_str())
     }
@@ -318,6 +366,14 @@ impl Apps {
 
     /// Launch `app_id` into this profile's workspace through the platform
     /// launcher; the launch's handle, recorded for attestation.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            unreachable_code,
+            unused_variables,
+            reason = "with no app sandbox here, the launch is refused before it starts"
+        )
+    )]
     pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
         if workspace != self.workspace {
             return Err(format!(
@@ -327,9 +383,9 @@ impl Apps {
         let app = self.launchable(app_id)?;
         self.run_with_signed_surface(&app);
         let sockets = Sockets {
-            collab: self.root.join(COLLAB_SOCKET),
-            identity: self.root.join(IDENTITY_SOCKET),
-            blobs: self.root.join(BLOB_SOCKET),
+            collab: self.sockets.join(COLLAB_SOCKET),
+            identity: self.sockets.join(IDENTITY_SOCKET),
+            blobs: self.sockets.join(BLOB_SOCKET),
         };
         #[cfg(target_os = "linux")]
         let original = self.original_launch(&app)?;
@@ -474,6 +530,13 @@ impl LauncherServices for Apps {
 }
 
 /// The profile's service sockets, as an app is connected to them.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    expect(
+        dead_code,
+        reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
+    )
+)]
 struct Sockets {
     collab: PathBuf,
     identity: PathBuf,
@@ -593,9 +656,70 @@ impl Launched {
         same && process_start_time(pid) == Some(recorded)
     }
 
+    /// Whether `pid` is still a process recorded here, whatever it was launched as.
+    fn is_live(&self, pid: u32) -> bool {
+        let recorded = self
+            .0
+            .lock_recover()
+            .get(&pid)
+            .map(|record| record.start_time);
+        recorded.is_some() && process_start_time(pid) == recorded
+    }
+
     /// Forget `pid`, once its process has been reaped.
     fn forget(&self, pid: u32) {
         self.0.lock_recover().remove(&pid);
+    }
+}
+
+/// `pid` and the processes it descends from, nearest first, up to (not including) the first
+/// process. Only `pid` itself where the system names no parents.
+fn ancestry(pid: u32) -> impl Iterator<Item = u32> {
+    /// Deeper than any process tree an app starts.
+    const MAX_DEPTH: usize = 64;
+    std::iter::successors(Some(pid), |process| parent_of(*process))
+        .take_while(|process| *process > 1)
+        .take(MAX_DEPTH)
+}
+
+/// The parent of process `pid` (`/proc/<pid>/stat` field 4), on Linux.
+fn parent_of(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(')')?;
+        rest.split_whitespace().nth(4 - 3)?.parse().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Whether process `pid` runs in the scope the launcher gives every app it starts
+/// (`launcher::scope`): `app-tilo-<app>-<pid>.scope`.
+fn in_app_scope(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(cgroups) = std::fs::read_to_string(format!("/proc/{pid}/cgroup")) else {
+            return false;
+        };
+        cgroups
+            .lines()
+            .filter_map(|line| line.strip_prefix("0::"))
+            .flat_map(|path| path.split('/'))
+            .any(|unit| {
+                unit.starts_with(launcher::scope::UNIT_PREFIX)
+                    && std::path::Path::new(unit)
+                        .extension()
+                        .is_some_and(|extension| extension == "scope")
+            })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
     }
 }
 

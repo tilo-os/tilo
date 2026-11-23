@@ -16,7 +16,7 @@ use std::cell::Cell;
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
-use threshold_identity::bip39;
+use tilo_user_identity::recovery_words;
 use tilo_user_identity::root_statement;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -255,7 +255,7 @@ impl Root {
     /// here; the page shows the words to the person to keep.
     #[wasm_bindgen(getter, js_name = recoveryWords)]
     pub fn recovery_words(&self) -> Result<String, JsValue> {
-        bip39::encode(&self.seed)
+        recovery_words::encode(&self.seed)
             .map(|words| words.to_string())
             .ok_or_else(|| error_with("malformed", "a root seed did not encode as words"))
     }
@@ -433,8 +433,8 @@ fn normalized_words(text: &str) -> String {
 #[wasm_bindgen(js_name = rootWordsPublicKey)]
 pub fn root_words_public_key(words: &str) -> Result<String, JsValue> {
     let phrase = normalized_words(words);
-    let seed =
-        bip39::decode(&phrase).map_err(|error| error_with("malformed", &error.to_string()))?;
+    let seed = recovery_words::decode(&phrase)
+        .map_err(|error| error_with("malformed", &error.to_string()))?;
     let seed: [u8; 32] = seed
         .as_slice()
         .try_into()

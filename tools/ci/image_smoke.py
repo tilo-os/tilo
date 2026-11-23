@@ -284,7 +284,7 @@ def check_units() -> None:
             ok(f"the {len(paths)} enabled {scope} units verify")
 
 
-# The elements Tilo's own code builds pipelines from (crates/platform/tilo-media, the music,
+# The elements Tilo's own code builds pipelines from (crates/engines/tilo-media, the music,
 # video and voice paths, recording, screen streaming) and the software path of the miracast
 # crate tilo-projector runs on.
 GST_ELEMENTS = [

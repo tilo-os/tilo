@@ -61,7 +61,7 @@ release does and fails on either, and on a crate of an engine that has moved
 out.
 
 An engine a few apps use moves out of the runtime into an engine library
-of its own: a crate under `crates/runtime/engines/<name>/` that is a Rust
+of its own: a crate under `crates/engines/loadable/<name>/` that is a Rust
 `dylib` chained on the runtime (Typst: `libtilo_typst_engine.so` for Typst
 Editor; Spotify playback: `libtilo_spotify_engine.so` for Music; the wet-media
 simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
@@ -212,7 +212,7 @@ in every process before `main`. Where the runtime needs such a table, it is
 laid out as offsets into one string literal instead, which is plain
 `.rodata`: MIME types by extension (`tilo-mime`, generated from mime_guess by
 `tools/mime-table.py`), the BIP39 wordlist of recovery phrases
-(`threshold-identity`'s `bip39.rs`), pulldown-cmark's HTML entities
+(`tilo-user-identity`'s `recovery_words.rs`), pulldown-cmark's HTML entities
 (`vendor/pulldown-cmark`) and regex-syntax's Unicode name and case-folding
 tables (`vendor/regex-syntax`, written by `tools/regex-syntax-tables.py`).
 The surface check fails on mime_guess or bip39 back in the runtime
@@ -291,7 +291,7 @@ used, `runtime_collab`, `tilo_fs_client`, `read_fonts` and `skrifa` gave back
 The wasm painter interpreter is no longer in the runtime: `wasmi`,
 `wasmi_ir` and `wasmi_core` are an engine of their own that the toolkit opens
 the first time a theme names a painter set that is not built in
-(`libtilo_theme_painter_engine.so`, crates/runtime/engines/theme-painter,
+(`libtilo_theme_painter_engine.so`, crates/engines/loadable/theme-painter,
 through the toolkit's `lazy-painter`), so no app maps them until then. In the
 runtime, its `.text` fell 40 KB with the interpreter; the loader and the
 interpreter's `Refusal` in the theme SDK came to a little more, so the file is

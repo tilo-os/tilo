@@ -38,9 +38,15 @@ mod cases {
         phase loading_the_same_module_twice_compiles_once;
         {
             let w = World::new();
+            // The counter and the library loaded beside it, which every package compiles against.
+            let compiled = w.rt.compiled_modules();
             let again = w.rt.load_package(&counter_wasm(), counter_meta()).unwrap();
             assert_eq!(again, w.counter);
-            assert_eq!(w.rt.compiled_modules(), 1);
+            assert_eq!(
+                w.rt.compiled_modules(),
+                compiled,
+                "the same module compiles once"
+            );
             assert_eq!(Runtime::module_hash(&counter_wasm()), w.counter);
         }
 

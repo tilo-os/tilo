@@ -12,6 +12,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use settings_store::hardware::InputDeviceKind;
+
 use super::tablet::TabletConfig;
 
 /// Slowest auto-repeat the `key_repeat` slider can select, in keys per second: below this, holding
@@ -89,7 +91,7 @@ pub struct InputConfig {
     /// Multiplier on every scroll distance, wheel and finger alike. Applied by the compositor
     /// rather than libinput, which has no such setting.
     pub scroll_speed: f64,
-    /// Each drawing tablet's settings, by [`device_key`].
+    /// Each drawing tablet's settings, by [`settings_store::hardware::input_device_key`].
     pub tablets: BTreeMap<String, TabletConfig>,
 }
 
@@ -120,12 +122,6 @@ impl Default for InputConfig {
             tablets: BTreeMap::new(),
         }
     }
-}
-
-/// The identity per-device settings are keyed by: USB vendor and product and the device's name, as
-/// Settings stores them.
-pub fn device_key(vendor: u32, product: u32, name: &str) -> String {
-    format!("{vendor:04x}:{product:04x}:{}", name.trim())
 }
 
 impl InputConfig {
@@ -217,18 +213,6 @@ pub struct DeviceCaps {
     pub is_tablet_pad: bool,
 }
 
-/// The kind of device, as Settings groups devices.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum DeviceKind {
-    Touchpad,
-    Mouse,
-    Keyboard,
-    Touchscreen,
-    Tablet,
-    TabletPad,
-    Other,
-}
-
 /// A libinput send-events mode, independent of the libinput bindings so the plan stays a pure
 /// value.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -261,21 +245,21 @@ impl DeviceCaps {
 
     /// The kind this device is. A tablet's pad and pen are checked first: both can also report
     /// pointer capabilities.
-    pub const fn kind(&self) -> DeviceKind {
+    pub const fn kind(&self) -> InputDeviceKind {
         if self.is_tablet_pad {
-            DeviceKind::TabletPad
+            InputDeviceKind::TabletPad
         } else if self.is_tablet_tool {
-            DeviceKind::Tablet
+            InputDeviceKind::Tablet
         } else if self.is_touchpad() {
-            DeviceKind::Touchpad
+            InputDeviceKind::Touchpad
         } else if self.is_touch {
-            DeviceKind::Touchscreen
+            InputDeviceKind::Touchscreen
         } else if self.is_pointer {
-            DeviceKind::Mouse
+            InputDeviceKind::Mouse
         } else if self.is_keyboard {
-            DeviceKind::Keyboard
+            InputDeviceKind::Keyboard
         } else {
-            DeviceKind::Other
+            InputDeviceKind::Other
         }
     }
 }
@@ -736,31 +720,31 @@ mod tests {
 
         phase device_kind_puts_each_device_in_one_group;
         {
-            assert_eq!(touchpad().kind(), DeviceKind::Touchpad);
-            assert_eq!(mouse().kind(), DeviceKind::Mouse);
-            assert_eq!(keyboard().kind(), DeviceKind::Other);
+            assert_eq!(touchpad().kind(), InputDeviceKind::Touchpad);
+            assert_eq!(mouse().kind(), InputDeviceKind::Mouse);
+            assert_eq!(keyboard().kind(), InputDeviceKind::Other);
             let typing = DeviceCaps {
                 is_keyboard: true,
                 ..DeviceCaps::default()
             };
-            assert_eq!(typing.kind(), DeviceKind::Keyboard);
+            assert_eq!(typing.kind(), InputDeviceKind::Keyboard);
             let screen = DeviceCaps {
                 is_touch: true,
                 ..DeviceCaps::default()
             };
-            assert_eq!(screen.kind(), DeviceKind::Touchscreen);
+            assert_eq!(screen.kind(), InputDeviceKind::Touchscreen);
             let pen = DeviceCaps {
                 is_tablet_tool: true,
                 is_pointer: true,
                 ..DeviceCaps::default()
             };
-            assert_eq!(pen.kind(), DeviceKind::Tablet, "a pen is not a mouse");
+            assert_eq!(pen.kind(), InputDeviceKind::Tablet, "a pen is not a mouse");
             let pad = DeviceCaps {
                 is_tablet_pad: true,
                 is_keyboard: true,
                 ..DeviceCaps::default()
             };
-            assert_eq!(pad.kind(), DeviceKind::TabletPad);
+            assert_eq!(pad.kind(), InputDeviceKind::TabletPad);
         }
 
         phase a_pen_is_never_turned_by_the_mouse_handedness;
@@ -781,8 +765,16 @@ mod tests {
         phase device_keys_match_what_settings_stores;
         {
             assert_eq!(
-                device_key(0x056a, 0x0374, " Wacom Intuos "),
+                settings_store::hardware::input_device_key(0x056a, 0x0374, " Wacom Intuos "),
                 "056a:0374:Wacom Intuos"
+            );
+            assert_eq!(
+                settings_store::hardware::input_device_key(0x0, 0x1, ""),
+                "0000:0001:"
+            );
+            assert_eq!(
+                settings_store::hardware::input_device_key(0xffff, 0x00ab, "\tKeyboard\n"),
+                "ffff:00ab:Keyboard"
             );
         }
 

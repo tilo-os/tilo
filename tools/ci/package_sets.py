@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """The workspace's package sets that CI lints and builds.
 
-  package_sets.py android   apps with an `<app>-android` example
   package_sets.py browser   crates that build for the browser (wasm-bindgen)
   package_sets.py wasm      those, and the crates the page runtime builds for the
                             browser through them
@@ -17,8 +16,6 @@ import re
 import subprocess
 import sys
 
-# Example apps.
-EXAMPLE_APPS = "examples/apps/"
 # Patched vendored crates with test suites of their own, mapped to the paths
 # those tests read. The workspace builds them only as path dependencies, so its
 # tests never run theirs; tools/ci/test-vendored-crates.sh tests its keys when
@@ -30,31 +27,12 @@ VENDORED_TEST_CRATES: dict[str, tuple[str, ...]] = {
 }
 
 
-def android_apps(packages: dict[str, dict]) -> set[str]:
-    """Apps that opt into the Android host by declaring an `<app>-android` example."""
-    return {
-        name for name, package in packages.items()
-        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
-               for target in package.get("targets", ()))
-    }
-
-
 def browser_crates(packages: dict[str, dict]) -> set[str]:
     """Crates that build for the browser: they depend on `wasm-bindgen`."""
     return {
         name for name, package in packages.items()
         if any(dependency.get("name") == "wasm-bindgen" and dependency.get("kind") is None
                for dependency in package.get("dependencies", ()))
-    }
-
-
-def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
-    """Packages under examples/apps/."""
-    base = root.resolve()
-    return {
-        name for name, package in packages.items()
-        if Path(package["manifest_path"]).resolve().parent.relative_to(base).as_posix()
-        .startswith(EXAMPLE_APPS)
     }
 
 
@@ -80,23 +58,6 @@ WASM_ALSO = {
 # The crate the web build compiles into the module a browser loads: the page's
 # runtime (`build.sh`).
 PAGE_ENTRY = "tilo-browser-runtime"
-
-
-def page_closure(packages: dict[str, dict]) -> set[str]:
-    """The workspace crates the page compiles for the browser: its entry, and every
-    workspace crate the entry reaches through normal dependencies. A change to any
-    of them can break the page while every crate still builds natively."""
-    if PAGE_ENTRY not in packages:
-        return set()
-    reached = {PAGE_ENTRY}
-    pending = [PAGE_ENTRY]
-    while pending:
-        for dependency in packages[pending.pop()].get("dependencies", ()):
-            name = dependency.get("name")
-            if dependency.get("kind") is None and name in packages and name not in reached:
-                reached.add(name)
-                pending.append(name)
-    return reached
 
 
 def wasm_crates(packages: dict[str, dict]) -> set[str]:
@@ -200,7 +161,7 @@ def per_arch(packages: dict[str, dict]) -> set[str]:
     return found
 
 
-SETS = {"android": android_apps, "browser": browser_crates, "wasm": wasm_crates, "per-arch": per_arch}
+SETS = {"browser": browser_crates, "wasm": wasm_crates, "per-arch": per_arch}
 
 
 def main(argv: list[str]) -> int:

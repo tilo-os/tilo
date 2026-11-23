@@ -752,7 +752,7 @@ ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=publisher_identity \
     --mount=type=bind,from=chromium-engine,source=/,target=/run/tilo-chromium,ro \
-    --mount=type=bind,source=crates/sdk/tilo-webview/src/chromium/runtime.rs,target=/run/tilo-chromium-runtime.rs,ro \
+    --mount=type=bind,source=crates/engines/tilo-webview/src/chromium/runtime.rs,target=/run/tilo-chromium-runtime.rs,ro \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
@@ -815,7 +815,7 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 #
 # Each app is in the image once, as its installed tree and signed record. The
 # dev VM daemon, the one reader of a complete archive, rebuilds it from those
-# (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
+# (crates/os/tilo-device-steps/src/cohort.rs); a second copy of every app as a `.tapp`
 # was half of the app bytes in every update.
 RUN --mount=type=secret,id=publisher_identity \
     --mount=type=bind,source=os/scripts/signed-records.py,target=/usr/local/libexec/tilo-signed-records.py,ro \
@@ -883,9 +883,9 @@ COPY --from=apps-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 FROM ${BASE_REF} AS os-fonts
 RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifacts \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tilo-src/crates/ui/ui-core/assets/fonts,ro \
     python3 /tilo-src/tools/font-catalog.py prepare \
-        /tilo-src/crates/sdk/ui-core/assets/fonts /out/fonts --scope os \
+        /tilo-src/crates/ui/ui-core/assets/fonts /out/fonts --scope os \
         --cache /var/cache/tilo-font-artifacts
 
 # ---- The Plymouth theme, rendered -------------------------------------------
@@ -942,7 +942,7 @@ RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/out/language-packs,target=/tilo-language-packs,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tilo-src/crates/ui/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
     --mount=type=bind,source=os/scripts/signed-records.py,target=/tilo-src/signed-records.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \
@@ -1196,9 +1196,6 @@ COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-exten
     /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf
-# The component manifest a live system update classifies changes by
-# (tilo-extension live:*): the staged image's own copy says what each path is.
-COPY os/components.toml /usr/share/tilo/components.toml
 COPY os/usr/lib/tmpfiles.d/tilo-extension.conf /usr/lib/tmpfiles.d/tilo-extension.conf
 COPY os/etc/polkit-1/rules.d/49-tilo-extension.rules /etc/polkit-1/rules.d/49-tilo-extension.rules
 COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
@@ -1466,7 +1463,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     #
     # `ntfs-3g` is the userspace NTFS driver behind "Open safely": the NTFS
     # mount service runs it confined, as its own account, for drives the person
-    # does not know (crates/system/ntfs-mount). Its probe also checks a volume
+    # does not know (crates/os/ntfs-mount). Its probe also checks a volume
     # for hibernation and an unfinished journal before any driver mounts it.
     #
     # NetworkManager is Tilo's sole network and DNS authority. The Fedora bootc
@@ -1556,7 +1553,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # glibc language pack so each accepted profile remains functional after first
     # boot; advertising languages backed by only glibc-langpack-en would silently
     # apply an unusable LANG value and fall back to English. Keep this curated set
-    # in lock-step with crates/session/install-profile-model/locales.txt rather than pulling
+    # in lock-step with crates/os/install-profile-model/locales.txt rather than pulling
     # the much larger all-locales archive into every download. libevdev is the
     # runtime library of joycond (see joycond-builder).
     && dnf install -y --setopt=reposdir=/repo \
@@ -2193,6 +2190,43 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-time-zone.rules \
     os/etc/polkit-1/rules.d/49-tilo-battery-cap.rules \
     /etc/polkit-1/rules.d/
+# The device's steps: one templated unit per step, which the device's daemon (user tilo) starts
+# for an invocation it admitted, and the rule that lets it start and stop exactly those.
+COPY \
+    os/usr/lib/systemd/system/tilo-device-account-create@.service \
+    os/usr/lib/systemd/system/tilo-device-account-list@.service \
+    os/usr/lib/systemd/system/tilo-device-account-restart@.service \
+    os/usr/lib/systemd/system/tilo-device-account-rm@.service \
+    os/usr/lib/systemd/system/tilo-device-account-show@.service \
+    os/usr/lib/systemd/system/tilo-device-app-install@.service \
+    os/usr/lib/systemd/system/tilo-device-awake@.service \
+    os/usr/lib/systemd/system/tilo-device-boot-confirm@.service \
+    os/usr/lib/systemd/system/tilo-device-build@.service \
+    os/usr/lib/systemd/system/tilo-device-ci-layer@.service \
+    os/usr/lib/systemd/system/tilo-device-control@.service \
+    os/usr/lib/systemd/system/tilo-device-device-unlock-enrol@.service \
+    os/usr/lib/systemd/system/tilo-device-exec@.service \
+    os/usr/lib/systemd/system/tilo-device-gc@.service \
+    os/usr/lib/systemd/system/tilo-device-input@.service \
+    os/usr/lib/systemd/system/tilo-device-install-packages@.service \
+    os/usr/lib/systemd/system/tilo-device-layer-import@.service \
+    os/usr/lib/systemd/system/tilo-device-layer-list@.service \
+    os/usr/lib/systemd/system/tilo-device-layer-verify@.service \
+    os/usr/lib/systemd/system/tilo-device-poweroff@.service \
+    os/usr/lib/systemd/system/tilo-device-reboot@.service \
+    os/usr/lib/systemd/system/tilo-device-rollback@.service \
+    os/usr/lib/systemd/system/tilo-device-seat-claim@.service \
+    os/usr/lib/systemd/system/tilo-device-seat-release@.service \
+    os/usr/lib/systemd/system/tilo-device-shot@.service \
+    os/usr/lib/systemd/system/tilo-device-status@.service \
+    os/usr/lib/systemd/system/tilo-device-logs@.service \
+    os/usr/lib/systemd/system/tilo-device-network-wake@.service \
+    os/usr/lib/systemd/system/tilo-device-swap@.service \
+    os/usr/lib/systemd/system/tilo-device-tree-sync@.service \
+    os/usr/lib/systemd/system/tilo-device-upgrade@.service \
+    os/usr/lib/systemd/system/tilo-device-userspace-apply@.service \
+    /usr/lib/systemd/system/
+COPY os/etc/polkit-1/rules.d/49-tilo-device-steps.rules /etc/polkit-1/rules.d/49-tilo-device-steps.rules
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 # Graphical installer. Primarily consumed by the layered installer image
@@ -2430,7 +2464,7 @@ RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselec
 #
 # 70-tilo-console.rules hands a VM's console port (org.tilo.console.0, which
 # only a hypervisor can attach) to the greetd user, whose greeter answers the
-# tilo-control action protocol there (crates/session/console-control).
+# tilo-control action protocol there (crates/os/console-control).
 #
 # 70-tilo-ddc.rules hands the display controllers' I²C buses to the active
 # session so external monitors' brightness can be set over DDC/CI; the
@@ -2452,7 +2486,8 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf \
+    os/usr/lib/tmpfiles.d/tilo-device-control.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
 
@@ -2499,7 +2534,7 @@ COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-po
 COPY os/etc/systemd/ /etc/systemd/
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
-COPY crates/session/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
+COPY crates/os/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync transport and diagnostics doc).
@@ -3248,12 +3283,6 @@ COPY --chmod=0755 os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-te
 # a caller forgets the argument, and an image that silently ships generation 0 is
 # one whose rollback floor can never move — the failure would appear months later
 # as a machine that will not unseal.
-#
-# The same step writes the enrollment methods this image offers, in the one file
-# every image declares them in: the token made for this machine, the code it
-# shows for a device of the person's to approve, and a device of theirs finding
-# it on the local network. A desktop has someone at it to confirm the pairing;
-# the server image declares only the first two.
 ARG TILO_GENERATION
 RUN case "${TILO_GENERATION}" in \
       ''|*[!0-9]*) \
@@ -3265,8 +3294,6 @@ RUN case "${TILO_GENERATION}" in \
     esac \
  && install -d -m 0755 /usr/lib/tilo \
  && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
- && printf '# Tilo OS: every way to enroll. `token` is the single-use token made\n# for this machine, `code` the short code it shows for a device of yours to\n# approve, `local-network` a device of yours finding it on the network.\ntoken\ncode\nlocal-network\n' \
-      > /usr/lib/tilo/enrollment-methods \
  && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"

@@ -214,7 +214,7 @@ fn signed_write_to(
     use automerge::transaction::Transactable as _;
     let before = record.get_heads();
     record.put(automerge::ROOT, key, key).unwrap();
-    record.commit_edit("fixture", key);
+    record.commit_edit("fixture", key, &fixture.certificate.user_public_key);
     let changes = record.save_after(&before);
     let message = fixture
         .owner
@@ -522,6 +522,7 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
         times.push(write_text(
             &fixture.owner,
             &fixture.key,
+            &fixture.certificate.user_public_key,
             fixture.now,
             workspace,
             &document,
@@ -582,6 +583,7 @@ async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
     write_text(
         &reopened,
         &fixture.key,
+        &fixture.certificate.user_public_key,
         fixture.now,
         workspace,
         "r7",
@@ -626,6 +628,7 @@ fn answer_everything(fixture: &Fixture, workspace: crate::owner::WorkspaceId, or
 fn write_text(
     owner: &NativeWorkspaceOwner,
     key: &SigningKey,
+    person: &[u8; 32],
     now: SystemTime,
     workspace: crate::owner::WorkspaceId,
     document: &str,
@@ -644,7 +647,7 @@ fn write_text(
             let before = doc.get_heads();
             doc.put(automerge::ROOT, "text", text)
                 .map_err(|error| error.to_string())?;
-            doc.commit_edit("fixture", "text");
+            doc.commit_edit("fixture", "text", person);
             view.peer()
                 .prepare_signed_mutation(
                     "so.tilo.chat",
@@ -768,6 +771,7 @@ async fn a_write_commits_at_what_it_changed_however_many_documents() {
             times.push(write_text(
                 &fixture.owner,
                 &fixture.key,
+                &fixture.certificate.user_public_key,
                 fixture.now,
                 workspace,
                 &format!("r{n}"),

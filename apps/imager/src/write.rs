@@ -595,13 +595,7 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(
-        feature = "flatpak-media-writer",
-        all(test, feature = "native-capture-qualification")
-    )
-))]
+#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
 fn open_udisks_device(target: &TargetDrive) -> io::Result<std::fs::File> {
     imager_backend::write::udisks::open_udisks_device(target)
 }
@@ -627,7 +621,7 @@ pub(crate) fn with_qualification_udisks_target<T>(
 fn run_udisks_job(
     req: &WriteRequest,
     should_cancel: &impl Fn() -> bool,
-    mut on_progress: impl FnMut(Progress),
+    on_progress: impl FnMut(Progress),
 ) -> JobResult {
     imager_backend::write::job::run_udisks_job(
         &req.target,

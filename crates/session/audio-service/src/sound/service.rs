@@ -47,7 +47,7 @@ impl From<&media::audio::AudioStream> for Stream {
     fn from(stream: &media::audio::AudioStream) -> Self {
         Self {
             node: stream.id,
-            app: stream.app.clone(),
+            application: stream.app.clone(),
             media: stream.media_name.clone(),
             playback: stream.playback,
             target: stream.target_id,

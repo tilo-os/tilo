@@ -67,12 +67,43 @@ d-tmqqtkeb = Notes
 d-qgq6mcy7 = Set aside
     .doc = Notes carried over from the native Notes app that it no longer showed: a page whose parent was deleted, kept here rather than dropped, out of the tree.
 
+d-dq2mnb22 = Tags
+    .doc = The tags the notebook's notes carry, one a name notes hold by: a note keeps its tags as words, and the notebook keeps the list a person names, renames and deletes them from.
+
+d-qj3f52qw = Tag
+    .doc = A tag of the notebook: a name notes carry, listed once so a person reads, renames and deletes it in one place, and every note that carries it follows.
+    .noun = { $count ->
+        [one] tag
+       *[other] tags
+    }
+
+d-itadoh74 = Name
+
+d-cvwcei36 = Found
+    .doc = One place in a note the words a person looked for stand: the paragraph they are in, counted from the note's first, and its words.
+    .noun = { $count ->
+        [one] found
+       *[other] founds
+    }
+
+d-dxxdlopq = At
+    .doc = The paragraph, counted from the note's first (1).
+
+d-2vlaqp45 = Words
+    .doc = The paragraph's words.
+
+d-cvwcei36-filter-at = At
+
 d-qymo5lg2 = New note
-    .doc = Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already.
+    .doc = Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already.
 
 d-qymo5lg2-title = Title
 
 d-qymo5lg2-body = Body
+
+d-qymo5lg2-parent = Parent
+
+d-qymo5lg2-after = After
 
 d-37dxigeq = New sub-note
     .doc = Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the words that stood there): the note the window has open too, so a person writing one starts the note it stands under without finding its row.
@@ -163,21 +194,51 @@ d-s4ewx4fo-title = Title
 d-s4ewx4fo-text = Text
 
 d-gc34cbhl = File a note
-    .doc = Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
+    .doc = Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
 
 d-gc34cbhl-title = Title
 
-d-gc34cbhl-tag = Tag
+d-gc34cbhl-name = Name
+
+d-j33acdci = New tag
+    .doc = Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by.
+    .w-a-tag-needs-a-name = A tag needs a name
+
+d-j33acdci-name = Name
 
 d-7ow26bju = Tag
-    .doc = Gives a note a tag.
+    .doc = Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of that name yet: a name is how a person, an agent and a script know a tag.
+    .w-a-tag-needs-a-name = A tag needs a name
 
-d-7ow26bju-t = T
+d-7ow26bju-name = Name
 
 d-3u3bevec = Untag
-    .doc = Untags a note.
+    .doc = Takes the tag named `name` off a note.
 
-d-3u3bevec-t = T
+d-3u3bevec-name = Name
+
+d-ja7xx6nf = Rename
+    .doc = Names a tag of the notebook: every note that carries the old name carries the new one.
+    .w-a-tag-needs-a-name = A tag needs a name
+    .w-the-notebook-has-that-tag = The notebook has that tag
+
+d-ja7xx6nf-tag = Tag
+
+d-ja7xx6nf-wanted = Wanted
+
+d-6hqlshe7 = Delete
+    .doc = Deletes a tag of the notebook: no note carries the name any more, and the notebook stops listing it.
+
+d-6hqlshe7-tag = Tag
+
+d-eec4pye2 = Carry word tags
+    .doc = Lists the tags the notebook's notes carry, once each: what a notebook written before the notebook listed its tags needs, and what a start that wrote tags straight onto notes left.
+
+d-3ngyieqa = Find in note
+    .doc = Finds the words `text` in one note, the case of their letters aside, and answers each paragraph holding them with its place in the note and its words: what the window's find bar shows, reachable by an agent or the palette that knows the note but not where in it to look.
+    .w-type-something-to-find = Type something to find
+
+d-3ngyieqa-text = Text
 
 d-jkqp27g7 = React
     .doc = Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a press on one of its pills, or the pick of the one its add button opened.
@@ -185,10 +246,12 @@ d-jkqp27g7 = React
 d-jkqp27g7-emoji = Emoji
 
 d-4s5iqnfo = Insert image
-    .doc = Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as.
+    .doc = Puts a picture in a note, where its words end, described by `alt` for a reader who cannot see it: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as.
     .did = added an image
 
 d-4s5iqnfo-image = Image
+
+d-4s5iqnfo-alt = Alt
 
 d-tmlnqj7q = Keep image
     .doc = Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it.
@@ -265,12 +328,24 @@ d-7in2x6ql = Move after~present
 
 d-i653dg7r = Append to note~present
 
+d-ureyllbi = New tag~present
+
+d-mapbyngl = Tag~present
+
+d-2f5tmgbl = Rename tag~present
+
 d-akcqjax3 = Notebook
     .w-outline = Outline
+    .w-tags = Tags
+    .w-no-tags-yet = No tags yet
+    .w-new-tag = New tag
     .w-reacted-in-the-native-notes = Reacted in the native Notes: { $reacted }
     .w-write-something = Write something
     .w-image = image
     .w-page = page
+
+d-aikvtwt5 = Notes tagged
+    .w-nothing-carries-yet = Nothing carries { $name } yet
 
 d-x4im3xs5 = Notebook head
 

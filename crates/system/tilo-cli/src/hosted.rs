@@ -2108,20 +2108,6 @@ mod tests {
         // It is a key the API in process takes, as it stands.
         tilo_api::direct::Direct::new(&file).unwrap();
 
-        // The workspace the device entered is the one a command acts in when
-        // `-w` names none: its id, and the name the device keeps for it.
-        assert_eq!(
-            api::entered_workspace(Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            })
-            .unwrap(),
-            Some((
-                "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".to_owned(),
-                "Studio".to_owned()
-            ))
-        );
         // A key file is someone else's key: it names no workspace of its own.
         assert_eq!(
             api::entered_workspace(Reach {

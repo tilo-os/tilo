@@ -319,6 +319,13 @@ impl StatePeer {
         write: &SignedOp,
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), OpenedRefusal> {
+        // A compaction is no change of its own: it was decided as a compaction when it was
+        // admitted, and the writes it folds were each decided as themselves before it folded
+        // them. Decided again as a plain write, it would claim the workspace's own compact
+        // action, which no member but its governor holds.
+        if write.kind == OpKind::Compaction {
+            return Ok(());
+        }
         // A write small enough to carry as itself is decided whole, as
         // admission decides the same write in the clear.
         if let Ok(payload) = mutation.encode() {

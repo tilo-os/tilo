@@ -108,14 +108,16 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
     match cmd {
         FoldersCmd::List | FoldersCmd::Status => Ok(list(dir, json)),
         FoldersCmd::Start => {
-            let running = start()?;
+            start()?;
             if !json {
-                println!("{}", running_said(&running));
+                println!(
+                    "Your folders are kept in sync by Tilo's service, started again at every login."
+                );
             }
             Ok(list(dir, json))
         }
         FoldersCmd::Stop => {
-            crate::service::stop()?;
+            tilo_api::daemon::service::stop();
             say(
                 json,
                 &json!({"stopped": true}),
@@ -174,25 +176,14 @@ fn say(json: bool, value: &Value, text: &str) {
     }
 }
 
-fn running_said(running: &crate::service::Running) -> &'static str {
-    match running {
-        crate::service::Running::Service => {
-            "Your folders are kept in sync by a user service, started again at every login."
-        }
-        crate::service::Running::Process => {
-            "Your folders are kept in sync by a process of its own: no user service keeps them here, so nothing starts it again after this computer restarts or after the program that started it ends."
-        }
-    }
-}
-
 /// Start the peer when none is there; one that is there is waited for, never replaced for being
 /// slow.
-fn start() -> Result<crate::service::Running> {
+fn start() -> Result<()> {
     if !crate::login::logged_in() {
         bail!("{}", crate::login::NOT_LOGGED_IN);
     }
     crate::login::trust_test_certificates()?;
-    crate::service::start()
+    tilo_api::daemon::service::start().map_err(anyhow::Error::msg)
 }
 
 /// What keeps the folders in sync, started when nothing does: `tilo status`
@@ -586,23 +577,7 @@ fn say_answered_late(peer: &Value) {
     );
 }
 
-/// `n` bytes as a person reads them: one decimal in the largest unit that
-/// holds a whole one.
-pub(crate) fn size(n: u64) -> String {
-    let units = [
-        ("TB", 1_000_000_000_000_u64),
-        ("GB", 1_000_000_000),
-        ("MB", 1_000_000),
-        ("KB", 1_000),
-    ];
-    units.iter().find(|(_, scale)| n >= *scale).map_or_else(
-        || format!("{n} B"),
-        |(unit, scale)| {
-            let tenths = n.saturating_mul(10).checked_div(*scale).unwrap_or(0);
-            format!("{}.{} {unit}", tenths / 10, tenths % 10)
-        },
-    )
-}
+use tilo_migrate::engine::size;
 
 /// What `tilo status` prints of the peer's answer to its status request.
 pub(crate) fn describe(status: &serde_json::Value) -> String {

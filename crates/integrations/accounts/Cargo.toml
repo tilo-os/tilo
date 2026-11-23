@@ -1,0 +1,87 @@
+[package]
+name = "accounts"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "The shared online-accounts model: the workspace's account list and one sealed credential vault for every Tilo app."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "accounts"
+path = "src/lib.rs"
+
+[dependencies]
+# Whether the calling thread may wait on the disk: the compositor's frame
+# loop commits the vault on a thread of its own.
+durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+hex.workspace = true
+tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# Credentials are long-lived bearer secrets, so the vault is sealed on disk
+# with XChaCha20-Poly1305 under a 256-bit key held by Secret Service, DPAPI
+# or an owner-only local file; the shared crate owns both the format and
+# the key storage.
+tilo-secret-vault = { version = "0.1.0", path = "../../system/secret-vault" }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+# The vault in a browser page, which has no native config directory.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
+# Settings app does, so every app agrees on one directory.
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
+
+# getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
+# `zeroize` wipes decrypted plaintext from the heap.
+getrandom.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
+uuid.workspace = true
+url.workspace = true
+# A code generator's code is RFC 6238 over HMAC-SHA-1, made inside the vault so
+# that its seed never leaves.
+hmac.workspace = true
+sha1 = "0.11"
+# A server address is judged secure as the cloud sources judge it; the
+# platform's secret store is asked through a bounded child process.
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
+bounded-command = { version = "0.1.0", path = "../../platform/bounded-command" }
+
+# The workspace's accounts as one record (`person`): the resource layer,
+# without any UI.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+# The document the record migrates: a version that kept a field drops it.
+automerge = { workspace = true, optional = true }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+
+[features]
+person = ["dep:tilo-resource", "dep:automerge"]
+# A stand-in for the session's account sign-ins socket, for the cloud service's tests.
+sign-ins-fixture = []
+
+[dev-dependencies]
+# The record's actions are decided by the workspace's roles and grants.
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+
+[[example]]
+name = "account_storage_probe"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Password generation must work without another browser crate enabling entropy.
+getrandom = { workspace = true, features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

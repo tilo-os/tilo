@@ -312,7 +312,7 @@ pub struct StateMeta {
     pub ty: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TypeMeta {
     pub id: String,
     pub name: String,
@@ -334,11 +334,12 @@ pub struct TypeMeta {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untitled: Option<String>,
-    /// `(readers: people)`: the field, by name, holding who reads a record of the type and
-    /// everything under it. Nobody else does, whatever the workspace's grants say.
+    /// `(readers: author)`: who reads a record of the type, when not every member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub readers: Option<String>,
+    pub readers: Option<ReaderRule>,
 }
+
+pub use tilo_action_policy::ReaderRule;
 
 /// What search, a list's filters and agents offer of a type: its filters in order (the first are the
 /// visible chips), the default order and the fields kept out of filters.
@@ -354,53 +355,11 @@ pub struct SearchMeta {
     /// Whether the type declares these with a `search` block rather than taking the defaults.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
-    /// What a resource of the type is to the system's search (`kind conversation`), when the type
-    /// says.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<SearchKind>,
-    /// The fields naming who a resource is with (`people person`), by id, in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub people: Vec<String>,
-}
-
-/// What a resource is to the system's search: it draws a row of the kind as one, and a message
-/// can be sent to a conversation, a person and an agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SearchKind {
-    /// A channel, a group or a direct conversation: a message is sent in it.
-    Conversation,
-    /// One message of a conversation, by who wrote it.
-    Message,
-    /// A person.
-    Person,
-    /// An agent.
-    Agent,
-}
-
-impl SearchKind {
-    pub const ALL: [Self; 4] = [Self::Conversation, Self::Message, Self::Person, Self::Agent];
-
-    /// The word a `kind` line writes it as.
-    #[must_use]
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Conversation => "conversation",
-            Self::Message => "message",
-            Self::Person => "person",
-            Self::Agent => "agent",
-        }
-    }
 }
 
 impl SearchMeta {
     pub fn is_empty(&self) -> bool {
-        self.filters.is_empty()
-            && self.sort.is_none()
-            && self.hidden.is_empty()
-            && !self.declared
-            && self.kind.is_none()
-            && self.people.is_empty()
+        self.filters.is_empty() && self.sort.is_none() && self.hidden.is_empty() && !self.declared
     }
 
     pub fn filter(&self, key: &str) -> Option<&FilterMeta> {
@@ -689,11 +648,6 @@ pub struct ActionMeta {
     /// app with this action, which the platform knows by the manifest's `[providers]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opens: Vec<String>,
-    /// `moderates: true`: the action acts on what other people made, as a moderator does
-    /// (settling a report, deleting a channel). The workspace decides it on its moderation node,
-    /// so the roles' own grants say who may: Moderators and administrators, not plain members.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub moderates: bool,
 }
 
 impl ActionMeta {

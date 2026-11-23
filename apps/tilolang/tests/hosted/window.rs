@@ -6,6 +6,7 @@
 use serde_json::{Map, Value as Json, json};
 use tilo_app_window::reconcile::{UiEvent, display};
 use tilo_app_window::{UiNode, Value};
+use tilolang_tilo::runtime::store::VersionKind;
 use tilolang_tilo::runtime::{ResourceRef, Value as RtValue};
 use ui::component::RowSource as _;
 use ui::component_lifecycle::WindowTitle as _;
@@ -13,7 +14,8 @@ use ui::tilo_actions::ActionInvoker;
 use ui::widget::{FilterCount, FindOptions, InPlace, SearchDriver};
 
 use super::{
-    CHAT, HANDMADE, NOTES, Session, TASKS, agent_session, find, note_row, place_at, press_new_note,
+    CHAT, DISCUSSION, HANDMADE, NOTES, Session, TASKS, agent_session, find, note_row, place_at,
+    press_new_note,
 };
 use crate::change_marks::action_id;
 
@@ -1221,5 +1223,55 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
         session.hosted().window_title(),
         Some("Untitled"),
         "the window names the book the shelf's action made and opened"
+    );
+}
+
+/// A scenario stages the workspace as the capture person's own: no change of it is somebody
+/// else's that they have not seen, so the window counts none and no row is marked. The reactions
+/// the notebook shows are the sample's, not unseen steps of Ada's and Leo's.
+#[test]
+fn a_staged_week_of_notes_leaves_no_change_marks() {
+    let mut session = staged(NOTES, "a week of notes");
+    assert!(
+        crate::change_marks::marks(&mut session).is_empty(),
+        "the window counts a change nobody has seen"
+    );
+}
+
+/// A staged note's changes happen after it was made: no version of it is dated before its
+/// creation, so its page cannot say it was created just now over an edit from yesterday.
+#[test]
+fn a_staged_note_versions_do_not_predate_its_creation() {
+    let mut session = staged(NOTES, "a week of notes");
+    let plan = items_of(&mut session, NOTES, "notes").remove(0);
+    let versions = session
+        .instance_host()
+        .runtime()
+        .versions(&plan)
+        .expect("the note's versions");
+    let made = versions
+        .iter()
+        .find(|version| version.kind == VersionKind::Created)
+        .expect("the note was made");
+    assert!(
+        versions.iter().all(|version| version.at >= made.at),
+        "a change of the note predates its creation: {versions:?}"
+    );
+}
+
+/// One comment's row says what was said once: a comment made from nothing is its own thread, so
+/// it is not repeated as the line under its own title.
+#[test]
+fn a_staged_comment_row_says_its_words_once() {
+    let mut session = staged(DISCUSSION, "what people said lately");
+    let twice = |row: &UiNode| -> Option<String> {
+        let shown = find(row, &|node| node.kind == "ui.ListRow")
+            .and_then(|row| Some((prop(row, "title")?, prop(row, "secondary")?)))?;
+        (shown.0 == shown.1).then_some(shown.0)
+    };
+    let repeated: Vec<String> = rows(&mut session).iter().filter_map(twice).collect();
+    assert!(
+        repeated.is_empty(),
+        "rows repeating their own title: {repeated:?}"
     );
 }

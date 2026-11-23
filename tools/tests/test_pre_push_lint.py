@@ -144,7 +144,7 @@ matrix = { arch = ["x86_64", "aarch64"] }
 [[cargo]]
 name = "clippy-page"
 tool = "clippy"
-packages = ["fixture-web"]
+packages = ["fixture-web", "page-user"]
 
 [[cargo]]
 name = "test"
@@ -223,6 +223,12 @@ class PrePushLintTests(unittest.TestCase):
         # which crates build on the host one.
         self.page_entry = False
         self.dependents = []
+        # Whether the fixture has the generated package that only unifies features, which a
+        # member depends on without using anything of it.
+        self.hack = False
+        # Whether the fixture has those packages building on the host crate, as their generated
+        # manifests do on every member.
+        self.hack_dependants = False
         self.commit("test: a workspace of one host crate and one page crate")
         self.base = self.head()
 
@@ -251,14 +257,29 @@ class PrePushLintTests(unittest.TestCase):
     def metadata(self) -> str:
         """The Cargo metadata of the fixture (of the checkout the hook runs in): what it selects with."""
         root = getattr(self, "checkout", self.root)
+        native = ([{"name": "workspace-hack", "kind": None,
+                    "path": str(root / "workspace-hack")}] if self.hack else [])
         packages = [
             {"name": "fixture-native", "manifest_path": str(root / "native/Cargo.toml"),
-             "dependencies": []},
+             "dependencies": native},
             {"name": "fixture-web", "manifest_path": str(root / "web/Cargo.toml"),
              "dependencies": [{"name": "wasm-bindgen", "kind": None, "path": "fake-binding"}]},
             {"name": "wasm-bindgen", "manifest_path": str(root / "fake-binding/Cargo.toml"),
              "dependencies": []},
         ]
+        if self.hack:
+            packages.append(
+                {"name": "workspace-hack", "manifest_path": str(root / "workspace-hack/Cargo.toml"),
+                 "targets": [{"kind": ["lib"]}], "dependencies": []})
+        if self.hack_dependants:
+            # Generated manifests name every member, so the host crate is one of their
+            # dependencies; a lib and a bin target so neither is skipped for its target kinds.
+            for name, kinds in (("workspace-hack", ["lib"]), ("workspace-unify", ["bin"])):
+                packages.append(
+                    {"name": name, "manifest_path": str(root / name / "Cargo.toml"),
+                     "targets": [{"kind": kinds}],
+                     "dependencies": [{"name": "fixture-native", "kind": None,
+                                       "path": str(root / "native")}]})
         for name in self.dependents:
             packages.append(
                 {"name": name, "manifest_path": str(root / name / "Cargo.toml"),
@@ -442,16 +463,18 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
         self.assertIn("lint passed", result.stderr)
 
-    def test_a_push_lints_only_the_packages_it_changes(self):
-        # Dependents and the page took minutes to rebuild, and main moved on before they
-        # finished: a push lints what it changes, and t's families lint the rest on every change.
-        self.page_entry = True
+    def test_a_push_lints_what_it_changes_and_what_builds_on_it(self):
+        # A dependant constructs what the changed package declares, so its build can break
+        # while the changed package compiles clean; a package that shares no path dependency
+        # with it stays out.
         self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
         self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
         self.commit("refactor: the answer is the solution")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace(
+            "-p fixture-native", "-p fixture-native -p user")])
+        self.assertIn("1 of them direct dependants of what changed", result.stderr)
 
     def test_a_cargo_drop_in_compiles_instead_of_the_local_cargo(self):
         self.write("web/src/lib.rs", LIB.format(answer=13))
@@ -481,7 +504,7 @@ class PrePushLintTests(unittest.TestCase):
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [
-            f"t test clippy/fixture-native clippy-{ARCH}/fixture-web --json"])
+            f"t test clippy/fixture-native clippy-{ARCH}/fixture-web clippy-page/fixture-web --json"])
         self.assertIn("pre-push: clippy/fixture-native passed in 61s", result.stderr)
         self.assertIn("clippy and rustfmt for 2 packages", result.stderr)
 
@@ -489,6 +512,63 @@ class PrePushLintTests(unittest.TestCase):
         self.with_t(cargo=False)
         self.write("native/src/lib.rs", LIB.format(answer=16))
         self.commit("feat: answer 16")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
+
+    def test_with_t_a_dependant_is_linted_through_its_check(self):
+        # t keys each per-package check by what that package's build reads, so a dependant is
+        # asked for as a seed is, and answered from t's cache when nothing it reads moved.
+        self.with_t()
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", LIB.format(answer=24))
+        self.commit("feat: answer 24")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["t test clippy/fixture-native clippy/user --json"])
+
+    def test_a_dependant_the_page_family_names_is_linted_for_the_page(self):
+        # The host lint cannot see a wasm32 break, so a dependant the page family names gets
+        # that family's check beside its host one.
+        self.with_t()
+        self.add_dependent("page-user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", LIB.format(answer=25))
+        self.commit("feat: answer 25")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [
+            "t test clippy/fixture-native clippy/page-user clippy-page/page-user --json"])
+
+    def test_a_change_to_the_hack_crate_lints_no_dependants(self):
+        # workspace-hack only unifies third-party features: its dependants build on it without
+        # naming anything of it, so its own change stands for no rebuild of theirs.
+        self.hack = True
+        self.write("workspace-hack/Cargo.toml", CRATE.format(name="workspace-hack"))
+        self.write("workspace-hack/src/lib.rs", "pub fn nothing() {}\n")
+        self.write("native/Cargo.toml", CRATE.format(name="fixture-native")
+                   + '\n[dependencies]\nworkspace-hack = { path = "../workspace-hack" }\n')
+        self.commit("test: a workspace of a hack crate")
+        self.base = self.head()
+        self.with_t()
+        self.write("workspace-hack/src/lib.rs", "pub fn nothing() {}\npub fn more() {}\n")
+        self.commit("chore: the hack crate moves")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["t test clippy/workspace-hack --json"])
+
+    def test_the_feature_unification_crates_are_never_dependants(self):
+        # They hold no code of their own, only feature resolution: a member's change cannot
+        # break them, so selecting them as dependants would lint nothing.
+        self.hack_dependants = True
+        for name in ("workspace-hack", "workspace-unify"):
+            self.write(f"{name}/Cargo.toml", CRATE.format(name=name)
+                       + '\n[dependencies]\nfixture-native = { path = "../native" }\n')
+            self.write(f"{name}/src/lib.rs", "pub fn nothing() {}\n")
+        self.commit("test: the unification crates build on the host crate")
+        self.base = self.head()
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=27))
+        self.commit("feat: answer 27")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
@@ -526,14 +606,15 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("t: cannot reach the server", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
-    def test_a_package_no_family_lints_is_named_and_not_linted(self):
+    def test_a_package_no_family_lints_is_named_and_its_dependant_is_linted(self):
         self.with_t()
         self.write("fake-binding/src/lib.rs", "pub fn bind() {}\npub fn more() {}\n")
         self.commit("feat: the binding binds more")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("no clippy family of t's lints wasm-bindgen", result.stderr)
-        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.calls(), [
+            f"t test clippy-{ARCH}/fixture-web clippy-page/fixture-web --json"])
 
     def test_a_cargo_named_in_cargo_lints_instead_of_t(self):
         self.with_t()
@@ -680,6 +761,68 @@ class PrePushLintTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["native: fixture-web"])
+
+    def test_a_plan_names_the_dependants_too(self):
+        # A dependant is part of what the push lints though no commit of it changed, and a plan
+        # says which packages are there for that.
+        self.with_t()
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", LIB.format(answer=26))
+        self.commit("feat: answer 26")
+        result = subprocess.run(
+            ["python3", str(self.root / "tools/ci/pre_push_lint.py"), "origin", "--plan"],
+            cwd=self.root,
+            capture_output=True, text=True, env=self.environment(), timeout=HANG_BOUND,
+            input=f"refs/heads/main {self.head()} refs/heads/main {self.base}\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [
+            "native: fixture-native user",
+            "dependants: user",
+            "t: clippy/fixture-native clippy/user",
+        ])
+
+
+def pre_push_lint():
+    """The check as a module, for the rules a push asks of a path without a repository."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "pre_push_lint", ROOT / "tools/ci/pre_push_lint.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CatalogueGateTests(unittest.TestCase):
+    """A push that reaches what the component catalogue is made from names t's ui-graph."""
+
+    def names(self, *files: str) -> list[str]:
+        module = pre_push_lint()
+        return module.catalogue_checks(module.Push(set(files), [], [], []))
+
+    def test_a_widget_change_names_the_catalogue_check(self):
+        self.assertEqual(self.names("crates/ui/ui-core/src/widget/button.rs"), ["ui-graph"])
+
+    def test_a_rich_edit_change_names_it_too(self):
+        self.assertEqual(self.names("crates/ui/tilo-rich-edit/src/editor.rs"), ["ui-graph"])
+
+    def test_the_windows_registry_names_it_too(self):
+        self.assertEqual(
+            self.names("crates/sdk/tilo-app-window/src/components.rs"), ["ui-graph"])
+
+    def test_an_edit_of_the_catalogue_names_it(self):
+        self.assertEqual(self.names("crates/ui/ui-graph/components.json"), ["ui-graph"])
+
+    def test_a_change_elsewhere_names_nothing(self):
+        self.assertEqual(self.names("crates/server/tilo-server/src/web/tickets.rs"), [])
+
+    def test_the_check_runs_in_the_same_t_batch_as_the_clippy_checks(self):
+        module = pre_push_lint()
+        selection = module.Selection(["fixture-native"], {})
+        runs = module.lint_runs(Path("/"), selection, [], ["clippy/fixture-native", "ui-graph"])
+        batches = [run.command for run in runs if run.t]
+        self.assertEqual(batches, [
+            [module.T_CARGO[0], "test", "clippy/fixture-native", "ui-graph", "--json"]])
 
 
 if __name__ == "__main__":

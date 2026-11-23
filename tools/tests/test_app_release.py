@@ -234,12 +234,12 @@ class AppReleaseTests(unittest.TestCase):
                 metadata = {'packages': [
                     package('format', 'crates/format'),
                     package('tilo-app-package-cli', 'tools/tilo-app-package-cli', ['crates/format']),
-                    package('runtime-dylib', 'crates/runtime/runtime-dylib'),
+                    package('runtime-dylib', 'crates/sdk/runtime-dylib'),
                     package('notes-bin', 'apps/files'), package('settings-bin', 'apps/settings'),
                 ]}
                 catalog = {'notes': {'package': 'notes-bin'}, 'settings': {'package': 'settings-bin'}}
                 for path, kind in [('crates/format/src/lib.rs', 'packaging'),
-                                   ('crates/runtime/runtime-dylib/src/lib.rs', 'binary')]:
+                                   ('crates/sdk/runtime-dylib/src/lib.rs', 'binary')]:
                     self.assertEqual(sorted(catalog), app_release.apps_from_changes([path], catalog, metadata, root))
                     self.assertEqual([path], app_release.input_classification([path], metadata, root)[kind])
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
@@ -247,13 +247,13 @@ class AppReleaseTests(unittest.TestCase):
                 # A runtime engine is signed into the runtime bundle:
                 # changing it changes the runtime every app names, not only
                 # the one app that loads it.
-                engine = root / 'crates/runtime/engines/typst/Cargo.toml'
+                engine = root / 'crates/engines/loadable/typst/Cargo.toml'
                 engine.parent.mkdir(parents=True)
                 engine.write_text('[package]\nname = "tilo-typst-engine"\n')
-                metadata['packages'].append(package('tilo-typst-engine', 'crates/runtime/engines/typst'))
+                metadata['packages'].append(package('tilo-typst-engine', 'crates/engines/loadable/typst'))
                 self.assertEqual({'tilo-typst-engine'}, app_release.runtime_engines(root))
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
-                    ['crates/runtime/engines/typst/src/lib.rs'], catalog, metadata, root))
+                    ['crates/engines/loadable/typst/src/lib.rs'], catalog, metadata, root))
                 metadata['packages'].pop()
                 # A shared dependency can invalidate packaging tools AND app code;
                 # do not label that as packaging-only for a future reuse worker.
@@ -274,13 +274,13 @@ class AppReleaseTests(unittest.TestCase):
                     "packages": [
                         {
                             "name": "ui",
-                            "manifest_path": str(root / "crates/sdk/ui-core/Cargo.toml"),
+                            "manifest_path": str(root / "crates/ui/ui-core/Cargo.toml"),
                             "dependencies": [],
                         },
                         {
                             "name": "notes-bin",
                             "manifest_path": str(root / "apps/files/Cargo.toml"),
-                            "dependencies": [{"path": str(root / "crates/sdk/ui-core")}],
+                            "dependencies": [{"path": str(root / "crates/ui/ui-core")}],
                         },
                         {
                             "name": "settings-bin",
@@ -295,7 +295,7 @@ class AppReleaseTests(unittest.TestCase):
                 }
                 self.assertEqual(
                     app_release.apps_from_changes(
-                        ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, root
+                        ["crates/ui/ui-core/src/lib.rs"], catalog, metadata, root
                     ),
                     ["notes"],
                 )
@@ -304,7 +304,7 @@ class AppReleaseTests(unittest.TestCase):
             metadata = app_release.ci_select.cargo_metadata(ROOT)
             self.assertEqual(
                 app_release.apps_from_changes(
-                    ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, ROOT
+                    ["crates/ui/ui-core/src/lib.rs"], catalog, metadata, ROOT
                 ),
                 sorted(catalog),
             )
@@ -318,8 +318,8 @@ class AppReleaseTests(unittest.TestCase):
             # the formats it reads. Apps decode through the toolkit's one codec,
             # so the formats a slides tapp carries are the codec's.
             expected = {
-                ROOT / "crates/platform/tilo-image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
-                ROOT / "crates/doc/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
+                ROOT / "crates/engines/tilo-image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
+                ROOT / "crates/engines/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
             }
             for manifest, formats in expected.items():
                 dependency = tomllib.loads(manifest.read_text())["dependencies"]["image"]

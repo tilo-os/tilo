@@ -1,0 +1,153 @@
+//! The subject of a picture, found on this device by the segmentation model
+//! the person installed (Settings › Models), through the model gateway; and
+//! the maths an app refines and cleans its edge with (`tilo-segment`).
+//!
+
+pub use tilo_segment::{Matte, Picture, defringe, object_at, refine_edge};
+
+use base64::Engine as _;
+use image::{DynamicImage, RgbaImage};
+use sha2::{Digest as _, Sha256};
+use thiserror::Error;
+use tilo_image_codec::{DecodedImage, EncodeError, Encoding};
+
+/// The longest side of the picture sent to the model: it sees far less (320
+/// pixels for U²-Net), and the edge is refined at full size after.
+pub const MAX_SUBJECT_EDGE: u32 = 1024;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Subject {
+    pub matte: Matte,
+    pub model_id: String,
+    pub revision: String,
+    pub load_ms: u64,
+    pub infer_ms: u64,
+}
+
+#[derive(Debug, Error)]
+pub enum SubjectError {
+    /// No segmentation model is installed, or no gateway was handed over.
+    #[error("{0}")]
+    Unavailable(String),
+    #[error("the picture is empty")]
+    Empty,
+    #[error("the picture cannot be prepared: {0}")]
+    Image(#[from] image::ImageError),
+    #[error("the picture cannot be prepared: {0}")]
+    Encode(#[from] EncodeError),
+    #[error("the subject model failed: {0}")]
+    Failed(String),
+}
+
+impl SubjectError {
+    /// Whether setting up the model in Settings is what is missing.
+    pub const fn needs_model(&self) -> bool {
+        matches!(self, Self::Unavailable(_))
+    }
+}
+
+/// How much of each pixel of `picture` (straight RGBA, `width` by
+/// `height`) is its subject.
+pub fn find_subject(rgba: &[u8], width: u32, height: u32) -> Result<Subject, SubjectError> {
+    let image = RgbaImage::from_raw(width, height, rgba.to_vec())
+        .filter(|_| width > 0 && height > 0)
+        .ok_or(SubjectError::Empty)?;
+    let image = DynamicImage::ImageRgba8(image);
+    let sent = if width.max(height) > MAX_SUBJECT_EDGE {
+        image.resize(
+            MAX_SUBJECT_EDGE,
+            MAX_SUBJECT_EDGE,
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        image
+    };
+    let jpeg = encode_jpeg(&sent, 90)?;
+    let hash = hex::encode(Sha256::digest(rgba));
+    let request = tilo_model_client::VisionImage {
+        media_type: "image/jpeg".into(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&jpeg),
+        source_content_hash: hash,
+    };
+    let answer = tilo_model_client::segment_subject(request).map_err(|error| match error {
+        tilo_model_client::ClientError::Unavailable => {
+            SubjectError::Unavailable("the model service is not available to this app".into())
+        }
+        tilo_model_client::ClientError::Rejected(message)
+            if message.contains(tilo_model_client::NO_SEGMENTATION_MODEL)
+                || message.contains("not authorized")
+                || message.contains("unknown variant") =>
+        {
+            SubjectError::Unavailable(message)
+        }
+        other => SubjectError::Failed(other.to_string()),
+    })?;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(&answer.matte_png_base64)
+        .map_err(|_| SubjectError::Failed("its matte is not base64".into()))?;
+    let grey = image::load_from_memory_with_format(&png, image::ImageFormat::Png)?.to_luma8();
+    let (matte_width, matte_height) = grey.dimensions();
+    let values = grey
+        .as_raw()
+        .iter()
+        .map(|&value| f32::from(value) / 255.0)
+        .collect();
+    let matte = Matte::new(matte_width as usize, matte_height as usize, values)
+        .ok_or_else(|| SubjectError::Failed("its matte is empty".into()))?
+        .resized(width as usize, height as usize);
+    Ok(Subject {
+        matte,
+        model_id: answer.model_id,
+        revision: answer.revision,
+        load_ms: answer.load_ms,
+        infer_ms: answer.infer_ms,
+    })
+}
+
+fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, EncodeError> {
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    tilo_image_codec::encode_now(
+        &DecodedImage {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        },
+        Encoding::Jpeg { quality },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed_rgba_image() -> DynamicImage {
+        let rgba = RgbaImage::from_fn(17, 13, |x, y| {
+            let r = u8::try_from(x.wrapping_mul(15).wrapping_add(y.wrapping_mul(3)) & 0xff)
+                .unwrap_or(0);
+            let g = u8::try_from(y.wrapping_mul(19).wrapping_add(x.wrapping_mul(7)) & 0xff)
+                .unwrap_or(0);
+            let b = u8::try_from(
+                x.wrapping_mul(11)
+                    .wrapping_add(y.wrapping_mul(13))
+                    .wrapping_add(29)
+                    & 0xff,
+            )
+            .unwrap_or(0);
+            let a = u8::try_from(x.wrapping_add(y).wrapping_mul(17) & 0xff).unwrap_or(0);
+            image::Rgba([r, g, b, a])
+        });
+        DynamicImage::ImageRgba8(rgba)
+    }
+
+    #[test]
+    fn encode_jpeg_bytes_match_pinned_digest_at_subject_quality() {
+        let image = fixed_rgba_image();
+        let bytes = encode_jpeg(&image, 90).expect("encode jpeg");
+        let digest = hex::encode(Sha256::digest(&bytes));
+        assert_eq!(
+            digest,
+            "d74109cb352acfef202a0b9b475d8ecac2ca2ec9e6b6be2c8125a48e85bd0a62"
+        );
+    }
+}

@@ -119,7 +119,7 @@ fn explorer(model: Rows, marks: &Rc<TreeMarks<ProjectId>>, events: &ExplorerEven
     .filling()
     .with_tree(marks)
     .with_semantic_key(ToString::to_string)
-    .on_view("file_tree", move |id| {
+    .on_choose("file_tree", move |id| {
         activated.borrow_mut().push(ExplorerEvent::Activate(id));
     })
     .on_fold(move |id, folded| {
@@ -230,7 +230,7 @@ pub fn sidebar(feed: &ExplorerFeed, events: &ExplorerEvents) -> Element {
     let empty = EmptyState::new("No folder open")
         .with_icon(Icon::FolderOpen)
         .with_action("Open folder")
-        .on_view(move || open.borrow_mut().push(ExplorerEvent::OpenFolder));
+        .on_open(move || open.borrow_mut().push(ExplorerEvent::OpenFolder));
     let named = feed.clone();
     let project = Box::new(
         ui::widget::Text::dynamic(move || named.name())

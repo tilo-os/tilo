@@ -464,7 +464,7 @@ impl Workspaces {
             // A workspace this host governs is listed as its governance has the person, never as
             // a device of theirs last kept it: one they left, or were taken out of, is in no list
             // of theirs here, so their devices let it go.
-            let governed_here = self.inner.memberships.governs(&workspace);
+            let governed_here = self.inner.memberships.serves(&workspace);
             if (governed_here && !local.iter().any(|one| one.workspace == workspace))
                 || !reaches(&workspace)
                 || !wanted(&PersonalWorkspace {

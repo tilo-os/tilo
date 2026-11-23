@@ -11,7 +11,7 @@ use agent_provider_config::{ProviderConfig, ProviderProfile};
 use std::sync::{Arc, Mutex};
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Effect;
-include!("../../../../../crates/sdk/provider-settings-ui/src/fake_backend.rs");
+include!("../../../../../crates/integrations/provider-settings-ui/src/fake_backend.rs");
 
 fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<SettingsShell> {
     let mut app = TestApp::<SettingsShell>::for_person_with_lent(
@@ -229,5 +229,5 @@ mod shared_contract {
     fn host_effect(effect: ProviderEffect) -> SettingsEffect {
         effect.into()
     }
-    include!("../../../../../crates/sdk/provider-settings-ui/src/mounted_tests.rs");
+    include!("../../../../../crates/integrations/provider-settings-ui/src/mounted_tests.rs");
 }

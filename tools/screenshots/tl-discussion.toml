@@ -1,0 +1,12 @@
+# Discussion: what people said, built from the comments' own scenarios
+# (tools/screenshots/run.py).
+
+[[situation]]
+name = "what-people-said-lately"
+title = "Two days of a discussion over the offsite"
+scenario = "what people said lately"
+
+[[situation]]
+name = "a-reply-to-a-comment"
+title = "A reply, with the thread it answers under it"
+scenario = "a reply to a comment"

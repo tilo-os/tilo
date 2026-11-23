@@ -475,6 +475,7 @@ d-vidcax4k = Arbeitsbereichsmenü
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
 
 d-hac3p23j = Lautstärke
     .w-volume-muted = Lautstärke, stumm
@@ -553,6 +554,19 @@ d-vedyud4d = Teil verschieben~present
 d-gkca5uj2 = Eintrag verschieben~present
 
 d-i4odzov3 = Anheften~present
+
+d-u2tma44r = Gerätebereich
+    .w-devices = Geräte
+    .w-nearby-send = In der Nähe senden
+    .w-no-devices-in-reach = Keine Geräte in Reichweite
+
+d-niotqkfd = Bluetooth weitergeben
+    .w-move-it-to = Verschieben nach…
+
+d-2abiywd2 = Kachel-Editor
+    .w-customise-the-panel = Bedienfeld anpassen
+    .w-panel-controls = Kacheln des Bedienfelds
+    .w-reset-the-panel = Bedienfeld zurücksetzen
 
 d-zzd3yipu = Leisten
 
@@ -662,6 +676,7 @@ d-gke2gvrj = Banner ganz
     .w-open = Öffnen
 
 d-wh7n4fhq = Bannerzeile
+    .w-read = Lesen
     .w-dismiss = Verwerfen
 
 d-76zs5p4r = Antwortzeile
@@ -669,7 +684,7 @@ d-76zs5p4r = Antwortzeile
     .w-send = Senden
     .w-write-a-reply-first = Schreib zuerst eine Antwort
 
-d-ny7ms2ry = Anzeige der Hardwaretasten
+d-ny7ms2ry = Bildschirmanzeige
 
 d-rcjzvfxp = Übersicht
     .w-overview = Übersicht
@@ -737,6 +752,11 @@ d-uvwnwa4d = Agenten-Chip
 d-teccuwja = Schnelleinstellungen
     .w-quick-settings = Schnelleinstellungen
 
+d-dd3gpi64 = Steuerungskachel
+
+d-vzdj2kff = Dreh-Kachel
+    .w-rotation-lock = Drehsperre
+
 d-yxl6yq2r = WLAN-Kachel
     .w-wi-fi = WLAN
     .w-this-device-has-no-wi-fi = Dieses Gerät hat kein WLAN
@@ -745,8 +765,8 @@ d-d5wzqn37 = Bluetooth-Kachel
     .w-bluetooth = Bluetooth
     .w-this-device-has-no-bluetooth = Dieses Gerät hat kein Bluetooth
 
-d-hnvxrx3k = VPN umschalten
-    .doc = Schaltet das VPN über sein erstes Profil ein oder über das verbundene aus: der eine Druck auf die Kachel, egal in welche Richtung.
+d-hnvxrx3k = VPN ein- oder ausschalten
+    .doc = Schaltet das VPN über sein erstes Profil ein oder über das verbundene aus: der eine Druck auf die Kachel, in welche Richtung auch immer.
 
 d-hnvxrx3k-v = V
 
@@ -770,7 +790,7 @@ d-72cehcnn = Mobilfunk-Kachel
 
 d-ntsyqtrw = Energiemodus-Kachel
     .w-power-saver = Energiesparen
-    .w-balanced = Ausgewogen
+    .w-balanced = Ausgeglichen
     .w-performance = Leistung
 
 d-w3fe7tjv = Pegel
@@ -811,6 +831,7 @@ d-lcjohgdk = Akkulinie
 
 d-ycck5awo = Ein/Aus-Zeile
     .w-lock = Sperren
+    .w-settings = Einstellungen
     .w-power = Ein/Aus
     .w-sleep = Ruhezustand
     .w-log-out = Abmelden
@@ -1075,8 +1096,11 @@ d-dgtjjxex = Menü der Person
     .w-join-a-workspace = Einem Arbeitsbereich beitreten
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
+    .w-history = Verlauf
+    .w-about-tilo = Über Tilo
+    .w-tilo = Tilo
 
-d-zlo3t3an = Aufnahmeanzeige
+d-zlo3t3an = Aufnahmestatus
     .w-watching = { $label } sieht zu
     .w-watching-and-more = { $label } und { $more } weitere sehen zu
     .w-watching-2 = Sieht zu
@@ -1324,3 +1348,24 @@ d-ce3pp2or-key = Schlüssel
 d-ce3pp2or-size = Größe
 
 d-vi5fveaq = Modellwahl
+
+# Added from the source: new words.
+d-pdda7z3y = Hängendes Fenster
+
+d-n6arlzpq = Fenster anderswo
+    .w-on = { $origin_app } auf { $device_name }
+    .w-on-another-device = { $origin_app } auf einem anderen Gerät
+    .w-this-window-runs-on-that-device = Dieses Fenster läuft auf diesem Gerät. Öffne es dort, um es zu sehen.
+
+d-6rjhuenw = Emoji-Karte
+
+d-wdiwq4yt = Über-Fenster
+
+d-tkt6f7u6 = Über-Fenster
+    .w-updates = Aktualisierungen
+    .w-close = Schließen
+    .w-all-details = Alle Details
+
+d-vv7k7lcl = Super-Tasten
+
+d-fhub73iw = Platzinhalt

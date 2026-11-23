@@ -853,7 +853,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         with self.subTest(phase='a compute package still may not bypass the facade'):
             root = self.fixture(
                 "fn main() {}\n",
-                dependencies='ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
+                dependencies='ui_core={package="ui",path="../../crates/ui/ui-core"}\n',
             )
             (root / "apps" / "sample" / "tilo-app.toml").write_text(
                 compute_manifest, encoding="utf-8"
@@ -1034,7 +1034,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "RemoteActionMessage::Observe;\n",
                 dependencies=(
                     'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
-                    'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n'
+                    'ui_core={package="ui",path="../../crates/ui/ui-core"}\n'
                 ),
                 app_name="agent",
             )
@@ -1047,7 +1047,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "RemoteActionMessage::Observe;\n",
                 dependencies=(
                     'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
-                    'rendering={path="../../crates/sdk/ui-core"}\n'
+                    'rendering={path="../../crates/ui/ui-core"}\n'
                 ),
                 app_name="agent",
             )
@@ -1083,7 +1083,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             manifest.write_text(
                 manifest.read_text(encoding="utf-8")
                 + "\n[target.'cfg(windows)'.dependencies]\n"
-                + 'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
+                + 'ui_core={package="ui",path="../../crates/ui/ui-core"}\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
@@ -1209,7 +1209,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_a_counted_builder_whose_arity_changes_fails(self):
         root = self.fixture("")
-        widget = root / "crates/sdk/ui-core/src/widget/row.rs"
+        widget = root / "crates/ui/ui-core/src/widget/row.rs"
         widget.parent.mkdir(parents=True)
         widget.write_text(
             "impl Row {\n"
@@ -1224,7 +1224,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_every_closure_taking_toolkit_callback_is_classified(self):
         root = self.fixture("")
-        widget = root / "crates/sdk/ui-core/src/widget/knob.rs"
+        widget = root / "crates/ui/ui-core/src/widget/knob.rs"
         widget.parent.mkdir(parents=True)
         widget.write_text(
             "impl Knob {\n"

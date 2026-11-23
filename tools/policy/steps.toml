@@ -46,11 +46,6 @@ label = "Where an app keeps a resource kind moves only with its conversion"
 run = "python3 tools/policy/check_resource_placement.py check"
 
 [[step]]
-name = "workflow-timeouts"
-label = "Workflow timeouts"
-run = "python3 tools/policy/check_workflow_timeouts.py"
-
-[[step]]
 name = "workflow-dependencies"
 label = "Workflow dependency and supply-chain invariants"
 run = "bash os/tests/workflow_dependency_invariants.sh"

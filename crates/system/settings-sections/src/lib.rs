@@ -11,7 +11,6 @@ pub mod continuity;
 pub mod desktop;
 pub mod device_vpn;
 pub mod identity;
-pub mod mcp_server;
 pub mod network_usage;
 pub mod osk;
 pub mod prefs;
@@ -98,7 +97,6 @@ sections!(
     device_vpn::DeviceVpnPrefs,
     identity::IdentityPrefs,
     network_usage::NetworkUsage,
-    mcp_server::McpServerDevice,
 );
 
 #[cfg(test)]

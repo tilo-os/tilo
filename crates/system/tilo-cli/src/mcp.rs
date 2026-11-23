@@ -20,13 +20,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use tilo_api::daemon::{DaemonPlace, PEER_STATUS, unreachable_answer};
+use tilo_api::daemon::{PEER_STATUS, this_computer, unreachable_answer};
 
 use crate::login::NOT_LOGGED_IN;
 
 /// `tilo mcp`: on a Tilo desktop, the desktop's own MCP server, which asks the person to let the
 /// agent in; elsewhere, a connection to this computer's daemon, which enters the person's
-/// workspace wherever it is hosted ([`held`]), started when none runs.
+/// workspace wherever it is hosted ([`held`]), its service started when none answers.
 pub fn serve() -> Result<ExitCode> {
     let desktop = tilo_mcp::session_api::desktop_server();
     if let Ok(Some(server)) = &desktop
@@ -39,16 +39,16 @@ pub fn serve() -> Result<ExitCode> {
     // is not complete has none yet. This computer's own login then reaches its daemon, as on any
     // other computer; without one the agent hears what it waits for.
     let login = crate::login::Place::here(crate::identity::paths())?;
-    let key = match (crate::login::load(&login)?, desktop) {
-        (Some((key, _)), _) => key,
+    match (crate::login::served_device_key(login.keys()), desktop) {
+        (Some(_), _) => {}
         (None, Ok(Some(server))) => {
             tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
             return Ok(ExitCode::SUCCESS);
         }
         (None, Ok(None)) => return held::alone(NOT_LOGGED_IN),
         (None, Err(error)) => return held::alone(&error.to_string()),
-    };
-    let place = DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes());
+    }
+    let place = this_computer();
     let reached = place
         .as_ref()
         .map_err(Clone::clone)
@@ -85,19 +85,18 @@ pub fn serve() -> Result<ExitCode> {
 /// reach it: they are calls to its API ([`held`]), never a session of their own, which would cut
 /// that one off. Nothing, when this computer did not log in.
 ///
-/// The daemon is named by the login's certificate, not its device key: this process hands the
-/// daemon its calls, and one that read the key would be undumpable, which the daemon's admission
+/// The login is read from its certificate, not its device key: this process hands the daemon
+/// its calls, and one that read the key would be undumpable, which the daemon's admission
 /// refuses.
 ///
 /// # Errors
 /// The login is damaged, or the daemon did not start.
 pub(crate) fn ensure_held() -> Result<()> {
     let login = crate::login::Place::here(crate::identity::paths())?;
-    let Some(device) = crate::login::load_public(&login)? else {
+    if crate::login::served_device_key(login.keys()).is_none() {
         return Ok(());
-    };
-    let place =
-        DaemonPlace::of(login.dir(), &device.cert.device_public_key).map_err(anyhow::Error::msg)?;
+    }
+    let place = this_computer().map_err(anyhow::Error::msg)?;
     held::ensure(&place).map_err(anyhow::Error::msg)
 }
 
@@ -130,9 +129,8 @@ fn answer_alone(line: &str, problem: &str) -> Option<String> {
 pub(crate) fn ask_peer() -> Option<Value> {
     use std::io::{BufRead as _, Write as _};
     let login = crate::login::Place::here(crate::identity::paths()).ok()?;
-    let (key, _) = crate::login::load(&login).ok()??;
-    let place = DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes()).ok()?;
-    let mut stream = place.connect()?;
+    crate::login::served_device_key(login.keys())?;
+    let mut stream = this_computer().ok()?.connect()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     writeln!(
         stream,

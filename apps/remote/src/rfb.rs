@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 /// Hard ceilings for data supplied by an untrusted RFB peer. They are generous
 pub const MAX_FRAMEBUFFER_PIXELS: usize = 16_777_216; // 4096 × 4096
-const MAX_SERVER_NAME_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_SERVER_NAME_BYTES: usize = 16 * 1024;
 const MAX_RECTANGLES_PER_UPDATE: u16 = 4_096;
 const MAX_RRE_SUBRECTS: u32 = 1_000_000;
 /// RRE's background and all subrectangles each have independent work limits.

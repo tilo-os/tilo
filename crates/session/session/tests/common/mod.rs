@@ -828,10 +828,13 @@ pub fn probe_app(home: &mut tilo_test_env::TestHome, app: &str, name: &str) {
         ),
     )
     .expect("the app's manifest");
+    // The app's row goes beside the rows of the apps installed before it.
+    let registry = store.join("registry.toml");
+    let rows = std::fs::read_to_string(&registry).unwrap_or_default();
     std::fs::write(
-        store.join("registry.toml"),
+        &registry,
         format!(
-            "[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
+            "{rows}[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
              payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
             payload = payload.display(),
             manifest = manifest.display(),

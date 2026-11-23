@@ -17,6 +17,14 @@
               "source": "display"
             }
           ]
+        },
+        {
+          "must": {
+            "see": [
+              "Mark up"
+            ],
+            "within": 15
+          }
         }
       ]
     },
@@ -29,6 +37,15 @@
             "desktop.capture-studio",
             "annotate"
           ]
+        },
+        {
+          "must": {
+            "see": [
+              "Save copy",
+              "Pen tools"
+            ],
+            "within": 15
+          }
         }
       ],
       "dark": true

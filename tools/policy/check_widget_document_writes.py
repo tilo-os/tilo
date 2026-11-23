@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Widgets never write the document.
 
-A widget in the toolkit (``crates/sdk/ui-core/src/widget``) shows the
+A widget in the toolkit (``crates/ui/ui-core/src/widget``) shows the
 document and keeps what the user does local; its owner takes the edit and
 submits it as a resource action, which is what history attributes, undo
 takes back, permissions check and a member replays. A write from widget
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rust_source import is_test_file, production_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-WIDGETS = Path("crates/sdk/ui-core/src/widget")
+WIDGETS = Path("crates/ui/ui-core/src/widget")
 
 WRITES = re.compile(
     r"(?:\b(?:doc|state|document|model)\b(?:\.\w+)*|ctx\.state)\s*"

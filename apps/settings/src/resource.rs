@@ -15,11 +15,38 @@ use ui::tilo_resource::Effect as _;
 pub struct Settings {}
 
 impl Settings {
+    /// What this device's settings hold: the settings document the process
+    /// reads (the session's, for the app the session launches), whole, or the
+    /// section `item` names. It is the source the panes read their values
+    /// from, so an agent, a script or a walk sees what the settings' actions
+    /// kept.
+    ///
+    /// A section is named as the record of it is (`settings.power`) or as the
+    /// document keeps it (`power`).
+    ///
+    /// # Errors
+    /// The item names nothing the document holds as a section.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
     ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
+        let document = ui::storage::SettingsDocument::Session.load();
+        let Some(item) = item else {
+            return Ok(serde_json::Value::Object(document));
+        };
+        let named = item.as_str();
+        let section = named.strip_prefix("settings.").unwrap_or(named);
+        match document.get(section) {
+            Some(serde_json::Value::Object(fields)) => {
+                Ok(serde_json::Value::Object(fields.clone()))
+            }
+            Some(_) => Err(format!(
+                "`{section}` is a setting of this device's document, not a section of it"
+            )),
+            None => Err(format!(
+                "this device's settings hold no `{section}` section"
+            )),
+        }
     }
 }
 

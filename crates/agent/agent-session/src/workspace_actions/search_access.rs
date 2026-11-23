@@ -65,7 +65,6 @@ fn item_node(route: &DocumentRoute, resource: &str) -> Option<TreePath> {
 pub(super) struct Reader {
     person: ui::permissions::policy::PersonId,
     agent: Option<String>,
-    delegated: bool,
     on_turn: bool,
     user: Option<[u8; 32]>,
     device: Option<[u8; 32]>,
@@ -79,7 +78,6 @@ impl Reader {
         Self {
             person: who.person.clone(),
             agent: acting.agent_id().map(str::to_owned),
-            delegated: who.caller.is_session_delegated(),
             on_turn: who.caller.turn().is_some(),
             user: who.caller.user_public_key().copied(),
             device: who.caller.device_public_key().copied(),

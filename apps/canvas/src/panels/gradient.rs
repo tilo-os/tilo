@@ -476,7 +476,7 @@ fn kind_picker(
         .fill()
         // Published as the control's own select action, so assistive
         // technology and agents choose a fill kind the way a tap does.
-        .on_view("canvas-fill-kind", move |index| {
+        .on_choose("canvas-fill-kind", move |index| {
             let Some(chosen) = kinds.get(index).copied() else {
                 return;
             };

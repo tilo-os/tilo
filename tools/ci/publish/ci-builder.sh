@@ -24,8 +24,8 @@ context_files=(dist/ci/install-build-deps.sh os/external-assets/github-assets.ts
   tools/ci/install-wine.sh os/external-assets/wine/*.patch
   tools/ci/install-cargo.sh os/external-assets/cargo/*.patch
   tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh
-  tools/font-catalog.py crates/sdk/ui-core/assets/fonts/manifest.toml
-  crates/sdk/ui-core/assets/fonts/artifacts.json)
+  tools/font-catalog.py crates/ui/ui-core/assets/fonts/manifest.toml
+  crates/ui/ui-core/assets/fonts/artifacts.json)
 
 # The wasm-bindgen CLI the image carries: the version the browser runtime's crate pins, which is
 # also the version a stack's build binds with. One file names it, so the image and the build

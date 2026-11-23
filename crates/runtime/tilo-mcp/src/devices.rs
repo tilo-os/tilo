@@ -9,6 +9,38 @@ use std::os::unix::net::UnixStream;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
+/// The first four bytes of a device key, as hex: enough to tell two devices
+/// of one person with the same label apart.
+fn short_id(key: &[u8; 32]) -> String {
+    hex::encode(key.get(..4).unwrap_or_default())
+}
+
+/// The agent id a client admitted for a device's key works as: its own id
+/// (`claude-code`), then `@` and the device (`claude-code@studio-laptop-3f2a9c1b`),
+/// so what it does is told apart from what the same client does for another key.
+#[must_use]
+pub fn agent_id(client: &str, device: &DeviceCert) -> String {
+    let mut slug = String::new();
+    for character in device.device_label.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            slug.push(character);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= 40 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let client: String = client.chars().take(64).collect();
+    let short = short_id(&device.device_public_key);
+    if slug.is_empty() {
+        format!("{client}@{short}")
+    } else {
+        format!("{client}@{slug}-{short}")
+    }
+}
+
 /// The longest answer to a [`Forward`] read.
 #[cfg(unix)]
 const MAX_ANSWER: usize = 64 * 1024;
@@ -34,6 +66,18 @@ pub fn open_forward(local: &mut UnixStream) -> io::Result<()> {
     local.write_all(&line)
 }
 
+/// Tell a forwarding client its device's server does not open, and why.
+#[cfg(unix)]
+pub fn refuse_forward(mut local: UnixStream, reason: String) {
+    let answer = ForwardAnswer::Refused { reason };
+    if let Ok(mut line) = serde_json::to_vec(&answer) {
+        line.push(b'\n');
+        let _ = local.set_write_timeout(Some(std::time::Duration::from_secs(1)));
+        let _ = local.write_all(&line);
+    }
+    let _ = local.shutdown(std::net::Shutdown::Both);
+}
+
 /// The longest device name the person is shown, and a `--device` is matched
 /// against.
 const MAX_NAME: usize = 64;
@@ -53,39 +97,6 @@ pub fn device_name(device: &DeviceCert) -> String {
         short_id(&device.device_public_key)
     } else {
         label
-    }
-}
-
-/// The first four bytes of a device key, as hex: enough to tell two devices
-/// of one person with the same label apart.
-fn short_id(key: &[u8; 32]) -> String {
-    hex::encode(key.get(..4).unwrap_or_default())
-}
-
-/// The agent id a client admitted from another device works as: its own id
-/// (`claude-code`), then `@` and the device it came from
-/// (`claude-code@studio-laptop-3f2a9c1b`), so what it does is told apart from
-/// what the same client does on this device, and from another device's.
-#[must_use]
-pub fn agent_id(client: &str, device: &DeviceCert) -> String {
-    let mut slug = String::new();
-    for character in device.device_label.chars().flat_map(char::to_lowercase) {
-        if character.is_alphanumeric() {
-            slug.push(character);
-        } else if !slug.is_empty() && !slug.ends_with('-') {
-            slug.push('-');
-        }
-        if slug.len() >= 40 {
-            break;
-        }
-    }
-    let slug = slug.trim_matches('-');
-    let client: String = client.chars().take(64).collect();
-    let short = short_id(&device.device_public_key);
-    if slug.is_empty() {
-        format!("{client}@{short}")
-    } else {
-        format!("{client}@{slug}-{short}")
     }
 }
 
@@ -218,16 +229,4 @@ pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()>
             ),
         )),
     }
-}
-
-/// Tell a forwarding client its device's server does not open, and why.
-#[cfg(unix)]
-pub fn refuse_forward(mut local: UnixStream, reason: String) {
-    let answer = ForwardAnswer::Refused { reason };
-    if let Ok(mut line) = serde_json::to_vec(&answer) {
-        line.push(b'\n');
-        let _ = local.set_write_timeout(Some(std::time::Duration::from_secs(1)));
-        let _ = local.write_all(&line);
-    }
-    let _ = local.shutdown(std::net::Shutdown::Both);
 }

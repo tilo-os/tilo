@@ -26,7 +26,7 @@ mod platform {
 #[cfg(unix)]
 mod platform {
     use super::{File, OpenOptions, Path, io};
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
     pub fn directory(path: &Path) -> io::Result<()> {
         std::fs::DirBuilder::new()
@@ -37,7 +37,7 @@ mod platform {
         if !metadata.is_dir() || !super::owned_by_me(&metadata) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "identity directory is not user-owned",
+                "a private directory must be this user's own and not a symlink",
             ));
         }
         restrict(path, &metadata)
@@ -63,10 +63,14 @@ mod platform {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         let metadata = file.metadata()?;
-        if !metadata.is_file() || !super::private_to_me(&metadata) {
+        // A second link is a name for the same bytes outside the directory the caller checked.
+        if !metadata.is_file() || !super::private_to_me(&metadata) || metadata.nlink() != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "identity file is not private and user-owned",
+                format!(
+                    "{}: a private file must be this user's own, owner-only and singly linked",
+                    path.display()
+                ),
             ));
         }
         Ok(file)

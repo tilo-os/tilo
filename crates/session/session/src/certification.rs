@@ -44,7 +44,7 @@ impl Keys for StoreKeys {
         let key = crate::identity_admin::fleet_store()?
             .identity_key(&hex::encode(person))
             .map_err(|error| error.to_string())?;
-        Ok(Arc::new(tilo_enrollment::root::PersonSigner::new(key)))
+        Ok(Arc::new(key))
     }
 }
 
@@ -210,7 +210,7 @@ fn answer_at_host(
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
         let approver = tilo_server_client::MemberApprover::new(host);
-        let answered = tilo_enrollment::certification::answer_pairing(
+        let answered = tilo_server_client::certification::answer_pairing(
             &approver,
             signer.as_ref(),
             digest,
@@ -432,7 +432,7 @@ mod tests {
     }
 
     /// A device holding the person's whole root.
-    struct Held(Arc<tilo_enrollment::root::PersonSigner>);
+    struct Held(Arc<tilo_identity::store::SigningIdentity>);
 
     impl Keys for Held {
         fn key(&self, _person: [u8; 32]) -> Result<Arc<dyn DeviceSigner + Send + Sync>, String> {
@@ -506,7 +506,7 @@ mod tests {
     /// A host of the person whose key `root` is, on this machine, serving the web a new device
     /// opens a pairing link on.
     async fn person_host(
-        root: &Arc<tilo_enrollment::root::PersonSigner>,
+        root: &Arc<tilo_identity::store::SigningIdentity>,
         state: &std::path::Path,
     ) -> (tilo_server::daemon::Server, tilo_server::web::WebHandle) {
         let person = root.device_public_key();
@@ -563,7 +563,7 @@ mod tests {
     fn a_device_that_opens_the_link_becomes_the_persons_once_they_approve_here() {
         let (_root_dir, root) = identity();
         let person = root.group_public_key();
-        let root = Arc::new(tilo_enrollment::root::PersonSigner::new(root));
+        let root = Arc::new(root);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -578,7 +578,7 @@ mod tests {
         // This laptop holds the person's key and shows the link.
         let (laptop, laptop_id) = this_device([0x62; 32]);
         set_keys(&laptop_id, Arc::new(Held(Arc::clone(&root))));
-        let adding = crate::pair_device::Adding::new(std::rc::Rc::new(Nowhere));
+        let adding = crate::pair_device::Adding::new(std::rc::Rc::new(Nowhere), None);
         let shown = adding.device(
             Ok(crate::pair_device::Place {
                 site: format!("{origin}/"),
@@ -610,7 +610,7 @@ mod tests {
             let phone = phone.clone();
             async move {
                 let invite = link.invite.unwrap_or([0; 16]);
-                tilo_enrollment::requester::certify(
+                tilo_server_client::certify::certify(
                     &at,
                     link.user_public_key,
                     "Phone",

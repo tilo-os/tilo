@@ -26,16 +26,7 @@
 
 pub mod device;
 pub use tilo_system_resources::effects;
-/// What a resource of a kind this crate publishes from outside a document is
-/// called, in the person's language: the kind's entry in the catalogue beside
-/// this crate, read the way a declaration's words are.
-mod i18n {
-    tilo_resource::declared_catalogue!(CATALOGUE);
-
-    pub(crate) fn name(kind: &str, source: &str) -> String {
-        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
-    }
-}
+tilo_resource::declared_names!();
 
 pub mod model;
 pub mod update;
@@ -50,7 +41,7 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
-use device::{Change, System, follow_once};
+use device::{Change, PowerProfiles, System, follow_once};
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
@@ -80,9 +71,17 @@ pub struct Readings {
     pub keyboard_light: KeyboardLight,
 }
 
-fn read(system: &dyn System) -> Readings {
+fn read(system: &dyn System, live_profiles: bool) -> Readings {
+    let power = if live_profiles {
+        Power {
+            user_switching: system.user_switching(),
+            ..Power::default()
+        }
+    } else {
+        system.power()
+    };
     Readings {
-        power: system.power(),
+        power,
         update: system.update(),
         time: system.time(),
         keyboard_light: system.keyboard_light(),
@@ -99,7 +98,28 @@ enum Landed {
         action: String,
         result: Result<(), String>,
         readings: Box<Readings>,
+        /// On the live path, the active power mode read once directly from the
+        /// daemon right after `Change::PowerMode` landed, paired with the live
+        /// source's revision before that read so a newer daemon signal still wins.
+        live_power_mode: Option<(u64, PowerMode)>,
     },
+}
+
+/// Live power-profile readings followed beside the service's worker.
+struct LiveProfiles {
+    source: Arc<dyn PowerProfiles>,
+    /// Local mirror of `active_shared` so the live poll path needs only one
+    /// atomic load (`source.revision()`).
+    active: bool,
+    /// Monotonic (`false -> true`) flag shared with worker closures so
+    /// `refresh`, `follow_location` and `start` stop calling `System::power`
+    /// once the live source takes over.
+    active_shared: Arc<AtomicBool>,
+    seen: u64,
+}
+
+fn is_live(flag: Option<&Arc<AtomicBool>>) -> bool {
+    flag.is_some_and(|active| active.load(Ordering::Acquire))
 }
 
 /// The system service.
@@ -111,6 +131,8 @@ pub struct SystemService {
     follower: Option<std::thread::Thread>,
     /// Follows the live update's state, once [`Self::follow_update`] started it.
     update_watch: Option<StateWatch>,
+    /// Live power profiles from the session's power service when one runs.
+    live_profiles: Option<LiveProfiles>,
 }
 
 impl SystemService {
@@ -119,15 +141,70 @@ impl SystemService {
     /// # Errors
     /// The worker's thread did not start.
     pub fn new(system: Arc<dyn System>, wake: Option<Wake>) -> std::io::Result<Self> {
+        Self::build(system, wake, None)
+    }
+
+    /// The service over `system`, taking the machine's power modes and active
+    /// mode live from `profiles` instead of polling `system.power()`.
+    ///
+    /// # Errors
+    /// The worker's thread did not start.
+    pub fn with_power_profiles(
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        profiles: Arc<dyn PowerProfiles>,
+    ) -> std::io::Result<Self> {
+        Self::build(system, wake, Some(profiles))
+    }
+
+    fn build(
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        profiles: Option<Arc<dyn PowerProfiles>>,
+    ) -> std::io::Result<Self> {
+        let mut readings = Readings::default();
+        let live_profiles = profiles.map(|source| {
+            if let Some(wake) = &wake {
+                source.on_change(Arc::clone(wake));
+            }
+            let active = source.is_ready();
+            let seen = if active {
+                // Capture the revision before reading the snapshot so a concurrent
+                // update between the two is still picked up on the next poll.
+                let seen = source.revision();
+                let (modes, mode) = source.snapshot();
+                readings.power.modes = modes;
+                readings.power.mode = mode;
+                seen
+            } else {
+                0
+            };
+            LiveProfiles {
+                source,
+                active,
+                active_shared: Arc::new(AtomicBool::new(active)),
+                seen,
+            }
+        });
+        let live_active = live_profiles
+            .as_ref()
+            .map(|live| Arc::clone(&live.active_shared));
         let service = Self {
-            readings: Readings::default(),
+            readings,
             worker: Worker::spawn("tilo-system", system, wake)?,
             stopped: Arc::new(AtomicBool::new(false)),
             follower: None,
             update_watch: None,
+            live_profiles,
         };
-        refresh(&service.worker.jobs());
+        refresh(&service.worker.jobs(), live_active);
         Ok(service)
+    }
+
+    fn live_active_flag(&self) -> Option<Arc<AtomicBool>> {
+        self.live_profiles
+            .as_ref()
+            .map(|live| Arc::clone(&live.active_shared))
     }
 
     /// Let the time zone follow the device while the person chose so:
@@ -138,11 +215,12 @@ impl SystemService {
     pub fn follow_location(&mut self) -> std::io::Result<()> {
         let jobs = self.worker.jobs();
         let stopped = Arc::clone(&self.stopped);
+        let live_profiles = self.live_active_flag();
         let follower = std::thread::Builder::new()
             .name("tilo-time-zone".into())
             .spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
-                    look(&jobs);
+                    look(&jobs, live_profiles.clone());
                     std::thread::park_timeout(LOOK_AGAIN);
                 }
             })?;
@@ -169,13 +247,39 @@ impl SystemService {
 
     /// Read the machine again.
     pub fn refresh(&self) {
-        refresh(&self.worker.jobs());
+        refresh(&self.worker.jobs(), self.live_active_flag());
     }
 
     /// What the machine reads now.
     #[must_use]
     pub const fn readings(&self) -> &Readings {
         &self.readings
+    }
+
+    /// Take in the power modes from the live power source when its revision moved.
+    fn sync_power_profiles(&mut self) -> bool {
+        let Some(live) = &mut self.live_profiles else {
+            return false;
+        };
+        let just_activated = if live.active {
+            false
+        } else if live.source.is_ready() {
+            live.active = true;
+            live.active_shared.store(true, Ordering::Release);
+            true
+        } else {
+            return false;
+        };
+        let revision = live.source.revision();
+        if !just_activated && revision == live.seen {
+            return false;
+        }
+        live.seen = revision;
+        let (modes, mode) = live.source.snapshot();
+        let changed = self.readings.power.modes != modes || self.readings.power.mode != mode;
+        self.readings.power.modes = modes;
+        self.readings.power.mode = mode;
+        changed
     }
 
     fn status(&mut self, part: Part) -> (&mut Vec<String>, &mut Option<String>) {
@@ -193,6 +297,10 @@ impl SystemService {
 
     fn take(&mut self, mut readings: Readings) {
         let old = &mut self.readings;
+        if self.live_profiles.as_ref().is_some_and(|live| live.active) {
+            readings.power.modes = std::mem::take(&mut old.power.modes);
+            readings.power.mode = old.power.mode.take();
+        }
         readings.power.pending = std::mem::take(&mut old.power.pending);
         readings.power.problem = old.power.problem.take();
         readings.update.pending = std::mem::take(&mut old.update.pending);
@@ -207,6 +315,7 @@ impl SystemService {
             .iter()
             .any(|action| action == "update-now");
         self.readings = readings;
+        self.sync_power_profiles();
     }
 
     fn land(&mut self, landed: Landed) {
@@ -224,6 +333,7 @@ impl SystemService {
                 action,
                 result,
                 readings,
+                live_power_mode,
             } => {
                 {
                     let (pending, problem) = self.status(part);
@@ -233,6 +343,15 @@ impl SystemService {
                     *problem = result.err();
                 }
                 self.take(*readings);
+                if let Some((rev_before, mode)) = live_power_mode {
+                    let superseded = self
+                        .live_profiles
+                        .as_ref()
+                        .is_some_and(|live| live.seen > rev_before);
+                    if !superseded {
+                        self.readings.power.mode = Some(mode);
+                    }
+                }
             }
         }
     }
@@ -244,19 +363,34 @@ impl SystemService {
         }
         let action = action.to_owned();
         let follow = matches!(change, Change::AutomaticZone(true));
+        let live_active = self.live_active_flag();
+        let live_source = self
+            .live_profiles
+            .as_ref()
+            .map(|live| Arc::clone(&live.source));
+        let look_active = live_active.clone();
         self.worker.run(move |system| {
             let result = system.change(&change);
+            let live_now = is_live(live_active.as_ref());
+            let live_power_mode =
+                if live_now && result.is_ok() && matches!(change, Change::PowerMode(_)) {
+                    let rev_before = live_source.as_ref().map_or(0, |source| source.revision());
+                    system.power_mode().map(|mode| (rev_before, mode))
+                } else {
+                    None
+                };
             Landed::Changed {
                 part,
                 action,
                 result,
-                readings: Box::new(read(system)),
+                readings: Box::new(read(system, live_now)),
+                live_power_mode,
             }
         });
         if follow {
             match &self.follower {
                 Some(follower) => follower.unpark(),
-                None => look(&self.worker.jobs()),
+                None => look(&self.worker.jobs(), look_active),
             }
         }
         Started::Accepted
@@ -272,8 +406,8 @@ impl Drop for SystemService {
     }
 }
 
-fn refresh(jobs: &Jobs<dyn System, Landed>) {
-    jobs.run(|system| Landed::Read(Box::new(read(system))));
+fn refresh(jobs: &Jobs<dyn System, Landed>, live_profiles: Option<Arc<AtomicBool>>) {
+    jobs.run(move |system| Landed::Read(Box::new(read(system, is_live(live_profiles.as_ref())))));
 }
 
 fn reread_update(jobs: &Jobs<dyn System, Landed>) {
@@ -380,8 +514,8 @@ impl StateWatch {
 }
 
 /// Set the zone where the device is, when it follows the device.
-fn look(jobs: &Jobs<dyn System, Landed>) {
-    jobs.run(|system| {
+fn look(jobs: &Jobs<dyn System, Landed>, live_profiles: Option<Arc<AtomicBool>>) {
+    jobs.run(move |system| {
         if system.time().automatic {
             match follow_once(system) {
                 Ok(Some(zone)) => tracing::info!(%zone, "time zone set from the device's location"),
@@ -389,7 +523,7 @@ fn look(jobs: &Jobs<dyn System, Landed>) {
                 Err(error) => tracing::info!(%error, "the time zone stays: no location"),
             }
         }
-        Landed::Read(Box::new(read(system)))
+        Landed::Read(Box::new(read(system, is_live(live_profiles.as_ref()))))
     });
 }
 
@@ -640,18 +774,23 @@ impl Service for SystemService {
         if let Some(watch) = &mut self.update_watch {
             watch.follow();
         }
+        let mut changed = self.sync_power_profiles();
         let landed = self.worker.landed();
-        let changed = !landed.is_empty();
-        for landed in landed {
-            self.land(landed);
+        if !landed.is_empty() {
+            changed = true;
+            for landed in landed {
+                self.land(landed);
+            }
         }
         changed
     }
 
     fn settle(&mut self) {
+        self.sync_power_profiles();
         for landed in self.worker.settle() {
             self.land(landed);
         }
+        self.sync_power_profiles();
     }
 }
 

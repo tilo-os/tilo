@@ -45,7 +45,7 @@ fn row(records: &Resources, index: usize, workspace: &mcp_server::Workspace) -> 
         "console-workspace-open",
     )
     .with_icon(Icon::ExternalLink)
-    .on_view(move || records.open_in_tilo(&href));
+    .on_open(move || records.open_in_tilo(&href));
     let mut row = ListRow::new(format!("console-workspace-{index}"), workspace.name.clone())
         .icon(Icon::LayoutGrid)
         .meta(ago(workspace.made_ms))

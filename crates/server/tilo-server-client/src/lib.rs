@@ -8,7 +8,10 @@
 //! - [`coedit`] — the co-edit payloads carried through the server; the iroh
 //!   session speaking them is `tilo_server_session::coedit::ServerCoeditSession`;
 //! - [`certify`] — transport signed certification requests, check responses,
-//!   and carry approvals from root-holding devices and members;
+//!   and carry approvals from root-holding devices and members; a device
+//!   without a certificate asks for one with [`certify::certify`];
+//! - [`certification`] — the certificates a person's root issues, and its
+//!   answer to a pending pairing;
 //! - [`pairing`] — the pairing ceremony a member's root answers, and the
 //!   certificates a person's root issues;
 //! - [`login`] — the pairing link, the signed-in device, and the workspace entry;
@@ -39,6 +42,8 @@
     )
 )]
 
+#[cfg(feature = "dial")]
+pub mod certification;
 #[cfg(feature = "dial")]
 pub mod certify;
 pub mod coedit;

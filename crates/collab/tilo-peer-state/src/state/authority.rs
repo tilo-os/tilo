@@ -876,7 +876,9 @@ impl StatePeer {
     }
 
     /// Certified key holders whose current authority allows reading this
-    /// document. Store-only devices never receive content keys.
+    /// document. Store-only devices never receive content keys. A call's media
+    /// keys ([`collab_types::calls::media_document`]) go only to the devices
+    /// of the people the call's rule admits now.
     pub fn document_key_holders(
         &self,
         app: &str,
@@ -884,7 +886,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<BTreeSet<[u8; 32]>, String> {
         let devices: Vec<_> = self.governance().key_holders(now)?.into_iter().collect();
-        Ok(self
+        let mut holders: BTreeSet<[u8; 32]> = self
             .governance()
             .access_of(&devices, now)?
             .into_iter()
@@ -892,7 +894,28 @@ impl StatePeer {
                 self.holds_document_keys_as(&member, (app, document), now)
                     .then_some(device)
             })
-            .collect())
+            .collect();
+        if app == collab_types::scope::MEDIA_APP
+            && let Some((tag, generation)) = collab_types::calls::parse_media_document(document)
+        {
+            let (rules, persons) = self.governance().call_gate(now)?;
+            let rule = rules
+                .into_iter()
+                .find(|(channel, _)| collab_types::calls::tag(channel) == tag)
+                .map(|(_, rule)| rule)
+                .unwrap_or_default();
+            // Only the rule's current generation has holders. Nobody takes keys of one it has
+            // not reached, which a change leaving them out would then seal under; and nobody is
+            // added to one it moved past, so a person let back in is never handed the keys of
+            // what was said while they were left out.
+            if generation != rule.generation {
+                return Ok(BTreeSet::new());
+            }
+            // No device holds them by role: whichever device the rule admits needs them first
+            // founds the group.
+            holders.retain(|device| rule.may(persons.get(device).map(String::as_str)).any());
+        }
+        Ok(holders)
     }
 
     /// Devices allowed by both workspace policy and the document's declared readers.
@@ -1303,7 +1326,12 @@ impl StatePeer {
                     _ => true,
                 }
             };
-        let decided = collab_types::decide_op_pinned(
+        // A write of a history one of the person's devices imported: what it made naming no one
+        // is the person's, as the import step said.
+        let imported = self
+            .governance()
+            .imported_invoker(source, app_id, record, envelope.seq);
+        let decided = collab_types::decide_op_imported(
             changes,
             &collab_types::WrittenDocument {
                 workspace: &self.core.workspace,
@@ -1314,6 +1342,7 @@ impl StatePeer {
             document.map(|document| document.doc.committed_document()),
             &self.surfaces,
             &allows,
+            imported.as_ref(),
         )
         .and_then(|receipt| match receipt {
             collab_types::Receipt::Admit => self.recorded_invocations(envelope).map(|()| receipt),
@@ -1417,6 +1446,14 @@ impl StatePeer {
                 )
             })?;
             let Some(invoker) = context.invoker.as_ref() else {
+                // Made naming no one: the person's own, when an import step holds the write.
+                if self
+                    .governance()
+                    .imported_invoker(source, app_id, record, envelope.seq)
+                    .is_some()
+                {
+                    continue;
+                }
                 return Err(refused_no_invoker(&route, source, envelope));
             };
             if invoker.device.is_none() {

@@ -1,0 +1,1724 @@
+//! `Banner` — an inline, semantic alert strip. Unlike a `super::toast::Toast`
+//! (transient, auto-expiring) a banner is a *persistent* in-flow message the
+//! person resolves or dismisses: "You're offline — changes will sync when you
+//! reconnect", "This file has unsaved changes", "You're in a private window".
+//!
+//! A [`BannerKind`] decides the leading icon and its colour; the well, the
+//! ink and the buttons come from the theme. A banner carries a **title**, an
+//! optional secondary **message**, up to two actions laid out inside its box
+//! at the trailing edge (they wrap under the message when the banner is
+//! narrow), and an optional dismiss control. The actions and the dismiss
+//! control are real [`Button`]s: focusable, named, and published as actions,
+//! so an app never places its own buttons beside a banner.
+//!
+//! [`Banner::paint`] and [`Banner::height`] draw the same banner for a host
+//! that paints into a `Scene`, and hand back where its buttons are.
+
+use std::borrow::Cow;
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use automerge::ObjId;
+use taffy::style_helpers::{auto, length, percent};
+use taffy::{NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
+
+use crate::icons::Icon;
+use crate::local_state::LocalBinding;
+use crate::paint::PaintCtx;
+use crate::presence::PresenceCtx;
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::DrawChild;
+use crate::widget::control_size::ControlSize;
+use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
+
+mod component;
+pub use component::BannerProps;
+
+#[derive(Clone, Copy, Debug)]
+struct Metrics {
+    pad_x: f64,
+    pad_y: f64,
+    icon: f64,
+    dismiss: f64,
+    /// Between the icon and the text, and before the trailing controls.
+    gap: f64,
+    /// Between the message and actions that wrapped under it.
+    row_gap: f64,
+    /// Between two actions.
+    related: f64,
+    min_height: f64,
+    /// The narrowest the text may get before the actions wrap under it.
+    text_basis: f64,
+}
+
+impl Metrics {
+    fn of(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        Self {
+            pad_x: f64::from(t.spacing.s4),
+            pad_y: f64::from(t.spacing.s3),
+            icon: f64::from(t.metrics.icon_md),
+            dismiss: ButtonFace::height(ControlSize::Small, theme),
+            gap: f64::from(t.spacing.s3),
+            row_gap: f64::from(t.spacing.s2),
+            related: f64::from(t.spacing.rhythm.related),
+            min_height: f64::from(t.metrics.panel_row_height),
+            text_basis: f64::from(theme.text(TextRole::Body).line_height_px()) * 12.0,
+        }
+    }
+}
+
+fn title_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Body).strong()
+}
+
+fn caption_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption)
+}
+
+/// The ground a banner stands on: the content's own ground washed with its kind's colour, so a
+/// warning or an error reads as one before a word of it is read. A neutral notice keeps the plain
+/// raised well. The wash goes over the content rather than over the raised well: the raised grey
+/// under a colour turns it to mud.
+fn well(theme: &Theme, kind: BannerKind) -> Color {
+    let colors = &theme.tokens.colors.surfaces;
+    match kind {
+        BannerKind::Neutral => colors.raised,
+        _ => crate::tokens::colors::mix8(colors.content, kind.color(theme), WELL_WASH),
+    }
+}
+
+/// The 1 px edge around a banner's well: its kind's colour, stronger than the wash, as a tinted
+/// chip wears it, so the banner keeps its bounds without a grey line around a coloured ground.
+fn well_edge(theme: &Theme, kind: BannerKind) -> Color {
+    match kind {
+        BannerKind::Neutral => crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+        _ => crate::tokens::colors::mix8(
+            theme.tokens.colors.surfaces.content,
+            kind.color(theme),
+            WELL_EDGE,
+        ),
+    }
+}
+
+/// How much of its kind's colour a banner's well takes: enough to tell a warning from a
+/// notice at a glance, little enough that the ink on it stays the theme's own.
+const WELL_WASH: f32 = 0.1;
+
+/// How much of its kind's colour a banner's edge takes: the tinted chip's edge, a little softer
+/// for a surface this much larger.
+const WELL_EDGE: f32 = 0.3;
+
+/// Input to [`Banner::paint`].
+#[derive(Clone, Debug)]
+pub struct BannerContent<'a> {
+    pub kind: BannerKind,
+    pub icon: Icon,
+    pub title: &'a str,
+    /// The line under the title, in words the caller resolved (a catalogue's
+    /// copy) rather than a literal.
+    pub message: Option<Cow<'a, str>>,
+    /// The app's name, shown above the title.
+    pub source: Option<&'a str>,
+    pub dismissible: bool,
+    /// The banner's one main action ("Try again", "Restore").
+    pub action: Option<&'a str>,
+    /// A second action, before the main one ("Discard").
+    pub secondary_action: Option<&'a str>,
+}
+
+impl<'a> BannerContent<'a> {
+    /// A non-dismissible banner with the severity's default icon.
+    pub fn new(kind: BannerKind, title: &'a str) -> Self {
+        Self {
+            kind,
+            icon: kind.default_icon(),
+            title,
+            message: None,
+            source: None,
+            dismissible: false,
+            action: None,
+            secondary_action: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    #[must_use]
+    pub fn with_message(mut self, message: Option<impl Into<Cow<'a, str>>>) -> Self {
+        self.message = message.map(Into::into);
+        self
+    }
+
+    #[must_use]
+    pub fn with_source(mut self, source: Option<&'a str>) -> Self {
+        self.source = source;
+        self
+    }
+
+    fn source_line(&self) -> Option<&'a str> {
+        self.source.filter(|source| !source.is_empty())
+    }
+
+    #[must_use]
+    pub fn dismissible(mut self, dismissible: bool) -> Self {
+        self.dismissible = dismissible;
+        self
+    }
+
+    /// The banner's main action, at its trailing edge.
+    #[must_use]
+    pub fn action(mut self, label: &'a str) -> Self {
+        self.action = Some(label);
+        self
+    }
+
+    /// A second action, before the main one.
+    #[must_use]
+    pub fn secondary_action(mut self, label: &'a str) -> Self {
+        self.secondary_action = Some(label);
+        self
+    }
+}
+
+/// Where [`Banner::paint`] put the banner and its controls, for the caller's
+/// hit-testing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BannerHit {
+    /// The banner's box.
+    pub rect: Rect,
+    pub action: Option<Rect>,
+    pub secondary_action: Option<Rect>,
+    /// The dismiss control's face, when the banner is dismissible.
+    pub dismiss: Option<Rect>,
+}
+
+/// The face of a banner's action: the main one a secondary control, the
+/// other a plain one, both small.
+fn action_face(rect: Rect, label: &str, primary: bool) -> ButtonFace<'_> {
+    ButtonFace::new(rect, label)
+        .role(if primary {
+            ButtonRole::Secondary
+        } else {
+            ButtonRole::Plain
+        })
+        .control_size(ControlSize::Small)
+}
+
+/// One banner geometry, shared by the retained widget's measure and the
+/// immediate painter. Coordinates are relative to the banner's top-left.
+#[derive(Clone, Copy, Debug)]
+struct Geometry {
+    height: f64,
+    icon: Rect,
+    text: Point,
+    text_width: f32,
+    /// Height of the source line and its gap; 0 without one.
+    source_h: f64,
+    title_h: f64,
+    action: Option<Rect>,
+    secondary_action: Option<Rect>,
+    dismiss: Option<Rect>,
+}
+
+fn geometry(
+    content: &BannerContent<'_>,
+    width: f64,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Geometry {
+    let secondary = content
+        .secondary_action
+        .map(|label| action_face(Rect::ZERO, label, false).intrinsic_width(text, theme));
+    let main = content
+        .action
+        .map(|label| action_face(Rect::ZERO, label, true).intrinsic_width(text, theme));
+    let control_h = ButtonFace::height(ControlSize::Small, theme);
+    geometry_with(content, [secondary, main], control_h, width, text, theme)
+}
+
+/// [`geometry`] with the actions' widths given, `[secondary, main]`, and the height its controls
+/// take (a finger's target on touch). The retained banner measures its own buttons.
+fn geometry_with(
+    content: &BannerContent<'_>,
+    actions: [Option<f64>; 2],
+    control_h: f64,
+    width: f64,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Geometry {
+    let m = Metrics::of(theme);
+    let dismiss_size = m.dismiss.max(control_h);
+    let trailing = if content.dismissible {
+        dismiss_size + m.gap
+    } else {
+        0.0
+    };
+    // The body: everything between the padding and the dismiss column.
+    let body_x0 = m.pad_x;
+    let body_x1 = (width - m.pad_x - trailing).max(body_x0 + 1.0);
+    let body_w = body_x1 - body_x0;
+    let widths: Vec<f64> = actions.iter().flatten().copied().collect();
+    let actions_w = widths.iter().sum::<f64>()
+        + m.related * crate::num::f64_of_usize(widths.len().saturating_sub(1));
+    let leading = m.icon + m.gap;
+    let beside = widths.is_empty() || body_w >= leading + m.text_basis + m.gap + actions_w;
+    let text_w = if widths.is_empty() || !beside {
+        body_w - leading
+    } else {
+        body_w - leading - m.gap - actions_w
+    }
+    .max(1.0);
+    let text_width = crate::num::f32_of_f64(text_w);
+    let title_h = f64::from(
+        text.measure_style(content.title, Some(text_width), &title_style(theme))
+            .1,
+    );
+    let source_h = content.source_line().map_or(0.0, |source| {
+        f64::from(theme.tokens.spacing.s1)
+            + f64::from(
+                text.measure_style(source, Some(text_width), &caption_style(theme))
+                    .1,
+            )
+    });
+    let message_h = content.message.as_deref().map_or(0.0, |message| {
+        f64::from(theme.tokens.spacing.s1)
+            + f64::from(
+                text.measure_style(message, Some(text_width), &caption_style(theme))
+                    .1,
+            )
+    });
+    let lines_h = source_h + title_h + message_h;
+    let text_h = lines_h.max(m.icon);
+    let (line_h, actions_y) = if widths.is_empty() {
+        (text_h, 0.0)
+    } else if beside {
+        (text_h.max(control_h), 0.0)
+    } else {
+        (text_h + m.row_gap + control_h, text_h + m.row_gap)
+    };
+    let natural = line_h + 2.0 * m.pad_y;
+    let height = natural.max(m.min_height);
+    let top = (height - line_h) / 2.0;
+    let text_top = if beside {
+        top + (line_h - text_h) / 2.0
+    } else {
+        top
+    };
+    let icon = Rect::from_center_size(
+        Point::new(body_x0 + m.icon / 2.0, text_top + text_h / 2.0),
+        (m.icon, m.icon),
+    );
+    let text_origin = Point::new(body_x0 + leading, text_top + (text_h - lines_h) / 2.0);
+    let actions_top = if beside {
+        top + (line_h - control_h) / 2.0
+    } else {
+        top + actions_y
+    };
+    let (action, secondary_action) = if beside {
+        // Beside the text the actions stand from the trailing edge back: the main action last,
+        // so it sits at the edge.
+        let mut x = body_x1;
+        let mut rects = Vec::new();
+        for w in widths.iter().rev() {
+            rects.push(Rect::new(x - w, actions_top, x, actions_top + control_h));
+            x -= w + m.related;
+        }
+        match (actions[1], actions[0]) {
+            (Some(_), Some(_)) => (rects.first().copied(), rects.get(1).copied()),
+            (Some(_), None) => (rects.first().copied(), None),
+            (None, Some(_)) => (None, rects.first().copied()),
+            (None, None) => (None, None),
+        }
+    } else {
+        // Under the text they start where the text does: a narrow banner keeps one column, and
+        // the words of an action stand in it rather than a block across the banner.
+        let mut x = body_x0 + leading;
+        let mut rects = Vec::new();
+        for w in &widths {
+            rects.push(Rect::new(x, actions_top, x + w, actions_top + control_h));
+            x += w + m.related;
+        }
+        match (actions[0], actions[1]) {
+            (Some(_), Some(_)) => (rects.get(1).copied(), rects.first().copied()),
+            (Some(_), None) => (None, rects.first().copied()),
+            (None, Some(_)) => (rects.first().copied(), None),
+            (None, None) => (None, None),
+        }
+    };
+    let dismiss = content.dismissible.then(|| {
+        let x1 = width - m.pad_x;
+        // Centred on the title line.
+        let cy = if beside {
+            height / 2.0
+        } else {
+            text_top + source_h + title_h.max(m.icon) / 2.0
+        };
+        Rect::new(
+            x1 - dismiss_size,
+            cy - dismiss_size / 2.0,
+            x1,
+            cy + dismiss_size / 2.0,
+        )
+    });
+    Geometry {
+        height,
+        icon,
+        text: text_origin,
+        text_width,
+        source_h,
+        title_h,
+        action,
+        secondary_action,
+        dismiss,
+    }
+}
+
+fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect, kind: BannerKind) {
+    let theme = ctx.theme;
+    let radius = f64::from(theme.tokens.radii.control);
+    let well = well(theme, kind);
+    ctx.fill_round(rect, radius, well);
+    ctx.stroke_round(rect, radius, well_edge(theme, kind), 1.0);
+}
+
+/// Where the body's icon and text go, in absolute coordinates.
+#[derive(Clone, Copy, Debug)]
+struct BodyPlace {
+    icon: Rect,
+    text: Point,
+    text_width: f32,
+    /// Height of the source line and its gap; 0 without one.
+    source_h: f64,
+    title_h: f64,
+}
+
+fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPlace) {
+    let BodyPlace {
+        icon: icon_rect,
+        text,
+        text_width,
+        source_h,
+        title_h,
+    } = place;
+    let (kind, icon, title) = (content.kind, content.icon, content.title);
+    let message = content.message.as_deref();
+    let theme = ctx.theme;
+    let on_well = theme.on_ground(well(theme, kind));
+    icon.draw(ctx.scene, ctx.transform, icon_rect, kind.icon_ink(&on_well));
+    if let Some(source) = content.source_line() {
+        ctx.text(
+            source,
+            &caption_style(theme),
+            on_well.text_dim,
+            text,
+            Some(text_width),
+        );
+    }
+    let title_y = text.y + source_h;
+    ctx.text(
+        title,
+        &title_style(theme),
+        on_well.text_primary,
+        Point::new(text.x, title_y),
+        Some(text_width),
+    );
+    if let Some(message) = message {
+        let y = title_y + title_h + f64::from(theme.tokens.spacing.s1);
+        ctx.text(
+            message,
+            &caption_style(theme),
+            on_well.text_dim,
+            Point::new(text.x, y),
+            Some(text_width),
+        );
+    }
+}
+
+fn paint_banner(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    content: &BannerContent<'_>,
+    hover: Point,
+) -> BannerHit {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return BannerHit::default();
+    }
+    let theme = ctx.theme.clone();
+    let mut g = geometry(content, rect.width(), ctx.text, &theme);
+    // A taller rect than the banner needs centres the content in it.
+    let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+    let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+    let shift = |r: Rect| r + origin;
+    g.icon = shift(g.icon);
+    g.text += origin;
+    paint_well(ctx, rect, content.kind);
+    paint_body(
+        ctx,
+        content,
+        BodyPlace {
+            icon: g.icon,
+            text: g.text,
+            text_width: g.text_width,
+            source_h: g.source_h,
+            title_h: g.title_h,
+        },
+    );
+    let on_well = theme.on_ground(well(&theme, content.kind));
+    let mut hit = BannerHit {
+        rect,
+        ..BannerHit::default()
+    };
+    for (label, face_rect, primary) in [
+        (content.secondary_action, g.secondary_action, false),
+        (content.action, g.action, true),
+    ] {
+        if let (Some(label), Some(face_rect)) = (label, face_rect) {
+            let face_rect = shift(face_rect);
+            let face = action_face(face_rect, label, primary);
+            let hovered = face.contains(&on_well, hover);
+            let face = face.hovered(hovered);
+            crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
+            if primary {
+                hit.action = Some(face_rect);
+            } else {
+                hit.secondary_action = Some(face_rect);
+            }
+        }
+    }
+    if let Some(dismiss) = g.dismiss {
+        let dismiss = shift(dismiss);
+        let name = crate::i18n::widget_format("widget-dismiss", &[]);
+        let face = ButtonFace::icon_only(dismiss, Icon::X, &name)
+            .control_size(ControlSize::Small)
+            .hovered(dismiss.contains(hover));
+        crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
+        hit.dismiss = Some(dismiss);
+    }
+    hit
+}
+
+/// Severity of a [`Banner`]. Selects the icon and its colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BannerKind {
+    /// A notice where nothing is wrong (a private window, a read-only
+    /// document): primary ink, no hue.
+    Neutral,
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+impl BannerKind {
+    /// The status colour of this severity; primary ink for
+    /// [`BannerKind::Neutral`].
+    pub fn color(self, theme: &Theme) -> Color {
+        let s = &theme.tokens.colors.semantic;
+        match self {
+            BannerKind::Neutral => theme.text_primary,
+            BannerKind::Info => s.info,
+            BannerKind::Success => s.success,
+            BannerKind::Warning => s.warning,
+            BannerKind::Error => s.danger,
+        }
+    }
+
+    fn icon_ink(self, on_well: &Theme) -> Color {
+        self.color(on_well)
+    }
+
+    /// The default leading icon for this severity (overridable via
+    /// [`Banner::with_icon`]).
+    pub fn default_icon(self) -> Icon {
+        match self {
+            BannerKind::Neutral | BannerKind::Info => Icon::Info,
+            BannerKind::Warning => Icon::TriangleAlert,
+            BannerKind::Success => Icon::CircleCheck,
+            BannerKind::Error => Icon::CircleAlert,
+        }
+    }
+
+    fn politeness(self) -> crate::a11y::Politeness {
+        match self {
+            BannerKind::Error | BannerKind::Warning => crate::a11y::Politeness::Assertive,
+            _ => crate::a11y::Politeness::Polite,
+        }
+    }
+}
+
+/// What a state-bound banner shows ([`Banner::from_state`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BannerNotice {
+    pub kind: BannerKind,
+    pub title: String,
+    pub message: Option<String>,
+    pub icon: Option<Icon>,
+    /// The app's name, shown above the title.
+    pub source: Option<String>,
+}
+
+impl BannerNotice {
+    pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
+        Self {
+            kind,
+            title: title.into(),
+            message: None,
+            icon: None,
+            source: None,
+        }
+    }
+    pub fn neutral(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Neutral, title)
+    }
+    pub fn info(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Info, title)
+    }
+    pub fn success(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Success, title)
+    }
+    pub fn warning(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Warning, title)
+    }
+    pub fn error(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Error, title)
+    }
+    #[must_use]
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+    #[must_use]
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    #[must_use]
+    pub fn source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retained parts: the body, a measured leaf with the banner's whole geometry.
+// ---------------------------------------------------------------------------
+
+/// The well, icon, title and message: a measured leaf as tall as the whole
+/// banner at its width, laid out by the same geometry as the immediate
+/// painter, so the banner's buttons go where [`Banner::paint`] puts them.
+struct BannerBody {
+    notice: BannerNotice,
+    /// The measured widths of the banner's buttons: `[secondary, main]`.
+    actions: [Option<f64>; 2],
+    /// The height the banner's buttons measure themselves at: a finger's target on touch.
+    control_h: Option<f64>,
+    dismissible: bool,
+    rect: Rect,
+    theme: Theme,
+    dirty: bool,
+    layout_dirty: bool,
+}
+
+impl BannerBody {
+    fn content(&self) -> BannerContent<'_> {
+        let n = &self.notice;
+        BannerContent::new(n.kind, &n.title)
+            .with_icon(n.icon.unwrap_or_else(|| n.kind.default_icon()))
+            .with_message(n.message.as_deref())
+            .with_source(n.source.as_deref())
+            .dismissible(self.dismissible)
+    }
+
+    fn geometry(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> Geometry {
+        let control_h = self
+            .control_h
+            .unwrap_or_else(|| ButtonFace::height(ControlSize::Small, theme));
+        geometry_with(&self.content(), self.actions, control_h, width, text, theme)
+    }
+}
+
+impl Widget for BannerBody {
+    /// Its icon, source, title and message as a page lays them out, on the well it stands on.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Ground, TextLook, rgba8};
+        let theme = cx.theme();
+        let well = well(theme, self.notice.kind);
+        cx.element("div");
+        cx.ground(Ground {
+            fill: Some(rgba8(well)),
+            edge: Some(rgba8(well_edge(theme, self.notice.kind))),
+            radius: f64::from(theme.tokens.radii.control),
+            inset: [0.0; 2],
+        });
+        let content = self.content();
+        // Its words stand where the banner's own geometry measures them.
+        let width = self.rect.width();
+        let g = crate::text_render::with_layout_renderer(theme, |text| {
+            self.geometry(text, theme, width)
+        });
+        let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        // Its geometry is the banner's own; the page places its parts in the window.
+        let at = vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0 + dy);
+        let x = g.text.x + at.x;
+        // Its icon as painted, where it stands; its buttons are the banner's own widgets.
+        if !g.icon.is_zero_area() {
+            cx.part("icon", "BannerPart", g.icon + at).painted(0);
+        }
+        let on_well = theme.on_ground(well);
+        let text_width = f64::from(g.text_width);
+        let mut y = g.text.y + at.y;
+        if let Some(source) = content.source_line() {
+            let look = TextLook::new(
+                source.to_owned(),
+                &caption_style(theme),
+                Some(on_well.text_dim),
+            );
+            cx.words(
+                "source",
+                "p",
+                Rect::new(x, y, x + text_width, y + g.source_h),
+                look,
+            );
+            y += g.source_h;
+        }
+        let look = TextLook::new(
+            content.title.to_owned(),
+            &title_style(theme),
+            Some(on_well.text_primary),
+        );
+        cx.words(
+            "title",
+            "p",
+            Rect::new(x, y, x + text_width, y + g.title_h),
+            look,
+        );
+        y += g.title_h;
+        if let Some(message) = content.message.as_deref() {
+            let look = TextLook::new(
+                message.to_owned(),
+                &caption_style(theme),
+                Some(on_well.text_dim),
+            );
+            // Set a small step under the title, as painted.
+            let top = y + f64::from(theme.tokens.spacing.s1);
+            cx.words(
+                "message",
+                "p",
+                Rect::new(x, top, x + text_width, (self.rect.y1 - dy).max(top)),
+                look,
+            );
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.theme = theme.clone();
+        let style = Style {
+            size: Size {
+                width: percent(1.0_f32),
+                height: auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let m = Metrics::of(&self.theme);
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            taffy::AvailableSpace::MinContent => {
+                crate::num::f32_of_f64(m.icon + m.gap + 2.0 * m.pad_x)
+            }
+            taffy::AvailableSpace::MaxContent => {
+                crate::num::f32_of_f64(m.icon + m.gap + m.text_basis + 2.0 * m.pad_x)
+            }
+        });
+        let theme = self.theme.clone();
+        let g = self.geometry(text, &theme, f64::from(width));
+        taffy::Size {
+            width,
+            height: crate::num::f32_of_f64(g.height.ceil()),
+        }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = layout_rect(taffy, node, origin);
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let mut ctx = PaintCtx::new(scene, transform, text, theme);
+        paint_well(&mut ctx, self.rect, self.notice.kind);
+        let g = self.geometry(ctx.text, theme, self.rect.width());
+        let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        let origin = self.rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let content = self.content();
+        paint_body(
+            &mut ctx,
+            &content,
+            BodyPlace {
+                icon: g.icon + origin,
+                text: g.text + origin,
+                text_width: g.text_width,
+                source_h: g.source_h,
+                title_h: g.title_h,
+            },
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "BannerBody"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    crate::redraw_flag!();
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Banner — retained.
+// ---------------------------------------------------------------------------
+
+/// An inline semantic alert with a title, an optional message, up to two
+/// actions and an optional dismiss control.
+pub struct Banner {
+    body: BannerBody,
+    secondary: Option<Button>,
+    action: Option<Button>,
+    dismiss: Option<Button>,
+    id: Option<String>,
+    /// Absent: the banner collapses, and with it its gap in the parent.
+    shown: bool,
+    source: Option<LocalBinding<Option<BannerNotice>>>,
+    /// Persistent "the person closed this" state; collapses the banner until
+    /// the host shows another notice.
+    dismissed: bool,
+    /// One-shot drain signal for [`take_dismissed`](Banner::take_dismissed).
+    dismiss_fired: bool,
+    /// Set by the dismiss control's action; read on the next sync.
+    dismiss_requested: Rc<Cell<bool>>,
+    on_dismiss: Option<Box<dyn FnMut()>>,
+    /// What the view bound to the dismiss control: run when the person presses it, through the
+    /// same API as the banner's own controls.
+    dismiss_press: crate::widget::Press,
+    /// The body's node, then one per button, in [`Widget::children`] order.
+    nodes: Vec<NodeId>,
+    rect: Rect,
+    layout_dirty: bool,
+    dirty: bool,
+    /// Its arriving and leaving (`motion::Disclosure`): its box opens or
+    /// closes from the top, what follows moving with its edge, and it
+    /// stands out of the layout while it moves (`widget::Disclosing`).
+    band: crate::widget::BandMotion,
+    /// It is shown at rest from its first frame: what it stands in brings
+    /// it in ([`Banner::arrives_in_place`]).
+    arrives_in_place: bool,
+    /// The device pixels per logical pixel it was laid out at: its buttons, placed as it is
+    /// drawn, land on that grid.
+    device_scale: f64,
+}
+
+impl Banner {
+    /// Whether the layout gives the banner its place: shown and not on its
+    /// way. A moving banner stands out of the layout, in the slot its
+    /// container gives it ([`Widget::place_disclosing`]).
+    fn in_flow(&self) -> bool {
+        self.band.in_flow(self.visible())
+    }
+
+    /// Show or hide this node with the banner. True when the style changed.
+    fn style_visibility(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let visible = self.visible();
+        self.band.style_display(taffy, node, visible)
+    }
+
+    pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
+        Self::from_notice(Some(BannerNotice::new(kind, title)))
+    }
+
+    fn from_notice(notice: Option<BannerNotice>) -> Self {
+        let shown = notice.is_some();
+        Self {
+            body: BannerBody {
+                notice: notice.unwrap_or_else(|| BannerNotice::neutral("")),
+                actions: [None, None],
+                control_h: None,
+                dismissible: false,
+                rect: Rect::ZERO,
+                theme: Theme::dark(),
+                dirty: true,
+                layout_dirty: true,
+            },
+            secondary: None,
+            action: None,
+            dismiss: None,
+            id: None,
+            shown,
+            source: None,
+            dismissed: false,
+            dismiss_fired: false,
+            dismiss_requested: Rc::new(Cell::new(false)),
+            on_dismiss: None,
+            dismiss_press: crate::widget::Press::default(),
+            nodes: Vec::new(),
+            rect: Rect::ZERO,
+            layout_dirty: true,
+            dirty: true,
+            // First paint shows the banner at rest; only a change moves it.
+            band: crate::widget::BandMotion::new(shown),
+            arrives_in_place: false,
+            device_scale: 1.0,
+        }
+    }
+
+    /// A banner bound to `state`: it shows the notice while there is one and
+    /// collapses, with its gap, while the state holds `None`. A new notice
+    /// clears an earlier dismissal.
+    pub fn from_state(state: &crate::LocalState<Option<BannerNotice>>) -> Self {
+        let (notice, binding) = LocalBinding::new(state);
+        let mut banner = Self::from_notice(notice);
+        banner.source = Some(binding);
+        banner
+    }
+
+    pub fn neutral(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Neutral, title)
+    }
+    pub fn info(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Info, title)
+    }
+    pub fn success(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Success, title)
+    }
+    pub fn warning(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Warning, title)
+    }
+    pub fn error(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Error, title)
+    }
+
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.body.notice.message = Some(message.into());
+        self
+    }
+
+    /// The app's name, shown above the title.
+    #[must_use]
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.body.notice.source = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.body.notice.icon = Some(icon);
+        self
+    }
+
+    /// Name the banner for tests, scenarios and inspection. Its dismiss
+    /// control is `<id>.dismiss`.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        if self.dismiss.is_some() {
+            self = self.dismissible();
+        }
+        self
+    }
+
+    /// The banner's main action, inside its box at the trailing edge. The
+    /// banner sizes it, and keeps its role where the banner is wide enough for
+    /// the actions to stand beside what it says: under the text they are words
+    /// of their own, as an action in a sentence is.
+    #[must_use]
+    pub fn with_action(mut self, button: Button) -> Self {
+        self.action = Some(button.control_size(ControlSize::Small));
+        self
+    }
+
+    /// A second action, before the main one.
+    #[must_use]
+    pub fn with_secondary_action(mut self, button: Button) -> Self {
+        self.secondary = Some(button.control_size(ControlSize::Small));
+        self
+    }
+
+    /// Show the banner at rest from its first frame, for a banner that is
+    /// the whole of what arrives: the place it stands in brings it in (a
+    /// window's arrival cross-fades it), so it does not open on its own.
+    #[must_use]
+    pub fn arrives_in_place(mut self) -> Self {
+        self.arrives_in_place = true;
+        self
+    }
+
+    /// Offer a dismiss control at the trailing edge: a focusable icon button
+    /// named "Dismiss".
+    #[must_use]
+    pub fn dismissible(mut self) -> Self {
+        let id = format!("{}.dismiss", self.id.as_deref().unwrap_or("banner"));
+        let requested = Rc::clone(&self.dismiss_requested);
+        self.dismiss = Some(
+            Button::icon_only(
+                &id,
+                Icon::X,
+                &crate::i18n::widget_format("widget-dismiss", &[]),
+            )
+            .control_size(ControlSize::Small)
+            .on_open(move || requested.set(true)),
+        );
+        self.body.dismissible = true;
+        self
+    }
+
+    /// What pressing the dismiss control does: the action the view bound to it, run through
+    /// the banner's own control API. Implies [`Self::dismissible`].
+    #[must_use]
+    pub fn with_dismiss_press(mut self, press: crate::widget::Press) -> Self {
+        if self.dismiss.is_none() {
+            self = self.dismissible();
+        }
+        self.dismiss_press = press;
+        self
+    }
+
+    /// The dismiss control's name in the control inventory, as the one the button carries.
+    fn dismiss_control_id(&self) -> String {
+        format!("{}.dismiss", self.id.as_deref().unwrap_or("banner"))
+    }
+
+    /// Run `f` once when the person dismisses the banner. Implies
+    /// [`Self::dismissible`].
+    #[must_use]
+    pub fn on_dismiss(mut self, f: impl FnMut() + 'static) -> Self {
+        if self.dismiss.is_none() {
+            self = self.dismissible();
+        }
+        self.on_dismiss = Some(Box::new(f));
+        self
+    }
+
+    /// Drain the "the person dismissed this" signal (fires once). Draining
+    /// does **not** show the banner again; [`is_dismissed`](Self::is_dismissed)
+    /// stays `true`.
+    pub fn take_dismissed(&mut self) -> bool {
+        std::mem::take(&mut self.dismiss_fired)
+    }
+
+    /// Whether this banner has been dismissed (and now collapses).
+    pub fn is_dismissed(&self) -> bool {
+        self.dismissed
+    }
+
+    /// Whether the banner shows: it has a notice and was not dismissed.
+    pub fn is_shown(&self) -> bool {
+        self.shown && !self.dismissed
+    }
+
+    /// The effective leading icon (override or severity default).
+    pub fn icon(&self) -> Icon {
+        let notice = &self.body.notice;
+        notice.icon.unwrap_or_else(|| notice.kind.default_icon())
+    }
+
+    /// Replace what the banner says. `None` collapses it.
+    pub fn set_notice(&mut self, notice: Option<BannerNotice>) {
+        match notice {
+            Some(notice) => {
+                if !self.shown || self.dismissed || self.body.notice != notice {
+                    self.body.notice = notice;
+                    self.shown = true;
+                    self.dismissed = false;
+                    self.changed();
+                }
+            }
+            None => {
+                if self.shown {
+                    self.shown = false;
+                    self.changed();
+                }
+            }
+        }
+    }
+
+    fn changed(&mut self) {
+        self.layout_dirty = true;
+        self.dirty = true;
+        self.body.layout_dirty = true;
+        self.body.dirty = true;
+        // Arriving and leaving disclose, also when the person did nothing
+        // (the window went offline); a key's result lands.
+        let visible = self.visible();
+        self.band.disclosure.show_change(visible, self.band.motion);
+    }
+
+    /// Whether the banner is drawn on its way in or out.
+    fn in_motion(&self) -> bool {
+        self.band.in_motion()
+    }
+
+    /// Its identity across rebuilds: its id, else what it says.
+    fn carry_key(&self) -> String {
+        self.id.clone().unwrap_or_else(|| {
+            let notice = &self.body.notice;
+            format!("{:?}\u{1f}{}", notice.kind, notice.title)
+        })
+    }
+
+    fn dismiss_now(&mut self) {
+        if self.dismissed {
+            return;
+        }
+        self.dismissed = true;
+        self.dismiss_fired = true;
+        if !self.dismiss_press.is_none() {
+            self.dismiss_press.run();
+        }
+        if let Some(f) = &mut self.on_dismiss {
+            f();
+        }
+        self.changed();
+    }
+
+    /// Immediate-mode paint of a banner filling `rect`, for apps that render
+    /// straight to a `Scene`. Size `rect` with [`Self::height`]. Returns where
+    /// the banner and its controls are so the caller can hit-test them; pass
+    /// `hover` for the pointer's hover state.
+    pub fn paint(
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        content: &BannerContent<'_>,
+        hover: Point,
+    ) -> BannerHit {
+        paint_banner(ctx, rect, content, hover)
+    }
+
+    /// Where [`Self::paint`] would put the banner's controls in `rect`,
+    /// without painting: for a host that hit-tests before it paints.
+    pub fn layout(
+        content: &BannerContent<'_>,
+        rect: Rect,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> BannerHit {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return BannerHit::default();
+        }
+        let g = geometry(content, rect.width(), text, theme);
+        let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+        let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        BannerHit {
+            rect,
+            action: g.action.map(|r| r + origin),
+            secondary_action: g.secondary_action.map(|r| r + origin),
+            dismiss: g.dismiss.map(|r| r + origin),
+        }
+    }
+
+    /// The height a banner with `content` takes at `width`: its text, and
+    /// its actions beside or under it, never below a panel row.
+    pub fn height(
+        content: &BannerContent<'_>,
+        width: f64,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        geometry(content, width, text, theme).height.ceil()
+    }
+
+    fn poll_source(&mut self) {
+        if let Some(notice) = self.source.as_mut().and_then(LocalBinding::poll) {
+            self.set_notice(notice);
+        }
+    }
+
+    fn visible(&self) -> bool {
+        self.shown && !self.dismissed
+    }
+
+    /// The banner's buttons in child order: secondary, main, dismiss.
+    fn buttons_mut(&mut self) -> impl Iterator<Item = &mut Button> {
+        [&mut self.secondary, &mut self.action, &mut self.dismiss]
+            .into_iter()
+            .flatten()
+    }
+
+    /// Put every button where the body's geometry says, for the body laid
+    /// out at `self.body.rect`.
+    fn place_buttons(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let rect = self.body.rect;
+        if rect.width() <= 0.0 {
+            return;
+        }
+        let g = self.body.geometry(text, theme, rect.width());
+        let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+        let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let scale = self.device_scale;
+        let place = |button: &mut Option<Button>, at: Option<Rect>| {
+            if let (Some(button), Some(at)) = (button, at) {
+                // On device pixels: centring the controls in the line leaves fractions, and a
+                // control whose trailing edge kept one is drawn blurred across two pixels —
+                // both edges are snapped, so the box stands on the grid whole.
+                let at = at + origin;
+                let snap = |edge: f64| (edge * scale).round() / scale;
+                button.apply_layout_external(Rect::new(
+                    snap(at.x0),
+                    snap(at.y0),
+                    snap(at.x1),
+                    snap(at.y1),
+                ));
+            }
+        };
+        place(&mut self.secondary, g.secondary_action);
+        place(&mut self.action, g.action);
+        place(&mut self.dismiss, g.dismiss);
+    }
+
+    /// The body and the buttons, where the layout placed them.
+    fn draw_contents(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.body
+            .draw_child(scene, transform, text, theme, presence);
+        let on_well = theme.on_ground(well(theme, self.body.notice.kind));
+        for button in self.buttons_mut() {
+            button.draw_child(scene, transform, text, &on_well, presence);
+        }
+    }
+
+    /// Where a control stands is the layout's, never a paint's: a frame that is
+    /// read before it is drawn — a test, assistive technology, a press on a
+    /// window that has laid out and not yet painted — finds the banner's
+    /// controls inside it rather than at the window's origin, where a control
+    /// nothing placed stands.
+    fn place_contents(&mut self) {
+        if !self.visible() || self.body.rect.width() <= 0.0 {
+            return;
+        }
+        let theme = self.body.theme.clone();
+        crate::text_render::with_layout_renderer(&theme, |text| {
+            self.place_buttons(text, &theme);
+        });
+    }
+
+    /// Its contents in the slot it stands in while it moves, at the height its
+    /// text takes there: what its container places when it puts the banner
+    /// where it stood.
+    fn place_in_slot(&mut self) {
+        let slot = self.band.laid_rect;
+        if slot.width() <= 0.0 {
+            return;
+        }
+        let theme = self.body.theme.clone();
+        let height = crate::text_render::with_layout_renderer(&theme, |text| {
+            self.body.geometry(text, &theme, slot.width()).height.ceil()
+        });
+        let box_ = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
+        self.band.laid_rect = box_;
+        if self.body.rect != box_ {
+            self.body.rect = box_;
+            self.body.dirty = true;
+        }
+        self.place_contents();
+    }
+}
+
+/// A button's width and height as it measures itself.
+fn button_size(button: &mut Button, text: &mut TextRenderer) -> (f64, f64) {
+    let size = Widget::measure(
+        button,
+        taffy::Size {
+            width: None,
+            height: None,
+        },
+        taffy::Size {
+            width: taffy::AvailableSpace::MaxContent,
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        text,
+    );
+    (f64::from(size.width), f64::from(size.height))
+}
+
+impl Widget for Banner {
+    /// A notice beside the page: its kind, words and actions.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("aside");
+        cx.children();
+        // Its buttons stand where it lays them, over its body.
+        for (key, button) in [
+            ("secondary", &self.secondary),
+            ("action", &self.action),
+            ("dismiss", &self.dismiss),
+        ] {
+            if let Some(button) = button {
+                cx.part_widget(key, button);
+            }
+        }
+    }
+
+    crate::described!();
+
+    crate::provides!(
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::controls::ActionControls
+    );
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        let before = self.visible();
+        self.poll_source();
+        let mut changed = false;
+        for button in self.buttons_mut() {
+            changed |= button.update(state, path);
+        }
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        changed |= before != self.visible();
+        // A banner that has come to rest takes its place in the layout, and
+        // one setting off leaves it.
+        if self.band.layout_moved(self.visible()) {
+            crate::widget::note_layout_moved();
+        }
+        changed
+    }
+
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.poll_source();
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        for button in self.buttons_mut() {
+            button.sync(state, path);
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.band.motion = theme.motion();
+        // Built again by its view: go on from the banner it replaces.
+        let (key, visible) = (self.carry_key(), self.visible());
+        self.band.build(&key, visible, self.arrives_in_place);
+        let mut nodes = vec![self.body.build_layout(taffy, theme, node_map)];
+        let mut buttons = Vec::new();
+        for button in self.buttons_mut() {
+            buttons.push(button.build_layout(taffy, theme, node_map));
+        }
+        // The buttons are placed by the banner's geometry, out of the flow.
+        for &node in &buttons {
+            if let Ok(style) = taffy.style(node) {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                style.size = Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                };
+                let _ = taffy.set_style(node, style);
+            }
+        }
+        nodes.extend(buttons);
+        self.band.laid_in_flow = self.in_flow();
+        let node = taffy.parent_node(self.style(), &nodes);
+        self.nodes = nodes;
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) {
+        self.style_visibility(taffy, node);
+        // The body's height depends on the buttons' sizes: measure them. On touch they are a
+        // finger's target tall, and the banner grows to fit that.
+        let secondary = self.secondary.as_mut().map(|b| button_size(b, text));
+        let main = self.action.as_mut().map(|b| button_size(b, text));
+        let dismiss = self.dismiss.as_mut().map(|b| button_size(b, text));
+        let widths = [secondary.map(|s| s.0), main.map(|s| s.0)];
+        let control_h = [secondary, main, dismiss]
+            .into_iter()
+            .flatten()
+            .map(|s| s.1)
+            .reduce(f64::max);
+        if widths != self.body.actions || control_h != self.body.control_h {
+            self.body.actions = widths;
+            self.body.control_h = control_h;
+            if let Some(&body) = self.nodes.first() {
+                let _ = taffy.mark_dirty(body);
+            }
+        }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = if self.band.laid_in_flow {
+            layout_rect(taffy, node, origin)
+        } else {
+            Rect::ZERO
+        };
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+        self.device_scale = f64::from(super::layout::device_scale());
+        // Its identity matched nothing: it takes up the banner that stood
+        // here before (what it says changed), or it arrived.
+        let visible = self.visible();
+        self.band
+            .place_first(self.rect, visible, self.arrives_in_place);
+        if !self.band.laid_in_flow {
+            // On its way, out of the layout. A shown banner no container puts
+            // in its slot lands here, and the next layout takes it in; one its
+            // container places ([`Self::place_disclosing`]) stands there with
+            // its contents. Either way the frame that follows reads what this
+            // one placed, and lays nothing out.
+            if visible && self.band.land_unplaced(visible) {
+                self.layout_dirty = true;
+                return;
+            }
+            self.band.unplaced = visible;
+            self.place_in_slot();
+            return;
+        }
+        self.band.unplaced = false;
+        self.band.laid_rect = self.rect;
+        let origin = self.rect.origin();
+        if let Some(&body) = self.nodes.first() {
+            self.body.apply_layout(taffy, body, origin);
+        }
+        self.place_contents();
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.band.motion = theme.motion();
+        if !self.in_motion() {
+            if !self.visible() || self.rect.width() <= 0.0 {
+                return;
+            }
+            // Kept, so its column can draw it leaving when its view stops
+            // building it.
+            let mut painted = self.band.take_painted();
+            self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+            self.band.show_at_rest(painted, scene, transform);
+            return;
+        }
+        // On its way, out of the layout: it is drawn in its slot, where the
+        // layout put its contents.
+        if self.band.laid_rect.width() <= 0.0 {
+            return;
+        }
+        let mut painted = self.band.take_painted();
+        self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+        self.band.show_moving(painted, scene, transform);
+    }
+
+    /// Frames while it moves, and one more to take it into the layout at
+    /// rest.
+    fn needs_animation_frame(&self) -> bool {
+        self.band.needs_frame(self.visible())
+            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.in_motion() {
+            regions.push(self.band.laid_rect);
+        } else if self.needs_redraw() || self.needs_animation_frame() {
+            regions.push(self.rect);
+        }
+    }
+
+    fn is_band(&self) -> bool {
+        true
+    }
+
+    fn note_placement(&mut self, placement: crate::widget::Placement) {
+        self.band.note_placement(placement);
+    }
+
+    fn place_disclosing(&mut self, slot: Rect) {
+        self.band.place(slot);
+        self.place_in_slot();
+    }
+
+    fn paint_bounds(&self) -> Rect {
+        self.band.paint_bounds(self.rect)
+    }
+
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        self.band.disclosing()
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        if !self.visible() {
+            return;
+        }
+        let nodes: Vec<NodeId> = self.nodes.iter().skip(1).copied().collect();
+        for (button, node) in self.buttons_mut().zip(nodes) {
+            button.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
+                return;
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = vec![&self.body];
+        for button in [&self.secondary, &self.action, &self.dismiss]
+            .into_iter()
+            .flatten()
+        {
+            out.push(button);
+        }
+        out
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.body];
+        for button in [&mut self.secondary, &mut self.action, &mut self.dismiss]
+            .into_iter()
+            .flatten()
+        {
+            out.push(button);
+        }
+        out
+    }
+
+    /// Dirty when it should join or leave the layout; its contents count
+    /// only while the layout places them.
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty
+            || self.band.layout_moved(self.visible())
+            || (self.band.laid_in_flow && self.body.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.band.structure_dirty);
+        super::defaults::take_structure_dirty(self.children_mut()) || own
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.in_motion()
+            || (self.body.needs_redraw() || self.body.needs_animation_frame())
+            || [&self.secondary, &self.action, &self.dismiss]
+                .into_iter()
+                .flatten()
+                .any(Widget::needs_redraw)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.body.mark_drawn();
+        for button in self.buttons_mut() {
+            button.mark_drawn();
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "Banner"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        if !self.visible() {
+            return None;
+        }
+        // A banner is a live status region: the reader announces it when it
+        // appears. Errors and warnings are assertive; the rest polite.
+        let notice = &self.body.notice;
+        let mut node = AccessNode::new(Role::Group)
+            .with_name(notice.title.clone())
+            .with_live(notice.kind.politeness());
+        if let Some(id) = &self.id {
+            node = node.with_semantic_key(id.clone());
+        }
+        let source = self.body.content().source_line().map(str::to_owned);
+        let description = match (source, &notice.message) {
+            (Some(source), Some(message)) => Some(format!("{source}. {message}")),
+            (Some(source), None) => Some(source),
+            (None, message) => message.clone(),
+        };
+        if let Some(description) = description {
+            node = node.with_description(description);
+        }
+        Some(node)
+    }
+}
+
+/// A banner a rebuild drops leaves its motion for the one put in its place.
+impl Drop for Banner {
+    fn drop(&mut self) {
+        let (key, visible) = (self.carry_key(), self.visible());
+        self.band.leave(key, self.rect, visible);
+    }
+}
+
+impl crate::widget::ResourceOperations for Banner {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let started = crate::widget::start_in_children(self, op, doc, path)?;
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        Ok(started)
+    }
+}
+
+impl Banner {
+    fn style(&self) -> Style {
+        Style {
+            display: if self.in_flow() {
+                taffy::Display::Flex
+            } else {
+                taffy::Display::None
+            },
+            flex_direction: taffy::FlexDirection::Column,
+            flex_shrink: 0.0,
+            size: Size {
+                width: percent(1.0_f32),
+                height: auto(),
+            },
+            min_size: Size {
+                width: length(0.0_f32),
+                height: auto(),
+            },
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+/// The dismiss control is a part of the banner: what the view bound to it is carried out here,
+/// where the banner's controls answer for it.
+impl crate::widget::controls::ActionControls for Banner {
+    fn attach_controls(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_domain::DomainAttachment,
+    ) {
+        self.dismiss_press.attach(domain, attachment);
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::attach_controls(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.dismiss_press.take().or_else(|| {
+            Widget::children_mut(self)
+                .into_iter()
+                .find_map(crate::widget::controls::take_control_invocation)
+        })
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings: Vec<_> = self
+            .dismiss_press
+            .metadata(self.dismiss_control_id())
+            .into_iter()
+            .collect();
+        for child in Widget::children(self) {
+            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if self.dismiss_press.refresh_availability(allowed) {
+            self.dirty = true;
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}

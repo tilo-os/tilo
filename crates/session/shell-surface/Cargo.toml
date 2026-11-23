@@ -20,7 +20,7 @@ tilo-desktop-policy = { path = "../desktop-policy" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 # The layout's readings, which every host's layout holds.
 tilo-session-core = { path = "../core" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 vello.workspace = true
 winit.workspace = true
 # The buffers the compositor shows (memory render buffers).
@@ -28,11 +28,11 @@ serde_json.workspace = true
 tracing.workspace = true
 # A tilolang shell's parts: its views run in an instance, drawn through the app window's half
 # of a window, over a record of the shell's own (`shell_part`).
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # The render node a GPU is named by, as the compositor names it.
 tilo-presentation = { path = "../../platform/tilo-presentation" }
-tilo-app-window = { path = "../../platform/tilo-app-window" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-app-window = { path = "../../sdk/tilo-app-window" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # Frames drawn on the GPU are delivered in the dma-bufs apps' frames are.
 tilo-render-service = { path = "../render-service" }
 tilo-action-policy = { path = "../../collab/action-policy" }
@@ -45,7 +45,8 @@ url.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
 # What a tab holds, as the shell's own tree keeps it.
 tilo-desktop-model = { path = "../desktop-model" }
 # A workspace's records as the session publishes them, for the places that compose their views.

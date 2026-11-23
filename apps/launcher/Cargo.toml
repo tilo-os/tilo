@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

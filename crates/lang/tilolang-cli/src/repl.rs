@@ -454,25 +454,22 @@ fn attach(
 }
 
 /// Whether anything on this computer signs the person in: a key file named, an API key, or the
-/// login `tilo login` kept.
-fn signed_in(options: &ReplOptions) -> Result<bool, String> {
+/// certificate `tilo login` filed.
+fn signed_in(options: &ReplOptions) -> bool {
     if options.key_file.is_some()
         || std::env::var_os(tilo_api::client::KEY_ENV).is_some_and(|key| !key.is_empty())
     {
-        return Ok(true);
+        return true;
     }
     // This login's own desktop serves its person at its socket: a program of
     // this login answers as the person there, with no key, because the
     // socket's own permissions and the kernel's account of the peer admit it
     // (`tilo_api::client::desktop_socket`).
     if tilo_api::client::desktop_socket().is_some() {
-        return Ok(true);
+        return true;
     }
-    let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
-        .map_err(|error| error.to_string())?;
-    Ok(tilo_device_identity::login::load(&place)
-        .map_err(|error| error.to_string())?
-        .is_some())
+    // A computer a person's certificate names is one of their devices, its daemon serving it.
+    tilo_device_identity::login::served_device_key(&tilo_api::client::device_keys()).is_some()
 }
 
 /// The workspace the REPL works in: the one `--workspace` names, else the one this computer's
@@ -561,7 +558,7 @@ pub fn repl(options: &ReplOptions) -> Result<(), String> {
         let running = attach(&editor, named.as_deref())?;
         (Client::session(&running.socket), None)
     } else {
-        if !signed_in(options)? {
+        if !signed_in(options) {
             return Err(not_signed_in());
         }
         let reach = Reach {

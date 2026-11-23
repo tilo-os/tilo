@@ -23,13 +23,13 @@ udisks = ["dep:zbus", "block-devices/udisks"]
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-wire-frame = { path = "../wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 # The session lists the machine's block devices with lsblk.
 [target.'cfg(target_os = "linux")'.dependencies]
-block-devices = { path = "../block-devices" }
+block-devices = { path = "../../os/block-devices" }
 # Matches the zbus the disk tools resolve, so one copy stays in the lock.
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 

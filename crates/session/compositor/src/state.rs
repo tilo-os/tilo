@@ -357,6 +357,11 @@ pub struct State {
     /// The outputs whose next frame must be drawn: something that shows changed on them since the
     /// last one. An idle session draws nothing.
     pub(crate) redraw: Vec<Output>,
+    /// Why [`Self::redraw`] holds what it holds: [`tilo_frame_metrics::paint_reason`] bits since
+    /// the last frame drawn.
+    pub(crate) redraw_why: u16,
+    /// The apps whose commits asked for the frames owed, each once.
+    pub(crate) redraw_clients: Vec<String>,
     /// When the first input the displays have not answered yet was routed: the next frame drawn
     /// answers it, and the frame trace times it from here. Every input reaches the desktop through
     /// [`State::route_input`], whichever device or link it came from.
@@ -514,6 +519,8 @@ impl State {
             pointer_placed: false,
             super_tap: None,
             redraw: Vec::new(),
+            redraw_why: 0,
+            redraw_clients: Vec::new(),
             unanswered_input: None,
             loop_handle: None,
             key_latency: tilo_frame_metrics::key_latency::KeyLatency::default(),
@@ -553,19 +560,29 @@ impl State {
     }
 
     /// `output` must be drawn again: something that shows on it changed since its last frame.
-    pub(crate) fn mark_redraw(&mut self, output: &Output) {
+    /// `why` is a [`tilo_frame_metrics::paint_reason`] bit, which the frame that draws it records.
+    pub(crate) fn mark_redraw(&mut self, output: &Output, why: u16) {
+        self.redraw_why |= why;
         if self.redraw_owed(output) {
             return;
         }
         self.redraw.push(output.clone());
     }
 
-    /// Every output must be drawn again.
-    pub(crate) fn mark_redraw_all(&mut self) {
+    /// Every output must be drawn again, for `why`.
+    pub(crate) fn mark_redraw_all(&mut self, why: u16) {
+        self.redraw_why |= why;
         let outputs: Vec<Output> = self.space.outputs().cloned().collect();
         for output in outputs {
-            self.mark_redraw(&output);
+            self.mark_redraw(&output, why);
         }
+    }
+
+    /// Why the frames owed now are owed, and the apps whose commits asked for them, `+`-joined;
+    /// both start again empty.
+    pub(crate) fn take_redraw_reasons(&mut self) -> (u16, String) {
+        let clients = std::mem::take(&mut self.redraw_clients).join("+");
+        (std::mem::take(&mut self.redraw_why), clients)
     }
 
     /// Whether `output` has something to show its last frame did not.
@@ -584,7 +601,7 @@ impl State {
         self.space.map_output(output, location);
         self.place_layers();
         self.rearrange();
-        self.mark_redraw(output);
+        self.mark_redraw(output, tilo_frame_metrics::paint_reason::PRESENTATION);
     }
 
     /// Stop showing anything on `output` (it was disconnected) and withdraw its global.
@@ -595,7 +612,7 @@ impl State {
         crate::output::withdraw(output, &self.display);
         self.place_layers();
         self.rearrange();
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
     }
 
     /// The surface that has the pointer.
@@ -763,7 +780,7 @@ impl State {
             index,
             frame: self.framing(window).frame,
         });
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Ask the window `id` to close, as its own close button would: the client decides what closing
@@ -1094,7 +1111,7 @@ impl State {
         // the windows it moves), and a frame drawn for the key itself would hold that answer back
         // to the display's next refresh.
         if !matches!(event, InputEvent::Key { .. } | InputEvent::Switch { .. }) {
-            self.mark_redraw_all();
+            self.mark_redraw_all(tilo_frame_metrics::paint_reason::INPUT);
         }
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
@@ -1712,7 +1729,7 @@ impl State {
     }
 
     pub(crate) fn focus_window(&mut self, window: &Window, serial: Serial) {
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         // A modal dialog of the window takes the focus in its place, with the window raised under
         // it.
         self.space.raise_element(window, true);
@@ -1857,7 +1874,7 @@ impl State {
             // A window the policy placed elsewhere may stand on other outputs now: they are the
             // ones that show it, and what they show changed, so they owe a frame.
             self.space.refresh();
-            self.mark_redraw_all();
+            self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         self.restack();
         self.apply_policy_focus_and_closes();
@@ -1949,7 +1966,7 @@ impl State {
         let shown = self.space.elements().count();
         self.space.refresh();
         if self.space.elements().count() != shown {
-            self.mark_redraw_all();
+            self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         self.popups.cleanup();
         self.unmapped.retain(IsAlive::alive);
@@ -2322,7 +2339,7 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         // A client drew: the frame it committed is on its way.
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::APPS);
         if self.layers.holds(surface) {
             self.layer_committed(surface);
         }
@@ -2333,6 +2350,12 @@ impl CompositorHandler for State {
         self.tell_share_color(surface);
         if !is_sync_subsurface(surface) {
             let root = root_surface(surface);
+            // Whose commit the frame it owes now is drawn for.
+            if let Some(app) = committing_app(&root)
+                && !self.redraw_clients.contains(&app)
+            {
+                self.redraw_clients.push(app);
+            }
             // A frame this client drew, counted against its window: a still window keeps one count
             // and an app that draws moves it, which is what a tool reads to tell the two apart.
             if let Some(id) = self.committed_window(&root) {
@@ -2951,6 +2974,18 @@ pub(crate) fn axis_frame(scroll: Scroll, time: u32) -> AxisFrame {
         }
     }
     frame
+}
+
+/// The app a committed surface tree is of: its toplevel's app id, as the frame trace names the
+/// apps whose commits a frame was drawn for. `None` for a surface of no toplevel or one that named
+/// no app.
+fn committing_app(root: &WlSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(root, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok()?.app_id.clone())
+    })
 }
 
 #[cfg(test)]

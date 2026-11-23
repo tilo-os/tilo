@@ -8,11 +8,13 @@ use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use crate::support::install_bin;
+use crate::support::{install_bin, offline};
 
 /// The CLI's output for `args`, with the bundle store under `xdg`.
 fn cli(xdg: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(install_bin())
+    let mut command = Command::new(install_bin());
+    offline(&mut command, xdg);
+    command
         .args(args)
         .env("XDG_DATA_HOME", xdg)
         .env("HOME", xdg)
@@ -21,7 +23,9 @@ fn cli(xdg: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn cli_from(xdg: &Path, host: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(install_bin())
+    let mut command = Command::new(install_bin());
+    offline(&mut command, xdg);
+    command
         .args(args)
         .arg(host)
         .env("XDG_DATA_HOME", xdg)

@@ -1,0 +1,63 @@
+[package]
+name = "tilo-extension"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Downloaded, Tilo-signed system extensions: fetches, verifies and activates what a signed manifest pins, and stages the reboot-bound ones a signed hardware catalogue recommends."
+
+[lib]
+name = "tilo_extension"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-extension"
+path = "src/main.rs"
+
+[[bin]]
+name = "tilo-system-extension-manager"
+path = "src/bin/tilo-system-extension-manager.rs"
+
+[dependencies]
+# The BootPack manager's bounded helper runs.
+bounded-command = { path = "../../platform/bounded-command" }
+ed25519-dalek.workspace = true
+hex.workspace = true
+# The composefs image's fs-verity digest (FS_IOC_MEASURE_VERITY).
+libc.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+reqwest = { workspace = true, features = ["blocking"] }
+# utimensat without following a symlink, umask, geteuid and uname without FFI.
+rustix = { workspace = true, features = ["fs", "process", "system", "std"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# rpm2archive's stream.
+tar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+# Status and manifest files replaced atomically, durably and at their exact mode.
+tilo-files = { path = "../../platform/tilo-files" }
+# The login's runtime directory and the desktop's ready record in it.
+tilo-paths = { path = "../../platform/tilo-paths" }
+# A process's id and kernel start time, which the ready record binds.
+tilo-process = { path = "../../platform/tilo-process" }
+# The one blocking HTTP client builder on Tilo's TLS provider and trust.
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-pycompat = { path = "../tilo-pycompat" }
+# NetworkManager's connectivity verdict: wait for the network before a download.
+tilo-nm = { path = "../tilo-nm" }
+tokio = { workspace = true, features = ["rt"] }
+# The image's component manifest, which a live system update classifies by.
+toml.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

@@ -135,6 +135,7 @@ mod tests {
             },
             records: vec![(1, String::new()), (2, "settings-of-ada".into())],
             authors: [(1, "ada".to_owned()), (2, "ada".to_owned())].into(),
+            items: Vec::new(),
             opened_by: std::collections::BTreeMap::new(),
         }
     }

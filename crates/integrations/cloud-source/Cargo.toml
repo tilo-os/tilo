@@ -1,0 +1,56 @@
+[package]
+name = "cloud-source"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The provider interface behind mounted cloud accounts: items, change feeds, ranged reads, resumable uploads, revisions and a conformance suite."
+
+[package.metadata.cargo-machete]
+# The self dev-dependency only turns on `client` for this crate's own tests.
+ignored = ["cloud-source"]
+
+# Provider crates (WebDAV/Nextcloud, Google Drive, OneDrive, Dropbox, iCloud
+# Drive) implement `CloudSource`; the storage daemon consumes it. Default
+# builds stay free of HTTP and TLS so lightweight and wasm32 consumers can
+# depend on this crate cheaply; provider crates opt into the `client` feature
+# for the shared blocking HTTP client.
+[dependencies]
+# RFC 3339 timestamps and HTTP-dates (`http::parse_rfc3339`,
+# `http::parse_http_date`), as every provider reads them.
+jiff.workspace = true
+serde.workspace = true
+# Bounded JSON bodies (`http::read_json`).
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+# Endpoint checks for mount configurations (`is_secure_endpoint`).
+url.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+# The shared blocking HTTP client (`http::blocking_client`), behind `client`.
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
+
+[features]
+# The provider conformance suite (`cloud_source::conformance`). Provider
+# crates enable it from [dev-dependencies] and run it against their fake
+# server.
+conformance = []
+# The shared blocking HTTP client (`cloud_source::http::blocking_client`).
+# Without it this crate stays free of HTTP and TLS.
+client = ["dep:reqwest", "dep:tilo-net"]
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+# Exercise `http::blocking_client` in this crate's own test run.
+cloud-source = { path = ".", features = ["client"] }
+test-http = { path = "../../../tools/test-http" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

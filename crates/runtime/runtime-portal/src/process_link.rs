@@ -176,6 +176,18 @@ pub struct OpenedFile {
     pub name: Option<String>,
 }
 
+/// What an instance was opened with: a file of the workspace, or a link of a scheme its app
+/// claims (`tube:watch?v=…`). A file's bytes are the content store's, and the instance runs its
+/// package's action for that kind of file; a link is text, and the instance runs its package's
+/// `open-link` with it, so it shows what the link names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenRequest {
+    /// A file, as `file.choose` hands one to an action.
+    File(OpenedFile),
+    /// A link, as a shell hands one to the app that claims its scheme.
+    Uri(String),
+}
+
 /// A later build of one app the process runs ([`ToProcess::Build`]): its instances take it over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppBuild {
@@ -221,11 +233,11 @@ pub struct InstanceRequest {
     /// a window asked for another is refused rather than shown that one.
     pub document: Option<String>,
     pub reveal: Option<String>,
-    /// The file the app was opened with, when its launch named one: the instance runs the action
-    /// its package declares for the file's kind with it, as a chooser hands a file to an action.
-    /// The instance reads the bytes from the content store by their hash; `None` for a window
-    /// opened without one.
-    pub open: Option<OpenedFile>,
+    /// What the app was opened with, when its launch named one: a file's bytes are read from the
+    /// content store by their hash and given to the action its package declares for the file's
+    /// kind, and a link is given to the app's `open-link`; `None` for a window opened without
+    /// one.
+    pub open: Option<OpenRequest>,
     /// The tilolang apps installed here, by id, each with the id its documents are kept under: a
     /// package the app uses that is one of them is another app, whose documents the instance reads
     /// from that app's own document and whose changes it asks of that app's link. A package it uses
@@ -245,37 +257,68 @@ pub struct InstanceRequest {
     pub link_home: Option<String>,
 }
 
-/// The descriptors one instance arrives with.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InstanceFds {
-    #[serde(with = "crate::packet::fd")]
-    pub broker: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub identity: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub module: Descriptor,
-    /// The instance's end of its view's patch connection. `None` for a call that shows nothing
-    /// ([`Shows::Nothing`]).
-    #[serde(with = "crate::packet::optional_fd")]
-    pub window: Option<Descriptor>,
-    /// The instance's connection to its app's origin connector, when its types hold an outside
-    /// service's resources.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub origin: Option<Descriptor>,
-    /// The instance's connection to the device's content store, scoped to its app in its
-    /// workspace: what a file it chooses or keeps, and the pictures its document holds, are read
-    /// and written through. `None` on a device that keeps no content store.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub content: Option<Descriptor>,
-    /// The instance's connection to the person's chooser: what `file.choose` and `file.save`
-    /// ask. `None` on a session that serves none.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub chooser: Option<Descriptor>,
-    /// The instance's connection to the person's clipboard: what `clipboard.copy` offers and
-    /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
-    /// session that serves none.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub clipboard: Option<Descriptor>,
+/// Declares the connections a packet of one shape carries, once: its fields, which the packet
+/// writes and reads in that order, and how many descriptors it carries at most
+/// ([`InstanceFds::CONNECTIONS`]). The link sizes its descriptor buffers from that count, so a
+/// connection added to the list below is one more the buffers hold, never one they leave out.
+macro_rules! connections {
+    ($(#[$doc:meta])* $name:ident {
+        $(
+            $(#[$field_doc:meta])*
+            $field:ident: $ty:ty [with = $with:literal],
+        )*
+    }) => {
+        $(#[$doc])*
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct $name {
+            $(
+                $(#[$field_doc])*
+                #[serde(with = $with)]
+                pub $field: $ty,
+            )*
+        }
+
+        impl $name {
+            /// The most descriptors a packet of this shape carries: one for each connection, since
+            /// every one of them may be carried.
+            pub const CONNECTIONS: usize = [$(stringify!($field)),*].len();
+        }
+    };
+}
+
+connections! {
+    /// The descriptors one instance arrives with.
+    InstanceFds {
+        broker: Descriptor [with = "crate::packet::fd"],
+        identity: Descriptor [with = "crate::packet::fd"],
+        module: Descriptor [with = "crate::packet::fd"],
+        /// The instance's end of its view's patch connection. `None` for a call that shows nothing
+        /// ([`Shows::Nothing`]).
+        window: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to its app's origin connector, when its types hold an outside
+        /// service's resources.
+        origin: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the device's content store, scoped to its app in its
+        /// workspace: what a file it chooses or keeps, and the pictures its document holds, are
+        /// read and written through. `None` on a device that keeps no content store.
+        content: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the person's chooser: what `file.choose` and `file.save`
+        /// ask. `None` on a session that serves none.
+        chooser: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// The instance's connection to the person's clipboard: what `clipboard.copy` offers and
+        /// `clipboard.paste` reads, since its process holds no display to do either on. `None` on a
+        /// session that serves none.
+        clipboard: Option<Descriptor> [with = "crate::packet::optional_fd"],
+    }
+}
+
+/// The most descriptors one message on the link carries: every connection an instance arrives
+/// with ([`InstanceFds::CONNECTIONS`]), the widest message. A window request's two, a patch's and a
+/// build's one, and a task's connections ([`TaskFds::CONNECTIONS`]) are fewer.
+pub const MAX_FDS: usize = max(InstanceFds::CONNECTIONS, TaskFds::CONNECTIONS);
+
+const fn max(left: usize, right: usize) -> usize {
+    if left > right { left } else { right }
 }
 
 #[cfg(unix)]
@@ -329,14 +372,13 @@ pub struct TaskRequest {
     pub changed_at_document: std::collections::BTreeSet<String>,
 }
 
-/// The descriptors a task arrives with: its program connection and a memfd of the apps its
-/// programs are compiled against ([`encode_apps`]).
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TaskFds {
-    #[serde(with = "crate::packet::fd")]
-    pub program: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub apps: Descriptor,
+connections! {
+    /// The descriptors a task arrives with: its program connection and a memfd of the apps its
+    /// programs are compiled against ([`encode_apps`]).
+    TaskFds {
+        program: Descriptor [with = "crate::packet::fd"],
+        apps: Descriptor [with = "crate::packet::fd"],
+    }
 }
 
 /// One app a task's programs may name, as the session hands it to the task's process: a tilolang
@@ -527,6 +569,11 @@ pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
 }
 
 /// The link the launcher handed this process, taken once.
+///
+/// A link handed as stdin ([`spawn`]) is moved off it, and stdin reads `/dev/null` from then on:
+/// a child this process starts sets up its stdin before anything else, which would otherwise
+/// replace the link before the child is handed it, and a child left the default stdin would
+/// share the link.
 #[must_use]
 pub fn take() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
@@ -538,19 +585,40 @@ pub fn take() -> Option<Descriptor> {
         }
         // SAFETY: the launcher handed this descriptor to the process for the link alone, and the
         // flag above lets it be owned exactly once.
-        Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
+        let link: Descriptor = unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) };
+        if fd != 0 {
+            return Some(link);
+        }
+        match off_stdin(link) {
+            Ok(link) => Some(link),
+            Err(error) => {
+                eprintln!("tilo-portal: the process link could not be moved off stdin: {error}");
+                None
+            }
+        }
     }
     #[cfg(not(target_os = "linux"))]
     None
 }
 
-/// Start `command` holding the other end of a new link, as its stdin, named by [`FD_ENV`]: a
-/// tilolang host reads it there, and a launcher takes it off stdin and places it at [`CHILD_FD`]
-/// in the sandbox it starts. Answers this end and the child. Every tilolang host is handed its
-/// link this way, whatever starts it.
-///
-/// Stdin, rather than a descriptor placed in a `pre_exec` step: that step makes
-/// `Command::spawn` `fork()` the caller, which for the compositor's session is the whole desktop.
+/// `link`, handed as descriptor 0, at a descriptor of its own, with `/dev/null` at 0.
+#[cfg(target_os = "linux")]
+fn off_stdin(link: Descriptor) -> io::Result<Descriptor> {
+    use std::os::fd::{AsRawFd as _, IntoRawFd as _};
+    let moved = link.try_clone()?;
+    let null = std::fs::File::open("/dev/null")?;
+    // SAFETY: both are this process's own descriptors; dup2 replaces the link at 0 with
+    // `/dev/null` in one step, so 0 is never closed in between.
+    if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // Descriptor 0 is `/dev/null` now, stdin's own: dropping `link` would close it.
+    let _ = link.into_raw_fd();
+    Ok(moved)
+}
+
+/// Start `command` with the other end of a new link as its stdin, named by [`FD_ENV`] ([`take`]
+/// reads it): not a `pre_exec` step, which would make the spawn `fork()` the whole caller.
 ///
 /// # Errors
 /// No link could be made, or the program did not start.
@@ -647,10 +715,10 @@ mod tests {
             language: "de-DE".into(),
             document: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
             reveal: Some("tl.so.tilo.notes.Note:7".into()),
-            open: Some(OpenedFile {
+            open: Some(OpenRequest::File(OpenedFile {
                 hash: "ab".repeat(32),
                 name: Some("plan.md".into()),
-            }),
+            })),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
             link_home: None,
             access: Some(MemberAccess::person(
@@ -700,7 +768,7 @@ mod tests {
             // crosses as it was sent, the fields after it read as theirs.
             let plain = InstanceRequest { open: None, ..opened.clone() };
             let unnamed = InstanceRequest {
-                open: Some(OpenedFile { hash: "cd".repeat(32), name: None }),
+                open: Some(OpenRequest::File(OpenedFile { hash: "cd".repeat(32), name: None })),
                 ..opened.clone()
             };
             // An instance that shows nothing crosses with no window connection.
@@ -841,6 +909,42 @@ mod tests {
             let mut cut = module.encode();
             cut.truncate(cut.len() - 1);
             assert!(Module::decode(&cut).is_err());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_window_opens_a_link_over_the_process_link;
+
+        phase a_link_crosses_as_text_its_instance_shows;
+        {
+            // What an app was opened with crosses as the `open-link` text its instance shows,
+            // never as bytes a file's kind names: the request's shape carries either.
+            let (session, process) = pair().unwrap();
+            let request = InstanceRequest {
+                open: Some(OpenRequest::Uri("tube:watch?v=abc".into())),
+                ..instance_request()
+            };
+            ToProcess::Instance {
+                request: Box::new(request.clone()),
+                fds: InstanceFds {
+                    broker: connection(),
+                    identity: connection(),
+                    module: connection(),
+                    window: Some(connection()),
+                    origin: None,
+                    content: None,
+                    chooser: None,
+                    clipboard: None,
+                },
+            }
+            .send(&session)
+            .unwrap();
+            let Some(ToProcess::Instance { request: received, .. }) =
+                ToProcess::receive(&process).unwrap()
+            else {
+                panic!("an instance arrives as one");
+            };
+            assert_eq!(*received, request);
         }
     }
 }

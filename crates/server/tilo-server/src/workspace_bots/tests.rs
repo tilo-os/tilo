@@ -240,6 +240,7 @@ fn greeter_into(target: tilo_automation::Selector) -> installed::InstalledBot {
         actions: vec!["send".into()],
         fields: Vec::new(),
         by: ActorFilter::People,
+        filter: tilo_automation::ChangeFilter::default(),
     };
     let shortcut = Shortcut {
         id: "greeter".into(),
@@ -1658,6 +1659,7 @@ async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
         actions: vec!["send".into()],
         fields: Vec::new(),
         by: ActorFilter::People,
+        filter: tilo_automation::ChangeFilter::default(),
     };
     let shortcut = Shortcut {
         id: "reader".into(),
@@ -1949,6 +1951,7 @@ fn membership_changes_fire_a_bots_workspace_triggers_as_governance_verbs() {
         actions: vec!["set-role".into(), "ban".into()],
         fields: Vec::new(),
         by: ActorFilter::Anyone,
+        filter: tilo_automation::ChangeFilter::default(),
     };
     let shortcut = Shortcut {
         id: "mirror".into(),

@@ -133,7 +133,7 @@ impl Workspaces {
                 agent: Some(agent.to_owned()),
                 workspace: String::new(),
                 policy: None,
-                granted: acting.handed_preset(""),
+                granted: [acting.handed_preset(""), caller.granted(&[])].concat(),
             };
         };
         let now = tilo_clock::unix_now_ns();
@@ -147,7 +147,9 @@ impl Workspaces {
         };
         let workspace = member.policy.workspace.clone();
         let mut granted = acting.handed_preset(&workspace);
-        let kept = self.kept_bound(&workspace, agent).await;
+        let kept = self
+            .kept_bound(&workspace, agent, caller.turn().is_some())
+            .await;
         granted.extend(caller.granted(&kept.unwrap_or_default()));
         AgentGrants {
             agent: Some(agent.to_owned()),
@@ -179,10 +181,17 @@ impl Workspaces {
 
     /// What the agent `agent` is held to in `workspace`, as the workspace's
     /// list of its agents keeps it: the bound kept for it there, and nothing
-    /// at all once it was retired. A list this server cannot read holds it to
-    /// nothing: what it may do is never more than the list says. `None` while
-    /// the list does not name it.
-    pub async fn kept_bound(&self, workspace: &str, agent: &str) -> Option<Vec<Rule>> {
+    /// at all once it was retired. A sub-agent works only on a turn
+    /// (`on_turn`), as one more actor in its starter's chain, which the server
+    /// that works it carries: outside one its name may do nothing. A list this
+    /// server cannot read holds it to nothing: what it may do is never more
+    /// than the list says. `None` while the list does not name it.
+    pub async fn kept_bound(
+        &self,
+        workspace: &str,
+        agent: &str,
+        on_turn: bool,
+    ) -> Option<Vec<Rule>> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let kept = match self
             .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
@@ -197,7 +206,7 @@ impl Workspaces {
                 return Some(nothing(workspace));
             }
         };
-        Some(if kept.is_active() {
+        Some(if kept.is_active() && (on_turn || !kept.is_sub()) {
             kept.turn_rules(workspace)
         } else {
             nothing(workspace)

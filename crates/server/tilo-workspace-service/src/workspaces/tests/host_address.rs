@@ -152,6 +152,7 @@ async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() 
         ServiceConfig {
             label: "tilo.sh".to_owned(),
             rented: true,
+            origin: Some("https://eu1.tilo.sh".to_owned()),
             ..ServiceConfig::new(
                 dir.path().to_owned(),
                 tilo_server_protocol::WorkSetting::none(),
@@ -175,6 +176,11 @@ async fn a_keeper_names_itself_and_its_rented_machine_in_the_address_it_signs() 
     )
     .unwrap();
     assert_eq!(hint.label, "tilo.sh");
+    assert_eq!(
+        hint.origin.as_deref(),
+        Some("https://eu1.tilo.sh"),
+        "a site's keeper signs where its site answers"
+    );
     assert!(hint.cloud, "a rented machine says its provider can read it");
     assert!(!hint.moderates, "no moderation agent yet");
 

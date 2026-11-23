@@ -25,16 +25,16 @@ tilolang = { path = "../tilolang" }
 # What an app is called: the one id type every crate naming one shares.
 tilo-app-id.workspace = true
 # `RichText` values and fields are tilo-doc's rich text: one rich-text model for every app.
-tilo-doc = { path = "../../doc/tilo-doc" }
+tilo-doc = { path = "../../sdk/tilo-doc" }
 # A document as the Markdown an editor shows and writes, and the bounded reader of the archives
 # a person imports.
-tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false, features = [
+tilo-doc-codecs = { path = "../../engines/tilo-doc-codecs", default-features = false, features = [
     "markdown",
 ] }
-bounded-zip = { path = "../../doc/bounded-zip" }
+bounded-zip = { path = "../../engines/bounded-zip" }
 # The zone a wall-clock time is read in, and how a wall time that falls in a change of clocks
 # resolves, so a time of day survives one on every device.
-tilo-recurrence = { path = "../../sdk/tilo-recurrence" }
+tilo-recurrence = { path = "../../engines/tilo-recurrence" }
 # Days and moments.
 jiff.workspace = true
 # A reference inside rich text is the catalogue's resource reference, in the one form every app writes.
@@ -67,6 +67,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 # What a file is called, and the most it may hold: one reading of a file's media type and size,
 # shared with the window that hands a dropped file over.
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
+# The one image codec: what a file's pixels are decoded and encoded with, on the device.
+tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native targets only: wasmtime maps executable memory, which no browser has.

@@ -15,25 +15,25 @@ use crate::Session;
 pub(crate) struct Formats {
     /// The settings version the formats were last followed at, so the document is read again only
     /// when it changed.
-    seen: std::cell::Cell<Option<settings_store::SettingsStamp>>,
+    settings: std::cell::Cell<settings_store::SettingsFollower>,
 }
 
 #[cfg(target_os = "linux")]
 impl Formats {
     pub(crate) fn new() -> Self {
         Self {
-            seen: std::cell::Cell::new(None),
+            settings: std::cell::Cell::new(settings_store::SettingsFollower::default()),
         }
     }
 
     /// Follow the person's formats when their settings changed since the last pass. Returns
     /// whether they are another set of formats now: the caller tells whoever shows them.
     pub(crate) fn follow(&self) -> bool {
-        let stamp = settings_store::stamp();
-        if !settings_store::document_changed(self.seen.get().is_some(), self.seen.get(), stamp) {
+        let mut settings = self.settings.get();
+        if !settings.changed(settings_store::stamp()) {
             return false;
         }
-        self.seen.set(stamp);
+        self.settings.set(settings);
         ui::format::region::refresh()
     }
 }
@@ -96,6 +96,42 @@ mod tests {
         assert!(follow.follow(), "they put their week back to Monday");
 
         settings_store::install_source(None);
+        ui::format::region::install(before);
+    }
+
+    /// With no settings store (`stamp()` is `None`), a follower reads the defaults once and skips
+    /// later passes instead of refreshing on every pass.
+    #[test]
+    fn without_a_settings_store_formats_refresh_once() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", "").remove("XDG_DATA_HOME");
+        let _source = settings_store::scoped_source(None);
+        assert_eq!(settings_store::stamp(), None);
+
+        let before = ui::format::region::current();
+        let non_default = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Sunday,
+            ..ui::format::region::RegionFormats::default()
+        };
+        ui::format::region::install(non_default);
+
+        let follow = Formats::new();
+        assert!(
+            follow.follow(),
+            "the first pass refreshes even without a settings store"
+        );
+        assert_eq!(
+            ui::format::region::current(),
+            ui::format::region::RegionFormats::default()
+        );
+
+        ui::format::region::install(non_default);
+        assert!(
+            !follow.follow(),
+            "the second pass skips the refresh while there is still no stamp"
+        );
+        assert_eq!(ui::format::region::current(), non_default);
+
         ui::format::region::install(before);
     }
 }

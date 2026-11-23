@@ -209,7 +209,7 @@ keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
 # inside an installed app's private namespace.
 runtime_fonts="$out/work/fonts"
 python3 "$repo_root/tools/font-catalog.py" prepare \
-    "$repo_root/crates/sdk/ui-core/assets/fonts" "$runtime_fonts" --scope product
+    "$repo_root/crates/ui/ui-core/assets/fonts" "$runtime_fonts" --scope product
 # The model runtime the apps' modules link against is signed into the runtime bundle
 # (lib/app-model-runtime), so every device these apps are installed on has it once.
 app_model_runtime="$app_models/app-model-runtime"

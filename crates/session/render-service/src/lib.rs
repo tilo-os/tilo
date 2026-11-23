@@ -31,6 +31,8 @@ mod gpu;
 mod registry;
 mod service;
 mod surface;
+#[cfg(target_os = "linux")]
+mod warmup;
 
 use std::path::PathBuf;
 
@@ -128,29 +130,43 @@ fn bundle_catalogs() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// Open the device every frame is drawn on.
-///
-/// # Errors
-///
-/// When wgpu offers no adapter at all: the service has nothing to draw on,
-/// and ends, so the broker's next request starts another rather than the app
-/// waiting on a service that cannot draw.
-pub fn open_gpu(config: &Config) -> Result<Gpu, GpuError> {
-    let gpu = Gpu::open(config.render_node.as_deref())?;
-    if gpu.software {
-        tracing::info!(adapter = %gpu.adapter.name, "software adapter: drawing on the CPU");
+/// Open the device every frame is drawn on; `None` when there is none to
+/// open (wgpu offers no adapter at all, or its device cannot draw): the
+/// service then rasterizes every frame on the CPU, without a device, into
+/// shared memory, so apps still show on a machine with no usable GPU driver.
+pub fn open_gpu(config: &Config) -> Option<Gpu> {
+    // wgpu's adapter search panics, rather than answering none, when
+    // `WGPU_ADAPTER_NAME` names an adapter the machine does not have.
+    match tilo_rt::panic_boundary::isolate(|| Gpu::open(config.render_node.as_deref())) {
+        Ok(Ok(gpu)) => {
+            if gpu.software {
+                tracing::info!(adapter = %gpu.adapter.name, "software adapter: drawing on the CPU");
+            }
+            Some(gpu)
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "no device to draw on: rasterizing on the CPU");
+            None
+        }
+        Err(panic) => {
+            let why = tilo_rt::panic_boundary::message(&*panic);
+            tracing::warn!(why, "opening a device panicked: rasterizing on the CPU");
+            None
+        }
     }
-    Ok(gpu)
 }
 
 /// Serve the broker on `broker` with `config`, on this thread, until the
 /// broker goes away.
 #[cfg(target_os = "linux")]
 pub fn serve(config: &Config, broker: &Channel) -> Result<(), String> {
-    let gpu = open_gpu(config).map_err(|error| format!("no device to draw on: {error}"))?;
+    let gpu = open_gpu(config);
     let fonts = FontFiles::new(&config.font_roots, config.font_catalog.as_deref());
     if config.confine {
-        let node = config.render_node.as_ref().filter(|_| gpu.dmabufs());
+        let node = config
+            .render_node
+            .as_ref()
+            .filter(|_| gpu.as_ref().is_some_and(Gpu::dmabufs));
         confine::confine(node, fonts.roots()).map_err(|error| error.to_string())?;
     }
     Service::new(gpu, fonts, config.limits)

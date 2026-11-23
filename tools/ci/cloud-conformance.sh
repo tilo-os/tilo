@@ -17,7 +17,7 @@ usage() {
 layer=$1
 suite=$(realpath "$2")
 root=$(cd "$(dirname "$0")/../.." && pwd)
-crate=$root/crates/system/cloud-source-dav
+crate=$root/crates/integrations/cloud-source-dav
 
 # Run every test of the suite whose name starts with FILTER, and fail unless
 # all of them ran and passed: a filter that matches nothing still exits 0.

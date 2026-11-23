@@ -84,14 +84,9 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
     let (outsider, outsider_key) = certified_device(&root, user.public_key, "outsider");
     let id = WorkspaceId::from_u128(21);
     let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
-    wr.admit_device(b.device_public_key).unwrap();
+    let mut wr = crate::workspace::WorkspaceRuntime::open(tmp.path(), id).unwrap();
+    wr.list_environment(a.device_public_key, true);
+    wr.list_environment(b.device_public_key, true);
     let (atx, _arx) = mpsc::channel(8);
     let (disconnect, _disconnect_rx) = mpsc::channel(1);
     for device in [&a, &outsider] {

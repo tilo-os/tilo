@@ -407,7 +407,6 @@ impl AppBrokerState {
         } else {
             drop(registry);
         }
-        state.turn_updated(id, &update);
         Ok(())
     }
 }
@@ -895,7 +894,6 @@ impl AppBrokerState {
             checkouts.remove(&peer_id);
         }
         self.refresh_action_directory_root_snapshot();
-        self.turns.forget(peer_id);
         self.end_invocations(peer_id);
         self.catalogue_changed();
     }
@@ -1016,8 +1014,7 @@ impl AppBrokerState {
             return;
         }
         self.publish_activity(invocation.activity.as_ref(), &update);
-        self.record_completion(id, invocation.completion_owner(), update.clone());
-        self.turn_updated(id, &update);
+        self.record_completion(id, invocation.completion_owner(), update);
         if let Ok(mut requests) = self.cancellation_requests.lock() {
             requests.remove(&id);
         }

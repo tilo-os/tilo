@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tube@5738a7401a7c766a";
+export const SURFACE = "so.tilo.tube@3fc9638722335f13";
 
 /** The arguments of `subscribe`. */
 export interface SubscribeArgs {
@@ -45,6 +45,10 @@ export interface WatchLaterArgs {
 
 /** The arguments of `forget`. */
 export interface ForgetArgs {
+}
+
+/** The arguments of `retract_reply`. */
+export interface RetractReplyArgs {
 }
 
 /** The arguments of `delete_history`. */
@@ -71,8 +75,38 @@ export interface SetCaptionsArgs {
   on: boolean;
 }
 
+/** The arguments of `set_sponsorblock`. */
+export interface SetSponsorblockArgs {
+  on: boolean;
+}
+
+/** The arguments of `set_dearrow`. */
+export interface SetDearrowArgs {
+  on: boolean;
+}
+
+/** The arguments of `set_dislikes`. */
+export interface SetDislikesArgs {
+  on: boolean;
+}
+
+/** The arguments of `filter_search`. */
+export interface FilterSearchArgs {
+  kind: string;
+}
+
 /** The arguments of `end_search`. */
 export interface EndSearchArgs {
+}
+
+/** The arguments of `import_history`. */
+export interface ImportHistoryArgs {
+  watched: unknown[][];
+}
+
+/** The arguments of `import_previous`. */
+export interface ImportPreviousArgs {
+  previous: unknown[][];
 }
 
 /** Channel — `tl.so.tilo.tube.Channel`. */
@@ -121,7 +155,10 @@ export interface Video extends tilo.Resource {
   mvlf65b5: number;  // duration
   pfdoae2w: string;  // description
   ddfiordt: number;  // likes
+  lhbq7qff: number;  // dislikes
   l25oorez: string;  // thumbnail
+  vvxj4w64: string;  // dearrow_title
+  imamvrnr: string;  // dearrow_thumbnail
   pkbzjs7l: string;  // stream
   jfam7tjf: boolean;  // live
   bifohbpv: boolean;  // liked
@@ -147,17 +184,23 @@ export interface Video extends tilo.Resource {
   progress(args: {
     at: number;
   }): Promise<void>;
+  /** Skips the SponsorBlock segment the video plays into, at `at` (a share of its length), when the person skips segments: the playhead moves to the segment's end, so a sponsor read or an outro is never watched. The player reports where it got to as it plays, so this is what makes a marked segment skip on its own. */
+  skip_segment(args: {
+    at: number;
+  }): Promise<void>;
   /** Takes one video out of the person's own history. */
   forget(): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Asks the service for where the video's bytes play from again, after the player could not show them: the address the client holds is the service's alone to write, and the answer it gives now is what the player opens. */
   retry_playback(): Promise<void>;
+  /** Asks the service for the video's comments again, for what people said since the page opened. */
+  refresh_comments(): Promise<void>;
 }
 
 /** The actions `Video` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VIDEO_ACTIONS = ["like", "likeMany", "watch_later", "watch_laterMany", "play", "resume", "progress", "forget", "forgetMany", "retry_playback"] as const;
+export const VIDEO_ACTIONS = ["like", "likeMany", "watch_later", "watch_laterMany", "play", "resume", "progress", "skip_segment", "forget", "forgetMany", "retry_playback", "refresh_comments"] as const;
 
 /** The `tl.so.tilo.tube.Video` kind at `path`. */
 export function video(ws: tilo.Workspace, path: string): Video {
@@ -187,6 +230,74 @@ export const PLAYLIST_ACTIONS = ["refresh_playlist", "play_playlist"] as const;
 /** The `tl.so.tilo.tube.Playlist` kind at `path`. */
 export function playlist(ws: tilo.Workspace, path: string): Playlist {
   return resourceProxy(ws, path, SURFACE, PLAYLIST_ACTIONS) as unknown as Playlist;
+}
+
+/** Comment — `tl.so.tilo.tube.Comment`. */
+export interface Comment extends tilo.Resource {
+  pv4laajx: string;  // key
+  li4xiefh: string;  // video_key
+  "3ncdj3up": string;  // author
+  lgtlgzui: string;  // avatar
+  az6iwuma: string;  // text
+  hgdwjwgt: number;  // likes
+  dninsxc6: string;  // published
+  tmf5hovn: boolean;  // pinned
+  gp3basiz: boolean;  // hearted
+  ha6vpfhz: number;  // replies
+  /** Replies to a comment: the workspace keeps the reply itself, beside the comment it answers, since YouTube lets no app post as the person. Everyone who reads the comment reads the reply. */
+  reply_to_comment(args: {
+    text: string;
+  }): Promise<Reply>;
+}
+
+/** The actions `Comment` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const COMMENT_ACTIONS = ["reply_to_comment"] as const;
+
+/** The `tl.so.tilo.tube.Comment` kind at `path`. */
+export function comment(ws: tilo.Workspace, path: string): Comment {
+  return resourceProxy(ws, path, SURFACE, COMMENT_ACTIONS) as unknown as Comment;
+}
+
+/** Segment — `tl.so.tilo.tube.Segment`. */
+export interface Segment extends tilo.Resource {
+  uakovynu: string;  // key
+  pvlf5o2c: string;  // video_key
+  qlgpeq35: string;  // category
+  bbnmvcim: number;  // start
+  hts3jgqy: number;  // end
+  j7wuhxg5: number;  // votes
+}
+
+/** The actions `Segment` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SEGMENT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.tube.Segment` kind at `path`. */
+export function segment(ws: tilo.Workspace, path: string): Segment {
+  return resourceProxy(ws, path, SURFACE, SEGMENT_ACTIONS) as unknown as Segment;
+}
+
+/** Reply — `tl.so.tilo.tube.Reply`. */
+export interface Reply extends tilo.Resource {
+  y4coaxks: string;  // comment
+  kwxg57v6: string;  // video
+  "6psi22ua": string;  // text
+  nzwksffp: string | null;  // member
+  k3jskmid: string;  // said
+  /** Takes back a reply the person wrote. A reply the native app kept is the workspace's, and any member may take it back. */
+  retract_reply(): Promise<void>;
+  /** Runs `retract_reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  retract_replyMany(items: RetractReplyArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Reply` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const REPLY_ACTIONS = ["retract_reply", "retract_replyMany"] as const;
+
+/** The `tl.so.tilo.tube.Reply` kind at `path`. */
+export function reply(ws: tilo.Workspace, path: string): Reply {
+  return resourceProxy(ws, path, SURFACE, REPLY_ACTIONS) as unknown as Reply;
 }
 
 /** Subscription — `tl.so.tilo.tube.Subscription`. */
@@ -225,6 +336,9 @@ export interface PlaybackPrefs extends tilo.Resource {
   "5bpxm33f": number;  // speed
   lesyml4z: string;  // quality
   u3fgpv6e: boolean;  // captions
+  vbbcsaos: boolean;  // sponsorblock
+  "7cyrtrv6": boolean;  // dearrow
+  eyoonq3d: boolean;  // dislikes
 }
 
 /** The actions `PlaybackPrefs` reaches before it is read: `ws` calls them without a
@@ -264,8 +378,15 @@ export interface YouTube extends tilo.Resource {
   iputtmua: Array<tilo.Entry<Subscription>>;  // subscriptions
   jgjqgesf: Array<tilo.Entry<QueuedVideo>>;  // queue
   hv25j74h: Array<tilo.Entry<WatchEntry>>;  // history
+  puten5ar: boolean;  // history_cleared
+  ugv4b6is: Array<tilo.Entry<Comment>>;  // comments
+  cjlgivfs: Array<tilo.Entry<Segment>>;  // segments
+  iphlnbkx: Array<tilo.Entry<Reply>>;  // replies
   epgpppzy: Array<tilo.Entry<PlaybackPrefs>>;  // playback
   bqesicxq: string;  // search_text
+  "2pryeqkt": string;  // search_kind
+  egducuxn: string;  // search_length
+  ypapv6iy: string;  // search_published
   hcmy6dp7: string;  // search_state
   zjw3anaz: string;  // search_trouble
   nnvco6w3: string;  // feed_state
@@ -301,9 +422,41 @@ export interface YouTube extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_captions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_captionsMany(items: SetCaptionsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Whether the player skips the segments SponsorBlock marks, as they play. */
+  set_sponsorblock(args: {
+    on: boolean;
+  }): Promise<void>;
+  /** Runs `set_sponsorblock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_sponsorblockMany(items: SetSponsorblockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Whether a video shows the community's title and picture where DeArrow has them. */
+  set_dearrow(args: {
+    on: boolean;
+  }): Promise<void>;
+  /** Runs `set_dearrow` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_dearrowMany(items: SetDearrowArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Whether a video shows how many people disliked it, as Return YouTube Dislike estimates it. */
+  set_dislikes(args: {
+    on: boolean;
+  }): Promise<void>;
+  /** Runs `set_dislikes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_dislikesMany(items: SetDislikesArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them. The answer arrives through the platform's network, never the app's. */
   search(args?: {
     query?: string;
+  }): Promise<void>;
+  /** Narrows the search to the kinds the person chose: `all`, `video`, `channel` or `playlist`. What the service found is kept, and the page shows the kind chosen alone, as the old chips did; asking again is the search field's, which carries the kind with it. */
+  filter_search(args: {
+    kind: string;
+  }): Promise<void>;
+  /** Runs `filter_search` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  filter_searchMany(items: FilterSearchArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Narrows the search to how long its videos run: `any`, `short`, `medium` or `long`. */
+  filter_length(args: {
+    length: string;
+  }): Promise<void>;
+  /** Narrows the search to how recent its results are: `any`, `hour`, `today`, `week`, `month` or `year`. */
+  filter_published(args: {
+    published: string;
   }): Promise<void>;
   /** Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen. */
   end_search(): Promise<void>;
@@ -313,6 +466,22 @@ export interface YouTube extends tilo.Resource {
   refresh_feed(): Promise<void>;
   /** Asks the service for the videos it lists as trending. */
   load_trending(): Promise<void>;
+  /** Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the client is open, and what this returns opens in the window. The host publishes it as the system's `open-link` on the client's root, which is what a shell hands a link to. */
+  open_link(args: {
+    link: string;
+  }): Promise<unknown>;
+  /** Imports a watch history another device kept, in the format the native app's own history and its `import` call used: rows of `[a video's key, when it was watched in milliseconds since 1970]`. A video the person already watched keeps its place; each one imported becomes part of their own history, which keeps its newest thousand videos. */
+  import_history(args: {
+    watched: unknown[][];
+  }): Promise<void>;
+  /** Runs `import_history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  import_historyMany(items: ImportHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Imports the watch history an earlier version of this app kept for the person, in that version's own format: rows of `[a video's key, when it was watched in milliseconds since 1970, where it was left in milliseconds or nothing]`. Nothing is imported once the person deleted their history, since the delete is theirs to keep; a video already in it keeps its place. */
+  import_previous(args: {
+    previous: unknown[][];
+  }): Promise<void>;
+  /** Runs `import_previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  import_previousMany(items: ImportPreviousArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Plays the video a history entry names, from where the person left off. */
   play_again(args: {
     h: WatchEntry;
@@ -321,7 +490,7 @@ export interface YouTube extends tilo.Resource {
 
 /** The actions `YouTube` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const YOUTUBE_ACTIONS = ["play_queue", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_speed", "set_speedMany", "set_quality", "set_qualityMany", "set_captions", "set_captionsMany", "search", "end_search", "end_searchMany", "refresh_feed", "load_trending", "play_again"] as const;
+export const YOUTUBE_ACTIONS = ["play_queue", "delete_history", "delete_historyMany", "set_autoplay", "set_autoplayMany", "set_speed", "set_speedMany", "set_quality", "set_qualityMany", "set_captions", "set_captionsMany", "set_sponsorblock", "set_sponsorblockMany", "set_dearrow", "set_dearrowMany", "set_dislikes", "set_dislikesMany", "search", "filter_search", "filter_searchMany", "filter_length", "filter_published", "end_search", "end_searchMany", "refresh_feed", "load_trending", "open_link", "import_history", "import_historyMany", "import_previous", "import_previousMany", "play_again"] as const;
 
 /** The `tl.so.tilo.tube.YouTube` kind at `path`. */
 export function youTube(ws: tilo.Workspace, path: string): YouTube {

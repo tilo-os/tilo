@@ -282,7 +282,7 @@ printf '%s\n' "$pubkey" > "$trust"
 say "baking the Tilo runtime bundle"
 fonts=$scratch/fonts
 python3 "$repo_root/tools/font-catalog.py" prepare \
-    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+    "$repo_root/crates/ui/ui-core/assets/fonts" "$fonts" --scope product
 keyboard_library=$(ldconfig -p | awk '/libxkbcommon\.so\.0 .*(x86-64|AArch64)/ && !found {print $NF; found=1}')
 [[ -f $keyboard_library ]] || die "libxkbcommon.so.0 is not installed"
 runtime_libs=("$thin/libruntime_dylib.so" "$thin/$needed_std" "$keyboard_library")
@@ -308,7 +308,7 @@ say "the apps run on $app_runtime"
 . "$repo_root/tools/apps/tilolang_packages.sh"
 tilolang_version=$(tilolang_runtime_version "$repo_root") \
     || die "cannot read the tilolang runtime version"
-# Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
+# Beside it, the tilolang host (crates/lang/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances, as `nested-session.sh` bakes it: without it every tilolang
 # app's window and every agent program finds no host to run in. `nested-session-build.sh` builds
 # it without the toolkit, so it runs on the app runtime's loader and libraries alone.
@@ -388,7 +388,7 @@ install_tapp() {
         TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
-        "$bin/tilo-install" install "$tapp" --allow-self-signed "$@" \
+        "$bin/tilo-install" --offline-store "$store" install "$tapp" --allow-self-signed "$@" \
         >/dev/null
 }
 if ((${#apps[@]})); then

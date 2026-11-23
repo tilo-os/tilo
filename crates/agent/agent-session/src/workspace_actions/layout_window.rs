@@ -34,7 +34,7 @@ impl Worker {
         }
         let document = application_provider_resource(&request.target.provider).unwrap_or_default();
         let opened_by = opened_by(caller, request);
-        self.place_window(workspace_id, caller, (named, app, document), opened_by)?;
+        self.place_window(workspace_id, caller, (app, document), opened_by)?;
         Ok(ActionOutput::default())
     }
 
@@ -56,7 +56,7 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        (named, app, document): (&str, &str, &str),
+        (app, document): (&str, &str),
         opened_by: Option<tilo_desktop_model::ownership::OpenedBy>,
     ) -> Result<(), Outcome> {
         let unknown = || Outcome::Rejected(ActionCallError::UnknownAction);
@@ -68,7 +68,8 @@ impl Worker {
             .get(app)
             .map(|definition| definition.title().to_owned())
             .ok_or_else(unknown)?;
-        let layout = crate::workspace_documents::desktop_route(named);
+        let workspace = workspace_id.to_string();
+        let layout = crate::workspace_documents::desktop_route(&workspace);
         // Read, not acted on: a layout not here yet is asked for below.
         let state = self
             .refresh(
@@ -81,7 +82,7 @@ impl Worker {
             .map_err(Outcome::Rejected)?;
         let route = DocumentRoute {
             app_id: app.to_owned(),
-            cluster_id: named.to_owned(),
+            cluster_id: workspace,
             document: document.to_owned(),
         };
         if !document.is_empty()
@@ -92,7 +93,7 @@ impl Worker {
                 reason: format!("this workspace has no {app} record {}", route.document),
             }));
         }
-        let Some(held) = self.held_layout(workspace_id, named)? else {
+        let Some(held) = self.held_layout(workspace_id)? else {
             // A layout not held here (none yet, or not replayed here yet) is never waited for: the
             // view is asked for in the layout's document, and the person's page places it once it
             // holds the layout, now or when it next comes up.
@@ -145,7 +146,7 @@ impl Worker {
             .map(|who| who.person)
     }
 
-    /// The workspace `named`'s shared layout as the device's service holds it now, read even
+    /// `workspace_id`'s shared layout as the device's service holds it now, read even
     /// before anything landed here this session (an agent's first call is often an open):
     /// `None` while it holds none.
     #[allow(
@@ -155,7 +156,6 @@ impl Worker {
     pub(super) fn held_layout(
         &mut self,
         workspace_id: WorkspaceId,
-        named: &str,
     ) -> Result<Option<automerge::AutoCommit>, Outcome> {
         let workspace = self
             .workspaces
@@ -164,7 +164,7 @@ impl Worker {
         let reads = workspace.reads.clone();
         Ok(workspace
             .documents
-            .get_or_insert_with(|| WorkspaceDocuments::new(named, reads))
+            .get_or_insert_with(|| WorkspaceDocuments::new(&workspace_id.to_string(), reads))
             .desktop())
     }
 

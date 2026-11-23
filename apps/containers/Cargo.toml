@@ -21,12 +21,12 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verbs and typed action arguments.
 containers-model = { path = "../containers-model" }
 tilo-actions = { path = "../../crates/collab/actions" }
-bounded-command = { path = "../../crates/system/bounded-command" }
+bounded-command = { path = "../../crates/platform/bounded-command" }
 # Container shells open in Terminal through the shell's typed tool service.
 runtime-portal = { path = "../../crates/runtime/runtime-portal", default-features = false }
 automerge.workspace = true

@@ -29,6 +29,10 @@ crate::effects::effect_family!(PrinterEffect => answer);
 
 crate::area::pane_area! {
     PrintersArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Printers);
     fn poll(&self) {
         PrintersArea::poll(self);
     }

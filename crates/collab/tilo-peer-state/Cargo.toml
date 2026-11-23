@@ -64,7 +64,7 @@ iroh-base = { workspace = true, features = ["key"], optional = true }
 # The person's own documents between two of their devices: the link every host
 # dials, a page included.
 # One length-prefixed record per link exchange, the same framing its peers read.
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
 
 # The device's own transports and files: its enrollment and relay sessions,
 # its calls, the owner record on disk and the process's authorization
@@ -95,7 +95,7 @@ tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] 
 tilo-automerge.workspace = true
 # The record API apps open their own records with: a person's record reaches
 # their other device through the store the same way an app writes it.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 # Where that record API keeps a device's records in the test: in memory.
 durable-store = { path = "../../system/durable-store" }
 tempfile.workspace = true

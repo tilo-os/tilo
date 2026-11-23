@@ -44,6 +44,8 @@ mod e2e_native;
 mod e2e_native_ui;
 #[path = "e2e_notes.rs"]
 mod e2e_notes;
+#[path = "e2e_std.rs"]
+mod e2e_std;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
 #[path = "effects.rs"]
@@ -56,6 +58,8 @@ mod filters;
 mod foreign_readings;
 #[path = "held_records.rs"]
 mod held_records;
+#[path = "image.rs"]
+mod image;
 #[path = "interpolation.rs"]
 mod interpolation;
 #[path = "json.rs"]
@@ -68,6 +72,7 @@ mod members;
 mod multi_select;
 #[path = "names.rs"]
 mod names;
+mod nested_proposals;
 #[path = "outcomes.rs"]
 mod outcomes;
 #[path = "outside.rs"]

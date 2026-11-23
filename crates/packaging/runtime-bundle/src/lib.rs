@@ -1903,7 +1903,7 @@ mod tests {
                 .arg("-I")
                 .arg(repo.join("tools/font-catalog.py"))
                 .arg("prepare")
-                .arg(repo.join("crates/sdk/ui-core/assets/fonts"))
+                .arg(repo.join("crates/ui/ui-core/assets/fonts"))
                 .arg(&fonts)
                 .args(["--scope", "product"])
                 .output_locked()

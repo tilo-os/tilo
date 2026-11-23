@@ -24,7 +24,7 @@ mod batch;
 mod file_keys;
 mod ranges;
 pub use batch::{FetchReport, Want};
-pub use file_keys::FileKeys;
+pub use file_keys::{FileKeys, KEYS_NOT_READY};
 pub use ranges::Priority;
 
 type FetchResult = std::result::Result<Bytes, String>;

@@ -6,10 +6,10 @@
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
     DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, MatchArm,
-    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
-    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart, TitleDecl,
-    TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl, UseDecl,
-    VariantDecl, ViewDecl, ViewsDecl,
+    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl, RootDecl,
+    ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart,
+    TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl,
+    UseDecl, VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -1213,9 +1213,27 @@ impl<'a> Parser<'a> {
                     }
                     "readers" => {
                         let span = self.span();
-                        let field =
-                            self.ident("the field naming who reads a record of the type")?;
-                        readers = Some(TitleDecl { field, span });
+                        let who = self.ident(
+                            "who reads the type's records: `author`, or a field naming members",
+                        )?;
+                        let rule = if who.name == "author" {
+                            let until = if matches!(self.peek(), Tok::Ident(w) if w == "until") {
+                                self.bump();
+                                Some(
+                                    self.ident("the `Bool` field that hands it to every member")?
+                                        .name,
+                                )
+                            } else {
+                                None
+                            };
+                            crate::meta::ReaderRule::Author { until }
+                        } else {
+                            crate::meta::ReaderRule::Field { field: who.name }
+                        };
+                        readers = Some(ReadersDecl {
+                            rule,
+                            span: span.to(Span::new(self.prev_end(), self.prev_end())),
+                        });
                     }
                     other => {
                         return self.fail(
@@ -1315,8 +1333,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `search { ... }`: one `filter`, `sort`, `hide`, `kind` or `people` per line (search.md, "What a
-    /// type declares").
+    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type declares").
     fn search_block(&mut self) -> PResult<SearchBlock> {
         let start = self.bump().span;
         self.expect(&Tok::LBrace)?;
@@ -1350,7 +1367,7 @@ impl<'a> Parser<'a> {
 
     fn search_entry(&mut self) -> PResult<SearchEntry> {
         let start = self.span();
-        let word = self.ident("`filter`, `sort`, `hide`, `kind` or `people`")?;
+        let word = self.ident("`filter`, `sort` or `hide`")?;
         let kind = match word.name.as_str() {
             "filter" => {
                 if matches!(self.peek(), Tok::Str(_)) {
@@ -1387,17 +1404,11 @@ impl<'a> Parser<'a> {
             "hide" => SearchEntryKind::Hide {
                 field: self.ident("the field to keep out of filters")?,
             },
-            "kind" => SearchEntryKind::Kind {
-                kind: self.ident("`conversation`, `message`, `person` or `agent`")?,
-            },
-            "people" => SearchEntryKind::People {
-                field: self.ident("the field naming who the resource is with")?,
-            },
             other => {
                 return self.fail(
                     word.span,
                     format!(
-                        "a search block holds `filter`, `sort`, `hide`, `kind` and `people` lines; `{other}` is none of them"
+                        "a search block holds `filter`, `sort` and `hide` lines; `{other}` is none of them"
                     ),
                 );
             }

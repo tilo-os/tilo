@@ -21,6 +21,9 @@ use tilo_session_core::desktop::navigation::ChromeEffect;
 
 use crate::windows::{reaching, windows};
 
+use tilo_action_policy::{Answer, Grantee};
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+
 /// What the device's lists are made from ([`DeviceLists::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
 #[derive(Clone, PartialEq, Eq)]
@@ -245,6 +248,27 @@ pub(crate) enum AgentsEffect {
         #[param("The agent session, by its key")]
         agent: String,
     },
+    /// Whether this computer accepts the person's agents from their other devices, and whether
+    /// their steps go unasked here: the grant this device keeps in its workspaces.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-agents-other-devices", audience = "people")]
+    OtherDeviceAgents,
+    /// Accept agents from the person's other devices on this computer, or stop accepting them:
+    /// the grant this device keeps in its workspaces.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-agents-accept-other-devices", audience = "people")]
+    SetAcceptOtherDeviceAgents {
+        #[param("Whether this computer accepts the person's agents from their other devices")]
+        on: bool,
+    },
+    /// Let the steps of agents from the person's other devices go unasked on this computer, or
+    /// put them to the person again.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-agents-act-without-asking", audience = "people")]
+    SetOtherDeviceAgentsUnasked {
+        #[param("Whether their steps go unasked on this computer")]
+        on: bool,
+    },
 }
 
 /// The scopes a walk of the switcher crosses, as the walk's action names them: the whole workspace
@@ -346,7 +370,22 @@ pub(crate) struct Surfaces {
     /// The shell's desktop handle, read before opening the switcher so an empty walk never leaves
     /// the switcher up holding the keyboard.
     pub(crate) handle: DesktopHandle,
+    /// Whether the emoji picker stands over the windows, as the shell's own view draws it. The
+    /// shell that draws the screen owns its picker: the card is the shell's view, and the keys the
+    /// person types into it are the shell's, so the session keeps where it is rather than the
+    /// chrome's stack.
+    pub(crate) emoji: Rc<std::cell::Cell<bool>>,
+    /// Whether the About sheet stands over the windows, as the shell's own view draws it.
+    pub(crate) about: Rc<std::cell::Cell<bool>>,
 }
+
+/// The name the shell's own view gives the emoji picker, in what stands over the windows.
+pub(crate) const EMOJI: &str = "emoji";
+/// The name the shell's own view gives the About sheet, in what stands over the windows.
+pub(crate) const ABOUT: &str = "about";
+/// The surface a held Super's key card makes the shell say it shows: a picture over the windows,
+/// which takes no key.
+pub(crate) const PEEK: &str = tilo_session_core::shell::PEEK_SURFACE;
 
 impl Surfaces {
     /// Whether the quick settings stand in the panel's own app: the device has it, and the shell
@@ -364,6 +403,23 @@ impl Surfaces {
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
         self.caught_up();
+        if surface == EMOJI {
+            let opening = !self.emoji.get();
+            self.close_views();
+            self.emoji.set(opening);
+            self.settled();
+            return;
+        }
+        if surface == ABOUT {
+            let opening = !self.about.get();
+            self.close_views();
+            self.about.set(opening);
+            self.settled();
+            return;
+        }
+        // Another surface opens: the shell's own views go down under it.
+        self.emoji.set(false);
+        self.about.set(false);
         if self.shell_centre(surface) {
             // One centre: the shell's chrome draws the one the bar's bell counts, and it is asked
             // to open or shut as the bell asks it.
@@ -413,6 +469,21 @@ impl Surfaces {
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
         self.caught_up();
+        if name == EMOJI {
+            self.close_views();
+            self.emoji.set(true);
+            self.settled();
+            return;
+        }
+        if name == ABOUT {
+            self.close_views();
+            self.about.set(true);
+            self.settled();
+            return;
+        }
+        // Another surface opens: the shell's own views go down under it.
+        self.emoji.set(false);
+        self.about.set(false);
         if self.shell_centre(name) {
             self.notices.ask_centre(true);
             self.panel_closes();
@@ -473,6 +544,25 @@ impl Surfaces {
         self.settled();
     }
 
+    /// Take the shell's own views down: the picker and the About sheet, and the surface and the
+    /// popovers under them. One surface stands at a time, so opening another closes theirs.
+    fn close_views(&self) {
+        self.emoji.set(false);
+        self.about.set(false);
+        self.clear_shell();
+        self.clear_panel();
+    }
+
+    /// Whether the shell's own view draws the emoji picker now.
+    pub(crate) fn emoji_open(&self) -> bool {
+        self.emoji.get()
+    }
+
+    /// Whether the shell's own view draws the About sheet now.
+    pub(crate) fn about_open(&self) -> bool {
+        self.about.get()
+    }
+
     /// Whether any of the shell's own popovers stands over the windows now.
     pub(crate) fn beside_up(&self) -> bool {
         Part::ALL
@@ -492,6 +582,14 @@ impl Surfaces {
     /// Close `surface` (`close-surface`), when it is the one up.
     pub(crate) fn close(&self, surface: &str) {
         self.caught_up();
+        if surface == EMOJI {
+            self.emoji.set(false);
+            return;
+        }
+        if surface == ABOUT {
+            self.about.set(false);
+            return;
+        }
         if self.shell_centre(surface) {
             self.notices.ask_centre(false);
             return;
@@ -949,6 +1047,98 @@ fn no_holder() -> ApiError {
 }
 
 impl DeviceLists {
+    /// Whether this computer accepts the person's agents from their other devices, and whether
+    /// their steps go unasked here, as the grant it keeps in its workspaces says.
+    fn other_device_agents(&self) -> Started {
+        let Some(engine) = &self.engine else {
+            return other_device_agents_reading(false, false);
+        };
+        let device = engine.identity().device_cert.device_public_key;
+        let answers: Vec<Option<Answer>> = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .map(|workspace| workspace.id().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .into_iter()
+            .filter_map(|workspace| engine.policy(&workspace).ok())
+            .map(|policy| tilo_action_policy::device_agents::answer(&policy, &device))
+            .collect();
+        let accept = !answers.is_empty() && answers.iter().all(Option::is_some);
+        let unasked = accept && answers.iter().all(|answer| *answer == Some(Answer::Allow));
+        other_device_agents_reading(accept, unasked)
+    }
+
+    /// Keep, change or take back the grant this computer's workspaces keep for the person's
+    /// agents from their other devices ([`tilo_action_policy::device_agents`]): `Some(Ask)`
+    /// accepts them with a step their grants ask first put to the person here, `Some(Allow)` lets
+    /// those steps go unasked, and `None` refuses them.
+    fn set_other_device_agents(&self, answer: Option<Answer>) -> Result<Started, ApiError> {
+        let Some(engine) = self.engine.clone() else {
+            return Err(ApiError::Failed(
+                "this session has no workspace to answer in".to_owned(),
+            ));
+        };
+        let device = engine.identity().device_cert.device_public_key;
+        let person = self.person.clone();
+        let workspaces: Vec<String> = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|workspace| workspace.id().to_string())
+                .collect::<Vec<_>>()
+        });
+        Ok(Started::Later(crate::landing::off_loop(async move {
+            for workspace in workspaces {
+                let Some(id) = WorkspaceId::parse(&workspace) else {
+                    continue;
+                };
+                let current = engine
+                    .policy(&workspace)
+                    .ok()
+                    .and_then(|policy| tilo_action_policy::device_agents::answer(&policy, &device));
+                if current == answer {
+                    continue;
+                }
+                let mut changes = Vec::new();
+                if current.is_some() {
+                    changes.push(Command::Revoke {
+                        grant: tilo_action_policy::device_agents::grant_id(&device),
+                    });
+                }
+                if let Some(answer) = answer {
+                    changes.push(Command::Grant {
+                        grant: tilo_action_policy::device_agents::grant(
+                            &workspace,
+                            &device,
+                            answer,
+                            Grantee::person(person.clone()),
+                        ),
+                    });
+                }
+                if changes.is_empty() {
+                    continue;
+                }
+                tilo_session_client::membership::Membership::of(&engine, id)
+                    .write(&changes)
+                    .await
+                    .map_err(ApiError::Failed)?;
+            }
+            Ok(tilo_actions::ActionOutput::default())
+        })))
+    }
+}
+
+/// What this computer answers for the person's agents from their other devices.
+fn other_device_agents_reading(accept: bool, unasked: bool) -> Started {
+    Started::Done(tilo_actions::ActionOutput {
+        value: Some(serde_json::json!({ "accept": accept, "unasked": unasked })),
+        resources: Vec::new(),
+    })
+}
+
+impl DeviceLists {
     /// Open the invite sheet on a workspace: the workspace comes to the front, and the sheet the
     /// bar's button opens is shown on it, through the session, which holds the surface.
     fn show_invite(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
@@ -1160,17 +1350,31 @@ impl Service for DeviceLists {
                 self.open_tray_item(&key)
             }
             AGENTS_RESOURCE => {
-                let AgentsEffect::StopAgent { agent } =
+                let effect =
                     decode::<AgentsEffect>(&self.resources(), resource, action, arguments)?;
-                if !self
-                    .agent_sessions
-                    .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
-                {
-                    return Err(ApiError::InvalidArguments(format!(
-                        "no agent session {agent} works here"
-                    )));
+                match effect {
+                    AgentsEffect::StopAgent { agent } => {
+                        if !self
+                            .agent_sessions
+                            .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
+                        {
+                            return Err(ApiError::InvalidArguments(format!(
+                                "no agent session {agent} works here"
+                            )));
+                        }
+                        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+                    }
+                    AgentsEffect::OtherDeviceAgents => Ok(self.other_device_agents()),
+                    AgentsEffect::SetAcceptOtherDeviceAgents { on } => {
+                        self.set_other_device_agents(if on { Some(Answer::Ask) } else { None })
+                    }
+                    AgentsEffect::SetOtherDeviceAgentsUnasked { on } => self
+                        .set_other_device_agents(Some(if on {
+                            Answer::Allow
+                        } else {
+                            Answer::Ask
+                        })),
                 }
-                Ok(Started::Done(tilo_actions::ActionOutput::default()))
             }
             INVITE_RESOURCE => {
                 let effect =
@@ -1253,6 +1457,8 @@ mod tests {
             notices: tilo_desktop_surface::DesktopNotifications::default(),
             overview: Rc::new(std::cell::Cell::new(false)),
             handle,
+            emoji: Rc::new(std::cell::Cell::new(false)),
+            about: Rc::new(std::cell::Cell::new(false)),
         }
     }
 

@@ -88,9 +88,12 @@ set -eu
 # `tilo-install` resolves the package's tilolang runtime before it installs, so a
 # package installed before its bundle exists is refused there.
 test -f '{self.runtimes}/0.1.0+tilolang/bundle.toml' || exit 27
-tapp=$2
+# An image build names the store it writes: `--offline-store DIR install TAPP`.
+test "$1" = --offline-store && test "$3" = install || exit 28
+store=$2
+tapp=$4
 id=$(cat "$tapp")
-printf '[[entry]]\\nid="%s"\\n' "$id" >> '{self.store}/registry.toml'
+printf '[[entry]]\\nid="%s"\\n' "$id" >> "$store/registry.toml"
 ''')
         for tool in (bundle, tilolang, verify, install):
             tool.chmod(0o755)

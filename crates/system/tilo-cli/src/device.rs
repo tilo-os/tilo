@@ -14,7 +14,6 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_api::daemon::DaemonPlace;
 use tilo_device_identity::login::Ticket;
 use tilo_server_session::workspaces::{PersonalDevice, WorkspaceLabels};
 use tilo_session_client::device::Device as Entered;
@@ -22,15 +21,6 @@ use tilo_user_identity::{DeviceCert, RevocationReason};
 
 use crate::api::{Client, Reach};
 use crate::login::{self, Device};
-
-/// What a computer added with a ticket becomes.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub enum Adding {
-    /// An ordinary member device.
-    Member,
-    /// A device that administers the person's other devices.
-    Admin,
-}
 
 /// How long a revocation is waited for to show in the person's list.
 const REVOKED_WAIT: Duration = Duration::from_secs(20);
@@ -61,9 +51,7 @@ async fn keep_in_list(entered: &Entered, cert: &DeviceCert) -> Result<()> {
 
 /// This computer's login and the person whose root it holds, checked to be one person.
 fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
-    crate::identity::convert_earlier()?;
-    let (key, here) = login::load(&login::Place::here(crate::identity::paths())?)?
-        .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let (key, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     let person = crate::identity::held()?.ok_or_else(|| {
         anyhow!(
             "This computer does not hold your identity, so it cannot add a device: run \
@@ -94,7 +82,6 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 pub fn add(
     ticket: Option<&str>,
     json: bool,
-    adding: Adding,
     no_wait: bool,
     plan: Option<&str>,
     server: bool,
@@ -103,14 +90,10 @@ pub fn add(
         return sign_in(ticket, json);
     }
     login::trust_test_certificates()?;
-    crate::identity::convert_earlier()?;
-    let login_place = login::Place::here(crate::identity::paths())?;
     // A login that ended names a workspace no daemon here holds: the daemon serves this
     // computer as the person's own device instead, in the workspace it founded.
-    let here = login::load_public(&login_place)?.filter(Device::reaches_a_server);
-    let place = DaemonPlace::of(login_place.dir(), &login::this_device_public_key()?)
-        .map_err(anyhow::Error::msg)?;
-    login::ensure_daemon(&place)?;
+    let here = login::home().filter(Device::reaches_a_server);
+    login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let cert = runtime.block_on(async {
         let client = Client::open(Reach {
@@ -122,13 +105,8 @@ pub fn add(
             Some(device) => device.workspace.clone(),
             None => client.founded_workspace().await?,
         };
-        let capability = match adding {
-            Adding::Member => "member",
-            Adding::Admin => "admin",
-        };
         // A role the person did not ask for goes as null, which the daemon reads as none.
-        let args =
-            json!({ "capability": capability, "plan": plan, "server": server.then_some(true) });
+        let args = json!({ "plan": plan, "server": server.then_some(true) });
         let issued = client
             .act(
                 &workspace,
@@ -149,11 +127,7 @@ pub fn add(
             eprintln!("On the computer to add, run:");
             println!("tilo login {ticket}");
             eprintln!(
-                "The ticket works once, for 10 minutes. It adds the computer as {}.",
-                match adding {
-                    Adding::Member => "an ordinary device",
-                    Adding::Admin => "an administrator of your other devices",
-                }
+                "The ticket works once, for 10 minutes. It adds the computer as one of your devices."
             );
         }
         if no_wait {
@@ -180,7 +154,7 @@ pub fn add(
         // no login has no session of its own to enter with: the host lists it as it enters.
         // The daemon calls are done, so this process may read the private key now.
         if here.is_some()
-            && let Some((key, here)) = login::load(&login_place)?
+            && let Some((key, here)) = login::here()?
         {
             match login::connect(&key, &here, None).await {
                 Ok(entered) => {
@@ -224,7 +198,6 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     use tilo_device_identity::login::{APPROVE, Direction, PENDING};
 
     login::trust_test_certificates()?;
-    crate::identity::convert_earlier()?;
     let parsed = Ticket::parse(ticket).map_err(|_| {
         anyhow!(
             "{} is not a Tilo ticket; a browser's sign-in prompt copies one that starts with \
@@ -240,11 +213,8 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         );
     }
     let person = crate::identity::held()?;
-    let login_place = login::Place::here(crate::identity::paths())?;
-    let (key, here) = login::load(&login_place)?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
-    let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
-        .map_err(anyhow::Error::msg)?;
-    login::ensure_daemon(&place)?;
+    let (_, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
     let (device, label, capability) = runtime.block_on(async {
@@ -360,14 +330,44 @@ fn named(device: &PersonalDevice) -> &str {
     device.name.as_deref().unwrap_or(&device.cert.device_label)
 }
 
+/// `tilo device key`: this computer's device key, its person and its label, from its login; with
+/// no login, the workspace its daemon founded for its person, as the daemon answers it.
+///
+/// # Errors
+/// This computer's login is damaged, or with none its daemon serves no workspace.
+pub fn key() -> Result<ExitCode> {
+    let Some(here) = login::home() else {
+        login::ensure_daemon()?;
+        let workspace = login::runtime()?.block_on(async {
+            Client::open(Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            })?
+            .founded_workspace()
+            .await
+        })?;
+        println!("{}", json!({ "workspace": workspace }));
+        return Ok(ExitCode::SUCCESS);
+    };
+    println!(
+        "{}",
+        json!({
+            "device": hex::encode(here.cert.device_public_key),
+            "identity": hex::encode(here.cert.user_public_key),
+            "label": here.cert.device_label,
+        })
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `tilo device ls`: the person's devices.
 ///
 /// # Errors
 /// This computer is not logged in, or its host did not answer.
 pub fn list(json: bool) -> Result<ExitCode> {
     login::trust_test_certificates()?;
-    let (key, here) = login::load(&login::Place::here(crate::identity::paths())?)?
-        .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    let (key, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     let runtime = login::runtime()?;
     let devices = runtime.block_on(devices(&key, &here))?;
     let this = here.cert.device_public_key;

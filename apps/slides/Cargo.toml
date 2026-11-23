@@ -25,7 +25,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -35,14 +35,14 @@ serde_json.workspace = true
 uuid.workspace = true
 tilo-content = { path = "../../crates/system/content" }
 # Text boxes are tilo-doc rich text, edited and drawn by the SDK editor.
-tilo-doc = { path = "../../crates/doc/tilo-doc" }
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-doc = { path = "../../crates/sdk/tilo-doc" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 tracing.workspace = true
 # The XML entity helpers shared with the office document codecs.
-tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["office"] }
+tilo-doc-codecs = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["office"] }
 # Zip-bomb and XXE bounds for imported .odp/.pptx packages.
-bounded-zip = { path = "../../crates/doc/bounded-zip" }
+bounded-zip = { path = "../../crates/engines/bounded-zip" }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

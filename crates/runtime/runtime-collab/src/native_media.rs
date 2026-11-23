@@ -431,6 +431,31 @@ pub struct Roster {
     /// person, so it is in none of the lists above.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bridges: Vec<String>,
+    /// The people a bridge carries into the call from another service, each a
+    /// member of it of their own: in `people` above by this id, and shown by
+    /// the name and picture they have there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridged: Vec<BridgedPerson>,
+}
+
+/// One person a bridge carries into a call: who they are there, and the member
+/// of `Roster::people` they are in it as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BridgedPerson {
+    /// The person (their root key or stand-in publisher, lowercase hex): in
+    /// the roster's `people` like everyone else.
+    pub person: String,
+    /// The service the call reaches them through (`discord`).
+    pub service: String,
+    /// Their account there.
+    pub account: String,
+    /// The name they are shown by.
+    pub name: String,
+    /// BLAKE3 hex of their picture in the workspace's content store, when it is
+    /// held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 impl Roster {
@@ -454,6 +479,17 @@ impl Roster {
                 .all(|person| self.muted.binary_search(person).is_ok())
             && self.bridges.iter().all(|service| service_valid(service))
             && self.bridges.is_sorted_by(|a, b| a < b)
+            && self.bridged.iter().all(|person| {
+                person_valid(&person.person)
+                    && self.people.binary_search(&person.person).is_ok()
+                    && service_valid(&person.service)
+                    && !person.account.trim().is_empty()
+                    && person.account.len() <= 64
+                    && !person.name.trim().is_empty()
+                    && person.name.chars().count() <= 80
+                    && person.avatar.as_deref().is_none_or(hex32)
+            })
+            && self.bridged.is_sorted_by(|a, b| a.person < b.person)
     }
 }
 

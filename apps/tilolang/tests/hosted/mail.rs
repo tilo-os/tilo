@@ -104,6 +104,21 @@ fn lease() -> String {
     )
 }
 
+/// The lease as a PDF, as the letting agent sends it.
+const LEASE_PDF: &[u8] = b"%PDF-1.4\n% lease 2026\n";
+
+/// The lease renewal with the lease attached, as a server holds it.
+fn lease_with_pdf() -> String {
+    format!(
+        "From: Mill Lane Lettings <office@lettings.example>\nTo: {ME}\nSubject: Your lease renewal\n\
+Message-ID: <lease@lettings.example>\nDate: Tue, 30 Jun 2026 09:00:00 +0000\nMIME-Version: 1.0\n\
+Content-Type: multipart/mixed; boundary=\"lease\"\n\n--lease\nContent-Type: text/plain; charset=utf-8\n\n\
+The new lease is attached.\n--lease\nContent-Type: application/pdf; name=\"Lease 2026.pdf\"\n\
+Content-Disposition: attachment; filename=\"Lease 2026.pdf\"\nContent-Transfer-Encoding: base64\n\n\
+JVBERi0xLjQKJSBsZWFzZSAyMDI2Cg==\n--lease--\n"
+    )
+}
+
 /// The two servers with nothing in the inbox yet: what a test puts there once the window stands,
 /// as mail arrives at an open window.
 fn empty_servers() -> Servers {
@@ -157,6 +172,15 @@ struct MailConnector {
 
 impl MailConnector {
     fn new(source: impl Fn() -> Vec<AccountConfig> + Send + 'static) -> Self {
+        Self::keeping(source, None)
+    }
+
+    /// [`Self::new`], keeping the files messages carry in `content`: the device's content store,
+    /// which the windows read them from.
+    fn keeping(
+        source: impl Fn() -> Vec<AccountConfig> + Send + 'static,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Self {
         let (wakeups, woken) = std::sync::mpsc::channel::<Wakeup>();
         let looping = wakeups.clone();
         let online = Arc::new(AtomicBool::new(false));
@@ -176,7 +200,8 @@ impl MailConnector {
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
             let source = move || source().into_iter().map(Into::into).collect();
-            Connector::new(Box::new(source), requests, events, device).run(&woken, &looping);
+            Connector::new(Box::new(source), (requests, events), device, content)
+                .run(&woken, &looping);
         });
         Self { wakeups, online }
     }
@@ -208,6 +233,18 @@ impl MailConnector {
         session.settle();
         session
     }
+}
+
+/// Ada at a Mail window kept in step with `config`'s servers, the files messages carry kept in
+/// `content`, the device's store, which the connector and the window share.
+fn window_keeping(
+    config: AccountConfig,
+    content: &tilo_content::ContentStore,
+) -> (MailConnector, Session) {
+    Session::keeping_files_in(content);
+    let connector = MailConnector::keeping(move || vec![config.clone()], Some(content.clone()));
+    let session = connector.window();
+    (connector, session)
 }
 
 /// Ada at a Mail window kept in step with `config`'s servers.
@@ -331,8 +368,15 @@ impl Session {
         self.settle();
         // What the action asks first — a send its code makes — is allowed, as the person allows
         // what the app's sheet asks of them, through the API.
+        self.approve_asks(on, &asked_before)?;
+        Ok(answered)
+    }
+
+    /// Answer the asks on `on` that were not there before, allowing each: what an action the
+    /// person ran asked to reach outside, as they allow it on the app's sheet.
+    fn approve_asks(&mut self, on: &ResourceRef, before: &[String]) -> Result<(), String> {
         for asked in self.asked(on) {
-            if asked_before.contains(&asked) {
+            if before.contains(&asked) {
                 continue;
             }
             let decide = action_id(self, HOST, "Decide suggestion");
@@ -348,11 +392,11 @@ impl Session {
             )?;
             let state = decided.value.as_ref().map(|value| value["state"].clone());
             if state != Some(json!("done")) {
-                return Err(format!("{name}: the ask was not carried out: {decided:?}"));
+                return Err(format!("the ask was not carried out: {decided:?}"));
             }
             self.settle();
         }
-        Ok(answered)
+        Ok(())
     }
 
     /// What waits for the person's answer on `on`: the suggestions an action asked, by id.
@@ -423,6 +467,36 @@ impl Session {
         let mut texts = Vec::new();
         texts_in(view.tree(), &mut texts);
         texts
+    }
+
+    /// Open `resource` through the `open` the app publishes for it, by the address the
+    /// catalogue offers it under, as a person's row or an agent's call does; then settle.
+    fn open_showing(&mut self, resource: &ResourceRef) {
+        let published = tilolang_tilo::publish::resource_id(APP, &resource.id_string());
+        if let Err(error) = self.invoke(None, None, &published, "open", &serde_json::Map::new()) {
+            panic!("{published}'s open answers: {error}");
+        }
+        self.settle();
+    }
+
+    /// The rows of the page the window opened beside its list, each row's texts: what a person
+    /// reads in the mailbox they opened.
+    fn page_rows(&mut self) -> Vec<Vec<String>> {
+        let view = self.hosted().view().expect("the window is connected");
+        let mut rows = Vec::new();
+        for list in view.lists() {
+            if !list.starts_with(tilo_app_window::shell::DETAIL) {
+                continue;
+            }
+            let shown = view.rows_of(&list).expect("the list's rows");
+            let shown = shown.borrow();
+            for key in shown.rendered() {
+                let mut texts = Vec::new();
+                super::texts(shown.row(&key).expect("a rendered row"), &mut texts);
+                rows.push(texts);
+            }
+        }
+        rows
     }
 
     /// How many conversations the account's window lists in the sidebar's place `place`: the
@@ -712,6 +786,108 @@ fn a_mailbox_longer_than_a_page_reads_the_page_before_it_when_asked() {
     );
 }
 
+// USER REQUIREMENT: a mailbox holding more than one page reads the page before it as the person
+// reads the list to its end, without pressing anything.
+#[test]
+fn a_mailbox_read_to_the_lists_end_reads_the_page_before_it() {
+    let servers = empty_servers();
+    sixty_messages(&servers);
+    let (_connector, mut session, inbox) = window_on_a_long_inbox(&servers);
+    // The window's list tells the person's reading to its end; what the list says it runs reads
+    // the page before the rows. The toolkit's own reading of a scroll to the end is the list's
+    // (`ui::widget::virtual_list`), so the event it fires is what the window sends here.
+    let composed = session
+        .hosted()
+        .view()
+        .and_then(tilo_app_window::AppWindow::composed)
+        .cloned()
+        .expect("the window composed its shell");
+    let list =
+        first_window_kind(&composed, "ui.VirtualList").expect("the window lists conversations");
+    assert!(
+        list.events.contains_key("end"),
+        "the list reads its end: {:?}",
+        list.events.keys().collect::<Vec<_>>()
+    );
+    let key = list.key.clone();
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .act(tilo_app_window::reconcile::UiEvent::Fire(
+            key,
+            "end".to_owned(),
+            None,
+            None,
+        ));
+    session.settle();
+    // The list asks for the page before the rows, or reads it at once where the person may
+    // already reach outside; what the list asks, they allow, as anything an app reaches outside
+    // for.
+    session.until("the list's end to ask for the page or read it", |session| {
+        session.threads().len() == 60 || session.ask_bar().as_deref() == Some("Show older messages")
+    });
+    if session.ask_bar().as_deref() == Some("Show older messages") {
+        session
+            .hosted()
+            .view()
+            .expect("the window is connected")
+            .answer(tilo_render_protocol::patch::Answer::Allow);
+        session.settle();
+    }
+    session.until("the page before it", |session| {
+        session.threads().len() == 60
+    });
+    assert!(
+        !session.flag(&inbox, "more"),
+        "the folder's first message is here, and it offers no more"
+    );
+}
+
+/// The first node of `kind` in the shell `node` the window composed, itself included.
+fn first_window_kind<'a>(
+    node: &'a tilo_app_window::UiNode,
+    kind: &str,
+) -> Option<&'a tilo_app_window::UiNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| first_window_kind(child, kind))
+}
+
+/// Sixty messages in `servers`' inbox, more than the one page an account syncs first.
+fn sixty_messages(servers: &Servers) {
+    for i in 0..60 {
+        servers.imap.append(
+            "INBOX",
+            &mail(
+                &format!("note-{i}@hopper.example"),
+                "Grace Hopper <grace@hopper.example>",
+                &format!("Note {i}"),
+                "A line.",
+                None,
+            ),
+            &[],
+        );
+    }
+}
+
+/// The window kept in step with `servers`, its account holding the newest page of sixty
+/// messages: the inbox whose server still holds the page before it.
+fn window_on_a_long_inbox(servers: &Servers) -> (MailConnector, Session, ResourceRef) {
+    let (connector, mut session) = window_of(account(servers));
+    session.until("the newest page", |session| session.threads().len() == 50);
+    let account = session.accounts().remove(0);
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    assert!(
+        session.flag(&inbox, "more"),
+        "the mailbox says its server holds older mail"
+    );
+    (connector, session, inbox)
+}
+
 // USER REQUIREMENT: mail that another client deletes here goes, and a folder the server
 // numbered again is read once more rather than kept stale or doubled.
 #[test]
@@ -934,7 +1110,7 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
         "folder": "archive", "read": true, "date": "2024-03-01T09:00:00Z",
         "conversation": "notes@analytical.example", "message_id": "notes@analytical.example",
         "original": "tilo.content:abc",
-        "attachments": ["notes.pdf"],
+        "attachments": [{"file": {"name": "notes.pdf", "hash": "def", "size": 3}}],
         "parts": [r#"{"at":120,"size":12,"pieces":["tilo.content:def"]}"#],
     });
     let delivered = session.call("deliver_message", &root, &first);
@@ -976,7 +1152,13 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     assert_eq!(session.text(notes, "from_name"), "Ada Lovelace");
     assert_eq!(session.text(notes, "mailbox"), "archive");
     assert_eq!(session.text(notes, "original"), "tilo.content:abc");
-    assert_eq!(session.text(notes, "attachments"), "notes.pdf");
+    assert!(
+        matches!(
+            session.value_of(notes, "attachments"),
+            RtValue::List(files) if matches!(files.as_slice(), [RtValue::File(f)] if f.name == "notes.pdf" && f.hash == "def")
+        ),
+        "the file it carries is kept as the content it names"
+    );
     assert!(session.text(notes, "parts").contains("tilo.content:def"));
     assert!(!session.flag(notes, "unread"));
     assert_eq!(
@@ -1033,6 +1215,27 @@ fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
         "{sent}"
     );
     assert!(session.flag(&draft, "sent"));
+}
+
+/// The conversation's reply bar answers and sends in one press: the person is asked once, and
+/// allowing it sends the answer the bar made, as the Send of a draft does.
+#[test]
+fn an_answer_typed_under_a_conversation_goes_out_once_allowed() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    session.call("answer", &plan, &json!({ "body": "Thursday works." }));
+    session.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    session.until("the outbox to settle", |session| {
+        session.instance_host().store().outbox_pending().is_empty()
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
+    assert!(sent.contains("Thursday works."), "{sent}");
 }
 
 #[test]
@@ -1706,6 +1909,79 @@ fn a_conversation_shows_its_subject_senders_recipients_and_attachments() {
     );
 }
 
+// USER REQUIREMENT: a file that came with a message is a real file: it saves as the bytes the
+// server sent, it goes along when the message is sent on, and a reply takes it as an attachment.
+#[test]
+fn an_attachment_saves_as_its_file_and_goes_along_with_what_is_sent() {
+    let servers = servers();
+    let content = tilo_content::ContentStore::memory();
+    let (_connector, mut session) = window_keeping(account(&servers), &content);
+    synced(&mut session);
+    session.hold_for(0);
+    servers.imap.append("INBOX", &lease_with_pdf(), &[]);
+    let message = session.wait_for("the lease with its file", |session| {
+        let lease = session
+            .threads()
+            .into_iter()
+            .find(|t| session.text(t, "subject") == "Your lease renewal")?;
+        session.refs(&lease, "messages").into_iter().next()
+    });
+    let shown = session.conversation(&session.thread("Your lease renewal"));
+    assert!(
+        shown.iter().any(|text| text == "Lease 2026.pdf"),
+        "the message shows the file it came with: {shown:#?}"
+    );
+
+    // It is the file the server sent, byte for byte, kept in the device's content.
+    let RtValue::List(files) = session.value_of(&message, "attachments") else {
+        panic!("a message holds its files");
+    };
+    let [RtValue::File(file)] = files.as_slice() else {
+        panic!("the lease came with one file: {files:?}");
+    };
+    assert_eq!(file.name, "Lease 2026.pdf");
+    assert_eq!(file.media, "application/pdf");
+    let hash = file.hash.clone();
+    assert_eq!(content.read(&hash).as_deref(), Some(LEASE_PDF));
+    session.call("attachment", &message, &json!({"name": "Lease 2026.pdf"}));
+    assert!(
+        session
+            .try_call("attachment", &message, &json!({"name": "Other.pdf"}))
+            .is_err(),
+        "a file it did not come with is none"
+    );
+
+    // Sent on, it carries the file.
+    let forward = session.made("forward_message", &message, &json!({}));
+    assert!(
+        matches!(
+            session.value_of(&forward, "attachments"),
+            RtValue::List(files) if matches!(files.as_slice(), [RtValue::File(f)] if f.hash == hash)
+        ),
+        "the forward takes the lease along"
+    );
+
+    // A reply takes the file as an attachment, as the person picks it, and the server gets it.
+    let reply = session.made("reply_to", &message, &json!({}));
+    session.call(
+        "attach",
+        &reply,
+        &json!({"file": {"file": {
+            "name": "Lease 2026.pdf",
+            "media": "application/pdf",
+            "size": LEASE_PDF.len(),
+            "hash": hash,
+        }}}),
+    );
+    session.call("send", &reply, &json!({}));
+    session.until("the server to take the reply", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Lease 2026.pdf"), "{sent}");
+    assert!(sent.contains("JVBERi0xLjQKJSBsZWFzZSAyMDI2Cg=="), "{sent}");
+}
+
 // USER REQUIREMENT: an empty answer is nothing to send: nothing is written and no blank
 // message goes.
 #[test]
@@ -1839,8 +2115,8 @@ fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answer
 }
 
 // USER REQUIREMENT: a reply the workspace has no account to send says so where it names the
-// sender, and offers the way to Settings' accounts, rather than a blank From and a Send that
-// does nothing.
+// sender, and where a Send would stand it offers the way to Settings' accounts, rather than a
+// blank From and a press that does nothing.
 #[test]
 fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
     let connector = MailConnector::new(Vec::new);
@@ -1873,47 +2149,33 @@ fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
             "{said:?} in {shown:?}"
         );
     }
-    // The composer's Send stands where a person looks for it, unavailable, saying why: what
-    // `send` refuses it with.
+    // Where a composer's Send stands, the way to add an account: pressing it opens the Settings
+    // page that adds one, and the draft stays as it is.
     let window = session
         .instance_host()
         .open_resource(&draft, None)
         .expect("its window opens");
-    let sends = labelled(window.tree(), "Send");
-    let composer = sends
-        .iter()
-        .find(|node| node.kind == "ui.Button")
-        .unwrap_or_else(|| panic!("the composer's Send: {shown:?}"));
+    let links = labelled(window.tree(), "Add an account to send");
+    let link = links
+        .first()
+        .unwrap_or_else(|| panic!("the composer offers the way to an account: {shown:?}"));
+    assert_eq!(link.kind, "ui.Link");
     assert_eq!(
-        composer.props.get("enabled"),
-        Some(&RtValue::Int(0)),
-        "the composer's Send is unavailable: {:?}",
-        composer.props
+        link.props.get("url"),
+        Some(&RtValue::Text("settings://external_accounts".to_owned())),
+        "it opens the page that adds an account: {:?}",
+        link.props
     );
-    assert_eq!(
-        composer.props.get("description"),
-        Some(&RtValue::Text(
-            "Add a mail account in Settings first".to_owned()
-        )),
-        "the composer's Send says why: {:?}",
-        composer.props
-    );
-    // So is the window's, in its menu.
-    for send in sends.iter().filter(|node| node.kind != "ui.Button") {
-        assert_eq!(
-            send.props.get("disabled"),
-            Some(&RtValue::Int(1)),
-            "{:?}",
-            send.props
-        );
-        assert_eq!(
-            send.props.get("reason"),
-            Some(&RtValue::Text(
-                "Add a mail account in Settings first".to_owned()
-            )),
-            "{:?}",
-            send.props
-        );
+    // The composer itself sends nothing with no account; the window's own Send says why.
+    for send in labelled(window.tree(), "Send") {
+        if send.kind == "ui.Button" {
+            assert_eq!(
+                send.props.get("enabled"),
+                Some(&RtValue::Int(0)),
+                "a Send with no account is unavailable: {:?}",
+                send.props
+            );
+        }
     }
     let refused = session
         .try_call("send", &draft, &json!({}))
@@ -1921,6 +2183,196 @@ fn a_reply_with_no_account_to_send_it_says_so_and_does_not_send() {
     assert!(
         refused.contains("Add a mail account in Settings first"),
         "{refused}"
+    );
+    assert!(
+        session.refs(&root, "drafts").contains(&draft),
+        "the draft stays where it was written"
+    );
+}
+
+// USER REQUIREMENT: a person always writes a message. With no account it waits in Drafts, and
+// once an account is added the same draft goes from it — nothing written is lost to the wait.
+#[test]
+fn a_message_written_with_no_account_is_kept_and_sends_once_one_is_added() {
+    let servers = servers();
+    let reachable = account(&servers);
+    let config = Arc::new(Mutex::new(Vec::<AccountConfig>::new()));
+    let accounts = Arc::clone(&config);
+    let connector = MailConnector::new(move || accounts.lock().unwrap().clone());
+    let mut session = connector.window();
+    session.settle();
+    let root = session.mail_root();
+    assert!(session.accounts().is_empty(), "no account yet");
+    session.call(
+        "deliver_message",
+        &root,
+        &json!({
+            "from": "Ada Lovelace <ada@analytical.example>",
+            "to": "Sam Rivera <sam@rivera.example>",
+            "subject": "Engine notes",
+            "body": "Could you look at the timing?",
+            "date": "2026-11-12T09:30:00Z",
+            "message_id": "<engine@analytical.example>",
+        }),
+    );
+    let kept = session.refs(&root, "recovered_mail");
+    let [thread] = kept.as_slice() else {
+        panic!("one conversation: {kept:?}");
+    };
+
+    // The answer is written with no account, and stays in Drafts.
+    let draft = session.made("reply", thread, &json!({}));
+    assert_eq!(session.text(&draft, "from"), "");
+    assert_eq!(session.text(&draft, "to"), "ada@analytical.example");
+    assert!(
+        session.refs(&root, "drafts").contains(&draft),
+        "it waits in Drafts"
+    );
+    assert!(session.try_call("send", &draft, &json!({})).is_err());
+    assert!(!session.flag(&draft, "sent"));
+
+    // The person adds an account, as Settings' accounts page does.
+    *config.lock().unwrap() = vec![reachable];
+    connector.come_online();
+    session.until("the account to be added", |session| {
+        !session.accounts().is_empty()
+    });
+    let account = session.accounts().remove(0);
+    let address = session.text(&account, "address");
+    session.call(
+        "send_from",
+        &draft,
+        &json!({ "a": {
+            "app": APP,
+            "kind": format!("tl.{APP}.Account"),
+            "id": account.id_string(),
+            "label": address,
+        }}),
+    );
+    assert_eq!(session.text(&draft, "from"), session.text(&account, "key"));
+
+    // The same draft goes, once.
+    session.hold_for(0);
+    session.call("send", &draft, &json!({}));
+    session.until("the message to be sent", |session| {
+        session
+            .delivery_of(&draft)
+            .is_some_and(|(state, _)| state == "sent")
+    });
+    assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(
+        sent.contains("Subject: Re: Engine notes"),
+        "the draft that waited goes as it was written: {sent}"
+    );
+}
+
+// USER REQUIREMENT: every message being written waits in Drafts — a new one, one sent on, and
+// an answer — and an answer opens with the conversation it answers.
+#[test]
+fn drafts_lists_every_message_being_written_and_an_answer_shows_its_conversation() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    let fresh = session.made("new_message", &account, &json!({}));
+    let plan = session.thread("Launch plan");
+    let reply = session.made("reply", &plan, &json!({}));
+    let _forwarded = session.made("forward", &plan, &json!({}));
+    assert_eq!(
+        session.text(&reply, "conversation"),
+        session.text(&plan, "key"),
+        "the answer names the conversation it answers"
+    );
+    assert_eq!(
+        session.text(&fresh, "conversation"),
+        "",
+        "a new message answers nothing"
+    );
+
+    // The Drafts place lists all three kinds.
+    let root = session.mail_root();
+    let mut view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    let drafts = find_kind(view.tree(), "ui.NavItem", "label", "Drafts")
+        .expect("the sidebar offers Drafts")
+        .key
+        .clone();
+    view.fire(&drafts, "select").expect("Drafts opens");
+    view.poll_patches().expect("the place shows");
+    assert_eq!(
+        count_in(view.tree(), "ui.NavShell"),
+        Some(3),
+        "Drafts lists the new, sent-on and reply drafts"
+    );
+
+    // An answer opens with the conversation it answers; a new message has none to show.
+    let shown = session.view_of(&reply);
+    assert!(
+        shown.iter().any(|text| text == "This answers Launch plan"),
+        "{shown:#?}"
+    );
+    let shown = session.view_of(&fresh);
+    assert!(
+        !shown.iter().any(|text| text.starts_with("This answers ")),
+        "{shown:#?}"
+    );
+}
+
+/// How many messages the Drafts place of `session`'s mail window lists, choosing the place as a
+/// person does.
+fn drafts_count(session: &Session) -> Option<i64> {
+    let root = session.mail_root();
+    let mut view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    let drafts = find_kind(view.tree(), "ui.NavItem", "label", "Drafts")
+        .expect("the sidebar offers Drafts")
+        .key
+        .clone();
+    view.fire(&drafts, "select").expect("Drafts opens");
+    view.poll_patches().expect("the place shows");
+    count_in(view.tree(), "ui.NavShell")
+}
+
+// USER REQUIREMENT: a message being written belongs to the person writing it. Each member's
+// Drafts place lists their own drafts and none another member's, so a draft in progress is
+// private to its author while the mailbox is the workshop.
+#[test]
+#[ignore = "waits for the Drafts' reader rule (readers: author) on main; then a member's Drafts \
+            place lists only their own drafts"]
+fn each_member_reads_only_their_own_drafts_in_the_drafts_place() {
+    use super::{RouteSpec, spec_of};
+    use std::rc::Rc;
+    use tilolang_process::testing::Bus;
+
+    let bus = Rc::new(Bus::default());
+    bus.member(ui::tilo_actions::MemberId::person("ada"), "Ada");
+    bus.member(ui::tilo_actions::MemberId::person("bo"), "Bo");
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let mut ada = Session::on_bus(&bus, &route, spec_of(&route, "ada"));
+    let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"));
+    ada.settle();
+    bo.settle();
+
+    // Each writes a message: with no account they still wait in Drafts.
+    let ada_root = ada.mail_root();
+    let bo_root = bo.mail_root();
+    let _ada_draft = ada.made("new_draft", &ada_root, &json!({}));
+    let _bo_draft = bo.made("new_draft", &bo_root, &json!({}));
+    // One draft each stands in the workspace, and each member's place lists the one they wrote.
+    assert_eq!(
+        drafts_count(&ada),
+        Some(1),
+        "Ada's Drafts place lists only the draft she wrote"
+    );
+    assert_eq!(
+        drafts_count(&bo),
+        Some(1),
+        "Bo's Drafts place lists only the draft he wrote"
     );
 }
 
@@ -2027,17 +2479,10 @@ fn a_trashed_message_is_deleted_for_good_on_the_server() {
         servers.imap.messages("INBOX").len() == 1
             && servers.imap.messages("[Gmail]/Trash").len() == 2
     });
-    let account = session.accounts()[0].clone();
     session.call("purge", &plan, &json!({}));
-    // The deletion is asked of the server on the poll it wakes: on a loaded machine that poll
-    // may be behind the answer that put the messages in the trash, so every so often the account
-    // is asked for its mail, as a person pressing Check now does.
-    let mut looks = 0;
-    session.until("the server to delete it for good", |session| {
-        looks += 1;
-        if looks % 30 == 1 {
-            session.call("check_now", &account, &json!({}));
-        }
+    // The deletion is asked of the server, and the server's trash is emptied of it: the record
+    // leaves the workspace only once the server confirmed the expunge.
+    session.until("the server to delete it for good", |_| {
         servers.imap.messages("[Gmail]/Trash").is_empty()
     });
     assert!(
@@ -2112,5 +2557,864 @@ fn a_message_goes_out_from_its_identity_as_formatted_mail() {
     assert!(
         !sent.contains("Bcc:"),
         "a blind recipient is never named in the message: {sent}"
+    );
+}
+
+/// Whether the conversation `thread` is filed in the mailbox `key`.
+fn in_box(session: &Session, thread: &ResourceRef, key: &str) -> bool {
+    matches!(
+        session.value_of(thread, "boxes"),
+        RtValue::List(ref boxes) if boxes.contains(&RtValue::text(key))
+    )
+}
+
+// USER REQUIREMENT: deleting a conversation moves it to the trash — it leaves the inbox, shows
+// under Trash, and reaches the server — and moving it files it in the mailbox the person chose.
+#[test]
+fn deleting_a_conversation_trashes_it_and_moving_it_files_it_elsewhere() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    let dinner = session.thread("Dinner on Friday?");
+
+    session.call("delete", &dinner, &json!({}));
+    assert!(in_box(&session, &dinner, "trash"), "it is in the trash");
+    assert!(!in_box(&session, &dinner, "inbox"), "and left the inbox");
+    assert_eq!(
+        session.place_count(&account, "Trash"),
+        Some(1),
+        "the Trash place lists it"
+    );
+    let shown_titles = session.titles();
+    assert!(
+        !shown_titles.iter().any(|title| title == "Bo Chen"),
+        "the inbox's list no longer shows it: {shown_titles:?}"
+    );
+    session.until("the server to hold it in the trash", |_| {
+        servers.imap.messages("INBOX").len() == 2
+            && servers.imap.messages("[Gmail]/Trash").len() == 1
+    });
+
+    // Moving the other conversation to Junk takes both its messages out of the inbox, here and
+    // on the server.
+    let plan = session.thread("Launch plan");
+    let junk = session.refs(&account, "mailboxes")[4].clone();
+    assert_eq!(session.text(&junk, "key"), "junk");
+    session.call(
+        "move_to",
+        &plan,
+        &json!({ "to": {
+            "app": APP,
+            "kind": format!("tl.{APP}.Mailbox"),
+            "id": junk.id_string(),
+            "label": "Junk",
+        } }),
+    );
+    assert!(in_box(&session, &plan, "junk"), "it is in Junk");
+    assert!(!in_box(&session, &plan, "inbox"), "and left the inbox");
+    assert_eq!(
+        session.place_count(&account, "Junk"),
+        Some(1),
+        "the Junk place lists it"
+    );
+    session.until("the server to hold it in junk", |_| {
+        servers.imap.messages("INBOX").is_empty()
+            && servers.imap.messages("[Gmail]/Spam").len() == 2
+    });
+}
+
+// USER REQUIREMENT: forwarding and replying to all make a draft that says what it answers, opens
+// in the composer when the person asks to see it, and goes when they throw it away.
+#[test]
+fn forward_reply_all_open_and_discard_work_on_the_composers_draft() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+
+    let forwarded = session.made("forward", &plan, &json!({}));
+    assert_eq!(session.text(&forwarded, "subject"), "Fwd: Launch plan");
+    assert_eq!(
+        session.text(&forwarded, "to"),
+        "",
+        "a forward is addressed by the person"
+    );
+    assert!(
+        session
+            .text(&forwarded, "body")
+            .contains("> Agreed on the twelfth."),
+        "it carries the message it sends on: {:?}",
+        session.text(&forwarded, "body")
+    );
+    // Its `open` shows the composer in the window: the subject it sends on, where it goes from,
+    // and the Send that would carry it, dimmed until it names someone.
+    session.open_showing(&forwarded);
+    let shown = session.shown();
+    for said in [
+        "Fwd: Launch plan",
+        "sam@rivera.example",
+        "It goes to nobody yet",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == said),
+            "{said:?} in the composer: {shown:#?}"
+        );
+    }
+
+    let answered = session.made("reply_all", &plan, &json!({}));
+    assert_eq!(session.text(&answered, "to"), "ada@analytical.example");
+    assert_eq!(
+        session.text(&answered, "cc"),
+        ME,
+        "everyone the message went to answers"
+    );
+    assert_eq!(session.text(&answered, "subject"), "Re: Launch plan");
+
+    // Its open shows it, and throwing it away takes it out of the window's drafts.
+    session.open_showing(&answered);
+    assert!(
+        session.shown().iter().any(|text| text == "Re: Launch plan"),
+        "the answered draft shows in the window"
+    );
+    let root = session.mail_root();
+    assert_eq!(session.refs(&root, "drafts").len(), 2, "both drafts wait");
+    session.call(
+        "discard",
+        &root,
+        &json!({ "d": {
+            "app": APP,
+            "kind": format!("tl.{APP}.Draft"),
+            "id": answered.id_string(),
+            "label": "Re: Launch plan",
+        } }),
+    );
+    let waiting = session.refs(&root, "drafts");
+    assert_eq!(waiting, vec![forwarded.clone()], "only the forward waits");
+}
+
+// USER REQUIREMENT: a mailbox opens as its own page: the conversations filed in it, and nothing
+// of another's.
+#[test]
+fn opening_a_mailbox_shows_the_conversations_filed_in_it() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    let dinner = session.thread("Dinner on Friday?");
+
+    // The inbox holds both conversations.
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    session.open_showing(&inbox);
+    let rows = session.page_rows();
+    assert_eq!(
+        rows.len(),
+        2,
+        "the inbox shows its two conversations: {rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|texts| texts.iter().any(|text| text == "Bo Chen")),
+        "and names who wrote: {rows:#?}"
+    );
+
+    // The archive holds only the conversation moved into it.
+    let archive = session.refs(&account, "mailboxes")[1].clone();
+    session.call("archive", &dinner, &json!({}));
+    session.open_showing(&archive);
+    let rows = session.page_rows();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the archive shows the one filed in it: {rows:#?}"
+    );
+    assert!(
+        rows[0].iter().any(|text| text == "Bo Chen"),
+        "the conversation filed in it: {rows:#?}"
+    );
+}
+
+/// How many messages the account's mailbox `key` says it holds: what Mail counted there after
+/// it read the folder from the server.
+fn mailbox_total(session: &Session, account: &ResourceRef, key: &str) -> Option<i64> {
+    let at = session
+        .refs(account, "mailboxes")
+        .into_iter()
+        .find(|b| session.text(b, "key") == key)?;
+    match session.value_of(&at, "total") {
+        RtValue::Int(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// What the first node of `kind` whose `label` is `label` says of the prop `name`.
+fn labelled_prop<'a>(node: &'a UiNode, kind: &str, label: &str, name: &str) -> Option<&'a RtValue> {
+    labelled(node, label)
+        .into_iter()
+        .find(|found| found.kind == kind)?
+        .props
+        .get(name)
+}
+
+// USER REQUIREMENT: mail the workspace does not hold, and mail in a folder it does not sync, is
+// found by asking the account's server, and comes in as the account's own mail once found.
+#[test]
+fn the_servers_search_finds_mail_the_window_does_not_hold() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    // A message the window never fetched: it came to the archive after the last sync.
+    servers.imap.append(
+        "[Gmail]/All Mail",
+        &mail(
+            "needle@analytical.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "Needle in the archive",
+            "The number you asked for is 42.",
+            None,
+        ),
+        &[],
+    );
+    assert!(
+        session
+            .threads()
+            .iter()
+            .all(|t| session.text(t, "subject") != "Needle in the archive"),
+        "the window holds no such mail yet"
+    );
+    let account = session.accounts().remove(0);
+    session.call(
+        "search_server",
+        &account,
+        &json!({ "text": "asked for is 42" }),
+    );
+    session.until("the server's search to find it", |session| {
+        session
+            .threads()
+            .iter()
+            .any(|t| session.text(t, "subject") == "Needle in the archive")
+    });
+    let found = session.thread("Needle in the archive");
+    assert!(
+        matches!(session.value_of(&found, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("archive"))),
+        "it comes in where the server holds it"
+    );
+}
+
+// USER REQUIREMENT: mail that comes while the window is open is announced to the people who
+// read it, once, and the first sync of a mailbox is not news.
+fn notices_held(session: &Session) -> Vec<ResourceRef> {
+    session
+        .instance_host()
+        .store()
+        .resources_of(tilolang::NOTICE_TYPE)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| ResourceRef::root(id, tilolang::NOTICE_TYPE.to_owned()))
+        .collect()
+}
+
+#[test]
+fn mail_that_comes_to_an_inbox_the_window_holds_is_announced_once() {
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let mut session = connector.attach(Session::member(APP, "ada"));
+    synced(&mut session);
+    // Who an announcement reaches: the workspace's members.
+    assert_eq!(
+        session.instance_host().runtime().members().len(),
+        1,
+        "the workspace has its person as a member"
+    );
+    let account = session.accounts().remove(0);
+    let at = tilolang::calendar::instant("2026-11-23T12:00:00Z").expect("a time");
+
+    // Mail that comes to an inbox the window holds is marked on its conversation with the
+    // moment it came, and the app's announcement runs for it.
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "lunch@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Lunch on Monday?",
+            "Shall we meet at noon?",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    let lunch = session.wait_for("the conversation to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .find(|t| session.text(t, "subject") == "Lunch on Monday?")
+            .cloned()
+    });
+    // Mail that comes to an inbox the window holds is marked with the moment it came: what the
+    // announcement runs for.
+    session.wait_for("the arrival to be marked", |session| {
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(Some(_))).then_some(())
+    });
+    // The app's announcement runs for the arrival: what the system's trigger runs. It is run
+    // here as the person at the window runs it, so what it writes is what the trigger writes.
+    session.call("announce", &lunch, &json!({}));
+    // The announcement ran for the arrival and cleared it: it is told of once.
+    session.wait_for("the arrival to be announced", |session| {
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(None)).then_some(())
+    });
+    assert_eq!(session.instance_host().run_triggers(at), 0, "it rings once");
+    // The notice is a record of the workspace, addressed to the person: every device of theirs
+    // reads it, so the store holds it and it opens the conversation.
+    let notices = notices_held(&session);
+    assert_eq!(notices.len(), 1, "one notice was told: {notices:?}");
+    let shown = notices[0].clone();
+    let opens = session
+        .instance_host()
+        .runtime()
+        .read(&shown, tilolang::NOTICE_OPENS)
+        .expect("the notice says what it opens");
+    let RtValue::Ref(reference) = opens else {
+        panic!("the notice opens the conversation: {opens:?}");
+    };
+    assert_eq!(
+        reference.target.id_string(),
+        lunch.id_string(),
+        "it opens the conversation it tells of"
+    );
+
+    // Mail that comes next is marked and announced the same way.
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "supper@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Supper on Saturday?",
+            "Are you free at seven?",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    let supper = session.wait_for("the mail that comes next to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .find(|t| session.text(t, "subject") == "Supper on Saturday?")
+            .cloned()
+    });
+    session.wait_for("the mail that comes next to be marked", |session| {
+        matches!(session.value_of(&supper, "arrived"), RtValue::Opt(Some(_))).then_some(())
+    });
+    assert!(
+        session.instance_host().run_triggers(at) >= 1,
+        "the next rings"
+    );
+    session.wait_for("the mail that comes next to be announced", |session| {
+        matches!(session.value_of(&supper, "arrived"), RtValue::Opt(None)).then_some(())
+    });
+    // The system's run of the trigger wrote its notice as the person's own press did.
+    let notices = notices_held(&session);
+    assert_eq!(
+        notices.len(),
+        2,
+        "the trigger's notice is written too: {notices:?}"
+    );
+    // What the window holds is no news again.
+    session.call("check_now", &account, &json!({}));
+    for _ in 0..10 {
+        session.settle();
+    }
+    assert_eq!(
+        session.instance_host().run_triggers(at),
+        0,
+        "each rings once"
+    );
+}
+
+// USER REQUIREMENT: a draft typed here is kept in the account's server Drafts folder, so another
+// mail client sees it, and the drafts another client keeps are read here.
+#[test]
+fn a_draft_is_kept_in_the_servers_drafts_and_theirs_are_read_here() {
+    let servers = empty_servers();
+    // A draft another mail client of the account kept on the server.
+    servers.imap.append(
+        "[Gmail]/Drafts",
+        &mail(
+            "elsewhere@rivera.example",
+            "Sam Rivera <sam@rivera.example>",
+            "Draft from elsewhere",
+            "Half written.",
+            None,
+        ),
+        &["\\Seen", "\\Draft"],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the server's drafts to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .any(|t| session.text(t, "subject") == "Draft from elsewhere")
+    });
+    let theirs = session.thread("Draft from elsewhere");
+    assert!(
+        matches!(session.value_of(&theirs, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("drafts"))),
+        "it is filed in the drafts"
+    );
+    assert!(
+        !session.flag(&theirs, "unread"),
+        "a draft is not unread mail"
+    );
+
+    // A message written here is kept in the server's Drafts folder too.
+    let root = session.mail_root();
+    let invitation = "BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:plan@rivera.example\n\
+END:VEVENT\nEND:VCALENDAR\n";
+    let draft = session.made(
+        "prepare_calendar_invitation",
+        &root,
+        &json!({
+            "to": "ada@analytical.example",
+            "subject": "Launch on the twelfth",
+            "body": "Join us on the twelfth.",
+            "calendar_ics": invitation,
+        }),
+    );
+    let draft_ref = json!({
+        "app": APP,
+        "kind": "tl.so.tilo.mail.Draft",
+        "id": draft.id_string(),
+        "label": "Launch on the twelfth",
+    });
+    session.call("save_to_drafts", &root, &json!({ "d": draft_ref }));
+    session.until("the server to keep the draft", |_| {
+        servers.imap.messages("[Gmail]/Drafts").len() == 2
+    });
+    let kept = servers.imap.messages("[Gmail]/Drafts");
+    let written = String::from_utf8_lossy(&kept[1].raw).into_owned();
+    assert!(
+        written.contains("Subject: Launch on the twelfth"),
+        "the server's draft carries what was written: {written}"
+    );
+    assert!(
+        kept[1].flags.iter().any(|flag| flag == "\\Draft"),
+        "it is a draft on the server: {:?}",
+        kept[1].flags
+    );
+}
+
+// USER REQUIREMENT: deleting a conversation in the trash permanently takes it out of the
+// mailbox and off the server, behind a confirmation, and leaves the rest of the mail.
+#[test]
+fn a_trashed_conversation_is_deleted_permanently_here_and_on_the_server() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let dinner = session.thread("Dinner on Friday?");
+    session.call("delete", &dinner, &json!({}));
+    // The conversation's window offers the deletion behind a confirmation, and opening it
+    // deletes nothing.
+    let view = session
+        .instance_host()
+        .open_resource(&dinner, None)
+        .expect("the conversation opens");
+    let mut shown = Vec::new();
+    texts_in(view.tree(), &mut shown);
+    let banner = find_kind(view.tree(), "ui.Banner", "title", "It is in the trash")
+        .unwrap_or_else(|| panic!("the window says it is in the trash: {shown:#?}"));
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&RtValue::Text("Delete permanently".to_owned())),
+        "the offer deletes it permanently"
+    );
+    // The server puts it in its trash, and Mail read it there: the account counts it in the
+    // trash, so the place the server gave it is the one Mail deletes it from.
+    let account = session.accounts().remove(0);
+    session.until("the server to hold it in the trash", |_| {
+        servers.imap.messages("[Gmail]/Trash").len() == 1
+    });
+    session.until("Mail to read the trash", |session| {
+        mailbox_total(session, &account, "trash") == Some(1)
+    });
+
+    session.call("purge", &dinner, &json!({}));
+    session.until("the conversation to leave the workspace", |session| {
+        session
+            .threads()
+            .iter()
+            .all(|t| session.text(t, "subject") != "Dinner on Friday?")
+    });
+    assert!(
+        servers.imap.messages("[Gmail]/Trash").is_empty(),
+        "the server's trash no longer holds it: the record leaves only after the server \
+         confirmed the expunge"
+    );
+    assert_eq!(session.threads().len(), 1, "the rest of the mail stays");
+
+    // Emptying the trash offers the same behind a confirmation, and takes every conversation
+    // in it.
+    let plan = session.thread("Launch plan");
+    session.call("delete", &plan, &json!({}));
+    session.until("the server to hold the conversation in the trash", |_| {
+        servers.imap.messages("[Gmail]/Trash").len() == 2
+    });
+    session.until("Mail to read the trash again", |session| {
+        mailbox_total(session, &account, "trash") == Some(2)
+    });
+    let mut view = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let trash = find_kind(view.tree(), "ui.NavItem", "label", "Trash")
+        .expect("the window offers the trash")
+        .key
+        .clone();
+    view.fire(&trash, "select").expect("the trash opens");
+    view.poll_patches().expect("the trash shows");
+    let banner = find_kind(view.tree(), "ui.Banner", "title", "Empty the trash")
+        .unwrap_or_else(|| panic!("the trash place offers to empty it"));
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&RtValue::Text("Empty trash".to_owned())),
+        "the offer empties it"
+    );
+    session.call("empty_trash", &account, &json!({}));
+    session.until("the trash to be empty", |session| {
+        session.threads().is_empty()
+    });
+    assert!(
+        servers.imap.messages("[Gmail]/Trash").is_empty(),
+        "the server's trash is emptied too, before the records leave"
+    );
+}
+
+// USER REQUIREMENT: an account Mail has no password for says so in its own words, offers to ask
+// again, and leads to the Settings that hold the password.
+#[test]
+fn an_account_with_no_password_says_so_and_leads_to_settings() {
+    let servers = servers();
+    let mut config = account(&servers);
+    config.password.clear();
+    let (_connector, mut session) = window_of(config);
+    let account = session.wait_for("the account", |session| {
+        session.accounts().into_iter().next()
+    });
+    let said = session.wait_for("the window to say the password is missing", |session| {
+        let said = session.view_of(&account);
+        said.iter()
+            .any(|text| text.contains("no password"))
+            .then_some(said)
+    });
+    for wanted in [
+        "Mail has no password for sam@rivera.example",
+        "Nothing was sent to its server. Enter its password in Settings, under Accounts.",
+        "Open account settings",
+    ] {
+        assert!(
+            said.iter().any(|text| text == wanted),
+            "{wanted:?} in {said:#?}"
+        );
+    }
+    // The notice offers to ask the server again.
+    let window = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let banner = find_kind(
+        window.tree(),
+        "ui.Banner",
+        "title",
+        "Mail has no password for sam@rivera.example",
+    )
+    .unwrap_or_else(|| panic!("the window says the password is missing: {said:#?}"));
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&RtValue::Text("Try again".to_owned())),
+        "the notice offers to ask again"
+    );
+    assert_eq!(session.text(&account, "trouble_kind"), "no-password");
+    assert!(!session.flag(&account, "online"));
+}
+
+// USER REQUIREMENT: what waits to go has a place of its own, showing how each message stands,
+// with the press that takes it back or tries a refused one again.
+#[test]
+fn the_outbox_shows_what_waits_to_go_and_takes_a_message_back() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(3600);
+    let draft = session.sent_reply("Launch plan");
+    assert_eq!(session.delivery_of(&draft).unwrap().0, "held");
+
+    // The window offers the outbox, counting the message that waits.
+    let root = session.mail_root();
+    let mut view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    assert_eq!(
+        labelled_prop(view.tree(), "ui.NavItem", "Outbox", "count"),
+        Some(&RtValue::Int(1)),
+        "it counts what waits",
+    );
+    // The place lists the message that waits: choosing it in the window lists the draft's row.
+    let (x, y) = super::shown_at(&mut session, "Outbox");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        session
+            .titles()
+            .iter()
+            .any(|title| title == "Re: Launch plan"),
+        "the outbox lists the waiting message: {:?}",
+        session.titles()
+    );
+    // A message that did not fail is not tried again: the server knows how it went.
+    assert!(
+        session.try_call("retry", &draft, &json!({})).is_err(),
+        "nothing failed, so nothing is tried again"
+    );
+
+    // What the row offers takes it back: it never goes, and it is a draft again.
+    session.call("undo_send", &draft, &json!({}));
+    assert!(!session.flag(&draft, "sent"), "it is a draft again");
+    assert!(session.flag(&draft, "recalled"));
+    for _ in 0..20 {
+        session.settle();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(servers.smtp.sent().is_empty(), "it never went");
+    // Nothing waits now: the place says so, and the window offers no outbox to open.
+    view.poll_patches().expect("the window shows");
+    let mut after = Vec::new();
+    texts_in(view.tree(), &mut after);
+    assert!(
+        after
+            .iter()
+            .any(|text| text == "Nothing is waiting to be sent"),
+        "the outbox is empty: {after:#?}"
+    );
+}
+
+/// A message the server kept from last winter, read already: what a date narrows conversations by.
+fn old_mail() -> String {
+    format!(
+        "From: Old Sender <old@example.org>\nTo: {ME}\nSubject: Last winter's news\n\
+Message-ID: <old@example.org>\nDate: Mon, 1 Dec 2025 09:00:00 +0000\n\nAn old note.\n"
+    )
+}
+
+// USER REQUIREMENT: search finds mail by who sent it, what it is about and when it came:
+// sender and subject as words, a date as a filter, through the same index and query the
+// system's search reads.
+#[test]
+fn search_finds_mail_by_sender_subject_and_date() {
+    let servers = servers();
+    servers.imap.append("INBOX", &old_mail(), &["\\Seen"]);
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the old message to come in with the rest", |session| {
+        session.threads().len() == 3
+    });
+
+    // The words a person types: who sent it and what it is about are both in the message's text.
+    let host = session.instance_host();
+    let hits = tilolang_tilo::search::every_hit(&host);
+    let plan = hits
+        .iter()
+        .find(|hit| hit.type_name == "Message" && hit.title == "Launch plan")
+        .unwrap_or_else(|| panic!("the plan message is indexed: {hits:?}"));
+    assert!(
+        plan.texts.iter().any(|text| text.contains("Grace Hopper")),
+        "its sender is searchable: {:?}",
+        plan.texts
+    );
+    assert!(
+        plan.texts
+            .iter()
+            .any(|text| text.contains("Here is the draft plan.")),
+        "its words are searchable: {:?}",
+        plan.texts
+    );
+
+    // A date, as `latest:>2026-06-01` or `latest:-7d` types it: the conversations of that span, by
+    // what each one's last message came in. The account's window narrows its list in place, as a
+    // query typed in search and scoped to the window does.
+    let account = session.accounts().remove(0);
+    let mut window = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    let list = window
+        .tree()
+        .of_kind("ui.VirtualList")
+        .first()
+        .map(|node| node.key.clone())
+        .expect("the window lists its conversations");
+    assert_eq!(
+        window.list_len(&list),
+        Some(3),
+        "the inbox lists every conversation"
+    );
+    let package = session
+        .instance_host()
+        .package(APP)
+        .expect("the mail package");
+    let query_state = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "mailboxes")
+        .and_then(|view| view.state.iter().find(|state| state.name == "query"))
+        .expect("the account's window keeps the place it shows")
+        .id
+        .clone();
+    // The conversations that came after the oldest of them: a date, as `latest:-7d` or
+    // `latest:>2026-06-01` types it, narrows the list where it stands.
+    let mut came: Vec<String> = session
+        .threads()
+        .iter()
+        .map(|thread| session.text(thread, "latest"))
+        .collect();
+    came.sort();
+    let after = format!("latest:>{}", came[0]);
+    window.set_view_state(&query_state, RtValue::text(after.as_str()));
+    window.poll_patches().expect("the window shows the span");
+    assert_eq!(
+        window.list_len(&list),
+        Some(2),
+        "the conversations that came after {} ({after})",
+        came[0]
+    );
+}
+
+// USER REQUIREMENT: an agent drafts a message as a typed action; the person finds it in Drafts
+// and sends it, answering what it answers.
+#[test]
+fn an_agent_drafts_a_message_the_person_sends() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let resource = tilolang_tilo::publish::resource_id(APP, &root.id_string());
+    let (agent, ambient) = super::agent_session();
+    let arguments = json!({
+        "to": "bo@chen.example",
+        "subject": "Re: Dinner on Friday?",
+        "body": "Friday works for me.",
+        "in_reply_to": "dinner@chen.example",
+    });
+    let answered = session
+        .invoke(
+            Some(agent),
+            Some(&ambient),
+            &resource,
+            "draft_message",
+            arguments.as_object().expect("an object"),
+        )
+        .expect("an agent drafts a message");
+    let made = answered
+        .resources
+        .first()
+        .unwrap_or_else(|| panic!("it answers the draft it made: {answered:?}"));
+    let draft = ResourceRef::parse_id(
+        made.strip_prefix(&format!("tl:{APP}:"))
+            .expect("a draft of Mail"),
+        session.type_id("Draft"),
+    )
+    .expect("a draft");
+    assert_eq!(session.text(&draft, "to"), "bo@chen.example");
+    assert_eq!(session.text(&draft, "subject"), "Re: Dinner on Friday?");
+    assert_eq!(session.text(&draft, "body"), "Friday works for me.");
+    assert_eq!(session.text(&draft, "in_reply_to"), "dinner@chen.example");
+    assert!(
+        !session.flag(&draft, "sent"),
+        "it waits for the person to send it"
+    );
+    assert!(
+        session.refs(&root, "drafts").contains(&draft),
+        "the person finds it in Drafts"
+    );
+
+    // The person sends it, and it goes out answering the message it names.
+    session.hold_for(0);
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take it", |_| servers.smtp.sent().len() == 1);
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("bo@chen.example"), "{sent}");
+    assert!(sent.contains("Subject: Re: Dinner on Friday?"), "{sent}");
+    assert!(
+        sent.contains("In-Reply-To: <dinner@chen.example>"),
+        "{sent}"
+    );
+    assert!(sent.contains("Friday works for me."), "{sent}");
+}
+
+// USER REQUIREMENT: a person reads a message before opening its conversation, and that marks
+// nothing read: neither here nor on the server.
+#[test]
+fn a_message_previews_without_being_read() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+    assert!(session.flag(&plan, "unread"));
+    // The list offers the newest message as a preview while the row is under the pointer.
+    let senders = session.text(&plan, "senders");
+    let (x, y) = session.wait_for("the conversation's row", |session| {
+        let mut found = Vec::new();
+        containing(session.window.root(), &senders, &mut found);
+        found.last().map(|rect| (rect.center().x, rect.center().y))
+    });
+    session.window.move_to(x, y);
+    session.settle();
+    let (preview_x, preview_y) = session.wait_for("its Preview to be offered", |session| {
+        let mut found = Vec::new();
+        containing(session.window.root(), "Preview", &mut found);
+        found.pop().map(|rect| (rect.center().x, rect.center().y))
+    });
+    session.window.click_at(preview_x, preview_y);
+    session.settle();
+    let tree = {
+        let window = session.hosted();
+        window
+            .view()
+            .expect("the window is connected")
+            .detail_tree()
+            .expect("the preview opens beside the list")
+    };
+    let mut texts = Vec::new();
+    super::texts(&tree, &mut texts);
+    assert!(
+        texts.iter().any(|text| text == "Ada Lovelace"),
+        "the preview says who wrote the newest message: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Agreed on the twelfth.")),
+        "the preview says what it says: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "It stays unread until its conversation is opened."),
+        "it says it is still unread: {texts:?}"
+    );
+    assert!(
+        session.flag(&plan, "unread"),
+        "the preview marks nothing read"
+    );
+    session.settle();
+    assert_eq!(
+        servers
+            .imap
+            .messages("INBOX")
+            .iter()
+            .filter(|message| message.flags.iter().any(|flag| flag == "\\Seen"))
+            .count(),
+        1,
+        "nothing told the server it was read"
     );
 }

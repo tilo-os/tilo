@@ -206,7 +206,7 @@ impl StartedSession {
         let runtime = private_home();
         let home = tempfile::tempdir().unwrap();
         let control = runtime.path().join("test-control.sock");
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-session"))
+        let mut child = std::process::Command::new(tilo_test_env::package_binary!("tilo-session"))
             .args([
                 "--backend",
                 "headless",

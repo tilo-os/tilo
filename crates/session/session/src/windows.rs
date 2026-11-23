@@ -38,8 +38,8 @@ pub struct Window {
     pub tab_index: i64,
     /// Its share of its strip's width, 0..1.
     pub share: f64,
-    /// Whether it runs on this device.
-    pub local: bool,
+    /// Whether it runs on another device: a window is this device's unless it says so.
+    pub elsewhere: bool,
     /// The device that runs it, when it is not this one: its hex key, empty when not known.
     pub device: String,
     /// That device's name, as its certificate labels it.
@@ -104,11 +104,11 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
     };
     // A window that runs only on another device may not be pictured here yet: it says which
     // device it is on.
-    let (local, device, device_name) = match &tab.tile {
+    let (elsewhere, device, device_name) = match &tab.tile {
         TileContent::HostedWindow {
             host, host_label, ..
-        } => (false, host.clone(), host_label.clone()),
-        _ => (true, String::new(), String::new()),
+        } => (true, host.clone(), host_label.clone()),
+        _ => (false, String::new(), String::new()),
     };
     Window {
         key: tab.id.to_string(),
@@ -128,7 +128,7 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
         group_key: at.group.id.to_string(),
         tab_index: at.tab_index,
         share: at.share,
-        local,
+        elsewhere,
         device,
         device_name,
         place: at.place,

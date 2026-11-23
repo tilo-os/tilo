@@ -39,7 +39,7 @@ tilo-color-params = { path = "../color-params" }
 # under the Wayland ones too, as the compositor offers its own X11 programs' copies.
 tilo-x11-transfer = { path = "../x11-transfer" }
 # The control socket's frames: the length prefix every session socket uses.
-wire-frame = { path = "../../system/wire-frame" }
+wire-frame = { path = "../../platform/wire-frame" }
 # A socket in a directory of any depth.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Wall-clock milliseconds for synthetic pointer events.

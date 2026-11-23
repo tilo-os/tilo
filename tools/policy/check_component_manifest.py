@@ -70,9 +70,10 @@ SESSION_BINARY = "tilo-session"
 # The component that ships the session binary and, with it, the PAM session
 # wrapper and the interface declaration every layer of a session is judged by.
 SESSION_COMPONENT = "tilo-session"
-# The daemon that admits a userspace cohort, by the component manifest it
-# reads: which components a tree has, and each one's scope and build profile.
-VMD_COMPONENT = "vmd"
+# The component whose program runs the device's steps, which admit a userspace
+# cohort by the component manifest they read: which components a tree has, and
+# each one's scope and build profile.
+STEPS_COMPONENT = "device-steps"
 # Where `program_path` finds a program: on PATH, and beside the session, whose
 # own directory is read from the manifest.
 SESSION_PROGRAM_DIRS = ("/usr/bin",)
@@ -257,26 +258,26 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                              'to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" } to the '
                              f'{SESSION_COMPONENT} files; a session swapped onto an older image '
                              'otherwise reads a declaration in another format and judges no app.')
-        elif component.name == VMD_COMPONENT:
+        elif component.name == STEPS_COMPONENT:
             manifest_copy = next((entry for entry in component.files
                                   if entry.to == "/usr/share/tilo/components.toml"), None)
             if (manifest_copy is None
                     or manifest_copy.source != "@manifest/components.toml"
                     or manifest_copy.optional or str(manifest_copy.mode) != "0644"):
-                report.error(where, "the daemon must ship the component manifest it admits cohorts by",
+                report.error(where, "the device's steps must ship the component manifest they admit cohorts by",
                              'add { from = "@manifest/components.toml", '
                              'to = "/usr/share/tilo/components.toml", mode = "0644" } to the '
-                             f'{VMD_COMPONENT} files; a cohort built from a tree newer than the '
-                             'device image otherwise names components the daemon reads as absent.')
+                             f'{STEPS_COMPONENT} files; a cohort built from a tree newer than the '
+                             'device image otherwise names components the steps read as absent.')
         elif any(entry.to == "/usr/share/tilo/components.toml" for entry in component.files):
             report.error(where, f"component {component.name!r} ships the component manifest, "
-                         f"which the {VMD_COMPONENT} component owns",
-                         "remove the entry: the daemon is its one reader.")
+                         f"which the {STEPS_COMPONENT} component owns",
+                         "remove the entry: the device's steps are its one reader.")
         elif any(entry.to == "/usr/share/tilo/system-interfaces.toml" for entry in component.files):
             report.error(where, f"component {component.name!r} ships the system-interface declaration, "
                          f"which the {SESSION_COMPONENT} component owns",
                          "remove the entry: two layers shipping /usr/share/tilo/system-interfaces.toml "
-                         "leave which one a slot reads to their stacking order, and tilo-vmd refuses "
+                         "leave which one a slot reads to their stacking order, and the device refuses "
                          "such a generation.")
         if component.scenario and not (report.repo / component.scenario).is_file():
             report.error(where, f"boot component {component.name!r} names scenario {component.scenario!r}, "

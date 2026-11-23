@@ -61,6 +61,7 @@ const GROUPS: [string, string[]][] = [
   ["Errors", [
     "Refused", "AskPending", "ProtocolError",
     "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged",
+    "UnsupportedVersion", "Unreachable",
   ]],
 ];
 

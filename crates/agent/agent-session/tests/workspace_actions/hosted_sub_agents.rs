@@ -1,14 +1,24 @@
 //! Sub-agents on the server, with no device of the person running anything: the person's own
-//! agent starts one, which is asked its job through the agent package in its starter's name and
-//! answers it as its own reply; a note asks it again, a stop takes back what was asked before
-//! it, and when work its starter gave it ends, its starter is asked with the news and reads the
-//! reply. A cause asks once however often a look finds it.
+//! agent starts one, it works in a conversation of its own, a note reaches it at its next step,
+//! several work at once, its person writes into one and stops one, and when work its starter
+//! gave it ends, its starter is told. What a sub-agent's own turn reads is what its chain may.
 use super::*;
+use chat::chat::{Message as Kept, reply_id};
 use tilo_server::workspaces::Workspaces;
-use tilo_workspace_service::asks::{self, AskState};
-use tilo_workspace_service::tl_records::runtime::Value;
 use ui::tilo_resource::{Invoke, NonBlank, Replica};
 use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
+
+/// Who ends a share an agent made for its person.
+#[path = "hosted_share_ends.rs"]
+mod share_ends;
+
+/// The one provider the reply tests below watch writing, and what they read of its answers.
+#[path = "reply_writing.rs"]
+mod writing;
+
+/// Coding agents: sub-agents whose work a coding harness does on a repository.
+#[path = "hosted_coding_agents.rs"]
+mod coding;
 
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
@@ -54,6 +64,37 @@ async fn worked(
     model: Model,
 ) -> ServerAgents {
     served.approving(workspace, &[SCOUT]).await.scripted(model)
+}
+
+/// What Chat's `post` is given for `text` in `conversation`, and its `ask-agent` with a `cause`.
+fn said(conversation: &str, text: &str, cause: Option<serde_json::Value>) -> serde_json::Value {
+    let mut said = serde_json::json!({"channel": conversation, "text": text});
+    if let (Some(cause), Some(said)) = (cause, said.as_object_mut()) {
+        said.insert("cause".to_owned(), cause);
+    }
+    said
+}
+
+/// What a call of Chat's `stream-output` says to put `text` at the end of `reply` in
+/// `conversation`: where, which reply, and the piece. The piece names no stream, so Chat
+/// itself would refuse it as no piece at all, in other words than whoever serves the turn
+/// refuses a call: a call that was let through to Chat shows in its answer's words.
+fn grown(conversation: &str, reply: &str, text: &str) -> serde_json::Value {
+    let mut grown = said(conversation, "", None);
+    if let Some(grown) = grown.as_object_mut() {
+        grown.remove("text");
+        grown.insert("reply".to_owned(), serde_json::json!(reply));
+        grown.insert(
+            "event".to_owned(),
+            serde_json::json!({"sequence": 1, "event": {"type": "text_delta", "text": text}}),
+        );
+    }
+    grown
+}
+
+/// The conversation `message` is in, as Chat names it.
+fn conversation_id(message: &Kept) -> &Id {
+    &message.channel
 }
 
 /// Whether `request` is a call of a sub-agent's turn: what it is told before everything says so.
@@ -147,7 +188,7 @@ async fn on_roster(
     workspaces
         .author_application(
             workspace,
-            workspaces.governor(),
+            workspaces.device_cert(),
             &tilo_agent_session::AppCatalogue::native(),
             ui::tilo_workspace_agent::OWNER,
             &document,
@@ -171,7 +212,7 @@ async fn on_roster(
         .map_err(|error| error.to_string())
 }
 
-/// `start-sub-agent` for the job `job`, under the name `name`, its id `id`.
+/// `start-sub-agent` for the job `job`, under the name `name`.
 fn start(name: &str, job: &str) -> Invoke<WorkspaceAgents> {
     WorkspaceAgents::START_SUB_AGENT.with(workspace_agents::StartSubAgent {
         sub_agent: NewSubAgent {
@@ -180,14 +221,6 @@ fn start(name: &str, job: &str) -> Invoke<WorkspaceAgents> {
             role: Some("Researcher".to_owned()),
             ..NewSubAgent::default()
         },
-    })
-}
-
-/// `note-sub-agent`: `text` for the sub-agent `agent`.
-fn note(agent: &str, text: &str) -> Invoke<WorkspaceAgents> {
-    WorkspaceAgents::NOTE_SUB_AGENT.with(workspace_agents::NoteSubAgent {
-        agent: Id::from_raw(agent.to_owned()),
-        text: NonBlank::parse(text).unwrap(),
     })
 }
 
@@ -221,6 +254,103 @@ async fn stands_as(workspaces: &Workspaces, workspace: &str, agent: &str, stands
     }
 }
 
+/// The messages of `conversation`, as the workspace keeps them.
+async fn said_there(
+    workspaces: &Workspaces,
+    workspace: &str,
+    conversation: &str,
+) -> Vec<(Id, Kept)> {
+    conversation_part(workspaces, workspace)
+        .await
+        .messages
+        .iter()
+        .filter(|(_, message)| conversation_id(message).as_str() == conversation)
+        .map(|(id, message)| (id.clone(), message.clone()))
+        .collect()
+}
+
+/// The messages of `conversation` that carry a cause of `kind`, once there are `count` of them.
+async fn caused(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (conversation, kind): (&str, &str),
+    count: usize,
+) -> Vec<(Id, Kept)> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let found: Vec<_> = said_there(workspaces, workspace, conversation)
+            .await
+            .into_iter()
+            .filter(|(_, message)| {
+                message
+                    .cause
+                    .as_ref()
+                    .is_some_and(|cause| cause.kind.0 == kind)
+            })
+            .collect();
+        if found.len() >= count {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{conversation} never held {count} of {kind}: {}",
+            found.len()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// `agent`'s reply to `message`, once its work ended.
+async fn reply_of(workspaces: &Workspaces, workspace: &str, message: &Id, agent: &str) -> Kept {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let part = conversation_part(workspaces, workspace).await;
+        let reply = part
+            .messages
+            .get(&reply_id(message, &MemberId::agent(agent)));
+        if let Some(reply) = reply
+            && !chat::summons::unanswered(Some(reply))
+        {
+            return reply.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{agent}'s reply to {message} never ended: {:?}",
+            reply.map(|reply| reply.work.clone())
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// `caller` writes `text` into `conversation`, as a person's page does: the message's id.
+async fn writes_in(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspaces: &Workspaces,
+    workspace: &str,
+    caller: &Caller,
+    (conversation, text): (&str, &str),
+) -> Id {
+    chat_action(
+        actions,
+        workspace,
+        caller,
+        ("", &ui::resource::chain_resource_id(&chat::parts::chain())),
+        "post",
+        said(conversation, text, None),
+    )
+    .await
+    .expect("the person writes into the conversation");
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let held = said_there(workspaces, workspace, conversation).await;
+        if let Some((id, _)) = held.iter().find(|(_, message)| message.text == text) {
+            return id.clone();
+        }
+        assert!(Instant::now() < deadline, "the server never holds {text:?}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// The person's own agent starts the sub-agent `name` for `job`: `start-sub-agent`, applied on
 /// the list as the agent acting for its person.
 async fn starts(workspaces: &Workspaces, workspace: &str, person: &str, (name, job): (&str, &str)) {
@@ -234,478 +364,685 @@ async fn starts(workspaces: &Workspaces, workspace: &str, person: &str, (name, j
     .expect("the person's own agent starts a sub-agent");
 }
 
-/// Every ask the agent package holds in Chat's record now, as `person`'s devices read it.
-async fn asked_now(workspaces: &Workspaces, workspace: &str, person: &str) -> Vec<asks::Asked> {
-    let packages = asks::chat_packages().unwrap();
-    workspaces
-        .with_tl_record(
-            workspace,
-            &packages,
-            asks::Actor::Member(MemberId::person(person.to_owned())),
-            |opened| asks::asks(opened),
-        )
-        .await
-        .unwrap()
-}
-
-/// The asks of the agent `agent`, oldest first.
-async fn asks_of(
-    workspaces: &Workspaces,
-    workspace: &str,
-    person: &str,
-    agent: &str,
-) -> Vec<asks::Asked> {
-    asked_now(workspaces, workspace, person)
-        .await
-        .into_iter()
-        .filter(|asked| asked.agent == MemberId::agent(agent))
-        .collect()
-}
-
-/// The ask `at` once its newest reply ended.
-async fn answered(
-    workspaces: &Workspaces,
-    workspace: &str,
-    person: &str,
-    at: &asks::ResourceRef,
-) -> asks::Asked {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let found = asked_now(workspaces, workspace, person)
-            .await
-            .into_iter()
-            .find(|asked| asked.at.same(at));
-        if let Some(found) = &found
-            && found
-                .latest()
-                .is_some_and(|reply| reply.state != AskState::Working)
-        {
-            return found.clone();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the ask was never answered: {found:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-/// The asks the sub-agent `agent` made of its starter with its news, once there are `count`.
-async fn news_of(
-    workspaces: &Workspaces,
-    workspace: &str,
-    person: &str,
-    (agent, count): (&str, usize),
-) -> Vec<asks::Asked> {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let news: Vec<asks::Asked> = asked_now(workspaces, workspace, person)
-            .await
-            .into_iter()
-            .filter(|asked| {
-                matches!(&asked.who, Some(asks::Actor::Member(member)) if member.agent_id() == Some(agent))
-            })
-            .collect();
-        if news.len() >= count {
-            return news;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{agent} never told its starter {count} times: {news:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-/// `person` mentions the agent `agent`, called `name`, in a channel of Chat with `words`: the
-/// ask their device's host makes from the mention, as theirs.
-async fn mentions(
-    workspaces: &Workspaces,
-    workspace: &str,
-    person: &str,
-    (agent, name, words): (&str, &str, &str),
-) {
-    let packages = asks::chat_packages().unwrap();
-    let them = asks::Actor::Member(MemberId::person(person.to_owned()));
-    let chat = packages.app().to_owned();
-    let (agent, name, words) = (agent.to_owned(), name.to_owned(), words.to_owned());
-    workspaces
-        .with_tl_record(workspace, &packages, them.clone(), move |opened| {
-            let all = opened
-                .host()
-                .root_of(&chat)
-                .map_err(|error| error.to_string())?;
-            let channel = opened.invoke(
-                &them,
-                (&chat, "new_channel"),
-                vec![Value::resource(&all), Value::Text("work".into())],
-                None,
-            )?;
-            opened
-                .invoke(
-                    &them,
-                    (&chat, "send"),
-                    vec![
-                        channel,
-                        asks::mentioning(&MemberId::agent(agent), &name, &words),
-                        Value::Opt(None),
-                    ],
-                    None,
-                )
-                .map(drop)
-        })
-        .await
-        .unwrap();
-}
-
-/// Answer `turn` and wait until it ended.
-async fn answers(
-    agents: &ServerAgents,
-    workspace: &str,
-    turn: &tilo_workspace_service::agents::Turn,
-) {
-    tokio::time::timeout(Duration::from_secs(60), agents.answer(workspace, turn))
-        .await
-        .expect("the turn ends")
-        .unwrap();
-}
-
-/// What `request` was told, every part of it.
-fn told_all(request: &ModelRequest) -> String {
-    format!("{:?}", request.messages)
-}
-
-/// The person's own agent starts a sub-agent outside a turn. With no device on, the server asks
-/// it its job in its starter's name, once however often it looks; the sub-agent's turn is told
-/// its job and nothing around it, its answer is its own reply, its item says it is done, and its
-/// starter is asked with the news, made from that reply, and reads it there.
+/// The person's own agent starts a sub-agent. With no device on, the server writes the job
+/// into a conversation of the sub-agent's own, works it there, says on its item how it stands, and
+/// tells its starter when it ends. It is told its job, not its starter's thread, and reads what
+/// its chain may: the person and the agent that started it may read that thread, so it may too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sub_agent_answers_its_job_as_its_reply_and_its_starter_reads_it_there() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
-    let browser = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let server = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        crate::harness::hosted::Options::offering(crate::common::catalogue),
-    )
-    .await;
-    let workspaces = server.workspaces().unwrap().clone();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    make_agent(&page, &workspaces, &workspace, &person, None).await;
+async fn a_sub_agent_works_in_a_conversation_of_its_own_and_reads_what_its_chain_may() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
 
+    // Every turn reads the chat's messages first, the person's own agent and the sub-agent
+    // alike, then answers.
+    let chat_messages = "chat/Messages".to_owned();
     let asked = Arc::new(Mutex::new(Vec::new()));
+    let path = chat_messages.clone();
     let agents = worked(
-        &server,
+        &served,
         &workspace,
-        plays(&asked, |request| {
+        plays(&asked, move |request| {
+            let told = said_in(request);
+            let news = told.contains("Your sub-agent");
+            if !answered_a_tool(request) && !news {
+                return reads(&path);
+            }
             if of_sub_agent(request) {
-                answer(
-                    vec![Content::Text {
-                        text: "The deck is in Files, under Decks.".into(),
-                    }],
-                    StopReason::EndTurn,
-                    1_000,
-                )
+                says("I read the chat. The deck is not in Files.")
+            } else if news {
+                says("Find the deck is done: the deck is not in Files.")
             } else {
-                answer(
-                    vec![Content::Text {
-                        text: "Ada, the deck is in Files.".into(),
-                    }],
-                    StopReason::EndTurn,
-                    1_000,
-                )
+                says("Noted.")
             }
         }),
     )
     .await;
 
+    // The main thread holds something only it holds, and the person's own agent reads it.
+    let secret = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (thread.as_str(), "The launch's code word is heron."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    let noted = reply_of(&workspaces, &workspace, &secret, SCOUT).await;
+    assert!(noted.text.contains("Noted"), "{}", noted.text);
+    let main_read = tools_said(&asked.lock().unwrap()[1]);
+    assert!(
+        main_read.contains("heron"),
+        "the person's own agent reads its thread: {main_read}"
+    );
+
+    // Only an agent starts a sub-agent: the person asks their own agent for one.
+    let refused = on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        start("Find the deck", "Find the Q3 board deck in Files."),
+    )
+    .await
+    .expect_err("a person starts none themselves");
+    assert!(refused.contains("ask your own agent"), "{refused}");
     starts(
         &workspaces,
         &workspace,
         &person,
-        ("Researcher", "Find the deck for Monday."),
+        ("Find the deck", "Find the Q3 board deck in Files."),
     )
     .await;
-    let researcher = roster(&workspaces, &workspace)
-        .await
-        .agents
-        .iter()
-        .find(|agent| agent.name == "Researcher")
-        .map(|agent| agent.id.0.clone())
-        .expect("the list holds the sub-agent");
-
-    // Its job is asked of it in its starter's name, once however often the server looks.
-    let turns = agents.turns(&workspace).await.unwrap();
-    let again = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "its job is its one turn: {turns:?}");
-    assert_eq!(again.len(), 1, "{again:?}");
-    let job = asks_of(&workspaces, &workspace, &person, &researcher).await;
-    assert_eq!(job.len(), 1, "a cause asks once: {job:?}");
-    assert_eq!(job[0].state, AskState::Waiting);
-    assert!(
-        matches!(&job[0].who, Some(asks::Actor::Member(member)) if member.agent_id() == Some(SCOUT)),
-        "its starter asked it: {:?}",
-        job[0].who
+    let started = stands_as(&workspaces, &workspace, "find-the-deck", Stands::Working).await;
+    let sub = started.sub.clone().unwrap();
+    assert_eq!(started.acts_for, person, "it works for the same person");
+    assert_eq!(
+        (
+            sub.started_by.as_str(),
+            sub.role.as_str(),
+            sub.kind.as_str()
+        ),
+        (SCOUT, "Researcher", "subtask")
     );
-    let turn = &turns[0];
-    assert_eq!(turn.agent.id.0, researcher);
-    assert_eq!(turn.person, person, "it works for its starter's person");
-    assert_eq!(turn.request, "Find the deck for Monday.");
-    let line = turn
-        .line
-        .as_ref()
-        .expect("a sub-agent's turn knows its line");
-    assert!(line.job && line.from_starter, "{line:?}");
-    assert_eq!(line.root.id.0, SCOUT, "it spends on its starter's day");
+    let own = chat::Chat::direct_id([
+        MemberId::person(person.clone()),
+        MemberId::agent("find-the-deck"),
+    ]);
+    assert_eq!(sub.conversation, own.as_str(), "a conversation of its own");
 
-    // Its answer is its own reply, and its item says it is done.
-    answers(&agents, &workspace, turn).await;
-    let job = answered(&workspaces, &workspace, &person, &job[0].at).await;
-    assert_eq!(job.state, AskState::Done, "{job:?}");
-    let reply = job.latest().unwrap();
+    // The server carries the job into that conversation, as the words of the agent that gave it.
+    agents.look(&workspace).await.unwrap();
+    let jobs = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await;
+    let (job, written) = &jobs[0];
+    assert_eq!(written.text, "Find the Q3 board deck in Files.");
+    assert_eq!(
+        written.author,
+        MemberId::agent(SCOUT),
+        "the job is its starter's own words"
+    );
+    let cause = written.cause.as_ref().unwrap();
+    assert_eq!(cause.label, "Scout");
+    assert_eq!(cause.person, MemberId::person(person.clone()));
+    // Looking again writes it no second time.
+    agents.look(&workspace).await.unwrap();
+
+    // The sub-agent works there, on the server, and its answer stands under its job.
+    let answered = reply_of(&workspaces, &workspace, job, "find-the-deck").await;
+    assert_eq!(answered.author, MemberId::agent("find-the-deck"));
+    assert_eq!(*conversation_id(&answered), own);
     assert!(
-        reply.body.contains("The deck is in Files, under Decks."),
+        answered.text.contains("The deck is not in Files"),
         "{}",
-        reply.body
-    );
-    stands_as(&workspaces, &workspace, &researcher, Stands::Done).await;
-    let said_to_it = asked.lock().unwrap().clone();
-    assert!(
-        said_to_it
-            .iter()
-            .filter(|request| of_sub_agent(request))
-            .all(|request| told_all(request).contains("Find the deck for Monday.")),
-        "it was told its job"
-    );
-
-    // Its starter is asked with the news, made from that reply, and reads the reply there.
-    let news = news_of(&workspaces, &workspace, &person, (&researcher, 1)).await;
-    assert_eq!(news.len(), 1, "{news:?}");
-    assert_eq!(news[0].agent, MemberId::agent(SCOUT));
-    assert!(
-        news[0]
-            .from
-            .as_ref()
-            .is_some_and(|from| from.same(&reply.at)),
-        "the news is made from the sub-agent's reply: {:?}",
-        news[0].from
-    );
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(
-        turns.len(),
-        1,
-        "the news is its starter's one turn: {turns:?}"
-    );
-    let told = &turns[0];
-    assert_eq!(told.agent.id.0, SCOUT);
-    assert!(
-        told.request.contains("stands: done")
-            && told.request.contains("The deck is in Files, under Decks."),
-        "its starter reads what it answered: {}",
-        told.request
-    );
-    assert!(told.line.is_none(), "a person's own agent has no line");
-    answers(&agents, &workspace, told).await;
-    let news = answered(&workspaces, &workspace, &person, &news[0].at).await;
-    assert_eq!(news.state, AskState::Done);
-    assert!(
-        agents.turns(&workspace).await.unwrap().is_empty(),
-        "nothing more is owed, and the ended work tells nobody twice"
+        answered.text
     );
     assert_eq!(
-        news_of(&workspaces, &workspace, &person, (&researcher, 1))
+        caused(&workspaces, &workspace, (own.as_str(), "job"), 1)
             .await
             .len(),
-        1
+        1,
+        "one job, however often the server looked"
+    );
+
+    // Its own turn read the chat's messages, as one more actor in its starter's chain.
+    let subs: Vec<ModelRequest> = asked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| of_sub_agent(request))
+        .cloned()
+        .collect();
+    assert_eq!(subs.len(), 2, "one call to read, one to answer");
+    let told = said_in(&subs[0]);
+    assert!(
+        told.contains("Find the Q3 board deck in Files.") && told.contains("Scout started you"),
+        "it is told its job and who started it: {told}"
+    );
+    let shown = format!("{:?}", subs[0].messages);
+    assert!(
+        !shown.contains("heron"),
+        "it is told its job, not its starter's thread: {shown}"
+    );
+    // The person and their agent may read that thread, and nothing in the chain narrows it.
+    let read = tools_said(&subs[1]);
+    assert!(
+        !read.contains("not_permitted") && read.contains("heron"),
+        "its read is answered as far as its chain may read: {read}"
+    );
+
+    // Its item says how it stands, in a line.
+    let done = stands_as(&workspaces, &workspace, "find-the-deck", Stands::Done).await;
+    assert_eq!(
+        done.sub.unwrap().line,
+        "I read the chat. The deck is not in Files."
+    );
+
+    // Its starter is told in the starter's own conversation, and says so there.
+    let news = caused(&workspaces, &workspace, (thread.as_str(), "news"), 1).await;
+    let (told, said) = &news[0];
+    assert_eq!(said.author, MemberId::agent("find-the-deck"));
+    assert!(
+        said.text.contains("stands: done") && said.text.contains("The deck is not in Files"),
+        "{}",
+        said.text
+    );
+    agents.look(&workspace).await.unwrap();
+    let line = reply_of(&workspaces, &workspace, told, SCOUT).await;
+    assert!(line.text.contains("Find the deck is done"), "{}", line.text);
+
+    // What the sub-agent's calls cost is counted on the day of the person's own agent.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let list = roster(&workspaces, &workspace).await;
+        let spent = |agent: &str| {
+            list.get(&Id::from_raw(agent))
+                .and_then(|agent| agent.spent.clone())
+                .map(|spent| spent.cost_micros)
+        };
+        if spent(SCOUT) == Some(5_000) {
+            assert_eq!(
+                spent("find-the-deck"),
+                None,
+                "a sub-agent has no day of its own"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "five calls on the main agent's day: {:?}",
+            spent(SCOUT)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    page.peer.close();
+}
+
+/// A note its starter gives a sub-agent while it works reaches it at its next step: one turn,
+/// which goes on with the note, not a second turn beside it. And its person writes into its
+/// conversation and is answered there, which its starter is not told.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writes_into_it() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let own = chat::Chat::direct_id([
+        MemberId::person(person.clone()),
+        MemberId::agent("usage-drop"),
+    ]);
+
+    // The sub-agent's first step is held, so the note is given while it works.
+    let hold = Arc::new(Hold::default());
+    let _opens = Opens(Arc::clone(&hold));
+    let held = Arc::clone(&hold);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &served,
+        &workspace,
+        plays(&asked, move |request| {
+            if !of_sub_agent(request) {
+                return says("Told.");
+            }
+            if !answered_a_tool(request) {
+                held.pass();
+                return looks();
+            }
+            let told = said_in(request);
+            if told.contains("only Safari") {
+                says("Yes, only Safari.")
+            } else if told.contains("Tuesday") {
+                says("Done, sign-in included.")
+            } else {
+                says("Done.")
+            }
+        }),
+    )
+    .await;
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Usage drop", "Find out why daily use fell."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    let jobs = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await;
+    agents.look(&workspace).await.unwrap();
+    until("the sub-agent's first step is under way", || {
+        asked.lock().unwrap().iter().any(of_sub_agent)
+    })
+    .await;
+
+    // Its starter gives it a note. The server writes it into the conversation as the starter's
+    // words, and hands it to the turn that is going.
+    on_roster(
+        &workspaces,
+        &workspace,
+        (Some(SCOUT), person.as_str()),
+        WorkspaceAgents::NOTE_SUB_AGENT.with(workspace_agents::NoteSubAgent {
+            agent: Id::from_raw("usage-drop".to_owned()),
+            text: NonBlank::parse("Also check Tuesday's sign-in change.").unwrap(),
+        }),
+    )
+    .await
+    .expect("its starter gives it a note");
+    agents.look(&workspace).await.unwrap();
+    let notes = caused(&workspaces, &workspace, (own.as_str(), "note"), 1).await;
+    let (note, written) = &notes[0];
+    assert_eq!(written.text, "Also check Tuesday's sign-in change.");
+    assert_eq!(written.author, MemberId::agent(SCOUT));
+    agents.look(&workspace).await.unwrap();
+    hold.open();
+
+    // One turn: it went on with the note, and its answer stands under it.
+    let answered = reply_of(&workspaces, &workspace, note, "usage-drop").await;
+    assert_eq!(answered.text, "Done, sign-in included.");
+    let left = reply_of(&workspaces, &workspace, &jobs[0].0, "usage-drop").await;
+    assert!(
+        left.text.contains("going on"),
+        "the job's own reply says the answer follows below: {}",
+        left.text
+    );
+    let done = stands_as(&workspaces, &workspace, "usage-drop", Stands::Done).await;
+    assert_eq!(done.sub.unwrap().line, "Done, sign-in included.");
+    let subs: Vec<ModelRequest> = asked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| of_sub_agent(request))
+        .cloned()
+        .collect();
+    assert_eq!(
+        subs.len(),
+        2,
+        "the note started no second turn beside the first"
+    );
+    assert!(
+        said_in(&subs[1]).contains("Also check Tuesday's sign-in change."),
+        "its next step is told the note: {}",
+        said_in(&subs[1])
+    );
+    // Its starter is told once, where the starter talks with its person.
+    let news = caused(&workspaces, &workspace, (thread.as_str(), "news"), 1).await;
+    agents.look(&workspace).await.unwrap();
+    reply_of(&workspaces, &workspace, &news[0].0, SCOUT).await;
+
+    // The person writes into it and is answered there.
+    let typed = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (own.as_str(), "is it only Safari?"),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    let answered = reply_of(&workspaces, &workspace, &typed, "usage-drop").await;
+    assert_eq!(answered.text, "Yes, only Safari.");
+    assert_eq!(*conversation_id(&answered), own);
+    let again = stands_as(&workspaces, &workspace, "usage-drop", Stands::Done).await;
+    let deadline = tilo_test_env::hang_deadline();
+    let mut again = again;
+    while again.sub.as_ref().unwrap().line != "Yes, only Safari." {
+        assert!(
+            Instant::now() < deadline,
+            "its line follows its last answer"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        again = stands_as(&workspaces, &workspace, "usage-drop", Stands::Done).await;
+    }
+    // What a sub-agent answers its person is theirs: its starter is told nothing more.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        caused(&workspaces, &workspace, (thread.as_str(), "news"), 1)
+            .await
+            .len(),
+        1,
+        "one piece of news, for the work its starter gave it"
     );
     page.peer.close();
 }
 
-/// A note its starter gives it asks it again, in the starter's name, made from its job's ask.
-/// A stop on its item takes back what its line asked before it and nobody took; a note given
-/// after the stop is new work. Its person asks it directly, and is answered too; a member who is
-/// not its person is not.
+/// Several sub-agents work at once, each in its own conversation, and a stop on the list
+/// ends the one it names while the others go on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
-    let browser = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let server = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        crate::harness::hosted::Options::offering(crate::common::catalogue),
-    )
-    .await;
-    let workspaces = server.workspaces().unwrap().clone();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    make_agent(&page, &workspaces, &workspace, &person, None).await;
+async fn several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let own = |agent: &str| {
+        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(agent)])
+    };
+
+    let hold = Arc::new(Hold::default());
+    let _opens = Opens(Arc::clone(&hold));
+    let held = Arc::clone(&hold);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &server,
+        &served,
         &workspace,
-        looks_then_answers(1_000, Arc::clone(&asked)),
+        plays(&asked, move |request| {
+            if !of_sub_agent(request) {
+                return says("Told.");
+            }
+            if !answered_a_tool(request) {
+                held.pass();
+                return looks();
+            }
+            says("Done.")
+        }),
     )
     .await;
-
     starts(
         &workspaces,
         &workspace,
         &person,
-        ("Sorter", "Sort the notes."),
+        ("Research A", "Look into company A."),
     )
     .await;
-    let sorter = roster(&workspaces, &workspace)
-        .await
-        .agents
-        .iter()
-        .find(|agent| agent.name == "Sorter")
-        .map(|agent| agent.id.0.clone())
-        .unwrap();
-    assert_eq!(agents.turns(&workspace).await.unwrap().len(), 1, "its job");
-
-    // A note asks it again, made from its job's ask.
-    on_roster(
-        &workspaces,
-        &workspace,
-        (Some(SCOUT), &person),
-        note(&sorter, "Leave the drafts alone."),
-    )
-    .await
-    .unwrap();
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 2, "its job and the note: {turns:?}");
-    let noted = turns
-        .iter()
-        .find(|turn| turn.line.as_ref().is_some_and(|line| !line.job))
-        .expect("the note's turn");
-    assert_eq!(noted.request, "A note from Scout: Leave the drafts alone.");
-    let held = asks_of(&workspaces, &workspace, &person, &sorter).await;
-    assert_eq!(held.len(), 2, "{held:?}");
-    assert!(
-        held[1]
-            .from
-            .as_ref()
-            .is_some_and(|from| from.same(&held[0].at)),
-        "the note is made from its job's ask: {held:?}"
-    );
-
-    // A stop takes back both, as nobody took them yet.
-    on_roster(
-        &workspaces,
-        &workspace,
-        (Some(SCOUT), &person),
-        stop(&sorter),
-    )
-    .await
-    .unwrap();
-    assert!(
-        agents.turns(&workspace).await.unwrap().is_empty(),
-        "what it was asked before the stop is owed nothing"
-    );
-    let held = asks_of(&workspaces, &workspace, &person, &sorter).await;
-    assert!(
-        held.iter().all(|asked| asked.state == AskState::Withdrawn),
-        "its asker took back what waited: {held:?}"
-    );
-
-    // A note after the stop is new work, and its answer is its reply.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    on_roster(
-        &workspaces,
-        &workspace,
-        (Some(SCOUT), &person),
-        note(&sorter, "Sort only this week's."),
-    )
-    .await
-    .unwrap();
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "the new note alone: {turns:?}");
-    assert_eq!(
-        turns[0].request,
-        "A note from Scout: Sort only this week's."
-    );
-    answers(&agents, &workspace, &turns[0]).await;
-    stands_as(&workspaces, &workspace, &sorter, Stands::Done).await;
-
-    // Its person asks it in a channel of Chat: their own words, and nothing around them.
-    mentions(
+    starts(
         &workspaces,
         &workspace,
         &person,
-        (&sorter, "Sorter", " how far are you?"),
+        ("Research B", "Look into company B."),
     )
     .await;
-    let turns: Vec<_> = agents
-        .turns(&workspace)
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|turn| turn.agent.id.0 == sorter)
-        .collect();
-    assert_eq!(turns.len(), 1, "its person's ask: {turns:?}");
-    assert!(turns[0].typed, "its person asked it themselves");
+    agents.look(&workspace).await.unwrap();
+    let job_a = caused(
+        &workspaces,
+        &workspace,
+        (own("research-a").as_str(), "job"),
+        1,
+    )
+    .await;
+    let job_b = caused(
+        &workspaces,
+        &workspace,
+        (own("research-b").as_str(), "job"),
+        1,
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+
+    // Both are at their first step at the same time.
+    until("both sub-agents work at once", || {
+        let asked = asked.lock().unwrap();
+        ["Look into company A.", "Look into company B."]
+            .iter()
+            .all(|job| asked.iter().any(|request| said_in(request).contains(job)))
+    })
+    .await;
+    for agent in ["research-a", "research-b"] {
+        stands_as(&workspaces, &workspace, agent, Stands::Working).await;
+    }
+
+    // Their person stops one. Nobody but its person or whoever steers it may: the other
+    // sub-agent is refused.
+    let refused = on_roster(
+        &workspaces,
+        &workspace,
+        (Some("research-b"), person.as_str()),
+        stop("research-a"),
+    )
+    .await
+    .expect_err("one sub-agent does not stop another");
+    assert!(refused.contains("steers"), "{refused}");
+    on_roster(
+        &workspaces,
+        &workspace,
+        (None, person.as_str()),
+        stop("research-a"),
+    )
+    .await
+    .expect("its person stops it");
+    stands_as(&workspaces, &workspace, "research-a", Stands::Stopped).await;
+    agents.look(&workspace).await.unwrap();
+    hold.open();
+
+    // The stopped one ends without an answer and stays stopped; the other finishes.
+    let stopped = reply_of(&workspaces, &workspace, &job_a[0].0, "research-a").await;
     assert!(
-        turns[0].request.contains("how far are you?") && !turns[0].request.contains("In \""),
-        "what its person wrote, and nothing around it: {}",
-        turns[0].request
+        !stopped.text.contains("Done."),
+        "a stopped turn gives no answer: {}",
+        stopped.text
     );
-    assert!(
-        turns[0]
-            .line
-            .as_ref()
-            .is_some_and(|line| !line.from_starter),
-        "its person's ask tells its starter nothing when it ends"
-    );
-    let _ = asked;
+    let finished = reply_of(&workspaces, &workspace, &job_b[0].0, "research-b").await;
+    assert_eq!(finished.text, "Done.");
+    stands_as(&workspaces, &workspace, "research-b", Stands::Done).await;
+    stands_as(&workspaces, &workspace, "research-a", Stands::Stopped).await;
+
+    // Their starter is told of the one that finished, not of the one its person stopped.
+    let news = caused(&workspaces, &workspace, (thread.as_str(), "news"), 1).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let news_now = caused(&workspaces, &workspace, (thread.as_str(), "news"), 1).await;
+    assert_eq!(news_now.len(), 1, "one piece of news");
+    assert_eq!(news[0].1.author, MemberId::agent("research-b"));
     page.peer.close();
+}
+
+/// `caller` asks for a sub-agent in `conversation`, through Chat's `ask-agent` under the cause
+/// kind `sub-agent`: the job `job`, under the name `name`.
+async fn asks_for_one(
+    actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
+    workspace: &str,
+    caller: &Caller,
+    conversation: &Id,
+    (name, job, key): (&str, &str, &str),
+) -> Result<serde_json::Value, String> {
+    chat_action(
+        actions,
+        workspace,
+        caller,
+        ("", &ui::resource::chain_resource_id(&chat::parts::chain())),
+        "ask-agent",
+        said(
+            conversation.as_str(),
+            job,
+            Some(serde_json::json!({"kind": "sub-agent", "label": name, "key": key})),
+        ),
+    )
+    .await
+}
+
+/// Its person asks for a sub-agent in their own thread with their agent, through the server's
+/// action service. The server starts it as that agent, with the words of the ask as its job and
+/// the cause's label as its name, and answers the ask itself: no model is asked. Looking again
+/// starts nothing twice. What an agent asks under that kind starts nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(
+        &served,
+        &workspace,
+        plays(&asked, |request| {
+            if of_sub_agent(request) {
+                says("The deck is not in Files.")
+            } else {
+                says("Told.")
+            }
+        }),
+    )
+    .await;
+
+    asks_for_one(
+        &actions,
+        &workspace,
+        &ada,
+        &thread,
+        (
+            "Find the deck",
+            "Find the Q3 board deck in Files.",
+            "deck-1",
+        ),
+    )
+    .await
+    .expect("its person asks for a sub-agent");
+    agents.look(&workspace).await.unwrap();
+    let ask = chat::cause::message_id(&MemberId::person(person.clone()), "deck-1");
+    let id = format!("sub-{}", &ask.as_str()[..12]);
+    let started = stands_as(&workspaces, &workspace, &id, Stands::Working).await;
+    let sub = started.sub.clone().unwrap();
+    assert_eq!(
+        (
+            started.name.as_str(),
+            started.acts_for.as_str(),
+            sub.started_by.as_str(),
+            sub.job.as_str(),
+            sub.kind.as_str()
+        ),
+        (
+            "Find the deck",
+            person.as_str(),
+            SCOUT,
+            "Find the Q3 board deck in Files.",
+            "subtask"
+        )
+    );
+
+    // The server answers the ask in the agent's name, and no model was asked for it.
+    let answer = reply_of(&workspaces, &workspace, &ask, SCOUT).await;
+    assert!(
+        answer
+            .text
+            .contains("I started the sub-agent \"Find the deck\""),
+        "{}",
+        answer.text
+    );
+    assert!(
+        asked.lock().unwrap().is_empty(),
+        "no model is asked to start one"
+    );
+
+    // Its job reaches a conversation of its own and it works there; however often the server
+    // looked, one sub-agent was started.
+    agents.look(&workspace).await.unwrap();
+    let own = chat::Chat::direct_id([
+        MemberId::person(person.clone()),
+        MemberId::agent(id.as_str()),
+    ]);
+    let jobs = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await;
+    assert_eq!(jobs[0].1.text, "Find the Q3 board deck in Files.");
+    agents.look(&workspace).await.unwrap();
+    stands_as(&workspaces, &workspace, &id, Stands::Done).await;
+    let sub_agents =
+        |list: &WorkspaceAgents| list.agents.iter().filter(|agent| agent.is_sub()).count();
+    assert_eq!(sub_agents(&roster(&workspaces, &workspace).await), 1);
+
+    // An agent's ask under that kind starts nothing: the sub-agent asks in its starter's thread.
+    // Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
+    // asking an agent is none of that.
+    let person_key = *ada
+        .user_public_key()
+        .expect("the person's caller names their key");
+    let device_key = *ada
+        .device_public_key()
+        .expect("the person's caller names their device");
+    let outside = Caller::delegated_agent(id.clone(), person_key, device_key)
+        .in_workspace(ada.workspace().unwrap_or_default())
+        .named("Find the deck");
+    let refused = asks_for_one(
+        &actions,
+        &workspace,
+        &outside,
+        &thread,
+        ("Another", "Do more.", "more-0"),
+    )
+    .await
+    .expect_err("outside a turn a sub-agent's name asks nobody");
+    assert!(refused.contains("may not invoke"), "{refused}");
+    // What the server writes for a sub-agent it writes on the turn it worked, with the bound its
+    // person set: an ask made that way is taken, and starts nothing either.
+    let beside = outside
+        .on_roster(0, person_key)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(&own),
+            jobs[0].0.to_string(),
+        ))
+        .held_to(Vec::new());
+    asks_for_one(
+        &actions,
+        &workspace,
+        &beside,
+        &thread,
+        ("Another", "Do more.", "more-1"),
+    )
+    .await
+    .expect("the ask itself is taken");
+    agents.look(&workspace).await.unwrap();
+    assert_eq!(
+        sub_agents(&roster(&workspaces, &workspace).await),
+        1,
+        "what an agent asks starts none"
+    );
+    page.peer.close();
+}
+
+/// The actions `R` offers that write, by their ids, as the resource itself states them.
+fn writes_of<R: ui::tilo_resource::Resource>() -> Vec<String> {
+    R::surface()
+        .verbs
+        .into_iter()
+        .filter(|verb| verb.kind != tilo_actions::policy::ActionKind::Read)
+        .map(|verb| verb.id)
+        .collect()
+}
+
+/// Chat's other actions that write, on what the workspace's chat and its messages do not hold:
+/// a draft, what was learned, and the workspace's emoji.
+const REFUSED_BESIDE: [&str; 7] = [
+    "start-draft",
+    "learn",
+    "correct",
+    "forget",
+    "add-emoji",
+    "remove-emoji",
+    "remove-any-emoji",
+];
+
+/// What marks a planned call as a read of the path after it, where every other is an action.
+const READ: &str = "read ";
+
+/// Whether the tools answered a call with a refusal: the action is not offered to the caller,
+/// or the caller may not invoke it.
+fn refused_in_words(answer: &str) -> bool {
+    [
+        "has no action",
+        "no such action",
+        "may not invoke",
+        "not_permitted: ",
+    ]
+    .iter()
+    .any(|said| answer.contains(said))
 }
 
 /// What a sub-agent writes is kept under its own name. Only the person's own agent is
 /// approved; the sub-agent it starts holds no approval of its own and works under its
-/// starter's. Its answer is its own reply, and History reads every change of that reply as
-/// the sub-agent's, none as its starter's.
+/// starter's. Its answer stands in its own conversation as its words, and History reads every
+/// change of it as the sub-agent's, working for its person.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sub_agents_write_is_kept_under_its_own_name() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
-    let browser = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = crate::support::scratch_dir();
-    let server = crate::harness::hosted::start(
-        &root,
-        &host,
-        state.path(),
-        crate::harness::hosted::Options::offering(crate::common::catalogue),
-    )
-    .await;
-    let workspaces = server.workspaces().unwrap().clone();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let page = Browser::open_at(&server, &browser, &host, &workspace).await;
-    let person = hex::encode(root.verifying_key().to_bytes());
-    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = worked(
-        &server,
+        &served,
         &workspace,
         plays(&asked, |request| {
-            let said = if of_sub_agent(request) {
-                "The notes are tidy."
+            if of_sub_agent(request) {
+                says("The notes are tidy.")
             } else {
-                "Told."
-            };
-            answer(
-                vec![Content::Text { text: said.into() }],
-                StopReason::EndTurn,
-                1_000,
-            )
+                says("Told.")
+            }
         }),
     )
     .await;
@@ -716,58 +1053,46 @@ async fn a_sub_agents_write_is_kept_under_its_own_name() {
         ("Writer", "Tidy the notes."),
     )
     .await;
-    let writer = roster(&workspaces, &workspace)
-        .await
-        .agents
-        .iter()
-        .find(|agent| agent.name == "Writer")
-        .map(|agent| agent.id.0.clone())
-        .expect("the list holds the sub-agent");
-    let turns = agents.turns(&workspace).await.unwrap();
-    let job = turns
-        .iter()
-        .find(|turn| turn.agent.id.0 == writer)
-        .expect("its job is its turn");
-    answers(&agents, &workspace, job).await;
-    let asked_it = asks_of(&workspaces, &workspace, &person, &writer).await;
-    let asked_it = answered(&workspaces, &workspace, &person, &asked_it[0].at).await;
-    let reply = asked_it.latest().unwrap().clone();
-    assert!(
-        reply.body.contains("The notes are tidy."),
-        "its answer is its own words: {}",
-        reply.body
+    let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
+    agents.look(&workspace).await.unwrap();
+    let job = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await[0]
+        .0
+        .clone();
+    agents.look(&workspace).await.unwrap();
+    let answered = reply_of(&workspaces, &workspace, &job, "writer").await;
+    assert_eq!(
+        (answered.text.as_str(), &answered.author),
+        ("The notes are tidy.", &MemberId::agent("writer")),
+        "its answer is its own words"
     );
 
-    let packages = asks::chat_packages().unwrap();
-    let history = workspaces
-        .with_tl_record(
-            &workspace,
-            &packages,
-            asks::Actor::Member(MemberId::person(person.clone())),
-            |opened| opened.changes(),
-        )
+    let saved = workspaces
+        .resource_document(&workspace, "so.tilo.chat", chat::parts::part(0).as_str())
         .await
+        .unwrap()
         .unwrap();
-    let reply_id = reply.at.id_string();
-    let by: Vec<Option<asks::Actor>> = history
+    let mut doc = automerge::AutoCommit::load(&saved).unwrap();
+    let mut entries = tilo_actions::EntryReader::default();
+    let by_it: Vec<_> = doc
+        .get_changes(&[])
         .iter()
-        .filter(|entry| {
-            entry["resource"]
-                .as_str()
-                .is_some_and(|resource| resource.ends_with(&reply_id))
+        .filter_map(|change| entries.read(change.actor_id(), change.message()))
+        .filter_map(|context| context.invoker.map(|invoker| invoker.acting))
+        .filter(|acting| {
+            acting
+                .nodes()
+                .iter()
+                .any(|node| node.agent_id() == Some("writer"))
         })
-        .map(|entry| serde_json::from_value(entry["who"].clone()).unwrap())
         .collect();
-    let itself = asks::Actor::Member(MemberId::agent(&writer));
-    assert!(
-        by.contains(&Some(itself)),
-        "History holds the sub-agent's writes of its reply: {by:?}"
-    );
-    let starter = asks::Actor::Member(MemberId::agent(SCOUT));
-    assert!(
-        !by.contains(&Some(starter)),
-        "none of them is its starter's, whose key it works under: {by:?}"
-    );
+    assert!(!by_it.is_empty(), "History holds the sub-agent's writes");
+    for acting in &by_it {
+        assert_eq!(
+            (acting.agent_id(), acting.acted_for_person()),
+            (Some("writer"), Some(person.as_str())),
+            "each is the sub-agent's own, working for its person: {acting:?}"
+        );
+    }
     page.peer.close();
 }
 
@@ -776,9 +1101,29 @@ async fn a_sub_agents_write_is_kept_under_its_own_name() {
 #[path = "hosted_sub_agent_teams.rs"]
 mod teams;
 
+/// An answer longer than one message holds.
+#[path = "hosted_reply_goes_on.rs"]
+mod reply_goes_on;
+
+/// The workspace’s shared Skills actions.
+#[path = "hosted_skills.rs"]
+mod skills;
+
+/// A reply shows its model thinking.
+#[path = "hosted_reply_thinks.rs"]
+mod reply_thinks;
+
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;
+
+/// What a device receives of an answer while its model writes it, measured.
+#[path = "hosted_reply_times.rs"]
+mod reply_times;
+
+/// A reply grows while its model writes it.
+#[path = "hosted_reply_grows.rs"]
+mod reply_grows;
 
 /// A model call its provider refuses for a moment is asked again, with the turn's work kept.
 #[path = "hosted_turn_asks_again.rs"]

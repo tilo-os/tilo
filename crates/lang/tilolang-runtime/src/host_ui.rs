@@ -32,8 +32,14 @@ pub const THEN_ACTION: &str = "$then";
 pub const SHORTCUT_ACTION: &str = "$shortcut";
 
 /// The action of `file.choose(a)`: ask the person for a file, and run `a` with it as the
-/// argument it still needs. Its arguments are `a` and the media types it may be.
+/// argument it still needs. Its arguments are `a` and the media types it may be. A parameter of
+/// `List<File>` takes every file the person chose.
 pub const CHOOSE_ACTION: &str = "$choose";
+
+/// The action of `file.choose_folder(a)`: ask the person for a folder, and run `a` with the
+/// files it holds, each with its path inside the folder, as the argument it still needs. Its
+/// arguments are `a` and the media types of the files kept.
+pub const CHOOSE_FOLDER_ACTION: &str = "$choose-folder";
 
 /// The action of `file.save(a, name: n)`: run `a`, and put what it made — text, or a file —
 /// where the person says, under the name `n`. Its arguments are `a` and the name.
@@ -180,7 +186,7 @@ impl Core {
     fn state_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let key = self.state_key(a.h(0)?)?;
         let fallback = self.val_whole(a.h(1)?)?;
-        let (value, generation) = {
+        let (held, generation) = {
             let states = self.view_states.borrow();
             // What the person set, else what a scenario staged the declaration at, else what
             // its view declares.
@@ -191,6 +197,8 @@ impl Core {
                 .unwrap_or(fallback);
             (held, states.generation(&key))
         };
+        // What the slot names, as the view reads it: a resource the workspace removed is gone.
+        let value = self.held_while_here(held);
         let seen = value.clone();
         self.with_view(|vs| {
             vs.state_reads.push((key.clone(), generation));
@@ -198,6 +206,39 @@ impl Core {
             Ok(())
         })?;
         self.ret_h(value)
+    }
+
+    /// `value` as the view reads it while the workspace holds what it names: a state holding a
+    /// reference to a resource the workspace removed reads as nothing, so the page a window
+    /// drew of it closes rather than drawing a record that is gone — whoever removed it: an
+    /// action here or at another surface, an agent, or a change another device made. A
+    /// resource that has not reached this device yet is left as it is: it may still come.
+    fn held_while_here(&self, value: Value) -> Value {
+        let Value::Opt(Some(inner)) = &value else {
+            return value;
+        };
+        let Value::Ref(held) = &**inner else {
+            return value;
+        };
+        if self.removed_here(&held.target) {
+            return Value::none();
+        }
+        value
+    }
+
+    /// Whether the workspace removed `target`: the store does not hold it, and its last version
+    /// is its removal. A root's history names every item made in it, so it is read only for a
+    /// resource the store does not hold.
+    fn removed_here(&self, target: &crate::value::ResourceRef) -> bool {
+        let store = self.store.borrow();
+        matches!(
+            store.type_of(target),
+            Err(crate::store::StoreError::NotFound(_))
+        ) && store.versions(target).is_ok_and(|versions| {
+            versions
+                .last()
+                .is_some_and(|last| last.kind == crate::store::VersionKind::Removed)
+        })
     }
 
     /// The view state slot itself, as an argument of an action reference: it is read when the
@@ -288,7 +329,7 @@ impl Core {
     /// argument it still needs. The chooser is the device's ([`crate::blob::BlobHost`]), and
     /// what it answers is what the action is invoked with: its invocation records the file's
     /// address, so history, replay and undo carry it.
-    fn act_choose(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+    fn act_choose(&self, a: &Args<'_>, action_name: &str) -> HResult<Option<Wasm>> {
         let action = self.val(a.h(0)?)?;
         if !matches!(action, Value::Action(_)) {
             return trap(format!(
@@ -310,7 +351,7 @@ impl Core {
         };
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
-            action: CHOOSE_ACTION.to_owned(),
+            action: action_name.to_owned(),
             args: vec![action, Value::List(accept)],
             author,
             from: None,
@@ -600,7 +641,8 @@ impl Core {
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
-            Imp::ActChoose => self.act_choose(a),
+            Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),
+            Imp::ActChooseFolder => self.act_choose(a, CHOOSE_FOLDER_ACTION),
             Imp::ActSave => self.act_save(a),
             Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActMany => self.act_many(a),

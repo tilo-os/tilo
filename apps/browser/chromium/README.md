@@ -45,7 +45,7 @@ Browser processes that use one profile therefore share one host. The first
 process to open the profile holds `<profile>.lock`, starts the host and serves
 `<profile>.sock` beside the profile directory; every later process connects
 there and drives its own tabs through that host (see
-`crates/sdk/tilo-webview/src/chromium/shared.rs`). The owning process calls
+`crates/engines/tilo-webview/src/chromium/shared.rs`). The owning process calls
 `ui::webview::chromium::serve_shared_until_idle()` after its event loop exits,
 so the host outlives every process still using it.
 
@@ -1175,7 +1175,7 @@ python3 apps/browser/chromium/tests/blocking_regressions.py \
 ```
 
 The committed bundle includes pinned source hashes, licenses and provenance in
-`crates/browser/chromium-blocker/resources/`. It has 214 resources. The
+`crates/engines/chromium-blocker/resources/`. It has 214 resources. The
 parameterized `click2load.html` redirect is unsupported; 34 upstream trusted-only
 resources retain permission mask 1 and cannot be invoked by ordinary lists.
 This is not a claim of complete uBlock Origin compatibility: procedural cosmetic

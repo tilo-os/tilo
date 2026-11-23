@@ -88,6 +88,9 @@ impl Session {
         // workspace fetches a part from where the record is. An agent's change too large to record
         // whole is recorded rather than refused, and reads back here and on the person's devices.
         self.lend_record_content(&mut services);
+        // Where the workspace's resources open on the web, as the session lends it to a tilolang
+        // window's host: the session's own services mint their `share-link` under the same page.
+        self.lend_link_home(&mut services);
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the API answers this pass.
         if let Err(error) = services.follow_shared() {
@@ -100,6 +103,20 @@ impl Session {
         // What the answers wrote (an agent's record of its work) reaches the workspace in this
         // pass, not in the next one's.
         self.shared.records.write();
+    }
+
+    /// Lend the session's own services the page the active workspace's resources open on the
+    /// web, as the session lends it to a tilolang window's host: where a resource they publish
+    /// is a browser page's, its `share-link` mints under it.
+    fn lend_link_home(&self, services: &mut tilo_service::Services) {
+        let workspace = self
+            .shared
+            .handle
+            .read(|tree| tree.active_workspace().map(|space| space.id().to_string()));
+        let home = workspace
+            .as_deref()
+            .and_then(|workspace| self.shared.link_home_json(workspace));
+        services.lend_link_home(home.as_deref());
     }
 
     /// Keep each record the services keep themselves in the content store of the workspace it
@@ -256,6 +273,7 @@ impl Session {
         // panel is sent the reading of this pass.
         self.surfaces.poll();
         self.surfaces.serve(&mut self.shared.published);
+        self.surfaces.place(&self.compositor);
         // The windows shared with the workspaces: what the person asked,
         // what the live session brought, and the frames of the ones on screen.
         self.follow_window_shares();
@@ -414,6 +432,13 @@ impl Session {
         // What `tilo-control` asks of the frame just drawn.
         let session = session(&self.shared, &self.compositor);
         self.control.serve(&mut self.compositor, &session);
+        // A control the socket pressed in a window's bar or content is written to its app now:
+        // the input the person makes after it is served into what the press opened, never ahead
+        // of it.
+        #[cfg(target_os = "linux")]
+        if let Some(tabs) = &self.tabs {
+            tabs.deliver_presses_now(&self.shared.desktop);
+        }
         let answered = answering.elapsed();
         self.compositor
             .mark_testctl(answered.saturating_add(self.tool_input));

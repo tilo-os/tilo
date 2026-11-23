@@ -32,9 +32,9 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # Videos opened by contents in a page, kept in the cache location for Recent.
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+media = { package = "tilo-media", path = "../../crates/engines/tilo-media" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

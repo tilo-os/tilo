@@ -510,19 +510,39 @@ async fn off_thread<T: Send + 'static>(
 
 pub const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
 
+/// The sealed file stores this process opened, each by the directory it seals.
+#[cfg(unix)]
+type FileStores =
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Arc<dyn SecretBackend>>>;
+
 fn machine_backend() -> Backend {
     #[cfg(unix)]
     if let Some(dir) = std::env::var_os(SECRETS_DIR_ENV).filter(|dir| !dir.is_empty()) {
-        static FILES: std::sync::OnceLock<Result<Arc<dyn SecretBackend>, SecretError>> =
-            std::sync::OnceLock::new();
-        let opened = FILES.get_or_init(|| {
-            files::FileStore::open(std::path::Path::new(&dir))
-                .map(|store| Arc::new(store) as Arc<dyn SecretBackend>)
-        });
-        return Backend::Sync(match opened {
-            Ok(store) => store.clone(),
-            Err(error) => Arc::new(Refused(error.clone())),
-        });
+        // The store is the directory's, and a process can meet more than one name: a test suite
+        // gives each test its own home and names its store while that test runs. Opened once
+        // per directory, so a name this process meets later opens its own store rather than
+        // borrowing the first one's, whose directory may no longer be there.
+        static FILES: std::sync::OnceLock<FileStores> = std::sync::OnceLock::new();
+        let stores = FILES.get_or_init(FileStores::default);
+        let dir = std::path::PathBuf::from(dir);
+        let opened = {
+            let files = stores
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            files.get(&dir).cloned()
+        };
+        if let Some(store) = opened {
+            return Backend::Sync(store);
+        }
+        let store = match files::FileStore::open(&dir) {
+            Ok(store) => Arc::new(store) as Arc<dyn SecretBackend>,
+            Err(error) => return Backend::Sync(Arc::new(Refused(error))),
+        };
+        stores
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(dir, store.clone());
+        return Backend::Sync(store);
     }
     system_backend()
 }

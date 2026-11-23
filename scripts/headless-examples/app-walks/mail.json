@@ -41,14 +41,12 @@
           "wait_for": "actions"
         },
         {
-          "offered": [
-            "New message"
-          ]
-        },
-        {
-          "must_not": [
-            "New message"
-          ]
+          "must": {
+            "see": [
+              "New message"
+            ],
+            "within": 15
+          }
         },
         {
           "targets": true
@@ -58,13 +56,36 @@
       "budget_ms": 60000
     },
     {
-      "id": "compose",
-      "said": "Write a message",
+      "id": "agent-drafts",
+      "said": "An agent drafts a message as a typed action, for the person to read and send",
       "ops": [
         {
-          "offered": [
-            "New message"
-          ]
+          "act": {
+            "do": [
+              "tl.so.tilo.mail.Mail",
+              "draft_message",
+              {
+                "to": "grace@hopper.example",
+                "subject": "A message an agent drafted",
+                "body": "The person reads this and sends it."
+              }
+            ]
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "compose",
+      "said": "Write a message with no account yet",
+      "ops": [
+        {
+          "must": {
+            "see": [
+              "New message"
+            ],
+            "within": 15
+          }
         },
         {
           "press_any": [
@@ -80,6 +101,16 @@
             ],
             "within": 15
           }
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Subject"
+            }
+          ]
+        },
+        {
+          "type": "First message"
         }
       ]
     },
@@ -88,12 +119,71 @@
       "said": "The message waits in Drafts",
       "ops": [
         {
-          "offered": [
-            "Drafts"
-          ]
+          "must": {
+            "see": [
+              "Drafts"
+            ],
+            "within": 15
+          }
         },
         {
           "select_row": "Drafts"
+        },
+        {
+          "must": {
+            "see": [
+              "First message"
+            ],
+            "within": 15
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "discard",
+      "said": "Discard the message being written: its window closes and the draft leaves Drafts",
+      "ops": [
+        {
+          "press_any": [
+            "More actions"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "menuitem": "Delete draft"
+            }
+          }
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "Delete draft"
+            }
+          ]
+        },
+        {
+          "must": {
+            "see": [
+              "A message an agent drafted"
+            ],
+            "within": 15
+          }
+        },
+        {
+          "must_not": [
+            {
+              "prefix": "Subject"
+            }
+          ]
+        },
+        {
+          "must_not": [
+            {
+              "prefix": "First message"
+            }
+          ]
         }
       ],
       "dark": true

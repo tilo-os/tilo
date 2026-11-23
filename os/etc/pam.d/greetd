@@ -37,3 +37,7 @@ session    required     pam_namespace.so
 session    optional     pam_keyinit.so force revoke
 session    include      password-auth
 session    optional     pam_gnome_keyring.so auto_start
+# Tell this computer's daemon (tilo-runtime.service) which person signed in, from the account's
+# local person proof, so it serves the account as them; and that they left, as the session
+# closes. Optional: a daemon that is down never holds up a sign-in.
+session    optional     pam_tilo.so

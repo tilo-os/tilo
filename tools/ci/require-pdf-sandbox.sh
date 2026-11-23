@@ -6,10 +6,10 @@
 #   export TILO_REQUIRE_PDF_SANDBOX=$required
 #
 # The helper refuses to parse PDFs without a fully enforced Landlock ruleset
-# at the ABI Tilo targets (crates/system/sandbox-core: TARGET_ABI). Where the
+# at the ABI Tilo targets (crates/platform/sandbox-core: TARGET_ABI). Where the
 # kernel offers it, TILO_REQUIRE_PDF_SANDBOX makes an unconfined helper a test
 # failure instead of the development build's fallback to the in-process engine
-# (crates/platform/tilo-pdf/src/lib.rs, "When the sandbox cannot be
+# (crates/engines/tilo-pdf/src/lib.rs, "When the sandbox cannot be
 # enforced"), so a regression that leaves the helper unconfined fails here
 # instead of passing as a host without Landlock. A node without it still runs
 # every PDF test that does not need the sandbox, and says on stderr that the

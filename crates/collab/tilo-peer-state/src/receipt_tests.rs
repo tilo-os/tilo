@@ -226,8 +226,9 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
     (peer, guest_key, guest)
 }
 
-/// Commit what `write` does as the step `what` on the item `item`.
-fn step(doc: &mut AutoCommit, what: Did, item: Option<&str>) {
+/// Commit what `write` does as the step `what` on the item `item`, made by
+/// the person whose root key is `person`.
+fn step(doc: &mut AutoCommit, what: Did, item: Option<&str>, person: [u8; 32]) {
     let context = ActionContext {
         what: Some(what),
         item: item.map(|id| ActionItem {
@@ -235,7 +236,10 @@ fn step(doc: &mut AutoCommit, what: Did, item: Option<&str>) {
             label: id.into(),
         }),
         ..ActionContext::for_resource("tab:1", KIND, "Test")
-    };
+    }
+    .with_invoker(tilo_actions::ActionInvoker::person(
+        tilo_actions::PersonId::from_root(person),
+    ));
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
 }
 
@@ -253,6 +257,16 @@ fn edit_value() -> Did {
 
 fn comment() -> Did {
     Did::Verb(VerbCall::new(ActionKey::new(APP, KIND, "comment"), []))
+}
+
+/// The person whose device `key` is, as `peer`'s workspace certifies it.
+fn person_of(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace certifies the writer's device")
+        .user_public_key
 }
 
 /// The guest's signed write: what `write` does to the record, committed as
@@ -282,7 +296,7 @@ fn guest_write_at(
     ));
     let heads = doc.get_heads();
     write(&mut doc);
-    step(&mut doc, what, item);
+    step(&mut doc, what, item, person_of(peer, key));
     signed_write_at(&mut doc, &heads, key, seq)
 }
 
@@ -324,7 +338,7 @@ fn guest_write_from(
     let mut forked = doc.fork_at(heads).unwrap();
     forked.set_actor(actor);
     write(&mut forked);
-    step(&mut forked, what, item);
+    step(&mut forked, what, item, person_of(peer, key));
     signed_write_at(&mut forked, heads, key, seq)
 }
 
@@ -674,7 +688,7 @@ tilo_test_env::scenario! {
             .unwrap();
         doc.insert(&index, 0, "notes").unwrap();
         doc.put(ROOT, "value", "indexed").unwrap();
-        step(&mut doc, edit_value(), None);
+        step(&mut doc, edit_value(), None, guest.user_public_key);
         let notes = doc.put_object(ROOT, "notes", ObjType::Map).unwrap();
         doc.put(&notes, "n1", "first").unwrap();
         step(
@@ -689,6 +703,7 @@ tilo_test_env::scenario! {
                 args: std::collections::BTreeMap::new(),
             }),
             None,
+            guest.user_public_key,
         );
         let written = signed_write(&mut doc, &heads, &key);
         receive(&mut peer, &guest, written).expect("the notes edit wrote the notes alone");
@@ -1003,7 +1018,7 @@ tilo_test_env::scenario! {
         ));
         let heads = doc.get_heads();
         doc.put(ROOT, "value", "x").unwrap();
-        step(&mut doc, edit_value(), None);
+        step(&mut doc, edit_value(), None, guest.user_public_key);
         let old = signed_write(&mut doc, &heads, &key);
         let held = peer
             .receive_from(
@@ -1147,6 +1162,32 @@ fn owner() -> (SigningKey, DeviceCert) {
 /// A viewer made an editor a moment ago writes at once: a peer that has not
 /// heard of the role yet holds the write rather than refusing it, and takes
 /// it in once the role arrives.
+/// A viewer's write names the viewer who made it, and their role refuses it: what keeps a
+/// viewer from writing is the grant, never a missing name. An editor's same write is taken in.
+#[test]
+fn a_viewers_write_naming_them_is_refused_by_their_role_and_an_editors_is_taken() {
+    for (role, taken) in [(Role::Viewer, false), (Role::Editor, true)] {
+        let (mut peer, key, guest) = workspace_with(role);
+        let before = value(&peer);
+        let write = guest_write(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "written").unwrap(),
+            edit_value(),
+            None,
+        );
+        let received = receive(&mut peer, &guest, write);
+        if taken {
+            received.expect("an editor writes the record");
+            assert!(value(&peer).contains("written"));
+        } else {
+            let refused = received.unwrap_err();
+            assert!(refused.contains("not granted"), "{refused}");
+            assert_eq!(value(&peer), before, "nothing of it is taken in");
+        }
+    }
+}
+
 #[test]
 fn a_write_under_a_role_given_a_moment_ago_waits_for_it_then_applies() {
     let (mut peer, guest_key, guest) = workspace_with(Role::Viewer);

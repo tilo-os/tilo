@@ -1,0 +1,43 @@
+[package]
+name = "agent-provider-config"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license = "MIT"
+description = "Portable, secret-safe model-provider configuration for Tilo agents."
+
+[lib]
+name = "agent_provider_config"
+path = "src/lib.rs"
+
+[dependencies]
+wire-frame = { path = "../../platform/wire-frame" }
+settings-store = { path = "../../system/settings-store" }
+serde.workspace = true
+serde_json.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+uuid.workspace = true
+url.workspace = true
+base64.workspace = true
+# The settings section as a model, so an app edits it by path.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+# One rule for which language a code or locale names, shared with the packs.
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+
+[features]
+model = ["dep:tilo-resource"]
+
+# New profile ids draw entropy from the browser's crypto on the web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

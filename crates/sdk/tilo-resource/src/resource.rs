@@ -434,6 +434,12 @@ pub trait Resource: Sized + 'static {
     /// and [`Self::migrate`] brings older documents up to it.
     const VERSION: u32 = 1;
 
+    /// Who reads a record of this kind, when not every member of the
+    /// workspace: `"author"`, `"author until <field>"` or a `Set<Actor>`
+    /// field's name, as `#[resource(readers = "...")]` writes it
+    /// ([`tilo_actions::surface::ReaderRule`]); empty for every member.
+    const READERS: &'static str = "";
+
     /// Bring a document stored at version `from` up to [`Self::VERSION`],
     /// reading its old shape with the model helpers. Called once per
     /// document by [`crate::evolution::migrate`].

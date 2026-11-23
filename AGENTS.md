@@ -12,7 +12,7 @@
 | Product flows         | `docs/architecture/flows.md`                                         |
 | Collaboration         | `docs/architecture/workspace.md`                                     |
 | Compositor            | `docs/headless-testing.md`                                           |
-| Apps/UI               | `crates/sdk/ui-core/HIG.md`, `docs/design-language.md`               |
+| Apps/UI               | `crates/ui/ui-core/HIG.md`, `docs/design-language.md`               |
 | tilolang              | `docs/designs/app-language/README.md`                                |
 | Dev VM/device         | `tilo device guide quickstart` (source: `tools/tilo-vm/guide/`) |
 
@@ -156,10 +156,11 @@ ask whether the larger thing could be done a better way; if it could, say so bef
 - Commit small and push straight to `main` (`git pull --rebase origin main`,
   then `git push origin HEAD:main`). There is no merge queue and no
   integration branch. The pre-commit hook is fast and reads only what the
-  commit stages; the pre-push hook lints the packages the push changes through
-  t's per-package clippy checks, answered from t's cache when a rebase changed
-  nothing they read (or `$CARGO`, any cargo drop-in, when set). Neither covers
-  the policy suite or a package's tests: those are t's, above.
+  commit stages; the pre-push hook lints the packages the push changes, and the
+  packages that build directly on them, through t's per-package clippy checks,
+  answered from t's cache when a rebase changed nothing they read (or `$CARGO`,
+  any cargo drop-in, when set). Neither covers the policy suite or a package's
+  tests: those are t's, above.
 - No tests while iterating. Run the focused tests once, when the work is done,
   then push.
 - A red `main` is fixed by the next commit, never by a revert or a hold.

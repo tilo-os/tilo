@@ -13,8 +13,11 @@ opens. An app that shows the machine it runs on (its journal, processes,
 drives, files) is built from one of its own scenarios instead: each of its
 situations names one (`scenario`), and the app refuses a capture without.
 
-Services (`kind = "service"` in the manifest: the agent, the on-screen
-keyboard the shell draws, compute workers) have no window and are skipped.
+Services (`kind = "service"` in a native app's manifest: the launcher, the
+on-screen keyboard the shell draws, compute workers) have no window and are
+skipped. A tilolang package (`kind = "tilolang"`) opens a window like a native
+app, and is driven through the same `--headless-drive` spec: its one runtime
+binary reads the package's compiled payload from `TILO_APP_MODULE`.
 For every situation the app runs once, headless, in a fresh profile (its own
 HOME, XDG directories and runtime directory; no display, no session bus), and
 captures four pictures after the steps settle, each the whole window as a
@@ -113,6 +116,9 @@ class Plan:
     repositories: list = field(default_factory=list)
     # Sizes beyond `VIEWPORTS` its pictures are taken at (`EXTRA_VIEWPORTS`).
     sizes: list = field(default_factory=list)
+    # A tilolang package runs on `<bin-dir>/tilolang-app`, its payload under
+    # `<bin-dir>/modules/<app>`; a native app has its own binary instead.
+    tilolang: bool = False
 
 
 def catalog() -> list[dict]:
@@ -125,9 +131,12 @@ def catalog() -> list[dict]:
 
 
 def has_window(entry: dict) -> bool:
-    """Whether the app opens a window of its own: `kind = "app"` in its
-    manifest. A service (the agent, the on-screen keyboard the shell draws,
-    a compute worker) has nothing to photograph."""
+    """Whether the app opens a window of its own: a tilolang package does, and
+    a native app does unless its manifest declares a service (the launcher, the
+    on-screen keyboard the shell draws, a compute worker), which has nothing to
+    photograph."""
+    if entry["kind"] == "tilolang":
+        return True
     manifest = tomllib.loads((REPO / entry["manifest"]).read_text())
     return manifest.get("package", {}).get("kind", "app") == "app"
 
@@ -172,7 +181,7 @@ def load_plan(entry: dict) -> Plan:
             raise ValueError(f"{path}: a home item's path is relative to the home: {item!r}")
     return Plan(
         entry["name"], entry["binary"], entry.get("id", entry["name"]), situations,
-        files, repositories, sizes,
+        files, repositories, sizes, entry["kind"] == "tilolang",
     )
 
 
@@ -226,7 +235,7 @@ def profile_env(root: Path, lib_dirs: list[Path]) -> dict:
         for key, value in os.environ.items()
         if key in {"PATH", "LANG", "LC_ALL", "TZ", "RUST_BACKTRACE", "RUST_LOG",
                    "VK_DRIVER_FILES", "VK_ICD_FILENAMES", "WGPU_BACKEND",
-                   "WGPU_ADAPTER_NAME", "TILO_PDFIUM_LIB"}
+                   "WGPU_ADAPTER_NAME", "TILO_PDFIUM_LIB", "TILO_CHROMIUM_HOST"}
     }
     dirs = {
         "HOME": root / "home",
@@ -288,7 +297,15 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
             spec["scenario"] = situation.scenario
         if index == 0:
             spec["resources"] = str(app_dir / "resources.json")
-        command = [str(args.bin_dir / plan.binary), "--headless-drive", json.dumps(spec)]
+        if plan.tilolang:
+            # One runtime binary runs every tilolang package; the launcher names
+            # the package it runs by its signed id and its payload.
+            env["TILO_APP_MODULE"] = str(args.bin_dir / "modules" / plan.app)
+            env["TILO_PACKAGE_ID"] = plan.app_id
+            executable = args.bin_dir / "tilolang-app"
+        else:
+            executable = args.bin_dir / plan.binary
+        command = [str(executable), "--headless-drive", json.dumps(spec)]
         started = time.monotonic()
         try:
             done = subprocess.run(
@@ -383,6 +400,14 @@ def main() -> int:
         "failures": sorted(failures, key=lambda o: (o["app"], o["situation"])),
     }
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    for outcome in summary["failures"]:
+        print(f"FAIL {outcome['app']}/{outcome['situation']}: {outcome['title']}", flush=True)
+        if outcome["status"] != 0:
+            print(f"  exit status {outcome['status']}", flush=True)
+        if outcome["missing"]:
+            print(f"  missing pictures: {', '.join(outcome['missing'])}", flush=True)
+        for line in outcome["log_tail"].splitlines():
+            print(f"  | {line}", flush=True)
     print(
         f"{summary['shots']} screenshots of {summary['apps']} apps in {summary['seconds']}s; "
         f"{len(failures)} situation(s) failed (see {args.out / 'summary.json'})"

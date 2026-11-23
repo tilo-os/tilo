@@ -375,6 +375,7 @@ tilo_test_env::scenario! {
                 actions: vec!["file".into()],
                 fields: vec!["title".into()],
                 by: crate::shortcut::ActorFilter::NotBots,
+                filter: crate::shortcut::ChangeFilter::default(),
             },
             TriggerSpec::Connector {
                 app_id: "so.tilo.mail".into(),

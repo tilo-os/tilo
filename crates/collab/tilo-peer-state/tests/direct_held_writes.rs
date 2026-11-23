@@ -36,7 +36,7 @@ fn write(author: &mut StatePeer, signer: &SigningKey, key: &str, value: &str) ->
     ));
     let heads = edit.get_heads();
     edit.put(ROOT, key, value).unwrap();
-    edit.commit_edit("fixture", key);
+    edit.commit_edit("fixture", key, &person(author, signer));
     author
         .publication_mut()
         .publish_incremental(
@@ -47,6 +47,16 @@ fn write(author: &mut StatePeer, signer: &SigningKey, key: &str, value: &str) ->
             SystemTime::now(),
         )
         .unwrap()
+}
+
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
 }
 
 fn value(peer: &StatePeer, key: &str) -> Option<String> {
@@ -78,7 +88,7 @@ async fn hears(
 
 /// One write of `key`'s device sealed under keys nobody here holds: what a
 /// host keeps in the history its members catch up from.
-fn sealed(key: &SigningKey) -> NeighbourMsg {
+fn sealed(key: &SigningKey, person: &[u8; 32]) -> NeighbourMsg {
     let keys = key_group::KeyGroup::create(
         collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
         key_group::MemberKey::generate("owner").unwrap(),
@@ -88,7 +98,7 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
     .unwrap();
     let mut edit = AutoCommit::new();
     edit.put(ROOT, "sealed", "sealed").unwrap();
-    edit.commit_edit("fixture", "sealed");
+    edit.commit_edit("fixture", "sealed", person);
     let plaintext = tilo_peer_state::DocumentMutation::Incremental(edit.save_incremental())
         .encode()
         .unwrap();
@@ -146,7 +156,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     govern.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &server_cert.user_public_key);
     govern
         .install_seed(
             SeedState {
@@ -255,7 +265,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     // A frame the host's history gained after the member caught up reaches
     // the member once it asks for the history again: what a member does once
     // a write it let go can be taken in.
-    let kept = sealed(&host_key);
+    let kept = sealed(&host_key, &server_cert.user_public_key);
     store
         .retain(
             tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
@@ -295,7 +305,7 @@ async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
     govern.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &server_cert.user_public_key);
     govern
         .install_seed(
             SeedState {

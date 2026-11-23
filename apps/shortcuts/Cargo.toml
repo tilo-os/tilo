@@ -26,11 +26,13 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 # The shortcut program, its checker and the least-authority grant vocabulary.
 tilo-automation = { path = "../../crates/collab/automation", features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
+# A trigger's one moment, read from the date and time the person types.
+jiff.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

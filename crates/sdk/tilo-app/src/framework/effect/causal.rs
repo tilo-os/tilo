@@ -10,7 +10,6 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use ui_core::invocation_scope::ResourceInvocationScope;
 use ui_core::widget::document_effects::AppliedDocument;
 
 const MAX_CAUSES: usize = 256;
@@ -21,7 +20,6 @@ pub(super) struct Completion {
     admitted: usize,
     output: ActionOutput,
     error: Option<ActionFailure>,
-    ownership: Option<ResourceInvocationScope>,
 }
 
 impl Completion {
@@ -89,7 +87,6 @@ impl CausalEffects {
         if !self.registered() {
             return Ok(None);
         }
-        operation.check()?;
         if self.groups.len() >= MAX_INVOCATIONS || self.groups.contains_key(&applied.invocation()) {
             return Err("too many pending document consequences".into());
         }
@@ -106,7 +103,6 @@ impl CausalEffects {
             admitted: 0,
             output: applied.output().clone(),
             error: None,
-            ownership: operation.with_ownership().1.cloned(),
         }));
         for entry in &mut self.drains {
             if entry.alive.strong_count() == 0 {
@@ -146,11 +142,7 @@ impl CausalEffects {
         cancel: bool,
     ) -> Option<InvocationUpdate> {
         let group = Rc::clone(self.groups.get(&invocation)?);
-        let ownership = group.borrow().ownership.clone();
         if cancel {
-            if let Some(ownership) = &ownership {
-                ownership.cancel();
-            }
             for entry in &mut self.drains {
                 entry.drain.cancel(invocation);
             }
@@ -159,16 +151,6 @@ impl CausalEffects {
                 invocation,
                 message: None,
             });
-        }
-        if let Some(error) = ownership
-            .as_ref()
-            .and_then(|ownership| ownership.check().err())
-        {
-            for entry in &mut self.drains {
-                entry.drain.cancel(invocation);
-            }
-            self.groups.remove(&invocation);
-            return Some(failed(invocation, failure(error)));
         }
         self.poll();
         if group.borrow().remaining != 0 {
@@ -210,9 +192,8 @@ impl CausalDrainer for Rc<RefCell<super::OutboxDrain>> {
         {
             return Err("document consequences exceed the budget or are already running".into());
         }
-        let (request, ownership) = operation.with_ownership();
+        let request = operation.request();
         for (id, value) in causes {
-            operation.check()?;
             {
                 let mut completion = group.borrow_mut();
                 completion.remaining = completion.remaining.saturating_add(1);
@@ -221,8 +202,7 @@ impl CausalDrainer for Rc<RefCell<super::OutboxDrain>> {
             drain
                 .caused
                 .insert(id.clone(), (request.invocation, Rc::clone(group)));
-            if let Err(error) =
-                drain.start_entry(id.clone(), value, Some(request.invocation), ownership)
+            if let Err(error) = drain.start_entry(id.clone(), value, Some(request.invocation))
                 && let Some((_, group)) = drain.caused.remove(&id)
             {
                 group.borrow_mut().finished(Err(failure(error)));

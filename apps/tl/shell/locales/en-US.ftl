@@ -871,6 +871,7 @@ d-vidcax4k = Workspace menu
     .w-join-a-workspace = Join a workspace
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
+    .w-history = History
 
 d-dgtjjxex = Person menu
     .w-you = You
@@ -881,6 +882,9 @@ d-dgtjjxex = Person menu
     .w-join-a-workspace = Join a workspace
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
+    .w-history = History
+    .w-about-tilo = About Tilo
+    .w-tilo = Tilo
 
 d-zlo3t3an = Capture status
     .w-watching = Watching { $label }
@@ -1038,6 +1042,7 @@ d-gke2gvrj = Banner full
     .w-open = Open
 
 d-wh7n4fhq = Banner row
+    .w-read = Read
     .w-dismiss = Dismiss
 
 d-76zs5p4r = Reply row
@@ -1099,6 +1104,13 @@ d-fehlcpo5 = Hung window
     .w-wait = Wait
     .w-force-quit = Force quit
 
+d-pdda7z3y = Hung card
+
+d-n6arlzpq = Window elsewhere
+    .w-on = { $origin_app } on { $device_name }
+    .w-on-another-device = { $origin_app } on another device
+    .w-this-window-runs-on-that-device = This window runs on that device. Open it there to see it.
+
 d-uhzjvuan = People button
     .w-people = People
     .w-is-here = { $name } is here
@@ -1112,6 +1124,11 @@ d-uvwnwa4d = Agent chip
 
 d-teccuwja = Quick settings
     .w-quick-settings = Quick settings
+
+d-dd3gpi64 = Control tile
+
+d-vzdj2kff = Rotation tile
+    .w-rotation-lock = Rotation lock
 
 d-yxl6yq2r = Wifi tile
     .w-wi-fi = Wi-Fi
@@ -1182,11 +1199,36 @@ d-lcjohgdk = Battery line
 
 d-ycck5awo = Power row
     .w-lock = Lock
+    .w-settings = Settings
     .w-power = Power
     .w-sleep = Sleep
     .w-log-out = Log out
     .w-restart = Restart
     .w-shut-down = Shut down
+
+d-u2tma44r = Devices section
+    .w-devices = Devices
+    .w-nearby-send = Nearby Send
+    .w-no-devices-in-reach = No devices in reach
+
+d-niotqkfd = Bluetooth hand off
+    .w-move-it-to = Move it to…
+
+d-2abiywd2 = Controls editor
+    .w-customise-the-panel = Customise the panel
+    .w-panel-controls = Panel controls
+    .w-reset-the-panel = Reset the panel
+
+d-6rjhuenw = Emoji card
+
+d-wdiwq4yt = About sheet
+
+d-tkt6f7u6 = About card
+    .w-updates = Updates
+    .w-close = Close
+    .w-all-details = All details
+
+d-vv7k7lcl = Peek card
 
 d-zzd3yipu = Strips
 
@@ -1249,6 +1291,8 @@ d-z4vc77e6 = Place controls
 d-oyjbbzbk = Place content
 
 d-43am22do = Place view
+
+d-fhub73iw = Place body
 
 d-6t5hb2z7 = Query view
     .w-retry = Retry

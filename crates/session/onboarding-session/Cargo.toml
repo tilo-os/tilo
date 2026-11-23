@@ -24,10 +24,10 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-api = { path = "../../server/tilo-api" }
 tilo-desktop = { path = "../desktop" }
 tilo-app-state = { path = "../../system/app-state" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
@@ -41,13 +41,11 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 sha2.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 tempfile.workspace = true
-threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The daemon's action is called from a thread of its own, inside a runtime.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
-tilo-handoff = { path = "../../platform/tilo-handoff" }
+tilo-handoff = { path = "../../os/tilo-handoff" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-onboarding = { path = "../onboarding" }
@@ -68,7 +66,8 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
+browser-continuity = { path = "../../import/browser-continuity", features = ["native"] }
+prepared-setup-model = { path = "../prepared-setup-model" }
 
 [dev-dependencies]
 iroh.workspace = true
@@ -76,11 +75,14 @@ tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+imager-backend = { path = "../../os/imager-backend", features = ["test-support"] }
 
 [lints]
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }

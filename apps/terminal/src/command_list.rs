@@ -252,7 +252,7 @@ fn working_row(cx: &ViewCx<Terminal>, key: u64, command: &Working, session: &Ses
                     "terminal-commands-stop",
                 )
                 .role(ButtonRole::Destructive)
-                .on_view(move || session.stop(key)),
+                .on_open(move || session.stop(key)),
             ));
         }
         block(Box::new(row), well(&plain(printed.as_bytes()), false))
@@ -286,12 +286,12 @@ fn command_line(
     let input = TextInput::from_state(draft)
         .with_id("terminal-command")
         .with_placeholder("terminal-commands-placeholder")
-        .on_submit_view(move |line| {
+        .on_submit(move |line| {
             submitted.0.send(line);
             submitted.1.set(String::new());
         });
     let pressed = (session.clone(), draft.clone());
-    let send = Button::new("terminal-command-send", "terminal-commands-send").on_view(move || {
+    let send = Button::new("terminal-command-send", "terminal-commands-send").on_open(move || {
         pressed.0.send(&pressed.1.get());
         pressed.1.set(String::new());
     });

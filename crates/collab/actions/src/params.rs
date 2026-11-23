@@ -1090,6 +1090,15 @@ impl MadeFrom {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({"ref": self.resource, "ty": self.kind})
     }
+
+    /// The app whose resource this is, where its kind names it as a tilolang app stores it
+    /// (`tl.<app>.<Type>`): the app at whose node a read of it is decided. `None` for a kind
+    /// that names no app.
+    #[must_use]
+    pub fn app(&self) -> Option<&str> {
+        let (app, kind) = self.kind.strip_prefix("tl.")?.rsplit_once('.')?;
+        (!app.is_empty() && !kind.is_empty()).then_some(app)
+    }
 }
 
 /// A typed reference to an item an earlier member of one group made:

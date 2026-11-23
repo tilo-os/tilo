@@ -146,7 +146,7 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
 
 /// A new workspace of `workspaces`, the workspace carrying it, and its governance
 /// as actions.
-pub(super) async fn governed(
+pub(crate) async fn governed(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
@@ -1769,7 +1769,7 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
 }
 
 /// An agent no device of a member's stands behind reaches nothing of the
-/// workspace's model providers, whatever it asks: not a turn's own, not one
+/// workspace's model providers, whatever it asks: not one
 /// the server admitted itself, not a bot and not an app. Unknown and
 /// forbidden are the same answer, and nothing of the workspace's changed.
 #[tokio::test]
@@ -1808,11 +1808,6 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
 
     let person = hex::encode(ada.user_public_key);
     let agents = [
-        Caller::agent_turn(
-            "assistant",
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
         Caller::local_agent("assistant"),
         Caller::local_bot("bot"),
         Caller::local_app("so.tilo.chat").acting_for(person),

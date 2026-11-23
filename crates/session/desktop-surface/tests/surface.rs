@@ -621,7 +621,7 @@ impl TileSource for Apps {
                     ui::widget::ListRow::new("terms", "terms.txt")
                         .secondary("Nov 15, 14:59")
                         .tooltip("Claude Code wrote this for Ada on laptop")
-                        .on_view(|| {}),
+                        .on_open(|| {}),
                 )),
             ),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),

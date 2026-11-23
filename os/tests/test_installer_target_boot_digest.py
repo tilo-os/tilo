@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 # The UKI editor under test: tilo-esp-write run as tilo-uki-cmdline. Its
-# Cargo test (crates/system/esp-write/tests/uki_cmdline.rs) builds it and
+# Cargo test (crates/os/esp-write/tests/uki_cmdline.rs) builds it and
 # names the link here.
 HELPER = os.environ["TILO_UKI_CMDLINE"]
 INSTALLER = ROOT / "os/usr/libexec/tilo-install"

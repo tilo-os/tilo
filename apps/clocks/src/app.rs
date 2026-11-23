@@ -99,7 +99,7 @@ fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
         Button::new(id, label)
             .control_size(ui::widget::ControlSize::Large)
-            .on_own_device_effect(f),
+            .on_click(f),
     )
 }
 
@@ -108,7 +108,7 @@ fn primary_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
         Button::new(id, label)
             .role(ui::widget::ButtonRole::Primary)
             .control_size(ui::widget::ControlSize::Large)
-            .on_own_device_effect(f),
+            .on_click(f),
     )
 }
 
@@ -531,7 +531,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         &crate::locales::CATALOG.t("clocks-edit"),
                     )
                     .control_size(ui::widget::ControlSize::Large)
-                    .on_view(move || {
+                    .on_open(move || {
                         editing.set(Some(alarm_id.clone()));
                         edit_label.set(label.clone());
                         edit_time.set(TimeValue::new(hour, minute));
@@ -1280,7 +1280,7 @@ fn surface(
     )])
     .with_accessible_name(crate::locales::CATALOG.t("clocks-title"))
     .bind_selection(selection)
-    .on_view("clocks.screens", move |id| {
+    .on_choose("clocks.screens", move |id| {
         if let Ok(mode) = id.parse::<usize>() {
             mode_state.set(mode);
         }

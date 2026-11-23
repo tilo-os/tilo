@@ -684,22 +684,13 @@ mod tests {
     fn enroll_phone(store: &Store, identity: &IdentityProfile) -> String {
         let fleets = store.fleets();
         let issued_at_ns = fleets.load(&identity.id).expect("fleet").certificates[0].issued_at_ns;
-        let token = fleets
-            .mint_enrollment(
-                &identity.id,
-                tilo_user_identity::DeviceCapabilities::member(),
-                issued_at_ns,
-                issued_at_ns.saturating_add(5_000),
-                &[],
-            )
-            .expect("token");
         let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         fleets
-            .complete_enrollment(
+            .certify_device(
                 &identity.id,
-                &token,
                 phone.verifying_key().to_bytes(),
                 "Phone",
+                tilo_user_identity::DeviceCapabilities::member(),
                 issued_at_ns,
             )
             .expect("enrolled");

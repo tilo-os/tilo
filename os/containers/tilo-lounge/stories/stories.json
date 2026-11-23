@@ -1,5 +1,5 @@
 {
-  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `walk` says how a story is walked: `shell` in Tilo shells, each person a headless Tilo session of their own (shell/story.py), or a computer on which the `tilo` command is the whole of Tilo (shell/cli_host.py); `page` on the web page, each person a fresh browser profile (recorder.mjs); `mount` through the workspace's mounted folders. `driver` names the program that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `servers` names the servers a story's people meet that the check starts itself (test-user-stories.sh), `nextcloud` being crates/system/cloud-source-dav/tests/servers.sh's seeded Nextcloud on the check's own loopback: the check then runs as root in its VM, where those containers can start. `stack: false` marks a page story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` gives a page story the stack's stand-in mail server and a shell story the tree's `mail_stand_in` program, and `privateNetwork` gives a page story's stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
+  "about": "The user stories: what a person sets out to do with Tilo, in their words, and the steps they take. `walk` says how a story is walked: `shell` in Tilo shells, each person a headless Tilo session of their own (shell/story.py), or a computer on which the `tilo` command is the whole of Tilo (shell/cli_host.py); `page` on the web page, each person a fresh browser profile (recorder.mjs); `mount` through the workspace's mounted folders. `driver` names the program that walks a story as that person; a story with none is listed as not yet automated, and `needs` says what walking it still takes. `servers` names the servers a story's people meet that the check starts itself (test-user-stories.sh), `nextcloud` being crates/integrations/cloud-source-dav/tests/servers.sh's seeded Nextcloud on the check's own loopback: the check then runs as root in its VM, where those containers can start. `stack: false` marks a page story walked without a tilo.sh stack of its own; `admission` is what that stack's entry admits (`open` unless the story asks for production's `invite`), `mailStandIn` gives a page story the stack's stand-in mail server and a shell story the tree's `mail_stand_in` program, and `privateNetwork` gives a page story's stack a network namespace of its own, where the low ports a provider publishes on may be bound. `credentials` marks a story that cannot run without an outside account.",
   "stories": [
     {
       "id": "invite-live",
@@ -102,14 +102,14 @@
     },
     {
       "id": "second-device",
-      "title": "Pair a phone and keep working on both",
-      "intent": "Ada works in Tilo on her laptop and adds her phone as another of her devices with Pair a new device. Both then show the same workspace: a Chat message or Tasks issue written on either shows on the other within about two seconds, and the phone still shows them after it opens Tilo again.",
+      "title": "Add a second computer with the ticket Add a device shows",
+      "intent": "Ada works in Tilo on her laptop, whose workspace no host on the web keeps, and opens Add a device: it shows a ticket from the laptop. Her second computer logs in with it and is then one of her devices.",
       "walk": "shell",
       "driver": "shell/second-device.py",
       "steps": [
         "Ada opens Tilo on her laptop",
         "Ada asks her laptop for a way to add a new device",
-        "Ada adds her phone as one of her devices"
+        "Ada adds her second computer as one of her devices"
       ]
     },
     {

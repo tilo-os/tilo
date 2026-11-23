@@ -140,17 +140,23 @@ pub struct TypeDecl {
     pub title: Option<TitleDecl>,
     /// `(untitled: "Untitled")`: what a record is called while its title is empty.
     pub untitled: Option<UntitledDecl>,
-    /// `(readers: people)`: the field naming who reads a record of the type and everything under
-    /// it, and nobody else.
-    pub readers: Option<TitleDecl>,
+    /// `(readers: author)`: who reads a record of the type, when not every member.
+    pub readers: Option<ReadersDecl>,
     pub fields: Vec<FieldDecl>,
     pub search: Option<SearchBlock>,
     pub span: Span,
 }
 
-/// A field a type's option names: the field a record is named by (a text field of the type, read
-/// wherever one is named: a row, a window's title, a reference, history), or the one naming its
-/// readers.
+/// Who reads a type's records (`readers: author until sent`, `readers: members`), and where it
+/// says so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReadersDecl {
+    pub rule: crate::meta::ReaderRule,
+    pub span: Span,
+}
+
+/// The field a record is named by: a text field of the type, read wherever one is named (a row, a
+/// window's title, a reference, history).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TitleDecl {
     pub field: Ident,
@@ -200,11 +206,6 @@ pub enum SearchEntryKind {
     Sort { field: Ident, order: Ident },
     /// `hide to`: a field kept out of filters.
     Hide { field: Ident },
-    /// `kind conversation`: what a resource of the type is to the system's search, which draws
-    /// it as one and sends to it (`conversation`, `message`, `person` or `agent`).
-    Kind { kind: Ident },
-    /// `people person`: a field naming who the resource is with, an `Actor` or a set of them.
-    People { field: Ident },
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: values are written `.a`, `.b(x: 1, y: 2)`.

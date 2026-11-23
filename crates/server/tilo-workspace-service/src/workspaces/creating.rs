@@ -140,8 +140,8 @@ impl super::Workspaces {
         {
             return Err("that workspace was deleted here".into());
         }
-        // A workspace this host serves for its governor elsewhere is that
-        // governor's: governing it here as well would fork it.
+        // A workspace this host serves already is the one it serves: founding
+        // it here as well would fork it.
         if let Some(workspace_id) = workspace.and_then(WorkspaceId::parse) {
             let bound = self
                 .inner
@@ -152,7 +152,7 @@ impl super::Workspaces {
                 .get(&workspace_id)
                 .cloned();
             if let Some(bound) = bound
-                && bound.lock().await.admission == crate::workspace_access::AdmissionMode::Governed
+                && bound.lock().await.workspace_authority.is_some()
             {
                 return Err("this host has that workspace already".into());
             }

@@ -1,0 +1,54 @@
+{
+  "display_name": "Ada",
+  "avatar_color": [
+    90,
+    140,
+    200
+  ],
+  "threshold_identity": {
+    "single_device": true,
+    "group_public_key": [
+      215,
+      90,
+      152,
+      1,
+      130,
+      177,
+      10,
+      183,
+      213,
+      75,
+      254,
+      211,
+      201,
+      100,
+      7,
+      58,
+      14,
+      225,
+      114,
+      243,
+      218,
+      166,
+      35,
+      37,
+      175,
+      2,
+      26,
+      104,
+      247,
+      7,
+      81,
+      26
+    ],
+    "threshold": 1,
+    "total_shares": 1,
+    "share_index": 1
+  },
+  "created_at": "2026-07-30T00:00:00Z",
+  "schema_version": 2,
+  "secret_ref": {
+    "backend": "broker-file-v1",
+    "locator": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+  }
+}

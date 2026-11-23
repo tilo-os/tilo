@@ -166,7 +166,6 @@ pub mod desktop_services;
 #[cfg(target_os = "linux")]
 mod device_actions;
 #[cfg(target_os = "linux")]
-mod device_agents;
 #[cfg(target_os = "linux")]
 mod device_inbox;
 #[cfg(target_os = "linux")]
@@ -206,8 +205,6 @@ mod emoji;
 mod engine_records;
 #[cfg(target_os = "linux")]
 mod engine_write;
-#[cfg(target_os = "linux")]
-mod enrollment;
 #[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]
@@ -287,7 +284,11 @@ mod machine_steps;
 pub mod mcp_server;
 pub mod mentions;
 #[cfg(target_os = "linux")]
+mod model_steps;
+#[cfg(target_os = "linux")]
 mod nearby_airdrop;
+#[cfg(target_os = "linux")]
+mod nearby_send;
 #[cfg(target_os = "linux")]
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
@@ -331,6 +332,8 @@ pub(crate) use tilo_workspace_service::workspaces::PersonResources;
 pub mod portal_link;
 #[cfg(target_os = "linux")]
 mod power;
+#[cfg(target_os = "linux")]
+pub use power::system_service;
 #[cfg(target_os = "linux")]
 mod press_outside;
 #[cfg(target_os = "linux")]

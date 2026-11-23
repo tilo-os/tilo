@@ -89,14 +89,14 @@ impl tilolang_tilo::runtime::Words for SeededWords {
 pub(crate) struct Language {
     /// The settings version the language was last followed at, so the document is read again only
     /// when it changed.
-    seen: std::cell::Cell<Option<settings_store::SettingsStamp>>,
+    settings: std::cell::Cell<settings_store::SettingsFollower>,
 }
 
 #[cfg(target_os = "linux")]
 impl Language {
     pub(crate) fn new() -> Self {
         Self {
-            seen: std::cell::Cell::new(None),
+            settings: std::cell::Cell::new(settings_store::SettingsFollower::default()),
         }
     }
 
@@ -104,11 +104,11 @@ impl Language {
     /// whether the words on screen are now resolved in another language: the caller lays out what
     /// it keeps between frames.
     pub(crate) fn follow(&self) -> bool {
-        let stamp = settings_store::stamp();
-        if !settings_store::document_changed(self.seen.get().is_some(), self.seen.get(), stamp) {
+        let mut settings = self.settings.get();
+        if !settings.changed(settings_store::stamp()) {
             return false;
         }
-        self.seen.set(stamp);
+        self.settings.set(settings);
         let before = ui::I18nManager::revision();
         ui::i18n::follow_configured_language();
         ui::I18nManager::revision() != before
@@ -205,5 +205,46 @@ mod tests {
         assert_eq!(word("no-such-word", &[], "Source"), "Source");
         ui::i18n::I18nManager::set_locale("en-US");
         assert_eq!(word("session-resource-layout", &[], "Layout"), "Layout");
+    }
+
+    /// With no settings store (`stamp()` is `None`), the language follower refreshes once and
+    /// skips later passes instead of re-applying the configured language on every pass.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn without_a_settings_store_language_refreshes_once() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", "").remove("XDG_DATA_HOME");
+        let _source = settings_store::scoped_source(None);
+        assert_eq!(settings_store::stamp(), None);
+
+        ensure();
+        let before = ui::i18n::I18nManager::current_locale();
+        let alternate = if ui::i18n::preferred_language()
+            .as_deref()
+            .is_some_and(|locale| locale.starts_with("de"))
+        {
+            "en-US"
+        } else {
+            "de-DE"
+        };
+        ui::i18n::I18nManager::set_locale(alternate);
+        assert_eq!(ui::i18n::I18nManager::current_locale(), alternate);
+
+        let follow = Language::new();
+        assert!(
+            follow.follow(),
+            "the first pass follows the language even without a settings store"
+        );
+        assert_ne!(ui::i18n::I18nManager::current_locale(), alternate);
+
+        ui::i18n::I18nManager::set_locale(alternate);
+        assert_eq!(ui::i18n::I18nManager::current_locale(), alternate);
+        assert!(
+            !follow.follow(),
+            "the second pass skips refreshing while there is still no stamp"
+        );
+        assert_eq!(ui::i18n::I18nManager::current_locale(), alternate);
+
+        ui::i18n::I18nManager::set_locale(&before);
     }
 }

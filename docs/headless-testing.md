@@ -260,7 +260,7 @@ Every widget in the tree exposes a name through either:
 - `Widget::test_id()` (opt-in): a stable name, e.g. `command_palette_input`, `strip_switcher`;
 - a path fallback: `Parent/Child[index]`, e.g. `OverlayHost/TopBarChrome/Button[0]`.
 
-`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/sdk/ui-core/src/action_palette.rs`.
+`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/ui/ui-core/src/action_palette.rs`.
 
 #### Naming a control by what it does
 
@@ -385,7 +385,7 @@ They run a single `sync → build_layout → compute_layout → apply_layout →
   "dump":"/tmp/after.json"}'
 ```
 
-Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/dev/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
+Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`. The whole grammar is `crates/ui/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
 
 `invoke` performs one action the app publishes, by address, through the same resolution, availability, confirmation and strict argument binding the live host applies:
 
@@ -394,7 +394,7 @@ Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, 
 {"invoke": {"resource": "installer", "action": "next", "expect_error": "action_unavailable"}}
 ```
 
-`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/sdk/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
+`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
 
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`ui::headless`) mounts a component in one `FrameHarness`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the harness, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
@@ -478,6 +478,8 @@ invoke = { resource = "calendar.calendar", action = "show-week" }
 Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${MON+2}`, this week's Wednesday), so a week or an agenda has content whenever the shots are taken.
 
 Each situation runs the app once, headless, in a fresh profile (its own HOME, XDG directories and runtime directory, no display, no session bus), and takes four pictures: dark and light, wide (1280x800) and compact (420x800). An app without a plan is photographed as it opens.
+
+A tilolang package of the collection is photographed the same way, through the same plans and the same `--headless-drive` spec: its plan names one of the app's own scenarios (`scenario = "a week of notes"`), where a native app's plan reaches its situation through actions. `tools/screenshots/build.sh` compiles each package into the payload the one tilolang runtime binary reads, and the runner starts that binary with the payload named in `TILO_APP_MODULE`.
 
 Each app's directory (`<out>/<app>/`, pictures named `<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and pictures) and `resources.json` (what its plan can invoke); `summary.json` at the top lists every situation that failed, with the end of its log, and `<situation>.log` beside the pictures has the whole log. With a build of the apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes one app or all, on the software renderer; on a laptop take the GPU lock:
 
@@ -573,6 +575,6 @@ Every build, release included, also runs the main-loop watchdog (`crates/session
 | Headless backend | `crates/session/compositor/src/backend/headless.rs` |
 | Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
 | Memory report | `crates/session/compositor/src/memory_report.rs` |
-| App headless drive | `crates/sdk/ui-core/src/headless/` |
-| Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
+| App headless drive | `crates/ui/ui-core/src/headless/` |
+| Offscreen renderer | `crates/ui/ui-core/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |

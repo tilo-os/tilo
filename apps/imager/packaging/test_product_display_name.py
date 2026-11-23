@@ -8,7 +8,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -32,15 +31,7 @@ def inno_metadata():
 
 
 class ProductDisplayNameTests(unittest.TestCase):
-    def test_app_manifest_and_linux_launcher_names(self):
-        with (PACKAGING.parent / "tilo-app.toml").open("rb") as stream:
-            manifest = tomllib.load(stream)
-        self.assertEqual(manifest["package"]["name"], "Tilo Installer")
-        for locale, name in manifest["package"]["names"].items():
-            with self.subTest(locale=locale):
-                self.assertEqual(name, "Tilo Installer")
-        self.assertEqual(manifest["package"]["id"], "so.tilo.imager")
-        self.assertEqual(manifest["entrypoint"]["bin"], "bin/imager")
+    def test_linux_launcher_name(self):
         desktop = configparser.ConfigParser(interpolation=None)
         desktop.read(PACKAGING / "linux/tilo-imager.desktop")
         self.assertEqual(desktop["Desktop Entry"]["Name"], "Tilo Installer")

@@ -188,7 +188,7 @@
 ; The compositor (shell) runs in the greetd session domain; giving it its own
 ; confined domain is the next base-daemon target, same workflow.
 
-; The console channel of a VM (crates/session/console-control): the greeter
+; The console channel of a VM (crates/os/console-control): the greeter
 ; and the live installer run in xdm_t and answer the tilo-control action
 ; protocol on the virtio-serial port named org.tilo.console.0. That port only
 ; exists when a hypervisor attaches it (real hardware has no virtio-serial

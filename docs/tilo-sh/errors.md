@@ -14,11 +14,12 @@ the command exits non-zero and prints the same words.
 | …because it expired | `KeyExpired` | `KeyExpired` | `expired_at_ms` (`expiredAtMs`) |
 | The call itself was malformed, or the answer was not the typed one | `ProtocolError` | `ProtocolError` | `message`, `status`, `code` |
 | The app's surface moved past the generated types | `SurfaceChanged` | `SurfaceChanged` | `code` is `surface_changed`; run `tilo sdk gen` |
-| The server speaks another major version of the API | `UnsupportedVersion` | `ProtocolError` | `version`, and the one this SDK speaks (`api_version_unsupported`) |
+| The server speaks another major version of the API | `UnsupportedVersion` | `UnsupportedVersion` | `version`, `speaking` (`code` is `api_version_unsupported` in TypeScript) |
+| The server could not be reached, or its answer was cut short | `Unreachable` | `Unreachable` | `message` |
 
 `KeyRevoked` and `KeyExpired` are `KeyRefused`s, and `KeyRefused` is a
 `ProtocolError` with HTTP status 401. So catching the parent catches its cases. `SurfaceChanged` is a
-`Refused` and `UnsupportedVersion` is a `ProtocolError`.
+`Refused`; `UnsupportedVersion` and `Unreachable` are `ProtocolError`s.
 
 ## Refused
 
@@ -70,8 +71,8 @@ whose app publishes another one refuses it rather than running it. `message` nam
 ## An API of another version
 
 Every answer names the API's major version (`Tilo-Api-Version`), and a server on another major than the SDK
-speaks is refused before anything else is read: Python raises `UnsupportedVersion`, and TypeScript a
-`ProtocolError` whose code is `api_version_unsupported`.
+speaks is refused before anything else is read: both SDKs raise `UnsupportedVersion`, a `ProtocolError`
+carrying `version` and `speaking` (and `code` `"api_version_unsupported"` in TypeScript).
 
 ## ProtocolError
 

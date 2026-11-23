@@ -189,7 +189,7 @@ def tasks_place(key: str) -> str:
 
 def toolkit_word(name: str, key: str) -> str:
     """The toolkit's word `key` as a window of the tilolang app `name` reads it."""
-    return say("crates/sdk/ui-core", key, window_language(name))
+    return say("crates/ui/ui-core", key, window_language(name))
 
 
 def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
@@ -819,7 +819,7 @@ def mark_done(session: Session, title: str) -> dict:
     takes the change, so it stands in Tasks' history; a change it refused would leave none."""
     tasks = app_id("tasks")
     focus(session, window_of(session, tasks))
-    box = say("crates/sdk/ui-core", "list-row-check", window_language("tasks"), title=title)
+    box = say("crates/ui/ui-core", "list-row-check", window_language("tasks"), title=title)
     session.wait_target(box)
     before = history_total(session, "tasks")
     refused = len([line for line in session.log().splitlines()

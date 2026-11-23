@@ -576,7 +576,7 @@ pub async fn certify_device(
     };
     let host = server_at(&address)?;
     let (cert, server_cert, label) =
-        tilo_enrollment::requester::certify(&host, user, &label, invite, &signer, |code| {
+        tilo_server_client::certify::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
         .await
@@ -645,12 +645,12 @@ pub async fn issue_device_cert(
     role: String,
 ) -> Result<String, JsError> {
     let role = match role.as_str() {
-        "browser" => tilo_enrollment::certification::IssuedRole::Browser,
-        "node" | "session" => tilo_enrollment::certification::IssuedRole::Device,
+        "browser" => tilo_server_client::certification::IssuedRole::Browser,
+        "node" | "session" => tilo_server_client::certification::IssuedRole::Device,
         _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_enrollment::certification::issue_device_cert(
+    let cert = tilo_server_client::certification::issue_device_cert(
         &root,
         device_key(&device_public_key_hex)?,
         &label,
@@ -935,7 +935,7 @@ pub async fn certify_with_root(
     let signer = PageSigner::from_js(&device_key)?;
     let server_cert: DeviceCert = serde_json::from_str(&host_cert).map_err(js_error)?;
     let (cert, server_cert) =
-        tilo_enrollment::certification::certify_with_root(&root, &signer, &label, &server_cert)
+        tilo_server_client::certification::certify_with_root(&root, &signer, &label, &server_cert)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {
@@ -1083,7 +1083,7 @@ impl PairingHost {
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
         let issued =
-            tilo_enrollment::certification::answer_pairing(&self.0, &root, digest, approved)
+            tilo_server_client::certification::answer_pairing(&self.0, &root, digest, approved)
                 .await
                 .map_err(js_error)?;
         issued
@@ -2135,7 +2135,7 @@ impl WasmPeer {
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
         tilo_session_actions::ask(&api, &caller, message)
             .await
-            .map_err(|error| js_error(&error))
+            .map_err(js_error)
     }
 
     /// Moderate one of the workspace's calls as `person`: `arguments` is the JSON the
@@ -2159,7 +2159,7 @@ impl WasmPeer {
         };
         let number = workspace_id(workspace)?;
         let arguments: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(arguments).map_err(|error| js_error(&error.to_string()))?;
+            serde_json::from_str(arguments).map_err(js_error)?;
         let api = crate::peer_sync::actions_of(self.id, number)
             .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
@@ -2179,20 +2179,19 @@ impl WasmPeer {
             appearance: None,
             signed: None,
         });
-        let message =
-            serde_json::to_string(&message).map_err(|error| js_error(&error.to_string()))?;
+        let message = serde_json::to_string(&message).map_err(js_error)?;
         let answer = tilo_session_actions::ask(&api, &caller, &message)
             .await
-            .map_err(|error| js_error(&error))?;
+            .map_err(js_error)?;
         match serde_json::from_str(&answer) {
             Ok(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
                 ReceiptStatus::Completed { output } => Ok(output
                     .value
                     .map(|value| value.to_string())
                     .unwrap_or_default()),
-                ReceiptStatus::Rejected { error } => Err(js_error(&error.to_string())),
-                ReceiptStatus::Failed { error } => Err(js_error(&error.message)),
-                status => Err(js_error(&format!("the call was not moderated: {status:?}"))),
+                ReceiptStatus::Rejected { error } => Err(js_error(error)),
+                ReceiptStatus::Failed { error } => Err(js_error(error.message)),
+                status => Err(js_error(format!("the call was not moderated: {status:?}"))),
             },
             _ => Err(js_error("the host did not answer")),
         }

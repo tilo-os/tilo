@@ -133,7 +133,7 @@ pub(crate) fn collect_toolkit(
         .context("toolkit artifact has no manifest")?;
     if Path::new(manifest).canonicalize()?
         != root
-            .join("crates/runtime/runtime-dylib/Cargo.toml")
+            .join("crates/sdk/runtime-dylib/Cargo.toml")
             .canonicalize()?
     {
         bail!("toolkit artifact came from another SDK checkout");

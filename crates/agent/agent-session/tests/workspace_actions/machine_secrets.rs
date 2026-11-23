@@ -154,14 +154,15 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
     let agent = Browser::open(&hosted, &computer, &server_device).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_agent(
         SessionActions::new(
             &agent.peer,
             agent.workspace,
             server_device.cert.device_public_key,
         ),
         WORKSPACE.into(),
-        person.clone(),
+        "claude-code",
+        &person,
     )
     .with_agent_session("session-1");
     let command = |line: &'static str| {

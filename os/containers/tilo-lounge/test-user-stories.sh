@@ -160,7 +160,7 @@ red=()
 # person's files, calendars and a second person an invitation can name). podman
 # starts the containers as root, which is why these stories' check is a VM;
 # nothing of them is left behind.
-servers_sh=$repo/crates/system/cloud-source-dav/tests/servers.sh
+servers_sh=$repo/crates/integrations/cloud-source-dav/tests/servers.sh
 serving=
 stop_servers() {
   [[ -z $serving ]] || bash "$servers_sh" stop > /dev/null 2>&1 || true

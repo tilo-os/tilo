@@ -28,7 +28,7 @@ class MotionLibraryTests(unittest.TestCase):
         return [finding.what for finding in motion.scan(root)]
 
     def test_hand_rolled_motion_is_found_outside_the_library(self):
-        widget = "crates/sdk/ui-core/src/widget/thing.rs"
+        widget = "crates/ui/ui-core/src/widget/thing.rs"
         cases = {
             "easing curve": "fn f() { t.set_open(true, d, Curve::EaseOut); }\n",
             "easing helper": "fn f() -> f64 { crate::ease_out(x) }\n",
@@ -54,15 +54,15 @@ class MotionLibraryTests(unittest.TestCase):
     def test_the_library_tests_comments_and_content_curves_are_exempt(self):
         root = self.fixture(
             {
-                "crates/sdk/ui-core/src/motion/named.rs": "fn f() { Curve::EaseOut; }\n",
-                "crates/sdk/ui-core/src/animation/animated.rs": "fn f() { Curve::EaseOut; }\n",
-                "crates/sdk/ui-core/src/widget/a_tests.rs": "fn f() { Curve::EaseOut; }\n",
-                "crates/sdk/ui-core/src/widget/b.rs": (
+                "crates/ui/ui-core/src/motion/named.rs": "fn f() { Curve::EaseOut; }\n",
+                "crates/ui/ui-core/src/animation/animated.rs": "fn f() { Curve::EaseOut; }\n",
+                "crates/ui/ui-core/src/widget/a_tests.rs": "fn f() { Curve::EaseOut; }\n",
+                "crates/ui/ui-core/src/widget/b.rs": (
                     "// Curve::EaseOut in a comment\n"
                     "#[cfg(test)]\nmod tests { fn f() { Curve::EaseOut; } }\n"
                 ),
                 "apps/video-editor/src/curve.rs": "fn ease_in_out(t: f64) -> f64 { t }\n",
-                "crates/sdk/ui-core/src/widget/sankey.rs": (
+                "crates/ui/ui-core/src/widget/sankey.rs": (
                     "fn f(t: f64) -> f64 { t * t * (3.0 - 2.0 * t) }\n"
                 ),
             }
@@ -93,7 +93,7 @@ class MotionLibraryTests(unittest.TestCase):
                     "fn f() { IdleFade::new(Duration::from_millis(BAR_HOLD_MS), CHROME_FADE); }\n"
                     "fn g() { let d = m.context(source, m.durations.fast()); }\n"
                 ),
-                "crates/sdk/ui-core/src/motion/named.rs": (
+                "crates/ui/ui-core/src/motion/named.rs": (
                     "pub const LIFE: Duration = Duration::from_millis(1200);\n"
                     "fn f() { SpringSpec::settling_within(d); }\n"
                 ),
@@ -102,7 +102,7 @@ class MotionLibraryTests(unittest.TestCase):
         self.assertEqual(self.whats(root), [])
 
     def test_a_spring_built_by_hand_is_found(self):
-        widget = "crates/sdk/ui-core/src/widget/group_row.rs"
+        widget = "crates/ui/ui-core/src/widget/group_row.rs"
         for source in (
             "fn f() -> (f64, f64) { crate::motion::SpringSpec::critical(omega).state(x, v, t) }\n",
             "fn f() { let s = SpringSpec::from_params(theme.tokens.motion.springs.heavy); }\n",
@@ -128,7 +128,7 @@ class MotionLibraryTests(unittest.TestCase):
         root = self.fixture(
             {
                 # A finger path interpolates between its reports.
-                "crates/sdk/ui-core/src/widget/finger_path.rs": (
+                "crates/ui/ui-core/src/widget/finger_path.rs": (
                     "fn f() -> f64 {\n"
                     "    let span = later.0.saturating_duration_since(sample_at).as_secs_f64();\n"
                     "    let into = at.saturating_duration_since(sample_at).as_secs_f64();\n"
@@ -153,7 +153,7 @@ class MotionLibraryTests(unittest.TestCase):
 
     def test_any_site_fails_the_check(self):
         root = self.fixture(
-            {"crates/sdk/ui-core/src/widget/thing.rs": "fn f() { Curve::Linear; }\n"}
+            {"crates/ui/ui-core/src/widget/thing.rs": "fn f() { Curve::Linear; }\n"}
         )
         findings = motion.scan(root)
         self.assertEqual(len(findings), 1)

@@ -348,6 +348,26 @@ macro_rules! declared_catalogue {
     };
 }
 
+/// What a resource of a kind this crate publishes from outside a document is
+/// called, in the person's language: the kind's entry in the catalogue beside
+/// this crate, read the way a declaration's words are.
+///
+/// Declares a module `i18n` holding the crate's `CATALOGUE` (through
+/// `declared_catalogue!`) and `pub(crate) fn name(kind, source)` (through
+/// [`localized`]).
+#[macro_export]
+macro_rules! declared_names {
+    () => {
+        mod i18n {
+            $crate::declared_catalogue!(CATALOGUE);
+
+            pub(crate) fn name(kind: &str, source: &str) -> String {
+                $crate::label::localized(kind, source, Some(&CATALOGUE))
+            }
+        }
+    };
+}
+
 /// `source`, the name the resource declares, in the person's language: the
 /// catalogue entry for `kind` when one of theirs holds it, `source` itself
 /// otherwise.

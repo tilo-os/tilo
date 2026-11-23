@@ -12,9 +12,8 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
 | any, with `ssh` | `device`: a real machine on a dev image (`vm add`) | its own display | on the device, or host with an aarch64 cargo | the device's |
 
-In-VM builds sync the worktree with rsync over SSH, so the host needs
-`rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
-rsync on `PATH`). Headless and vkms
+In-VM builds send the worktree to the VM's device daemon as content, so the
+host needs nothing beyond tilo-vm and a Tilo login. Headless and vkms
 accounts need no GPU, so every row runs them.
 
 ## Which targets give a guest a real GPU
@@ -241,21 +240,16 @@ the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
 `--hypervisor whpx` to select it explicitly. It never falls back to software
 CPU emulation.
 
-For component swaps that build inside the VM, install MSYS2's `rsync` and
-`openssh` packages too (`pacman -S rsync openssh`). `tilo-vm` discovers their
-default per-user location without changing `PATH`, uses the matching MSYS2
-SSH transport, and passes the Windows worktree as an MSYS2 `/c/...` path so
-`rsync` treats it as a local source.
-
 The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
 its own copy of the UEFI variables template beside that child. Before a
 download and before starting QEMU, at least 15 GiB must remain free on the
 respective volume. The guest gets the host CPU through WHPX, a PCI serial
 device for Linux `console=ttyS0`, a separate firmware UART, a user network
-with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
+with SSH (TCP) and the device daemon (UDP 7703) forwarded to
+`127.0.0.1:<ssh_port>` (default 2222), and a local VNC
 display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
-`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` asks the guest to power off
-through SSH first, then uses the QMP power button if SSH is unavailable.
+`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` asks the guest's device to
+power off first, then uses the QMP power button if it does not answer.
 
 For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
 virtual GPU, USB devices and VNC. WHPX defaults to 3 GiB of guest RAM; use
@@ -370,7 +364,7 @@ boot of it. That makes a VM per attempt cheap:
 
 ```sh
 tilo-vm vm create try1 --image ~/tilo-vm/media/disk.raw
-tilo-vm vm start try1         # waits up to 180s for SSH; an early-boot failure ends with its serial command
+tilo-vm vm start try1         # joins it as your device, waits for it to answer; an early-boot failure ends with its serial command
 tilo-vm vm serial try1
 tilo-vm vm rm try1 --force    # power off, unregister, delete its disk, variables, logs and key
 ```
@@ -414,10 +408,11 @@ running compositor's semantic actions; monitor commands manage the VM itself.
 
 ## The root SSH key
 
-`tilo-vm` reaches the VM as root with a key, never a password. `vm create`
-makes one ed25519 key per VM, `keys/<name>_ed25519` beside `vms.toml` (an
-existing key is kept), records it as the VM's `key` in `vms.toml`, and uses
-it for every connection. The dev image installs root's `authorized_keys`
+`tilo-vm vm ssh` opens a root shell in the VM with a key, never a password;
+nothing else uses SSH (tilo-vm reaches the VM's device daemon, `tilo-vm guide
+devices`). `vm create` makes one ed25519 key per VM, `keys/<name>_ed25519`
+beside `vms.toml` (an existing key is kept), and records it as the VM's `key`
+in `vms.toml`. The dev image installs root's `authorized_keys`
 from the systemd credential `ssh.authorized_keys.root`, so the key goes in
 at creation where the hypervisor has a channel for credentials:
 
@@ -432,7 +427,6 @@ The one-time step logs in with the dev account's password (`tester`,
 password `tilo`, from `os/account.env`) and appends the key for root:
 
 ```sh
-tilo-vm vm start      # SSH refuses the key, and the error prints the exact command:
 ssh -t -p <port> tester@<vm address> 'sudo install -d -m 0700 /root/.ssh && echo <key, base64> | base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'
 ```
 

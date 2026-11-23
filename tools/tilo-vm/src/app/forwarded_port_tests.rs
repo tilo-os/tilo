@@ -16,7 +16,7 @@ fn app(dir: &Path) -> App {
         runner: SystemRunner { cwd: None },
         receipt: Receipt::new(dir, vec![]),
         warnings: Vec::new(),
-        peer: None,
+        machine: None,
     }
 }
 

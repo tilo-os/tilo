@@ -16,6 +16,10 @@ pub(super) fn kind_shown(kind: AccountKind) -> String {
         AccountKind::CalDav => "accounts-kind-caldav",
         AccountKind::WebDav => "accounts-kind-webdav",
         AccountKind::Nextcloud => "accounts-kind-nextcloud",
+        AccountKind::GoogleDrive => "accounts-kind-google",
+        AccountKind::OneDrive => "accounts-kind-onedrive",
+        AccountKind::Dropbox => "accounts-kind-dropbox",
+        AccountKind::ICloudDrive => "accounts-kind-icloud",
     })
 }
 
@@ -76,7 +80,11 @@ pub(super) fn kind_icon(kind: AccountKind) -> ui::icons::Icon {
         AccountKind::Mail => Icon::Mail,
         AccountKind::CalDav => Icon::Calendar,
         AccountKind::WebDav => Icon::HardDrive,
-        AccountKind::Nextcloud => Icon::Cloud,
+        AccountKind::Nextcloud
+        | AccountKind::GoogleDrive
+        | AccountKind::OneDrive
+        | AccountKind::Dropbox
+        | AccountKind::ICloudDrive => Icon::Cloud,
     }
 }
 
@@ -84,8 +92,12 @@ pub(super) fn kind_icon(kind: AccountKind) -> ui::icons::Icon {
 /// account nothing has synced or tried to yet, whose status already says where it stands.
 pub(super) fn sync_detail(
     runtime: Option<&AccountSyncStatus>,
+    import_only: bool,
     granted_mail: bool,
 ) -> Option<String> {
+    if import_only && runtime.is_none_or(|status| status.message.is_none()) {
+        return Some(t("accounts-import-no-sync"));
+    }
     let status = runtime.filter(|status| {
         status.health != AccountSyncHealth::Never || status.last_success_unix.is_some()
     });

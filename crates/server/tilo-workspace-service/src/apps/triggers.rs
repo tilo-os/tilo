@@ -6,7 +6,7 @@
 //! into events of the one dispatcher every automation fires through
 //! ([`tilo_automation::dispatch`]): a schedule's fire time, a change to a record, an app's event.
 //! A shared folder changing and a workspace joined it watches here too. Each firing is a turn of
-//! work ([`Turn::Firing`]), and [`takes_turn`] decides which of the person's devices starts it:
+//! work ([`Turn::Once`]), and [`takes_turn`] decides which of the person's devices starts it:
 //! the one that saved the shortcut when it is up, otherwise an always-on server, otherwise any
 //! other. Nothing about a firing is kept in a device's own files: a schedule's progress is kept in
 //! the workspace ([`tilo_peer_state::trigger_mark`]), and a firing that started is kept done
@@ -31,7 +31,7 @@ use tilo_automation::dispatch::{
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
 use tilo_automation::{AutomationInvocationId, Shortcut, TriggerSpec};
 
-use crate::work::{NotTaken, Order, Turn, keep_done, takes_turn_in};
+use crate::work::{Actor, NotTaken, Order, Turn, keep_done, takes_turn_in};
 use crate::workspaces::Workspaces;
 use folders::{FolderChange, FolderWatch};
 
@@ -170,12 +170,12 @@ impl Firing {
     /// The turn of work this firing is, started on `starter` at `came_up_ms`.
     #[must_use]
     pub fn turn(&self, starter: [u8; 32], came_up_ms: i64) -> Turn {
-        Turn::Firing {
-            firing: format!("{}/{}", self.shortcut, self.invocation.0),
-            saver: self.saver.clone(),
-            starter,
-            came_up_ms,
-        }
+        Turn::once(
+            format!("shortcuts.shortcut:{}#run", self.shortcut),
+            serde_json::json!({ "invocation": self.invocation.0.to_string() }),
+        )
+        .acting_as(Actor::Person(self.saver.clone()))
+        .started(starter, came_up_ms)
     }
 }
 
@@ -251,8 +251,9 @@ pub fn seen_here(armed: &Armed, trigger: &TriggerSpec, payload: &[(&str, Value)]
     }
 }
 
-/// The changes of `doc` after `since`, in causal order, as events; on a record's first look
-/// (`since` is `None`) only the changes made from `from_s`, seconds since the epoch, on.
+/// The changes of `doc` after `since`, in causal order, as events, each with the item it
+/// changed as it left it; on a record's first look (`since` is `None`) only the changes made
+/// from `from_s`, seconds since the epoch, on.
 #[must_use]
 pub fn record_events(
     (workspace, record, kind): (&str, &str, &str),
@@ -270,28 +271,44 @@ pub fn record_events(
         .filter(|change| since.is_some() || change.timestamp() >= from_s)
         .filter_map(|change| {
             let context = ActionContext::from_change_message(change.message()?)?;
-            Some(event_of(
+            let mut event = event_of(
                 workspace,
                 record,
                 kind,
                 &change.hash().to_string(),
                 &context,
-            ))
+            );
+            // What a trigger's filter reads of the changed item: its fields as the change left
+            // them.
+            event.after = event.item.as_ref().and_then(|item| {
+                tilo_automerge::items::item_json(committed, &[change.hash()], &item.id)
+            });
+            Some(event)
         })
         .collect()
 }
 
+/// One resource a change of the resource store touched ([`store_events`]): its event, the
+/// change, and the write it is part of, the same in every document the write changed.
+pub struct StoreEvent {
+    pub event: DocumentEvent,
+    pub change: ChangeHash,
+    pub write: (String, u64),
+}
+
 /// The events of the changes to the resources the store document `record` of `app` keeps,
 /// committed since `since`: one for each resource a stamped change touched, named by its id and
-/// kind, by whoever invoked the verb. The store keeps no time in its changes, so a document's
+/// kind, by whoever invoked the verb, and with `incoming_message` set for a resource an outside
+/// origin made or wrote a body into. The store keeps no time in its changes, so a document's
 /// first look (no `since`) reports only the changes at its heads: the write that woke the runner,
-/// never what the document held before.
+/// never what the document held before. What the resource holds after the change is the
+/// runner's to read from the store ([`Workspaces::store_wrote`]).
 #[must_use]
 pub fn store_events(
     (workspace, app, record): (&str, &str, &str),
     doc: &AutoCommit,
     since: Option<&[ChangeHash]>,
-) -> Vec<DocumentEvent> {
+) -> Vec<StoreEvent> {
     let committed = doc.committed_document();
     let heads = committed.get_heads();
     if since.is_some_and(|since| heads == since) {
@@ -316,29 +333,65 @@ pub fn store_events(
             let Some(kind) = touch.kind else {
                 continue;
             };
-            events.push(DocumentEvent {
-                workspace: workspace.to_owned(),
-                record: id,
-                did: tilo_actions::Did::verb(
-                    tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
-                    [],
-                ),
-                kind,
-                change: change.hash().to_string(),
-                actor: actor.clone(),
-                arguments: Map::new(),
-                item: None,
-                before: None,
-                after: None,
-                caused_by: None,
-                incoming_message: false,
-                housekeeping: false,
-                shortcut: None,
-                invocation: None,
+            // A store keeps no facets beside its changes. A resource an outside origin wrote a
+            // body into or made is what the workspace received from outside, so a trigger on a
+            // kind of messages reads the change as an incoming message; an origin's write of a
+            // flag on a message it already held is not one.
+            let incoming_message =
+                stamp.verb == collab_types::Stamp::ORIGIN_VERB && (touch.made || touch.content);
+            events.push(StoreEvent {
+                change: change.hash(),
+                write: (stamp.invocation.clone(), stamp.moment),
+                event: DocumentEvent {
+                    workspace: workspace.to_owned(),
+                    record: id,
+                    did: tilo_actions::Did::verb(
+                        tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
+                        [],
+                    ),
+                    kind,
+                    change: change.hash().to_string(),
+                    actor: actor.clone(),
+                    arguments: Map::new(),
+                    item: None,
+                    before: None,
+                    after: None,
+                    origin: None,
+                    caused_by: None,
+                    incoming_message,
+                    housekeeping: false,
+                    shortcut: None,
+                    invocation: None,
+                },
             });
         }
     }
     events
+}
+
+/// `event`, of one resource a store write touched, with what the write left it holding
+/// ([`Workspaces::store_wrote`]): its fields and content, under `$in` the resource it is nested
+/// in (its kind as `$kind`, its id as `$id`, and its fields), and the item it names.
+fn with_what_it_holds(event: &mut DocumentEvent, wrote: tilo_resource_store::Wrote) {
+    let tilo_resource_store::Wrote {
+        kind,
+        id,
+        mut holds,
+        parent,
+    } = wrote;
+    if let Some((parent_kind, parent_id, mut fields)) = parent {
+        fields.insert("$kind".to_owned(), Value::String(parent_kind));
+        fields.insert("$id".to_owned(), Value::String(parent_id));
+        holds.insert("$in".to_owned(), Value::Object(fields));
+    }
+    let label = holds
+        .get("title")
+        .or_else(|| holds.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    event.item = Some(tilo_automation::dispatch::ItemRef { kind, id, label });
+    event.after = Some(Value::Object(holds));
 }
 
 /// The daemon's trigger runner over the workspaces this device keeps.
@@ -480,6 +533,7 @@ impl Runner {
     /// watches.
     async fn read(&mut self, written: Vec<crate::workspaces::ResourceWrite>) -> Vec<DocumentEvent> {
         let mut events = Vec::new();
+        let mut seen = BTreeSet::new();
         let written: BTreeSet<(String, String, String)> = written
             .into_iter()
             .filter(|write| !write.record.is_empty())
@@ -504,11 +558,22 @@ impl Runner {
             let heads = doc.committed_heads();
             let since = self.cursors.insert(key.clone(), heads);
             if collab_types::is_store_document(record) {
-                events.extend(store_events(
-                    (workspace, app, record),
-                    &doc,
-                    since.as_deref(),
-                ));
+                for StoreEvent {
+                    mut event,
+                    change,
+                    write,
+                } in store_events((workspace, app, record), &doc, since.as_deref())
+                {
+                    // A write that changed a resource and its content is one change of it.
+                    if !seen.insert((write, event.record.clone())) {
+                        continue;
+                    }
+                    let wrote = self.workspaces.store_wrote(workspace, record, change).await;
+                    if let Some(wrote) = wrote.into_iter().find(|wrote| wrote.id == event.record) {
+                        with_what_it_holds(&mut event, wrote);
+                    }
+                    events.push(event);
+                }
                 continue;
             }
             let kind = collab_types::document::identity::identity(&doc)
@@ -693,7 +758,11 @@ impl Runner {
     /// Start `firing`, this device's turn, once: a schedule's progress or the firing kept done in
     /// the workspace says it started, for every device.
     async fn started(&self, firing: &Firing, turn: &Turn) {
-        let Turn::Firing { came_up_ms, .. } = turn else {
+        let Turn::Once {
+            came_up_ms: Some(came_up_ms),
+            ..
+        } = turn
+        else {
             return;
         };
         if let Some(answer) = &firing.answers {

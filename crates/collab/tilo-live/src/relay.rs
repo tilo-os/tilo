@@ -6,13 +6,16 @@
 //! arrives in the carrier's admission preface ([`crate::carrier`]).
 //!
 //! Every admitted publisher writes into a private ingress origin scoped to its
-//! exact namespace. The relay copies its `audio` track into the shared origin,
+//! exact namespace. The relay copies its call's voice into the shared origin,
 //! validating every object and datagram bundle and bounding the groups in
 //! flight, so subscribers only ever observe validated tilo-voice/1 objects.
 //! Its picture tracks (tilo-video/1: a camera or screen in one resolution
-//! layer, [`crate::video`]) are copied the same way, each only while some
-//! subscriber asks for it, so a publisher sends, and the relay forwards, only
-//! the layers someone shows.
+//! layer, [`crate::video`]) are copied the same way. Each is copied only while
+//! some subscriber asks for it, so a publisher sends, and the relay forwards,
+//! only what someone hears or shows. A call's media names its call
+//! ([`crate::live::call_track`]), and the relay copies it from a publisher, and
+//! serves it to a subscriber, only while that call's rule lets each
+//! ([`SessionAuthorization::call`]).
 //! Every session is served from its own host-owned view of the shared origin
 //! (`crate::mirror`), which revocation drops before anything else.
 
@@ -55,8 +58,9 @@ pub const MAX_ADMITTING_STRANGERS: usize = 4;
 /// few, and never enough to take every place.
 pub const MAX_ADMITTING_OF_ONE: usize = 4;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
-/// The one track a voice broadcast carries.
-pub const VOICE_TRACK: &str = "audio";
+/// Voice tracks of one publisher served at once: the call it is in, and the
+/// one it is leaving.
+const MAX_VOICE_TRACKS: usize = 2;
 /// Longest an offered namespace whose publisher authority lapsed may stay
 /// offered to a subscriber before that subscriber fails closed.
 const LAPSED_OFFER_FENCE: Duration = Duration::from_millis(900);
@@ -154,6 +158,17 @@ pub trait SessionAuthorization: Send + Sync {
     /// is open (its idle timeout ends one whose device went away): the owner
     /// may count it as the holder being present. The default ignores it.
     fn connected(&self) {}
+
+    /// Whether this session may now send (`Publish`) or be sent (`Subscribe`)
+    /// the media of the call `call` tags ([`crate::live::call_track`]): what
+    /// the call's rule lets this session's person do, whatever its presence
+    /// says. Asked whenever a call track is asked for, and again on every
+    /// change ([`Self::changed`]): a call track it no longer lets through stops
+    /// at once. The default lets every call through.
+    fn call(&self, direction: Direction, call: &str) -> bool {
+        let _ = (direction, call);
+        true
+    }
 
     /// The change signal of everything [`status_all`](Self::status_all) reads:
     /// a membership change, a roster change, a new channel epoch. The relay
@@ -538,6 +553,7 @@ impl Relay {
                     VIEW_BYTES,
                     PICTURE_RETAIN,
                     Some(scopes.downlink.clone()),
+                    Some(Arc::clone(&scopes.authorization)),
                 );
                 server = server.with_publisher(view.consume());
                 scopes.view = Some(view);
@@ -717,6 +733,7 @@ impl Relay {
                 ingress.origin.consume(),
                 name.to_owned(),
                 self.counters.clone(),
+                Arc::clone(&authorization),
             ))),
             _ => None,
         };
@@ -775,18 +792,20 @@ impl Relay {
     }
 }
 
-/// Copy one publisher's voice broadcast from its private ingress into the
-/// shared origin for as long as it is announced there. Every datagram bundle
-/// and object is validated before any subscriber can observe it.
+/// Copy one publisher's broadcast from its private ingress into the shared
+/// origin for as long as it is announced there: its opaque tracks at once, and
+/// every other track only while a subscriber asks for it ([`forward_demands`]).
+/// Every datagram bundle and object is validated before any subscriber can
+/// observe it.
 ///
-/// The live session's opaque tracks (presence, activity) are copied beside it: they
-/// carry the scope's own sealed bytes, so the relay bounds their size and
-/// copies them unread.
+/// The live session's opaque tracks (presence, activity) carry the scope's own
+/// sealed bytes, so the relay bounds their size and copies them unread.
 async fn forward(
     shared: moq_net::origin::Producer,
     ingress: moq_net::origin::Consumer,
     name: String,
     counters: Arc<Counters>,
+    authorization: Arc<dyn SessionAuthorization>,
 ) {
     loop {
         let Ok(source) = ingress.routed_broadcast(name.as_str()).await else {
@@ -795,16 +814,11 @@ async fn forward(
         let Ok(out) = shared.create_broadcast(name.as_str()) else {
             return;
         };
-        let Ok(track) = out.create_track(
-            VOICE_TRACK,
-            moq_net::track::Info::default().with_max_age(VOICE_RETAIN),
-        ) else {
-            return;
-        };
         let demands = crate::Task::spawn(forward_demands(
             out.dynamic(),
             source.clone(),
             counters.clone(),
+            Arc::clone(&authorization),
         ));
         let mut opaque = Vec::new();
         for live_session_track in [crate::live::Track::Presence, crate::live::Track::Activity] {
@@ -825,17 +839,7 @@ async fn forward(
         if out.announce(moq_net::origin::Route::default()).is_err() {
             return;
         }
-        let subscription = moq_net::track::Subscription::default().with_max_age(VOICE_RETAIN);
-        let input = match source.track(VOICE_TRACK) {
-            Ok(input) => input.subscribe(subscription).await.ok(),
-            Err(_) => None,
-        };
-        if let Some(input) = input {
-            copy_checked(input, track, &counters, voice_bounds()).await;
-        } else {
-            let _ = source.closed().await;
-            let _ = track.abort(moq_net::Error::Cancel);
-        }
+        let _ = source.closed().await;
         drop(demands);
         drop(opaque);
         out.finish();
@@ -1006,38 +1010,67 @@ async fn copy_opaque(
     copy_checked(input, output, &counters, opaque_bounds()).await;
 }
 
-/// Serve the tracks subscribers ask of one publication — a call's picture
-/// layers, a publisher's viewed windows and a window's page — each copied
-/// from the publisher, validated, only while someone asks for it. Any other
-/// track name is refused.
+/// Serve the tracks subscribers ask of one publication — its call's voice and
+/// picture layers, its viewed windows and a window's page — each copied from
+/// the publisher, validated, only while someone asks for it. A call's track is
+/// copied only while the call lets its publisher speak ([`SessionAuthorization::call`]);
+/// a call's media that names no call, and any other track name, is refused.
 async fn forward_demands(
     mut requests: moq_net::broadcast::Dynamic,
     source: moq_net::broadcast::Consumer,
     counters: Arc<Counters>,
+    authorization: Arc<dyn SessionAuthorization>,
 ) {
+    let mut voices: Vec<crate::Task> = Vec::new();
     let mut pictures: Vec<crate::Task> = Vec::new();
     let mut windows: Vec<crate::Task> = Vec::new();
     let mut pages: Vec<crate::Task> = Vec::new();
     while let Ok(request) = requests.requested_track().await {
+        voices.retain(|task| !task.is_finished());
         pictures.retain(|task| !task.is_finished());
         windows.retain(|task| !task.is_finished());
         pages.retain(|task| !task.is_finished());
-        let Some(track) = crate::live::parse_track(request.name()) else {
+        let call = crate::live::parse_call_track(request.name());
+        let Some(track) = call
+            .map(|(track, _)| track)
+            .or_else(|| crate::live::parse_track(request.name()))
+        else {
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        // A call's layers, a publisher's viewed windows and its pages are
-        // bounded apart: a window viewer never takes a call's picture slots.
-        let (tasks, bound, bounds) = match track {
-            crate::live::Track::Camera(layer) | crate::live::Track::Screen(layer) => {
-                (&mut pictures, MAX_PICTURE_TRACKS, picture_bounds(layer))
+        let call = call.map(|(_, call)| call.to_owned());
+        if call
+            .as_deref()
+            .is_some_and(|call| !authorization.call(Direction::Publish, call))
+        {
+            counters.dropped.fetch_add(1, Ordering::Relaxed);
+            request.reject(moq_net::Error::Unauthorized);
+            continue;
+        }
+        // A call's voice and layers, a publisher's viewed windows and its pages
+        // are bounded apart: a window viewer never takes a call's picture slots.
+        let (tasks, bound, bounds, retain) = match (track, call.is_some()) {
+            (crate::live::Track::Audio, true) => {
+                (&mut voices, MAX_VOICE_TRACKS, voice_bounds(), VOICE_RETAIN)
             }
-            crate::live::Track::Window(_, layer) => (
+            (crate::live::Track::Camera(layer) | crate::live::Track::Screen(layer), true) => (
+                &mut pictures,
+                MAX_PICTURE_TRACKS,
+                picture_bounds(layer),
+                PICTURE_RETAIN,
+            ),
+            (crate::live::Track::Window(_, layer), false) => (
                 &mut windows,
                 crate::video::MAX_WINDOW_TRACKS,
                 picture_bounds(layer),
+                PICTURE_RETAIN,
             ),
-            crate::live::Track::Page(_) => (&mut pages, crate::page::MAX_TRACKS, page_bounds()),
+            (crate::live::Track::Page(_), false) => (
+                &mut pages,
+                crate::page::MAX_TRACKS,
+                page_bounds(),
+                PICTURE_RETAIN,
+            ),
             _ => {
                 request.reject(moq_net::Error::NotFound);
                 continue;
@@ -1047,23 +1080,52 @@ async fn forward_demands(
             request.reject(moq_net::Error::BoundsExceeded(moq_net::BoundsExceeded));
             continue;
         }
+        let held = call.map(|call| (Arc::clone(&authorization), Direction::Publish, call));
         tasks.push(crate::Task::spawn(forward_demand(
             request,
             source.clone(),
-            bounds,
+            (bounds, retain),
             counters.clone(),
+            held,
         )));
     }
 }
 
-/// Copy one demanded track for as long as a subscriber asks for it.
+/// A session's authority over one call track: the session, the direction it
+/// is let through in, and the call.
+pub(crate) type CallHeld = (Arc<dyn SessionAuthorization>, Direction, String);
+
+/// Wait until the call `held` names no longer lets its session through: on
+/// the first change that says so, or when the session's authority can no
+/// longer change and so no longer be told. Never for a track that is no
+/// call's.
+pub(crate) async fn call_refused(held: Option<&CallHeld>) {
+    let Some((authorization, direction, call)) = held else {
+        return std::future::pending().await;
+    };
+    let Some(mut changed) = authorization.changed() else {
+        return std::future::pending().await;
+    };
+    loop {
+        if !authorization.call(*direction, call) {
+            return;
+        }
+        if changed.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Copy one demanded track for as long as a subscriber asks for it and, for a
+/// call's track, the call lets its publisher speak.
 async fn forward_demand(
     request: moq_net::track::Request,
     source: moq_net::broadcast::Consumer,
-    bounds: Arc<Bounds>,
+    (bounds, retain): (Arc<Bounds>, Duration),
     counters: Arc<Counters>,
+    held: Option<CallHeld>,
 ) {
-    let subscription = moq_net::track::Subscription::default().with_max_age(PICTURE_RETAIN);
+    let subscription = moq_net::track::Subscription::default().with_max_age(retain);
     let input = match source.track(request.name()) {
         Ok(track) => track.subscribe(subscription).await,
         Err(error) => Err(error),
@@ -1075,12 +1137,17 @@ async fn forward_demand(
             return;
         }
     };
-    let output = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_RETAIN));
+    let output = request.accept(moq_net::track::Info::default().with_max_age(retain));
     let watched = output.clone();
+    let refused = output.clone();
     tokio::select! {
         () = copy_checked(input, output, &counters, bounds) => {}
         // Nobody shows this track any more: stop asking the publisher for it.
         _ = watched.unused() => {}
+        // The call no longer lets its publisher speak: nothing more of it is copied.
+        () = call_refused(held.as_ref()) => {
+            let _ = refused.abort(moq_net::Error::Unauthorized);
+        }
     }
 }
 

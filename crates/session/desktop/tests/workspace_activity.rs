@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
         ui::history_source::sentence::learn_published(
             "so.tilo.notes",
             &[
-                publish("new-note", "New note", "created the note"),
+                publish("new_note", "New note", "created the note"),
                 publish("append-to-note", "Append to note", "added to the note"),
             ],
         );
@@ -355,7 +355,7 @@ tilo_test_env::scenario! {
         for seed in 0..8_u8 {
             let mut tree = design();
             let mut note = AutoCommit::new().with_actor(ActorId::from([seed; 16].as_slice()));
-            for (verb, text) in [("new-note", "Spring plans"), ("append_to_note", "- book the trip")] {
+            for (verb, text) in [("new_note", "Spring plans"), ("append_to_note", "- book the trip")] {
                 note.put(ROOT, "text", text).unwrap();
                 note.commit_with(
                     CommitOptions::default()
@@ -424,7 +424,7 @@ tilo_test_env::scenario! {
             doc
         };
         let records = vec![
-            ("so.tilo.notes", "notes.pages", "new-note", "Spring plans", 1_800_000_000_700),
+            ("so.tilo.notes", "notes.pages", "new_note", "Spring plans", 1_800_000_000_700),
             ("so.tilo.tasks", "tasks.issues", "create", "Check the budget", 1_800_000_000_300),
         ]
         .into_iter()
@@ -904,6 +904,7 @@ tilo_test_env::scenario! {
                     person: Some("ada"),
                     mine: &|id| id >> 48 == 1,
                     records: device::Writer::NOTHING_NOTED,
+                    items: device::Writer::NOTHING_ITEMED,
                 },
             )
             .unwrap();

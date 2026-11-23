@@ -3,7 +3,7 @@ use ed25519_dalek::Signer as _;
 use std::os::unix::fs::PermissionsExt as _;
 use tilo_device_identity::{IdentityPaths, persist};
 #[cfg(feature = "native-current-device-qualification")]
-use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_test_env::{DiesWithTheTest as _, SpawnUnderEnvLock as _};
 use tilo_user_identity::DeviceCapabilities;
 
 const PASSWORD: &[u8] = b"a private device transport password";
@@ -388,115 +388,96 @@ fn current_owner_reference_refuses_changed_original_record_and_never_replaces_it
     assert_eq!(snapshot(fixture.source.path()), changed);
 }
 
-#[test]
 #[cfg(feature = "native-current-device-qualification")]
-fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership() {
-    use std::os::unix::process::CommandExt as _;
-    const ROLE: &str = "TILO_CURRENT_REFERENCE_QUALIFICATION";
-    if let Some(base) = std::env::var_os(ROLE) {
-        // SAFETY: only observes the qualification child's native credentials.
-        assert_eq!(unsafe { libc::geteuid() }, 1000);
-        // SAFETY: these calls only observe this child's real/effective IDs.
-        assert_eq!(unsafe { libc::getuid() }, 1000);
-        assert_eq!(unsafe { libc::getgid() }, 1000);
-        assert_eq!(unsafe { libc::getegid() }, 1000);
-        use std::io::Read as _;
-        let mut status = Vec::new();
-        std::fs::File::open("/proc/self/status")
-            .unwrap()
-            .take(65_537)
-            .read_to_end(&mut status)
-            .unwrap();
-        assert!(
-            status.len() <= 65_536,
-            "native credential observation overflow"
-        );
-        let status = std::str::from_utf8(&status).unwrap();
-        for name in ["CapEff:", "CapPrm:", "CapInh:", "CapAmb:"] {
-            let values: Vec<_> = status
-                .lines()
-                .filter_map(|line| line.strip_prefix(name))
-                .collect();
-            assert_eq!(
-                values.len(),
-                1,
-                "missing or duplicate native capability field"
-            );
-            assert_eq!(
-                u64::from_str_radix(values[0].trim(), 16).unwrap(),
-                0,
-                "original-user reads must not retain root capabilities"
-            );
+fn ownership(path: &Path, uid: u32, gid: u32) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: terminated exact synthetic fixture path; no recursive syscall.
+    assert_eq!(unsafe { libc::chown(path.as_ptr(), uid, gid) }, 0);
+}
+
+#[cfg(feature = "native-current-device-qualification")]
+fn user_tree(path: &Path) {
+    ownership(path, 1000, 1000);
+    if path.is_dir() {
+        for entry in std::fs::read_dir(path).unwrap() {
+            user_tree(&entry.unwrap().path());
         }
-        let base = PathBuf::from(base);
-        let system = base.join("future-system");
-        let identity = base.join("future-identity");
-        let source = CurrentDeviceReference::review(&system, &identity).unwrap();
-        let sealed = base.join("sealed-output/current-device.sealed");
-        source
-            .export_password_sealed(&sealed, PASSWORD, "current-owner-user-proof")
-            .unwrap();
-        let authenticated = AuthenticatedCurrentDeviceReference::open(
-            &sealed,
-            PASSWORD,
-            "current-owner-user-proof",
-            source.public_key(),
-            source.device_public_key(),
-            tilo_clock::unix_now_ns(),
-        )
-        .unwrap();
-        let resolved = authenticated.resolve_current(&system, &identity).unwrap();
-        assert_eq!(
-            resolved.load().unwrap().group_public_key(),
-            source.public_key()
-        );
-        assert_eq!(resolved.metadata().unwrap().display_name, "Ada");
-        // Returning a path would lose identity store here. The retained admission
-        // must reject replacement while the same source object is still alive.
-        tilo_files::native::atomic::write_with_mode(
-            &identity.join("member.json"),
-            &crate::store::public_member_record("Replaced", [88, 101, 242], source.public_key())
-                .unwrap(),
-            0o600,
-        )
-        .unwrap();
-        assert!(resolved.load().is_err());
-        assert!(resolved.metadata().is_err());
-        assert!(resolved.validate().is_err());
-        return;
     }
-    // This opt-in native qualifier requires genuine root-owned identity store and a
-    // real original-user child; it never treats missing privilege as a pass.
-    // A job sandbox's root holds neither CAP_CHOWN nor CAP_SETUID, so the
-    // qualifier runs in the privileged fixture check instead.
-    tilo_test_env::require_capability!(
-        Chown,
-        tilo_test_env::switch_identity(1000),
-        "the qualifier's root-owned fixture and original-user child"
+}
+
+#[cfg(feature = "native-current-device-qualification")]
+fn original_user_reads_the_root_owned_host(base: &std::ffi::OsStr) {
+    use rustix::process::{getegid, geteuid, getgid, getuid};
+    use std::io::Read as _;
+    let ids = [
+        geteuid().as_raw(),
+        getuid().as_raw(),
+        getgid().as_raw(),
+        getegid().as_raw(),
+    ];
+    assert_eq!(ids, [1000; 4]);
+    let mut status = Vec::new();
+    std::fs::File::open("/proc/self/status")
+        .unwrap()
+        .take(65_537)
+        .read_to_end(&mut status)
+        .unwrap();
+    assert!(
+        status.len() <= 65_536,
+        "native credential observation overflow"
     );
-    // SAFETY: observes current credentials only.
+    let status = std::str::from_utf8(&status).unwrap();
+    for name in ["CapEff:", "CapPrm:", "CapInh:", "CapAmb:"] {
+        // Exactly one field, holding no capability: original-user reads retain no root's.
+        let mut values = status.lines().filter_map(|line| line.strip_prefix(name));
+        let value = values
+            .next()
+            .map(|v| u64::from_str_radix(v.trim(), 16).unwrap());
+        assert_eq!((value, values.next()), (Some(0), None), "{name}");
+    }
+    let base = PathBuf::from(base);
+    let system = base.join("future-system");
+    let identity = base.join("future-identity");
+    let source = CurrentDeviceReference::review(&system, &identity).unwrap();
+    let sealed = base.join("sealed-output/current-device.sealed");
+    source
+        .export_password_sealed(&sealed, PASSWORD, "current-owner-user-proof")
+        .unwrap();
+    let authenticated = AuthenticatedCurrentDeviceReference::open(
+        &sealed,
+        PASSWORD,
+        "current-owner-user-proof",
+        source.public_key(),
+        source.device_public_key(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let resolved = authenticated.resolve_current(&system, &identity).unwrap();
     assert_eq!(
-        unsafe { libc::geteuid() },
-        0,
-        "requires actual native root/original-user qualification"
+        resolved.load().unwrap().group_public_key(),
+        source.public_key()
     );
+    assert_eq!(resolved.metadata().unwrap().display_name, "Ada");
+    // Returning a path would lose identity store here. The retained admission
+    // must reject replacement while the same source object is still alive.
+    tilo_files::native::atomic::write_with_mode(
+        &identity.join("member.json"),
+        &crate::store::public_member_record("Replaced", [88, 101, 242], source.public_key())
+            .unwrap(),
+        0o600,
+    )
+    .unwrap();
+    assert!(resolved.load().is_err());
+    assert!(resolved.metadata().is_err());
+    assert!(resolved.validate().is_err());
+}
+
+#[cfg(feature = "native-current-device-qualification")]
+fn root_owned_fixture() -> Fixture {
     let fixture = fixture();
-    let identity = fixture.member_file.parent().unwrap();
-    crate::store::set_active_identity(identity, "member").unwrap();
-    fn ownership(path: &Path, uid: u32, gid: u32) {
-        use std::os::unix::ffi::OsStrExt as _;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        // SAFETY: terminated exact synthetic fixture path; no recursive syscall.
-        assert_eq!(unsafe { libc::chown(path.as_ptr(), uid, gid) }, 0);
-    }
-    fn user_tree(path: &Path) {
-        ownership(path, 1000, 1000);
-        if path.is_dir() {
-            for entry in std::fs::read_dir(path).unwrap() {
-                user_tree(&entry.unwrap().path());
-            }
-        }
-    }
+    let identity = fixture.member_file.parent().unwrap().to_path_buf();
+    crate::store::set_active_identity(&identity, "member").unwrap();
     std::fs::set_permissions(
         fixture.source.path(),
         // The held-directory walker reads each public ancestor. Private
@@ -515,12 +496,40 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
     ownership(&private_key, 0, 1000);
     ownership(&private_key.join("keypair.bin"), 0, 1000);
     std::fs::set_permissions(&private_key, std::fs::Permissions::from_mode(0o2750)).unwrap();
-    user_tree(identity);
+    user_tree(&identity);
     user_tree(&fixture.output);
+    fixture
+}
+
+#[test]
+#[cfg(feature = "native-current-device-qualification")]
+fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership() {
+    use std::os::unix::process::CommandExt as _;
+    const ROLE: &str = "TILO_CURRENT_REFERENCE_QUALIFICATION";
+    if let Some(base) = std::env::var_os(ROLE) {
+        original_user_reads_the_root_owned_host(&base);
+        return;
+    }
+    // This opt-in native qualifier requires genuine root-owned identity store and a
+    // real original-user child; it never treats missing privilege as a pass.
+    // A job sandbox's root holds neither CAP_CHOWN nor CAP_SETUID, so the
+    // qualifier runs in the privileged fixture check instead.
+    tilo_test_env::require_capability!(
+        Chown,
+        tilo_test_env::switch_identity(1000),
+        "the qualifier's root-owned fixture and original-user child"
+    );
+    assert_eq!(
+        rustix::process::geteuid().as_raw(),
+        0,
+        "requires actual native root/original-user qualification"
+    );
+    let fixture = root_owned_fixture();
     let mut command = std::process::Command::new("/proc/self/exe");
     command.args(["--exact", "enrolled_transport::tests::current_owner_reference_actual_user_reads_root_owned_host_and_retains_activation_ownership", "--nocapture"])
         .env(ROLE, fixture.source.path())
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::inherit());
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::inherit())
+        .dies_with_the_test();
     // SAFETY: pre-exec clears inherited root groups using one async-safe syscall.
     unsafe {
         command.pre_exec(|| {
@@ -534,18 +543,8 @@ fn current_owner_reference_actual_user_reads_root_owned_host_and_retains_activat
         });
     }
     let mut child = command.spawn_locked().unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if std::time::Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("current-owner original-user qualifier exceeded deadline");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
+    let status =
+        tilo_test_env::wait_for("the original-user qualifier", || child.try_wait().unwrap());
     assert!(
         status.success(),
         "actual original-user reference producer/consumer failed"

@@ -15,26 +15,22 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use serde_json::json;
-use tilo_api::daemon::DaemonPlace;
-use tilo_api::server::ServerAddress;
+use serde_json::{Value, json};
 use tilo_device_identity::login::{Direction, REPORTED, Step, Ticket};
-use tilo_server_client::CertifyError;
-use tilo_server_client::LinkError;
 use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent};
 use crate::api::Client;
 pub(crate) use tilo_api::daemon::enter::{
-    IROH_ONLY, LOGIN_ENDED, NOT_LOGGED_IN, TOO_OLD, UNREACHED, connect, debug_why, enter_said,
+    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, connect, debug_why, enter_said,
     host_of, server_of, signed_over_iroh,
 };
-pub use tilo_device_identity::login::{Device, LOGIN_DAMAGED, Place, load, load_public, store};
+pub use tilo_device_identity::login::{Device, Place, served_device_key};
 
 /// The site a login names when the device that added this computer names none.
 pub const DEFAULT_SITE: &str = "https://tilo.sh";
@@ -90,62 +86,26 @@ pub(crate) fn trust_test_certificates() -> Result<()> {
     Ok(())
 }
 
+/// Whether a person's certificate names this computer's device key: it is one of their devices,
+/// read without the key, so the process stays dumpable.
 pub fn logged_in() -> bool {
-    Place::here(crate::identity::paths()).is_ok_and(|place| place.logged_in())
+    served_device_key(&crate::identity::paths()).is_some()
 }
 
-/// This computer's one device key, the one its session keeps, made now when it has none: every
-/// login of this computer is a certificate for it, never a key of its own.
+/// This computer's device key, with the device it is as it enters its person's workspaces, as its
+/// daemon knows it ([`tilo_api::daemon::who::here`]): `None` while it knows no server of theirs.
 ///
 /// # Errors
-/// A Tilo desktop serves this login, so it is a device already, or the key cannot be read or
-/// kept.
-pub(crate) fn this_device_key() -> Result<SigningKey> {
-    if tilo_api::client::desktop_socket().is_some() {
-        bail!(
-            "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
-             agents here act through it, with no login of their own."
-        );
-    }
-    let (key, _) =
-        tilo_device_identity::persist::load_or_create_device_key(&crate::identity::paths())
-            .context("reading this computer's device key")?;
-    Ok(key)
+/// The device key cannot be read, or the daemon serves another.
+pub fn here() -> Result<Option<(SigningKey, Device)>> {
+    tilo_api::daemon::who::here()
 }
 
-/// `tilo device public-key`: this computer's device key as hex, for [`this_device_public_key`].
-///
-/// # Errors
-/// The key cannot be read or kept.
-pub(crate) fn print_public_key() -> Result<ExitCode> {
-    println!(
-        "{}",
-        hex::encode(this_device_key()?.verifying_key().to_bytes())
-    );
-    Ok(ExitCode::SUCCESS)
-}
-
-/// This computer's device key, made now when it has none, read by a child of this program: a
-/// process that reads the private key is undumpable, and this computer's daemon refuses API
-/// calls from a process whose namespaces it cannot read. A command that calls the daemon after
-/// it knows which device this is keeps the private key out of its process until those calls end.
-///
-/// # Errors
-/// The child cannot run, or says why it could not read or keep the key.
-pub(crate) fn this_device_public_key() -> Result<[u8; 32]> {
-    let tilo = std::env::current_exe().context("finding this program")?;
-    let out = std::process::Command::new(tilo)
-        .args(["device", "public-key"])
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .context("reading this computer's device key")?;
-    if !out.status.success() {
-        bail!("reading this computer's device key failed");
-    }
-    hex::decode(String::from_utf8_lossy(&out.stdout).trim())
-        .ok()
-        .and_then(|key| key.try_into().ok())
-        .ok_or_else(|| anyhow!("reading this computer's device key gave no key"))
+/// The device this computer is as it enters its person's workspaces, read without the device key
+/// ([`tilo_api::daemon::who::home`]): `None` while its daemon knows no server of theirs, or none
+/// runs.
+pub fn home() -> Option<Device> {
+    tilo_api::daemon::who::home().ok().flatten()
 }
 
 pub(crate) fn hostname() -> String {
@@ -162,15 +122,7 @@ pub(crate) fn hostname() -> String {
 /// what a certificate's label carries.
 #[must_use]
 pub fn label(agent: &str, host: &str) -> String {
-    let mut fitted = format!("{agent} on {host}");
-    let room = tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
-    fitted.truncate(
-        (0..=room.min(fitted.len()))
-            .rev()
-            .find(|end| fitted.is_char_boundary(*end))
-            .unwrap_or(0),
-    );
-    fitted
+    tilo_device_identity::login::device_label(agent, host)
 }
 
 /// What a login that worked says: the device this computer now is, and which of the person's
@@ -192,56 +144,6 @@ fn which_agent(name: &str) -> String {
          computer of theirs logged in as \"{name}\" is this same agent, with what it did before. \
          If they want you as another of their agents, log in again with `--agent \"<its name>\"`."
     )
-}
-
-/// What an invitation the workspace's server did not take says to the person.
-fn invitation_said(error: &CertifyError) -> String {
-    match error {
-        CertifyError::Denied(reason) => {
-            format!("{reason}. Ask the person who invited you for a new link.")
-        }
-        CertifyError::Codec(_) => TOO_OLD.to_owned(),
-        CertifyError::Transport(link) => link_said(link),
-        CertifyError::Auth(error) => auth_said(error),
-        CertifyError::Expired
-        | CertifyError::Request(_)
-        | CertifyError::Sign(_)
-        | CertifyError::Iroh(_)
-        | CertifyError::Io(_) => UNREACHED.to_owned(),
-    }
-}
-
-fn link_said(error: &LinkError) -> String {
-    match error {
-        LinkError::Unavailable(_) | LinkError::Refused(_) => UNREACHED.to_owned(),
-        LinkError::ServerChanged => {
-            "This workspace has a new home. Ask the person for a new code from their Tilo tab \
-             (Set up with your agent)."
-                .to_owned()
-        }
-        LinkError::Malformed(_) | LinkError::PeerVersion { .. } => TOO_OLD.to_owned(),
-        LinkError::Sign(_) => LOGIN_DAMAGED.to_owned(),
-        LinkError::DeviceRevoked => LOGIN_ENDED.to_owned(),
-        LinkError::CertificateRejected => {
-            "The workspace refused this computer's certificate. `tilo login` again makes a new one."
-                .to_owned()
-        }
-    }
-}
-
-/// What a handshake this computer did not pass says.
-fn auth_said(error: &tilo_server_protocol::auth::AuthError) -> String {
-    use tilo_server_protocol::auth::AuthError;
-    use tilo_user_identity::DeviceCertError;
-    match error {
-        AuthError::Cert(DeviceCertError::Expired) | AuthError::Revoked => LOGIN_ENDED.to_owned(),
-        AuthError::Cert(_) | AuthError::PolicyReject => {
-            "Tilo didn't let this computer into the workspace. Ask the person to allow it in \
-             their Tilo tab, then try again."
-                .to_owned()
-        }
-        AuthError::BadChallengeSig | AuthError::EndpointMismatch => TOO_OLD.to_owned(),
-    }
 }
 
 /// How often entering the workspace is tried after a login: a server that has
@@ -297,65 +199,6 @@ fn invitation_in(link: &str) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("This link's invitation is damaged: ask for it again."))
 }
 
-/// The server an invitation names, where it is dialed over iroh: one that holds the workspace's
-/// keys, since only such a server lets a new member in.
-fn invited_server(
-    grant: &tilo_workspace_join::InviteGrant,
-) -> Result<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1> {
-    let servers: Vec<_> = grant
-        .transport
-        .iter()
-        .filter_map(|hint| {
-            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(hint)
-                .ok()
-        })
-        .filter(|server| server.workspace_id == grant.workspace_id)
-        .collect();
-    servers
-        .iter()
-        .find(|server| server.holds_keys)
-        .or_else(|| servers.first())
-        .cloned()
-        .ok_or_else(|| anyhow!("This invitation names no server to dial: ask for a new one."))
-}
-
-/// Redeem `invitation` on a session with the server at `address`, as `device` shown to the
-/// workspace's people as `shown_as`: the workspace's name, which the server answers.
-async fn redeem_over_iroh(
-    key: &SigningKey,
-    device: &Device,
-    address: &ServerAddress,
-    invitation: &[u8],
-    shown_as: &str,
-) -> Result<Option<String>> {
-    let signed = signed_over_iroh(device, address)?;
-    let session = Entered::connect(&signed, Arc::new(key.clone()));
-    let admitted = async {
-        session.connected().await.map_err(|refusal| {
-            debug_why("dialing the workspace's server", &refusal);
-            anyhow!(
-                "The workspace's server can't be reached from here right now: the computer \
-                 it is on may be asleep or offline. Try again in a minute."
-            )
-        })?;
-        let admission = session
-            .redeem(invitation, shown_as)
-            .await
-            .map_err(|error| {
-                debug_why("redeeming the invitation", &error);
-                anyhow!("{}", invitation_said(&error))
-            })?;
-        // A person without a name stays unnamed until they give one.
-        if !shown_as.is_empty() {
-            name_person(&session, &admission.workspace, shown_as).await;
-        }
-        anyhow::Ok(admission)
-    }
-    .await;
-    session.close();
-    Ok(Some(admitted?.name))
-}
-
 /// Announce `entry`, a revocation the person's root signed, to every workspace `session` is in.
 ///
 /// # Errors
@@ -370,40 +213,16 @@ pub(crate) fn announce_revocation(
         .map_err(|_| anyhow!("the session ended before the revocation was sent"))
 }
 
-/// How long naming the person in a workspace they just joined may take.
-const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Tell `workspace` that the person `session` is a device of goes by `name`, as a page tells it
-/// as it joins: what its member list and everyone's lists of people show for them, rather than
-/// this device's label. A workspace that does not answer keeps the name it admitted them with.
-async fn name_person(session: &Entered, workspace: &str, name: &str) {
-    let asked = tilo_server_protocol::workspaces::WorkspacesRequest::Name {
-        workspace: workspace.to_owned(),
-        name: name.to_owned(),
-    };
-    let answer = match session.session().ask_workspaces(asked) {
-        Ok(receipt) => tokio::time::timeout(NAMING_WITHIN, receipt).await,
-        Err(closed) => {
-            debug_why("naming the person in the workspace", &closed);
-            return;
-        }
-    };
-    match answer {
-        Ok(Ok(Ok(_))) => {}
-        Ok(Ok(Err(refused))) => debug_why("naming the person in the workspace", &refused),
-        Ok(Err(_)) => debug_why("naming the person in the workspace", &"the session ended"),
-        Err(_) => debug_why("naming the person in the workspace", &"no answer in time"),
-    }
-}
-
 /// `tilo login <invitation link>`: this computer joins the workspace a member invited the person
 /// into, as the person kept here (made now, named `name`, when there is none). The link carries
-/// the signed invitation and, in it, the server's own signed iroh address, so the server is dialed
-/// over iroh (through its packet relay when it is behind a NAT) and nothing is fetched from a web
-/// origin: a server on someone's laptop is joined as one in a data centre is.
+/// the signed invitation and, in it, the workspace's devices' own signed iroh addresses: this
+/// computer's daemon joins at one that holds the workspace's keys, over iroh (through its packet
+/// relay when it is behind a NAT), and keeps the workspace ([`Client::account`]'s
+/// `account/workspaces#join`). Nothing is fetched from a web origin: a server on someone's laptop
+/// is joined as one in a data centre is.
 ///
 /// # Errors
-/// The link carries no valid invitation, the server is not reached, or the workspace refuses it.
+/// The link carries no valid invitation, the daemon is not reached, or the workspace refuses it.
 pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Result<ExitCode> {
     trust_test_certificates()?;
     let invitation = invitation_in(link)?;
@@ -418,7 +237,6 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         anyhow!("This invitation is not valid any more: ask the person who sent it for a new one.")
     })?;
     let grant = verified.grant().clone();
-    let server = invited_server(&grant)?;
     // The name the person gave is theirs in the workspace; the device keeps a label of its own.
     let asked = name.map(str::trim).filter(|name| !name.is_empty());
     let (mut person, made) = crate::identity::ensure(asked.or(grant.invitee_name.as_deref()))?;
@@ -432,53 +250,74 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         );
     }
     let agent = agent::given(agent);
-    let key = this_device_key()?;
-    let label = label(&agent.name, &hostname());
-    let cert = held_device_cert(&person, &key, &label)?;
-    let address = ServerAddress {
-        endpoint_addr: server.endpoint_addr.clone(),
-        relay_url: server
-            .packet_relay_url
-            .parse::<iroh::RelayUrl>()
-            .ok()
-            .map(|url| url.to_string()),
-        web: None,
-    };
-    let shown_as = asked
-        .or_else(|| Some(person.name.as_str()).filter(|name| !name.is_empty()))
-        .or(grant.invitee_name.as_deref())
-        .unwrap_or_default()
-        .to_owned();
-    let device = Device {
-        site: format!("{DEFAULT_SITE}/"),
-        host_origin: format!("{IROH_ONLY}{}", server.endpoint_addr.id),
-        workspace: grant.workspace_id.to_string(),
-        workspace_name: None,
-        agent: agent.name.clone(),
-        cert,
-        server_cert: server.device_certificate,
-        server_address: Some(address.clone()),
-    };
+    ensure_daemon()?;
     let runtime = runtime()?;
-    let workspace_name = runtime.block_on(redeem_over_iroh(
-        &key,
-        &device,
-        &address,
-        &invitation,
-        &shown_as,
-    ))?;
-    let device = Device {
-        workspace_name,
-        ..device
-    };
-    store(&Place::here(crate::identity::paths())?, &device)?;
+    let client = Client::open(crate::api::Reach {
+        api: None,
+        key_file: None,
+        json: false,
+    })?;
+    let invite = tilo_workspace_join::encode_invitation_text(&invitation);
+    let joined = runtime
+        .block_on(client.account("account/workspaces", "join", &json!({"invite": invite})))
+        .map_err(|error| {
+            debug_why("joining the workspace", &error);
+            anyhow!(
+                "{error:#}. The workspace's server may be asleep or offline: try again in a \
+                 minute, or ask the person who invited you for a new link."
+            )
+        })?;
     println!(
-        "Joined: this computer is one of {} devices, \"{}\", in the workspace.\n{}",
+        "Joined: this computer is one of {} devices in the workspace.\n{}",
         person.whose(),
-        device.label(),
         which_agent(&agent.name)
     );
-    entered_after_login(&runtime, &key, &device, &agent, false)?;
+    let became = json!({
+        "workspace": joined
+            .get("workspace")
+            .and_then(Value::as_str)
+            .unwrap_or(&grant.workspace_id.to_string()),
+    });
+    entered_after_login(&runtime, &client, &became, &agent, false)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `tilo login --server`: log this computer in at the server `host` names (its `web-host.json`
+/// line, or that file's path) as the device the person's root, held here, certified: the computer
+/// that holds the root needs no ticket. The daemon serving the login then takes in every workspace
+/// of the person's that server keeps, and answers its asks for the content it holds of them.
+///
+/// # Errors
+/// This computer holds no identity, `host` is no server's line, the server is not reached or keeps
+/// no workspace of the person's, or the login cannot be kept.
+pub fn login_at_server(host: &str) -> Result<ExitCode> {
+    trust_test_certificates()?;
+    if crate::identity::held()?.is_none() {
+        bail!(
+            "Only a computer that holds your Tilo identity logs in at a server by itself: log in \
+             here with a ticket from `tilo device add` on one of your devices."
+        );
+    }
+    let line = match std::fs::read_to_string(host.trim()) {
+        Ok(read) => read,
+        Err(_) => host.to_owned(),
+    };
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.wait_for_native(ANSWERING))
+        .map_err(anyhow::Error::msg)?;
+    // The daemon logs in there, names the server among the hosts of your own workspace, and
+    // enters through it from now on.
+    let who = tilo_api::daemon::who::log_in_at(line.trim()).map_err(anyhow::Error::msg)?;
+    let device = who.home.ok_or_else(|| anyhow!(LOGIN_ENDED))?;
+    println!(
+        "Logged in at {}: this computer is your own device there, and takes in every workspace of \
+         yours it keeps, starting with {}.",
+        host_of(&device.host_origin),
+        device
+            .workspace_name
+            .as_deref()
+            .unwrap_or(&device.workspace)
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -499,17 +338,10 @@ pub(crate) fn first_act(agent: &Agent) -> String {
 /// server `TILO_API_URL` names, else tilo.sh's for a workspace on tilo.sh's own server. A
 /// workspace on another server (one joined over iroh, a company's own) is reached through the
 /// stdio server alone.
-fn http_mcp(device: &Device) -> Option<String> {
-    if let Some(api) = std::env::var(tilo_api::client::API_URL_ENV)
+fn http_mcp() -> Option<String> {
+    std::env::var(tilo_api::client::API_URL_ENV)
         .ok()
         .filter(|api| !api.trim().is_empty())
-    {
-        return Some(api);
-    }
-    let domain = host_of(&device.host_origin);
-    let on_tilo_sh =
-        device.server_address.is_none() && (domain == "tilo.sh" || domain.ends_with(".tilo.sh"));
-    on_tilo_sh.then(|| agent::MCP_URL.to_owned())
 }
 
 /// Where an agent finds Tilo's MCP server: the stdio server `tilo mcp`, and the streamable HTTP
@@ -579,7 +411,6 @@ fn not_a_ticket(text: &str) -> anyhow::Error {
 /// The text is no ticket, the issuing device is not reached, the ticket is spent or wrong, the
 /// person declined, or the answer cannot be kept.
 pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<ExitCode> {
-    crate::identity::convert_earlier()?;
     let parsed = Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
     if parsed.direction == Direction::SignIn {
         bail!(
@@ -588,37 +419,37 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         );
     }
     let agent = agent::given(agent);
-    let login_place = Place::here(crate::identity::paths())?;
-    let device_key = this_device_public_key()?;
-    let place = DaemonPlace::of(login_place.dir(), &device_key).map_err(anyhow::Error::msg)?;
-    let runtime = runtime()?;
-    let said = named.map_or_else(|| label(&agent.name, &hostname()), str::to_owned);
-    eprintln!("Asking your device to add this computer; it may ask you to approve it…");
-    // A computer no person's certificate names yet logs in itself: its daemon serves the device
-    // key alone until then, with no API to ask, and takes the person's workspaces up once the
-    // certificate is here.
-    let claimed = tilo_device_identity::login::claimed(&login_place, &device_key);
-    if claimed {
-        ensure_daemon(&place)?;
-        asked_daemon(&runtime, ticket, &agent, &said)?;
-    } else {
-        let key = this_device_key()?;
-        runtime.block_on(tilo_api::daemon::enter::log_in_here(
-            &key,
-            &login_place,
-            ticket,
-            &agent.name,
-            Some(&said),
-        ))?;
-        // The daemon serving the device alone takes the login up; one is started where none runs.
-        ensure_daemon(&place)?;
+    if tilo_api::client::desktop_socket().is_some() {
+        bail!(
+            "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
+             agents here act through it, with no login of their own."
+        );
     }
-    // The login is kept; the daemon serving it hands this computer its workspace.
-    let (key, device) = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
-    let days = device.cert.expires_at_ns.map_or(0, |end| {
-        end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
-    });
-    println!("{}", logged_in_said(device.label(), days, &agent.name));
+    let runtime = runtime()?;
+    // The label names the agent first, which is how the person's devices tell which runs here.
+    let said = label(
+        &agent.name,
+        named.map_or_else(hostname, str::to_owned).as_str(),
+    );
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.wait_for_native(ANSWERING))
+        .map_err(anyhow::Error::msg)?;
+    eprintln!("Asking your device to add this computer; it may ask you to approve it…");
+    // This computer's daemon logs in, whether a person's certificate names it already or not, and
+    // its person's part starts again as the device the ticket made of it.
+    let who = tilo_api::daemon::who::log_in(ticket.trim(), &agent.name, &said)
+        .map_err(anyhow::Error::msg)?;
+    let became = who
+        .home
+        .as_ref()
+        .map(tilo_api::daemon::enter::logged_in)
+        .ok_or_else(|| anyhow!(LOGIN_ENDED))?;
+    let label = became
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or("this computer");
+    let days = became.get("days").and_then(Value::as_u64).unwrap_or(0);
+    println!("{}", logged_in_said(label, days, &agent.name));
     let client = Client::open(crate::api::Reach {
         api: None,
         key_file: None,
@@ -627,7 +458,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     let text = parsed.encode();
     report(&runtime, &client, &text, Step::LoggedIn, &agent, None);
     let added = add_and_report(&runtime, &client, &text, &agent);
-    let entered = entered_after_login(&runtime, &key, &device, &agent, added)?;
+    let entered = entered_after_login(&runtime, &client, &became, &agent, added)?;
     if entered {
         report(&runtime, &client, &text, Step::Entered, &agent, None);
     } else {
@@ -639,9 +470,6 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
             &agent,
             Some("this computer could not enter your workspace"),
         );
-    }
-    if claimed {
-        restart_after_login(&place)?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -722,92 +550,55 @@ pub(crate) fn report(
     }
 }
 
-/// Ask this computer's daemon, which serves a person already, to log in with `ticket`.
-fn asked_daemon(
-    runtime: &tokio::runtime::Runtime,
-    ticket: &str,
-    agent: &Agent,
-    said: &str,
-) -> Result<()> {
-    runtime.block_on(async {
-        let client = Client::open(crate::api::Reach {
-            api: None,
-            key_file: None,
-            json: false,
-        })?;
-        let workspace = client.founded_workspace().await?;
-        client
-            .act(
-                &workspace,
-                "devices",
-                tilo_device_identity::login::LOG_IN,
-                &json!({"ticket": ticket.trim(), "agent": agent.name, "label": said}),
-                "Log in",
-            )
-            .await?;
-        Ok::<(), anyhow::Error>(())
-    })
-}
+/// How long a command waits for this computer's daemon to serve its API, its service started.
+const ANSWERING: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// How long `tilo login` waits for the daemon it logged in to end before starting the one the
-/// new login needs.
-const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Start this computer's daemon and wait until its API socket is served: the actions a ticket is
-/// served and logged in with are calls there.
+/// Start this computer's daemon's service and wait until its API socket is served: the actions a
+/// ticket is served and logged in with are calls there.
 ///
 /// # Errors
-/// The daemon did not start, or did not serve its API in time.
-pub(crate) fn ensure_daemon(place: &DaemonPlace) -> Result<()> {
-    place
-        .wait_for_api(RESTART_WAIT, || {
-            crate::mcp::held::ensure(place).map_err(std::io::Error::other)
-        })
+/// The service did not start, or the daemon did not serve its API in time.
+pub(crate) fn ensure_daemon() -> Result<()> {
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.wait_for_api(ANSWERING))
         .map_err(anyhow::Error::msg)
 }
 
-/// Start the daemon the new login needs, once the one serving the login before it ended.
-fn restart_after_login(place: &DaemonPlace) -> Result<()> {
-    let started = std::time::Instant::now();
-    while place.alive() || place.listening() {
-        if started.elapsed() > RESTART_WAIT {
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    crate::mcp::held::ensure(place).map_err(|why| anyhow!(why))
-}
-
+/// Have this computer's daemon keep the workspace the login `became` names, and say where its
+/// files and Tilo's tools are: whether it is kept here.
 fn entered_after_login(
     runtime: &tokio::runtime::Runtime,
-    key: &SigningKey,
-    device: &Device,
+    client: &Client,
+    became: &Value,
     agent: &Agent,
     added: bool,
 ) -> Result<bool> {
     let tilo = std::env::current_exe().context("finding this program")?;
+    let text = |name: &str| became.get(name).and_then(Value::as_str);
+    let workspace = text("workspace").unwrap_or_default();
+    let name = text("workspace_name");
     let place = format!(
         "{} on {}",
-        device.workspace_name.as_deref().unwrap_or("the workspace"),
-        host_of(&device.host_origin)
+        name.unwrap_or("the workspace"),
+        host_of(text("host_origin").unwrap_or_default())
     );
-    let entered = runtime.block_on(async {
-        match connect_retrying(key, device).await {
-            Ok(entered) => {
-                println!("Entered {place}.");
-                entered.close();
-                true
-            }
-            Err(error) => {
-                println!(
-                    "Logged in, but this computer can't open {place} yet: {}",
-                    enter_said(&error)
-                );
-                false
-            }
+    let entered = runtime.block_on(client.account(
+        "account/workspaces",
+        "enter",
+        &json!({ "workspace": workspace }),
+    ));
+    let entered = match entered {
+        Ok(_) => {
+            println!("Entered {place}.");
+            true
         }
-    });
-    match crate::folders::after_login(&device.workspace, device.workspace_name.as_deref()) {
+        Err(error) => {
+            debug_why("keeping the workspace on this computer", &error);
+            println!("Logged in, but this computer can't open {place} yet: {error:#}");
+            false
+        }
+    };
+    match crate::folders::after_login(workspace, name) {
         Ok(folder) => println!(
             "Its files are in {}, kept in sync both ways (`tilo folders` lists every workspace's \
              folder).",
@@ -821,87 +612,15 @@ fn entered_after_login(
         }
     }
     println!();
-    println!(
-        "{}",
-        next_steps(agent, &tilo, http_mcp(device).as_deref(), added)
-    );
+    println!("{}", next_steps(agent, &tilo, http_mcp().as_deref(), added));
     Ok(entered)
 }
 
-/// A member device certificate for `key`, signed by the person's root.
-fn held_device_cert(
-    person: &crate::identity::Person,
-    key: &SigningKey,
-    label: &str,
-) -> Result<tilo_user_identity::DeviceCert> {
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.public_key(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person.root)?;
-    Ok(cert)
-}
-
-/// The workspace a held login enters: the one `asked` names (its id, or its name in any case),
-/// else the first the person made of their own, else the first they were let in to. A login names
-/// no workspace to have every one of the person's: the peer it starts gives each of the others a
-/// folder as well, so the one entered first is only where it starts.
-pub(crate) fn choose_workspace(
-    listed: &[tilo_server_session::workspaces::PersonalWorkspace],
-    asked: Option<&str>,
-) -> Result<(String, String)> {
-    let pick = |found: &tilo_server_session::workspaces::PersonalWorkspace| {
-        (found.workspace.clone(), found.name.clone())
-    };
-    if let Some(asked) = asked.map(str::trim).filter(|asked| !asked.is_empty()) {
-        return listed
-            .iter()
-            .find(|found| {
-                found.workspace.eq_ignore_ascii_case(asked)
-                    || found.name.eq_ignore_ascii_case(asked)
-            })
-            .map(pick)
-            .ok_or_else(|| {
-                anyhow!(
-                    "You have no workspace called \"{asked}\" there; {}",
-                    names_of(listed)
-                )
-            });
-    }
-    let first = |own: bool| {
-        listed
-            .iter()
-            .filter(|found| !own || found.role.as_deref() == Some("owner"))
-            .min_by_key(|found| {
-                (
-                    found.made_at_ms.unwrap_or(i64::MAX),
-                    found.workspace.clone(),
-                )
-            })
-    };
-    first(true)
-        .or_else(|| first(false))
-        .map(pick)
-        .ok_or_else(|| anyhow!("You have no workspace there yet: make one in Tilo first."))
-}
-
-fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> String {
-    let names: Vec<_> = listed
-        .iter()
-        .map(|found| format!("\"{}\"", found.name))
-        .collect();
-    format!("yours are {}.", names.join(", "))
-}
-
-/// A login kept below `dir` for a test, as `tilo login` keeps one: `env` names `dir`'s `state`
-/// and `identity` as this account's state directory and this computer's identity root, `key`
-/// becomes its device key, and `device` its login.
+/// A computer logged in below `dir` for a test, as `tilo login` leaves one: `env` names `dir`'s
+/// `state`, `identity` and `run` as this account's state directory, this computer's identity root
+/// and its runtime directory, `key` becomes its device key with `device`'s certificate filed for
+/// it, and a daemon answers `account#who` at its native endpoint with `device` as where it
+/// enters.
 #[cfg(test)]
 pub(crate) fn keep_for_test(
     env: &mut tilo_test_env::ScopedEnv,
@@ -909,11 +628,32 @@ pub(crate) fn keep_for_test(
     key: &SigningKey,
     device: &Device,
 ) {
+    use std::io::{BufRead as _, Write as _};
+    std::fs::create_dir_all(dir.join("run")).unwrap();
     env.set("XDG_STATE_HOME", dir.join("state"))
-        .set("TILO_IDENTITY_ROOT", dir.join("identity"));
+        .set("TILO_IDENTITY_ROOT", dir.join("identity"))
+        .set("XDG_RUNTIME_DIR", dir.join("run"));
     let place = Place::here(crate::identity::paths()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
-    store(&place, device).unwrap();
+    tilo_device_identity::login::file_certificate(&place, &device.cert).unwrap();
+    let native = tilo_api::daemon::this_computer().unwrap().native();
+    let listener = std::os::unix::net::UnixListener::bind(&native).unwrap();
+    let who = json!({
+        "person": hex::encode(device.cert.user_public_key),
+        "device": hex::encode(device.cert.device_public_key),
+        "label": device.label(),
+        "claimed": true,
+        "home": tilo_api::daemon::who::home_answer(device),
+    });
+    std::thread::spawn(move || {
+        for stream in listener.incoming().map_while(Result::ok) {
+            let mut lines = std::io::BufReader::new(&stream);
+            let mut line = String::new();
+            if lines.read_line(&mut line).is_ok() {
+                let _ = writeln!(&stream, "{who}");
+            }
+        }
+    });
 }
 
 /// A member certificate `root` signs for `key`, named `label`, for a test.
@@ -941,6 +681,8 @@ pub(crate) fn certified_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_api::daemon::enter::{TOO_OLD, UNREACHED};
+    use tilo_device_identity::login::{LOGIN_DAMAGED, file_certificate};
 
     /// The person's root, this computer's device key, and the login they made of it.
     fn device() -> (SigningKey, SigningKey, Device) {
@@ -1014,60 +756,48 @@ mod tests {
         );
     }
 
-    tilo_test_env::scenario! {
-        fn a_login_keeps_its_device_and_the_tab_it_came_from;
-
-        phase the_login_is_a_certificate_for_this_computers_one_device_key;
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let dir = tempfile::tempdir().unwrap();
-            let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
-            let place = Place::at(dir.path().join("device"), keys.clone());
-            let (root, key, device) = device();
-            assert!(load(&place).unwrap().is_none(), "nobody logged in yet");
-            assert!(
-                store(&place, &device).is_err(),
-                "a login certifies this computer's device key, and it has none yet"
-            );
-            tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
-            store(&place, &device).unwrap();
-            assert!(place.logged_in());
-            assert_eq!(
-                std::fs::metadata(place.dir()).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-            let (read, kept) = load(&place).unwrap().unwrap();
-            assert_eq!(read.to_bytes(), key.to_bytes());
-            assert_eq!(kept, device);
-            assert_eq!(
-                tilo_device_identity::persist::read_device_cert(
-                    &keys.device_cert_for_user(&root.verifying_key().to_bytes())
-                )
-                .unwrap(),
-                device.cert,
-                "the certificate is kept with the device key, for the person it names"
-            );
-            assert!(
-                !place.dir().join("key").exists(),
-                "no key is kept beside the login"
-            );
-            // A certificate for a key this computer no longer has asks for a new login.
-            let other = SigningKey::from_bytes(&[8; 32]);
-            let stale = Device {
-                cert: certified_for_test(&root, &other, "Reviewer on build-box"),
-                ..device
-            };
-            tilo_device_identity::persist::write_device_cert(
-                &keys.device_cert_for_user(&root.verifying_key().to_bytes()),
-                &stale.cert,
+    #[test]
+    fn a_login_files_a_certificate_for_this_computers_one_device_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+        let place = Place::at(dir.path().join("device"), keys.clone());
+        let (root, key, device) = device();
+        let this = key.verifying_key().to_bytes();
+        assert!(
+            !tilo_device_identity::login::claimed(&place, &this),
+            "nobody logged in yet"
+        );
+        assert!(
+            file_certificate(&place, &device.cert).is_err(),
+            "a login certifies this computer's device key, and it has none yet"
+        );
+        tilo_device_identity::persist::adopt_device_key(&keys, &key.to_bytes()).unwrap();
+        file_certificate(&place, &device.cert).unwrap();
+        assert!(tilo_device_identity::login::claimed(&place, &this));
+        assert_eq!(served_device_key(&keys), Some(this));
+        assert_eq!(
+            tilo_device_identity::login::served_cert(&keys).unwrap(),
+            device.cert,
+            "the certificate is kept with the device key, for the person it names"
+        );
+        assert_eq!(
+            tilo_device_identity::login::agent_of(&device.cert.device_label),
+            "Reviewer",
+            "the label names the agent that runs here"
+        );
+        assert!(
+            !place.dir().join("login.json").exists(),
+            "nothing of the login is kept beside the certificate"
+        );
+        // A certificate for a key this computer does not have is refused.
+        let other = SigningKey::from_bytes(&[8; 32]);
+        assert!(
+            file_certificate(
+                &place,
+                &certified_for_test(&root, &other, "Reviewer on build-box")
             )
-            .unwrap();
-            let said = load(&place).unwrap_err().to_string();
-            assert!(said.contains("log in again with a ticket"), "{said}");
-            // A login that is not one says what to do, not what it holds.
-            std::fs::write(place.dir().join("login.json"), b"{}").unwrap();
-            assert_eq!(load(&place).unwrap_err().to_string(), LOGIN_DAMAGED);
-        }
+            .is_err()
+        );
     }
 
     #[test]

@@ -465,7 +465,7 @@ fn rows(directory: &Directory, query: &str, ask: &Ask) -> Element {
                     .push(Box::new(
                         Row::new().with_rhythm(Rhythm::Related).push(Box::new(
                             Button::new("directory-retry", &t("directory-try-again"))
-                                .on_view(move || retry(DirectoryEffect::Refresh)),
+                                .on_open(move || retry(DirectoryEffect::Refresh)),
                         )),
                     )),
             );
@@ -520,7 +520,7 @@ fn row(listing: &Listing, ask: &Ask) -> Element {
             &[("name", ui::i18n::ArgValue::Text(listing.name.clone()))],
         ))
         .tooltip(listing.joins_as.clone())
-        .on_own_device_effect(move || press(effect.clone()))
+        .on_click(move || press(effect.clone()))
         .with_enabled(!listing.waiting && listing.action != ListingAction::Joining);
     if primary {
         button = button.role(ButtonRole::Primary);

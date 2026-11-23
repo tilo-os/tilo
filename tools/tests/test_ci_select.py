@@ -431,43 +431,6 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(ci_select.make_plan(
             self.metadata, self.root, ["apps/tl/notes/app.tl"], 2)["full"])
 
-    def test_android_job_follows_selected_apps_with_an_android_example(self):
-        self.setUp()
-        for package in self.metadata["packages"]:
-            if package["name"] == "leaf":
-                package["targets"] = [
-                    {"name": "leaf", "kind": ["bin"]},
-                    {"name": "leaf-android", "kind": ["example"]},
-                ]
-            if package["name"] == "middle":
-                # Only an example named for its own package opts an app in.
-                package["targets"] = [
-                    {"name": "middle", "kind": ["lib"]},
-                    {"name": "leaf-android", "kind": ["example"]},
-                    {"name": "middle-android", "kind": ["bin"]},
-                ]
-        def plan(changes, **options):
-            return ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
-        for changes, options in ((["base/src/lib.rs"], {}), (["leaf/src/android.rs"], {}),
-                                 (["tilo-doc/src/lib.rs"], {"force_full": True})):
-            with self.subTest(changes=changes, options=options):
-                reached = plan(changes, **options)
-                self.assertTrue(reached["android_required"])
-                self.assertEqual(reached["android"], ["leaf"])
-        unrelated = plan(["tilo-doc/src/lib.rs"])
-        self.assertFalse(unrelated["android_required"])
-        self.assertEqual(unrelated["android"], [])
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "outputs"
-            ci_select.emit_github(plan(["base/src/lib.rs"]), output)
-            ci_select.emit_github(unrelated, output)
-            lines = output.read_text().splitlines()
-        self.assertEqual(
-            [line for line in lines if line.startswith("android_")],
-            ["android_required=true", "android_packages=-p leaf",
-             "android_required=false", "android_packages="],
-        )
-
     def test_wasm_job_follows_selected_browser_crates(self):
         self.setUp()
         for package in self.metadata["packages"]:
@@ -1088,7 +1051,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='unknown docs and embedded code retain contract checks'):
             self.setUp()
             for path in ["docs/contracts.md", "docs/packaging.md", "docs/app-development.md",
-                         "crates/sdk/ui-core/CHARTS.md", "docs/unknown.md", "docs/designs/fixture.rs",
+                         "crates/ui/ui-core/CHARTS.md", "docs/unknown.md", "docs/designs/fixture.rs",
                          "docs/designs/../contract.md", "unknown-input"]:
                 with self.subTest(path=path):
                     plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
@@ -1300,9 +1263,9 @@ class SelectorTests(unittest.TestCase):
                 self.metadata,
                 self.root,
                 [
-                    "os/tests/imager_ephemeral_runner.sh",
+                    "os/tests/imager_linux_release_trust.sh",
                     "scripts/check-install-contract.py",
-                    "tools/ci/runners/imager-ephemeral-linux.sh",
+                    "tools/ci/imager-release/assets.sh",
                 ],
                 2,
             )
@@ -1372,7 +1335,6 @@ class SelectorTests(unittest.TestCase):
                 "tools/tests/test_ci_select.py",
                 "tools/tests/test_ci_measure.py",
                 "tools/tests/test_suites.py",
-                "tools/tests/test_workflow_timeouts.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertFalse(plan["rust_required"])

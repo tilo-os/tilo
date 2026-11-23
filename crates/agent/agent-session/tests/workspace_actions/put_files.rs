@@ -247,10 +247,10 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // A PDF at the workspace's root: the node names its content, and the
@@ -374,10 +374,10 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
     .await;
     let agent = Browser::open(&hosted, &computer, &device).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, device.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // Many small files are kept whole in one call, each answered by the reference that opens
@@ -508,10 +508,10 @@ async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // A file of many pieces, its upload interrupted after the first ones and
@@ -581,10 +581,10 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        &person,
     );
 
     // The same bytes put into the workspace make no app's record: the
@@ -657,7 +657,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
     // writes it — each record of it founded with the empty genesis and then
     // its changes, the chunk first because the tree's own record names it —
     // sealed as every write of the workspace is.
-    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&computer.cert);
     folder
         .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
         .unwrap();
@@ -708,10 +708,10 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         &host,
     )
     .await;
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        hex::encode(root.verifying_key().to_bytes()),
+        &hex::encode(root.verifying_key().to_bytes()),
     );
     let notice = form_pdf("Notice of termination");
     let content = content_in(&put(&server, &notice).await);
@@ -781,7 +781,7 @@ async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
     // The viewer's computer mounts the workspace first: what it founds stays its own.
     let viewer_laptop =
         super::resource_support::open_admitted_peer(&hosted, &viewing, &serving, &workspace).await;
-    let mut theirs = tilo_fs::Namespace::new(hex::encode(viewing.cert.device_public_key)).unwrap();
+    let mut theirs = super::resource_support::computer_folder(&viewing.cert);
     theirs
         .create_file(tilo_fs::ROOT_INO, "notes.txt", None, 0, 1)
         .unwrap();
@@ -798,7 +798,7 @@ async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
     // The editor's computer founds it with a file in it, and the file lands.
     let editor_laptop =
         super::resource_support::open_admitted_peer(&hosted, &editing, &serving, &workspace).await;
-    let mut folder = tilo_fs::Namespace::new(hex::encode(editing.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&editing.cert);
     folder
         .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
         .unwrap();
@@ -860,14 +860,14 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
     );
     let laptop =
         super::resource_support::open_admitted_peer(&hosted, &computer, &serving, &workspace).await;
-    let server = McpServer::new(
+    let server = McpServer::for_person(
         SessionActions::new(
             &laptop.peer,
             laptop.workspace,
             serving.cert.device_public_key,
         ),
         workspace.clone(),
-        hex::encode(owner.verifying_key().to_bytes()),
+        &hex::encode(owner.verifying_key().to_bytes()),
     );
 
     // The service looks at the workspace's files before any folder wrote them: it finds none.
@@ -875,7 +875,7 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
     assert!(!before.contains("contract.txt"), "{before}");
 
     // The laptop's mounted folder founds the tree with a file in it.
-    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    let mut folder = super::resource_support::computer_folder(&computer.cert);
     folder
         .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
         .unwrap();

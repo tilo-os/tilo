@@ -6,8 +6,6 @@ app so.tilo.chat "Chat" (
     previously: so.tilo.lang.chat,
 )
 
-use so.tilo.agent as agent
-
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people. Beside them,
 /// how kinds of work are done here: the workspace's skills, which its people write and its
@@ -562,7 +560,7 @@ fn native_message(e: host.Earlier) -> Message {
         pinned: (e.texts.get("pinned") ?? "") == "true",
         by: e.texts.get("author_name") ?? member_named(e.texts.get("author") ?? ""),
         written: (e.texts.get("ts") ?? "").to_int() ?? 0,
-        reacted: reactions_said(e.lists.get("reactions") ?? []),
+        reacted: std.reactions_said(e.lists.get("reactions") ?? []),
     )
 }
 
@@ -651,6 +649,8 @@ action report_problem(all: Conversations, body: RichText) -> Message (
 /// Opens the direct message between the invoker and `who`, in the sidebar, or the one already
 /// open between the two of them: two people have one conversation, not a new empty one each
 /// time. With yourself it is your notes to self.
+/// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
+/// person has one conversation, not a new empty one each time.
 action message_person(all: Conversations, who: Actor) -> Direct (
     icon: .message_circle,
     label: "Message",
@@ -699,23 +699,6 @@ action send(
         sent.attachments.insert(
             Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
         )
-    }
-    // Writing to an agent asks it, made from the message, whose replies stand under it. Nothing
-    // said goes to an agent that may not read it.
-    match to {
-        d: Direct => {
-            for p in d.people.filter(p -> p != invoker and p.kind() == .agent) {
-                agent
-                    .ask(
-                        agent.agents,
-                        p,
-                        if std.may_read(p, sent) { body } else { RichText("") },
-                    )
-                    .made_from(sent)
-            }
-        }
-        c: TextChannel => {}
-        t: Thread => {}
     }
     sent
 }
@@ -1250,31 +1233,9 @@ view direct(d: Direct) {
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
-    // What was asked of the agent with no message to stand under, read once for the view and
-    // oldest first; each row draws only those asked between the message before it and itself.
-    let asked = if d.people.any(p -> p.kind() == .agent) {
-        asked_outright(d, workspace.me)
-    } else { [] }
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
-        let before = d.messages.previous(m)
-        for a in asked.filter(a -> made_before(a, m) and after(before, a)) {
-            agent.replies(a)
-        }
         direct_message(d, m, d.messages, replying, editing, revised)
-        if let last = d.messages.last() {
-            if last == m {
-                for a in asked.filter(a -> made_before(m, a)) {
-                    agent.replies(a)
-                }
-            }
-        }
         composer: {
-            // A Direct nothing was written in yet still shows what was asked in it.
-            if d.messages.is_empty() {
-                for a in asked {
-                    agent.replies(a)
-                }
-            }
             direct_typing_here(d)
             composer(
                 d,
@@ -1287,31 +1248,6 @@ view direct(d: Direct) {
             )
         }
     }
-}
-
-/// The asks of the agent `d` is with that `me`, the person looking, made from something with no
-/// message of Chat's to stand under (an event, a task), oldest first. An ask made from a message
-/// stands under that message instead.
-fn asked_outright(d: Direct, me: Actor) -> List<agent.Ask> {
-    agent.agents.asks
-        .filter(
-            a -> d.people.contains(a.agent)
-                and created(a)?.who == me
-                and if let from = created(a)?.from { [from].of(Message).is_empty() } else { false },
-        )
-        .sort_by(a -> created(a))
-}
-
-/// Whether `a` was made after `message`, or there is no message.
-fn after(message: Option<Message>, a: agent.Ask) -> Bool {
-    if let m = message { made_before(m, a) } else { true }
-}
-
-/// Whether `x` was made before `y`.
-fn made_before(x: host.Resource, y: host.Resource) -> Bool {
-    if let made = created(x)?.at {
-        if let later = created(y)?.at { made < later } else { true }
-    } else { false }
 }
 
 /// A channel as another app's page summarizes it: its name, and what it is about.
@@ -1570,14 +1506,7 @@ view message(
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())
     }
-    // What its asks of agents answer, under it, as the agents write it.
-    let asks = agent.asks_on(m)
-    for a in asks {
-        agent.replies(a)
-    }
-    let listed = linked(m)
-        .filter(l -> shown.any(x -> l.of == x) or asks.any(a -> l.of == a))
-        .map(l -> l.of)
+    let listed = linked(m).filter(l -> shown.any(x -> l.of == x)).map(l -> l.of)
     std.linked(m, compact: true, without: listed)
 }
 
@@ -1590,7 +1519,7 @@ view said(m: Message) {
         text(p.body)
     }
     if m.sent_view != "" {
-        agent.sent_view()
+        ui.Text("A view, to add to your own views", role: .caption, secondary: true)
     }
     if history(m).any(v -> v.is(edit)) {
         ui.Text("edited", role: .caption, secondary: true)

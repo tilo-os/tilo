@@ -44,6 +44,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// How long the session waits for the proxy's answer to a policy it sets: the desktop's loop
 /// waits that long too, so it stays short.
 const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
+/// Largest JSON line exchanged over the network proxy's control socket, in either direction.
+pub const MAX_CONTROL_LINE_BYTES: usize = 64 * 1024;
 
 /// Why a network proxy could not be prepared, started, or reached.
 #[derive(Debug, thiserror::Error)]
@@ -239,14 +241,20 @@ pub fn set_policy(control: &Path, policy: &EgressPolicy) -> Result<(), NetworkPr
             path: control.to_path_buf(),
             source,
         })?;
-    let mut answer = String::new();
-    BufReader::new(&stream)
-        .read_line(&mut answer)
+    let mut reader = BufReader::new(&stream);
+    let answer = wire_frame::read_line(&mut reader, MAX_CONTROL_LINE_BYTES)
         .map_err(|source| NetworkProxyError::Control {
             path: control.to_path_buf(),
-            source,
+            source: source.into(),
+        })?
+        .ok_or_else(|| NetworkProxyError::Control {
+            path: control.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the network proxy closed its control socket without answering",
+            ),
         })?;
-    let answer: Answer = serde_json::from_str(&answer)
+    let answer: Answer = serde_json::from_slice(&answer)
         .map_err(|source| NetworkProxyError::Refused(source.to_string()))?;
     match (answer.error, answer.allowed) {
         (Some(error), _) => Err(NetworkProxyError::Refused(error)),
@@ -285,7 +293,8 @@ fn admit(stream: &std::os::unix::net::UnixStream, proxy: &EgressProxy) {
     if stream.set_read_timeout(Some(CONTROL_TIMEOUT)).is_err() {
         return;
     }
-    let mut reader = BufReader::new(stream).take(64 * 1024);
+    let mut reader =
+        BufReader::new(stream).take(u64::try_from(MAX_CONTROL_LINE_BYTES).unwrap_or(u64::MAX));
     let outcome = reader
         .read_line(&mut line)
         .and_then(|_| serde_json::from_str::<Update>(&line).map_err(io::Error::other));

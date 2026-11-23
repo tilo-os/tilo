@@ -77,6 +77,7 @@ fn redemption(
 fn message(
     chat: &mut AutoCommit,
     author: &SigningKey,
+    person: &[u8; 32],
     seq: u64,
     text: &str,
     now: SystemTime,
@@ -91,7 +92,7 @@ fn message(
     let before = chat.get_heads();
     let messages = chat.get(ROOT, "messages").unwrap().unwrap().1;
     chat.put(&messages, text, text).unwrap();
-    chat.commit_edit("chat", "messages");
+    chat.commit_edit("chat", "messages", person);
     let mutation = DocumentMutation::Incremental(chat.save_after(&before));
     let author_key = author.verifying_key().to_bytes();
     let mut envelope = SignedOp::new_unsigned(
@@ -146,6 +147,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         label: String::new(),
         cloud: false,
         moderates: false,
+        origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -166,7 +168,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     .unwrap();
     let mut chat = AutoCommit::new();
     chat.put_object(ROOT, "messages", ObjType::Map).unwrap();
-    chat.commit_edit("chat", "messages");
+    chat.commit_edit("chat", "messages", &governor.user_public_key);
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(
@@ -210,7 +212,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         );
         for seq in 1..=messages_each {
             let text = format!("author {author} message {seq}");
-            let written = message(&mut chat, &key, seq, &text, now);
+            let written = message(&mut chat, &key, &cert.user_public_key, seq, &text, now);
             sync.push((cert.device_public_key, written.clone()));
             bootstrap.push(written);
             texts.push(text);

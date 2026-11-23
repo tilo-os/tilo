@@ -370,14 +370,14 @@ impl BrowserWindow {
                             "browser.download-exit.keep",
                             &crate::resource::CATALOG.t("browser-quit-keep-downloading"),
                         )
-                        .on_effect(move || keep.set(Some(false))),
+                        .on_click(move || keep.set(Some(false))),
                     ))
                     .push(Box::new(
                         Button::new(
                             "browser.download-exit.cancel",
                             &crate::resource::CATALOG.t("browser-quit-cancel-downloads"),
                         )
-                        .on_effect(move || cancel.set(Some(true))),
+                        .on_click(move || cancel.set(Some(true))),
                     )),
             ));
         }
@@ -1089,21 +1089,6 @@ mod tests {
                 &automerge::ROOT,
             )
         });
-        let invocation = ui::widget::controls::take_control_invocation(window)
-            .expect("exit choice must reach the root action broker");
-        assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
-        assert!(
-            window
-                .start_encoded(
-                    ui::tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    doc,
-                    &automerge::ROOT
-                )
-                .unwrap()
-                .is_some()
-        );
     }
 
     #[test]

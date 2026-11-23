@@ -15,7 +15,7 @@ async fn admit(
 ) {
     crate::workspace_actions::resource_support::admit_with(
         workspaces,
-        workspaces.governor(),
+        workspaces.device_cert(),
         workspace,
         device,
         tilo_peer_state::join::Role::Editor,
@@ -69,7 +69,7 @@ async fn a_card_opens_nothing_to_a_member_the_workspace_denies_reading() {
         Answer::Deny,
         Grantee::person(hex::encode(root.verifying_key().to_bytes())),
     );
-    let governor = workspaces.governor().clone();
+    let governor = workspaces.device_cert().clone();
     workspaces
         .put_workspace_grants(&workspace, &governor, [0x5a; 32], vec![deny])
         .await

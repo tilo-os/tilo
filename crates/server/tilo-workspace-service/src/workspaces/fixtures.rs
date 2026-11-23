@@ -211,7 +211,7 @@ pub fn device_cert(
 /// A certified workspace service on its own endpoint, routed as an embedder routes
 /// it.
 pub struct TestHost {
-    host: WorkspaceService,
+    host: Arc<WorkspaceService>,
     router: Router,
     /// The relay its endpoint took as its home ([`reached_through`]), closed
     /// after the endpoint that reaches it.
@@ -222,14 +222,21 @@ pub struct TestHost {
 impl TestHost {
     /// The workspaces it governs.
     #[must_use]
-    pub const fn workspaces(&self) -> &Workspaces {
+    pub fn workspaces(&self) -> &Workspaces {
         self.host.workspaces()
     }
 
     /// The host itself.
     #[must_use]
-    pub const fn host(&self) -> &WorkspaceService {
+    pub fn host(&self) -> &WorkspaceService {
         &self.host
+    }
+
+    /// The host, shared with what answers its steps from another thread, as an embedder
+    /// installs its service where its apps reach it.
+    #[must_use]
+    pub fn shared(&self) -> Arc<WorkspaceService> {
+        Arc::clone(&self.host)
     }
 
     /// The durable records of its workspaces.
@@ -310,13 +317,27 @@ impl TestGroupKeys {
             .send_modify(|handed| *handed = handed.wrapping_add(1));
     }
 
-    /// Hand the fixture every group's keys `other` holds, as a group lets a device in after it
-    /// opened.
-    pub fn hand_what_is_held_by(&self, other: &Self) {
-        let held = other.held.lock().expect("the other fixture's keys").clone();
-        self.held.lock().expect("the fixture's keys").extend(held);
-        self.handed
-            .send_modify(|handed| *handed = handed.wrapping_add(1));
+    /// Hand the fixture the keys of `workspace`'s every-member group that `other` holds, as the
+    /// group lets a new member in: never the keys of a group of fewer readers.
+    ///
+    /// # Panics
+    ///
+    /// `workspace` is no workspace's id, or `other` holds no keys of its group.
+    pub fn hand_every_member_of(&self, other: &Self, workspace: &str) {
+        let group = collab_types::reader_group(
+            collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+            collab_types::EVERY_MEMBER,
+        )
+        .expect("every member's group")
+        .to_string();
+        let keys = other
+            .held
+            .lock()
+            .expect("the other fixture's keys")
+            .get(&group)
+            .expect("the other fixture holds every member's keys")
+            .clone();
+        self.hand(workspace, keys);
     }
 
     /// The groups a read asked the person's other devices for the frames of, and the epoch this
@@ -518,33 +539,35 @@ async fn host_on(
     let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
     #[cfg(test)]
     reached_through(&endpoint, &home).await;
-    let host = WorkspaceService::open(
-        ServiceConfig {
-            max_workspace_grants: grants,
-            // Each device knows only the app surfaces named to it: tests run side by side in one
-            // process, and a surface one of them names must not change what another's stores
-            // admit.
-            surfaces: Arc::default(),
-            // A server of other people's workspaces takes their work in them.
-            ..ServiceConfig::new(
-                state_root.to_owned(),
-                tilo_server_protocol::WorkSetting {
-                    from: tilo_server_protocol::WorkFrom::Anyone,
-                    ..tilo_server_protocol::WorkSetting::own_person()
-                },
-            )
-        },
-        ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        endpoint.clone(),
-        Some(channels),
-    )
-    .await
-    .expect("the host opens");
+    let host = Arc::new(
+        WorkspaceService::open(
+            ServiceConfig {
+                max_workspace_grants: grants,
+                // Each device knows only the app surfaces named to it: tests run side by side in one
+                // process, and a surface one of them names must not change what another's stores
+                // admit.
+                surfaces: Arc::default(),
+                // A server of other people's workspaces takes their work in them.
+                ..ServiceConfig::new(
+                    state_root.to_owned(),
+                    tilo_server_protocol::WorkSetting {
+                        from: tilo_server_protocol::WorkFrom::Anyone,
+                        ..tilo_server_protocol::WorkSetting::own_person()
+                    },
+                )
+            },
+            ServiceIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key.clone(),
+                device_cert: cert.clone(),
+                revocations: RevocationList::new(),
+            },
+            endpoint.clone(),
+            Some(channels),
+        )
+        .await
+        .expect("the host opens"),
+    );
     let mut router = Router::builder(endpoint);
     for (alpn, handler) in host.protocols() {
         router = router.accept(alpn, handler);
@@ -632,13 +655,16 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
             .expect("the workspace's device_access");
         (device_access, governed.workspace_id())
     };
-    workspaces
+    let runtime = workspaces
         .inner
         .host
-        .access
-        .replace_access(workspace_id, device_access)
+        .workspaces
+        .lock()
         .await
-        .expect("the server projects the workspace's device_access");
+        .get(&workspace_id)
+        .cloned()
+        .expect("the server serves the workspace");
+    runtime.lock().await.device_access = Some(Arc::new(device_access));
 }
 
 /// Until when `workspace` restricts `person`, as `host` reads its policy.
@@ -832,4 +858,58 @@ impl Workspaces {
             .expect("the workspace is held here");
         governed.lock().await.peer.lock().name_person_as_founder();
     }
+}
+
+/// Record `grants` in `workspace`'s governance as its host, then project the access the host
+/// decides its changes against: what a person's Settings writes there, without a client.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance did not take them.
+pub async fn record_grants(
+    workspaces: &Workspaces,
+    workspace: &str,
+    grants: &[tilo_action_policy::Grant],
+) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    {
+        let governed = state.lock().await;
+        let key = workspaces.inner.host.key.clone();
+        governed
+            .peer()
+            .governance_mut()
+            .put_governed_grants(grants, &key, tilo_clock::wall())
+            .expect("the host records its workspace's grants");
+    }
+    project_access(workspaces, workspace).await;
+}
+
+/// Take the grants `ids` name back from `workspace`'s governance as its host, then project the
+/// access the host decides its changes against.
+///
+/// # Panics
+///
+/// The workspace is not governed here, or its governance did not take the change.
+pub async fn revoke_grants(
+    workspaces: &Workspaces,
+    workspace: &str,
+    ids: &[tilo_action_policy::GrantId],
+) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("a governed workspace");
+    {
+        let governed = state.lock().await;
+        let key = workspaces.inner.host.key.clone();
+        governed
+            .peer()
+            .governance_mut()
+            .remove_governed_grants(ids, &key, tilo_clock::wall())
+            .expect("the host takes its workspace's grants back");
+    }
+    project_access(workspaces, workspace).await;
 }

@@ -33,9 +33,9 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # The rendezvous socket is bound and reached by path, however deep its directory.
 tilo-files = { version = "0.1.0", path = "../tilo-files" }
 # Reading the login shell's PATH, bounded in time and size.
-bounded-command = { version = "0.1.0", path = "../../system/bounded-command" }
+bounded-command = { version = "0.1.0", path = "../bounded-command" }
 # The rendezvous lock and the socket wait.
-tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 # The owner-only service connect's deadline.

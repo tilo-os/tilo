@@ -1,5 +1,4 @@
 use super::*;
-use crate::dispatcher::testing::RecordingDispatcher;
 use ui::widget::Widget;
 
 pub(super) type App = ui::framework::testing::TestApp<crate::SettingsShell>;
@@ -368,7 +367,7 @@ tilo_test_env::scenario! {
         let (mut pane, rec) = recording(vec![panel()]);
         pane.apply(&DisplayEffect::SetBrightness { brightness: 0.75 })
             .unwrap();
-        assert_eq!(rec.calls(), ["set_brightness(75.00)"]);
+        assert_eq!(rec.calls(), ["set-display-brightness eDP-1 0.75"]);
         assert!((pane.brightness - 0.75).abs() < f32::EPSILON);
 
         let level = |connector: &str, level: f32| os_actions::MonitorLevel {
@@ -412,7 +411,7 @@ tilo_test_env::scenario! {
         .unwrap();
         assert!(
             rec.calls()
-                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
+                .contains(&"set-display-brightness DP-2 0.80".to_string()),
             "{:?}",
             rec.calls()
         );
@@ -586,12 +585,40 @@ fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
     }
 }
 
-fn recording(outputs: Vec<DisplayOutput>) -> (DisplayModel, Arc<RecordingDispatcher>) {
-    let rec = Arc::new(RecordingDispatcher::default());
+/// The session's displays as a test stands them in: each action the pane calls on them, as
+/// `action display level`, in order.
+#[derive(Default)]
+struct RecordedBrightness(std::sync::Mutex<Vec<String>>);
+
+impl RecordedBrightness {
+    fn calls(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl BrightnessControl for RecordedBrightness {
+    fn invoke(
+        &self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let display = arguments
+            .get("display")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-");
+        let level = arguments["level"].as_f64().unwrap();
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{action} {display} {level:.2}"));
+        Ok(())
+    }
+}
+
+fn recording(outputs: Vec<DisplayOutput>) -> (DisplayModel, Arc<RecordedBrightness>) {
+    let rec = Arc::new(RecordedBrightness::default());
     let mut model = model(outputs);
-    model.brightness_control = Arc::new(SystemBrightness(
-        Arc::clone(&rec) as Arc<dyn Dispatcher + Send + Sync>
-    ));
+    model.brightness_control = Arc::clone(&rec) as Arc<dyn BrightnessControl>;
     (model, rec)
 }
 

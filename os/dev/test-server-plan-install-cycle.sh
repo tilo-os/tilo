@@ -274,7 +274,7 @@ owner ssh "cat > $owner_driver" < "$dev_dir/server-plan-owner.sh" \
   || die 'the owner driver did not reach the guest'
 if [ -n "$owner_layers" ]; then
   # The components this run rebuilt, applied as a developer swaps them into a
-  # device: imported and merged through the device's own tilo-vmd.
+  # device: imported and merged through the device's own steps.
   [ -d "$owner_layers" ] || die "--owner-layers must name a directory: $owner_layers"
   owner ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' install -d -m 0700 /var/lib/tilo-vm/incoming" \
     || die 'the owner device has no tilo-vm state to take layers into'

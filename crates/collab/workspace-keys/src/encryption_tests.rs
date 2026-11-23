@@ -2607,7 +2607,11 @@ fn a_document_its_workspaces_founder_does_not_read_is_founded_by_a_reader() {
     let (metadata, ciphertext) = first_keys
         .seal_content(artifact, ContentRetention::Delta, b"a login")
         .unwrap();
-    assert!(second_keys.open_content(artifact, &metadata, &ciphertext).is_ok());
+    assert!(
+        second_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_ok()
+    );
 }
 
 /// A device whose own view says it reads a document it does not (its role taken back, and the news
@@ -2636,9 +2640,30 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
         .unwrap()
         .extend([public(1), public(2), public(3)]);
     let dir = tempfile::tempdir().unwrap();
-    let mut revoked = device(&workspace, workspace_id, 0, 1, &stale, &dir.path().join("revoked"));
-    let mut first = device(&workspace, workspace_id, 1, 2, &current, &dir.path().join("first"));
-    let mut second = device(&workspace, workspace_id, 2, 3, &current, &dir.path().join("second"));
+    let mut revoked = device(
+        &workspace,
+        workspace_id,
+        0,
+        1,
+        &stale,
+        &dir.path().join("revoked"),
+    );
+    let mut first = device(
+        &workspace,
+        workspace_id,
+        1,
+        2,
+        &current,
+        &dir.path().join("first"),
+    );
+    let mut second = device(
+        &workspace,
+        workspace_id,
+        2,
+        3,
+        &current,
+        &dir.path().join("second"),
+    );
     let mut now = Instant::now();
     revoked.service.access(workspace_id, now);
     revoked.service.access_scope(scope.clone(), now);
@@ -2660,9 +2685,15 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
     let (metadata, ciphertext) = first_keys
         .seal_content(artifact, ContentRetention::Delta, b"a login")
         .unwrap();
-    assert!(second_keys.open_content(artifact, &metadata, &ciphertext).is_ok());
     assert!(
-        revoked_keys.open_content(artifact, &metadata, &ciphertext).is_err(),
+        second_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_ok()
+    );
+    assert!(
+        revoked_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_err(),
         "the refused genesis's key opens nothing the readers seal"
     );
 }
@@ -2715,5 +2746,224 @@ fn a_document_asked_for_before_its_readers_are_known_is_told_when_they_are() {
     assert!(
         matches!(reader.service.access_scope(scope, now), KeyAccess::Ready(_)),
         "asked again, the document's group opens"
+    );
+}
+
+/// A call's media keys move on among people's own devices alone: no device of the workspace
+/// holds a role the others lack. The call denies the person whose device founded the workspace,
+/// and whichever of the devices its next generation admits asks first founds that generation's
+/// group, with no wait for anyone else: the other admitted device opens what the founder seals,
+/// and the denied one is never handed its keys, nor opens it with every key it had.
+#[test]
+fn any_device_a_call_admits_founds_its_next_keys_and_the_one_it_denied_opens_nothing() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let generation = |generation: u64| neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: collab_types::scope::MEDIA_APP.into(),
+        document: collab_types::calls::media_document("standup", generation),
+        readers: None,
+    };
+    let policy = Policy::readers([1, 2, 3]);
+    policy
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(1), public(2), public(3)]);
+    let dir = tempfile::tempdir().unwrap();
+    let [mut denied, mut first, mut second] =
+        document_key_devices(&workspace, workspace_id, &policy, dir.path());
+    let mut now = Instant::now();
+    for device in [&mut denied, &mut first, &mut second] {
+        device.service.access(workspace_id, now);
+        device.service.access_scope(generation(0), now);
+    }
+    drive(&mut [&mut denied, &mut first, &mut second], &mut now, 8);
+    let KeyAccess::Ready(before) = denied.service.access_scope(generation(0), now) else {
+        panic!("everyone in the call holds its first keys");
+    };
+
+    // Denied: the rule's next generation admits the other two.
+    policy.document_readers.lock().unwrap().remove(&public(1));
+    let started = now;
+    first.service.access_scope(generation(1), now);
+    second.service.access_scope(generation(1), now);
+    denied.service.access_scope(generation(1), now);
+    let mut keys = None;
+    while keys.is_none() {
+        assert!(
+            now.duration_since(started) < Duration::from_secs(8),
+            "no admitted device founded the call's next keys"
+        );
+        drive(&mut [&mut denied, &mut first, &mut second], &mut now, 1);
+        keys = match (
+            first.service.access_scope(generation(1), now),
+            second.service.access_scope(generation(1), now),
+        ) {
+            (KeyAccess::Ready(first), KeyAccess::Ready(second)) => Some((first, second)),
+            _ => None,
+        };
+    }
+    let (sealing, opening) = keys.unwrap();
+    assert!(
+        now.duration_since(started) < founding_wait(),
+        "the next keys took {:?}, longer than one founding wait",
+        now.duration_since(started)
+    );
+    let artifact = collab_types::document_artifact_id(
+        collab_types::scope::MEDIA_APP,
+        &workspace_id.to_string(),
+        &collab_types::calls::media_document("standup", 1),
+    );
+    let (metadata, ciphertext) = sealing
+        .seal_content(artifact, ContentRetention::Delta, b"after the deny")
+        .unwrap();
+    assert_eq!(
+        &*opening
+            .open_content(artifact, &metadata, &ciphertext)
+            .unwrap(),
+        b"after the deny"
+    );
+    drive(&mut [&mut denied, &mut first, &mut second], &mut now, 8);
+    assert!(
+        !matches!(
+            denied.service.access_scope(generation(1), now),
+            KeyAccess::Ready(_)
+        ),
+        "the denied device is handed the next keys"
+    );
+    let KeyAccess::Ready(workspace_keys) = denied.service.access(workspace_id, now) else {
+        panic!("the denied device keeps the workspace's keys");
+    };
+    for held in [&before, &workspace_keys] {
+        assert!(
+            held.open_content(artifact, &metadata, &ciphertext).is_err(),
+            "the denied device opens what was said after"
+        );
+    }
+}
+
+/// Page `seed` (transport endpoint `id`) of `workspace_id`: a follower whose key signs on a later
+/// poll, with its state under `dir`.
+fn page_signing_later(
+    workspace: &Arc<Workspace>,
+    workspace_id: WorkspaceId,
+    (id, seed): (usize, u8),
+    policy: &Policy,
+    dir: &Path,
+) -> Device {
+    workspace.queues.lock().unwrap().entry(id).or_default();
+    Device {
+        founds: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        service: WorkspaceKeys::open(
+            KeysConfig {
+                state: Arc::new(KeyDir::new(dir.join("groups"))),
+                vault: VaultKey::new([seed; 32]),
+                signer: Arc::new(LaterSigner(key(seed))),
+                role: KeyRole::Follower,
+            },
+            Box::new(Directory::new(policy.clone())),
+            Arc::new(SealChecks::default()),
+        )
+        .unwrap(),
+        seal_checks: Arc::new(SealChecks::default()),
+        endpoint: Endpoint::join(workspace, workspace_id, id),
+    }
+}
+
+/// Two pages are alone in a call: neither holds a role that commits the workspace's groups, and
+/// each one's key signs only on a later poll. The first to ask founds the call's keys and admits
+/// the other, which opens what it seals. A desktop of the workspace the call leaves out is handed
+/// every frame of the group as it travels, and founds none beside it: it holds no state of the
+/// group, and no key it holds opens what was said in the call.
+#[test]
+fn pages_found_their_calls_keys_and_a_device_the_call_leaves_out_opens_none_of_them() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let scope = neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: collab_types::scope::MEDIA_APP.into(),
+        document: collab_types::calls::media_document("standup", 0),
+        readers: None,
+    };
+    let group = scope.group();
+    let policy = Policy::readers([40, 41, 42]);
+    policy
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(41), public(42)]);
+    let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+    let mut desktop = device(&workspace, workspace_id, 0, 40, &policy, dirs[0].path());
+    let mut first = page_signing_later(&workspace, workspace_id, (1, 41), &policy, dirs[1].path());
+    let mut second = page_signing_later(&workspace, workspace_id, (2, 42), &policy, dirs[2].path());
+    let mut now = Instant::now();
+    let KeyAccess::Ready(desktop_keys) = create(&mut desktop, workspace_id, now) else {
+        panic!("the desktop holds the workspace's keys");
+    };
+    assert!(matches!(
+        desktop.service.access_scope(scope.clone(), now),
+        KeyAccess::Unavailable
+    ));
+
+    let started = now;
+    let mut keys = None;
+    while keys.is_none() {
+        assert!(
+            now.duration_since(started) < Duration::from_secs(30),
+            "the pages never founded the call's keys"
+        );
+        for page in [&mut first, &mut second] {
+            page.service.access_scope(scope.clone(), now);
+        }
+        drive(&mut [&mut desktop, &mut first, &mut second], &mut now, 1);
+        for page in [&mut first, &mut second] {
+            pollster::block_on(page.service.signatures());
+        }
+        // Both may found a group at once; they settle on one, which holds them both, in one epoch.
+        keys = match (
+            first.service.access_scope(scope.clone(), now),
+            second.service.access_scope(scope.clone(), now),
+        ) {
+            (KeyAccess::Ready(sealing), KeyAccess::Ready(opening))
+                if sealing.epoch() == opening.epoch()
+                    && first.service.peers[&group].peer.members()
+                        == BTreeSet::from([public(41), public(42)]) =>
+            {
+                Some((sealing, opening))
+            }
+            _ => None,
+        };
+    }
+    let (sealing, opening) = keys.unwrap();
+    let artifact = collab_types::document_artifact_id(
+        collab_types::scope::MEDIA_APP,
+        &workspace_id.to_string(),
+        &collab_types::calls::media_document("standup", 0),
+    );
+    let (metadata, ciphertext) = sealing
+        .seal_content(artifact, ContentRetention::Delta, b"in the call")
+        .unwrap();
+    assert_eq!(
+        &*opening
+            .open_content(artifact, &metadata, &ciphertext)
+            .unwrap(),
+        b"in the call"
+    );
+
+    drive(&mut [&mut desktop, &mut first, &mut second], &mut now, 8);
+    assert!(
+        !desktop.service.peers.contains_key(&group),
+        "the desktop holds no state of the call's group"
+    );
+    assert!(matches!(
+        desktop.service.access_scope(scope, now),
+        KeyAccess::Unavailable
+    ));
+    assert!(
+        desktop_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_err(),
+        "the workspace's keys open the call"
     );
 }

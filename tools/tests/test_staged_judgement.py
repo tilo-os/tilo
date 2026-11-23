@@ -16,10 +16,12 @@ proves, for one check:
 """
 
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -118,6 +120,16 @@ class Case:
             return [v.path for v in module.audit(repository.root, staged)]
         if self.check == "check_too_many_arguments":
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
+        if self.check == "check_catalogue_coverage":
+            if staged:
+                return [
+                    entry.split(":", 1)[0]
+                    for entry in module.staged_drift(repository.root)
+                ]
+            return [
+                f"{unit}/locales/{module.SOURCE_LOCALE}.ftl"
+                for unit, _, _, _, _ in module.untranslated(repository.root)
+            ]
         raise AssertionError(f"no verdict for {self.check}")
 
 
@@ -129,20 +141,20 @@ CASES = (
         check="check_ui_clock_contract",
         files={
             "clippy.toml": "allow-unwrap-in-tests = true\n",
-            "crates/sdk/ui-core/clippy.toml": "allow-unwrap-in-tests = true\n",
-            "crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n",
+            "crates/ui/ui-core/clippy.toml": "allow-unwrap-in-tests = true\n",
+            "crates/ui/ui-core/src/lib.rs": "pub fn run() {}\n",
         },
         violation={
-            "crates/sdk/ui-core/src/wall.rs": (
+            "crates/ui/ui-core/src/wall.rs": (
                 "pub fn deadline() -> std::time::Instant { std::time::Instant::now() }\n"
             ),
         },
     ),
     Case(
         check="check_formats",
-        files={"crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n"},
+        files={"crates/ui/ui-core/src/lib.rs": "pub fn run() {}\n"},
         violation={
-            "crates/sdk/ui-core/src/row.rs": (
+            "crates/ui/ui-core/src/row.rs": (
                 'pub fn stamp(when: Time) -> String { when.format("%b %d").to_string() }\n'
             ),
         },
@@ -159,11 +171,11 @@ CASES = (
     Case(
         check="check_app_window_inputs_contract",
         files={
-            "crates/sdk/ui-core/src/lib.rs": "pub fn run() {}\n",
-            **{f"crates/sdk/ui-core/src/{name}": "" for name in NATIVE_RUNNER_FILES},
+            "crates/ui/ui-core/src/lib.rs": "pub fn run() {}\n",
+            **{f"crates/ui/ui-core/src/{name}": "" for name in NATIVE_RUNNER_FILES},
         },
         violation={
-            "crates/sdk/ui-core/src/portable.rs": (
+            "crates/ui/ui-core/src/portable.rs": (
                 'pub fn home() -> Option<String> { env::var("HOME").ok() }\n'
             ),
         },
@@ -218,6 +230,14 @@ CASES = (
                 "pub fn at() -> std::time::SystemTime { std::time::SystemTime::now() }\n"
             ),
         },
+    ),
+    Case(
+        check="check_catalogue_coverage",
+        files={
+            "app/locales/en-US.ftl": "a = Title\n",
+            "app/locales/de-DE.ftl": "a = Titel\n",
+        },
+        violation={"app/locales/en-US.ftl": "a = Title\n\nb = Settings\n"},
     ),
 )
 
@@ -303,6 +323,29 @@ def counting_reads(read: list[Path]):
     return factory
 
 
+class GitTimeoutTests(unittest.TestCase):
+    """A git call that does not finish refuses the commit, naming the step."""
+
+    def test_a_git_call_that_does_not_finish_refuses_with_the_step_named(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = judged_module.subprocess.run
+
+            def slow(*args, **kwargs):
+                self.assertEqual(kwargs.get("timeout"), judged_module.GIT_TIMEOUT_SECONDS)
+                raise subprocess.TimeoutExpired(args[0], judged_module.GIT_TIMEOUT_SECONDS)
+
+            judged_module.subprocess.run = slow
+            stderr = io.StringIO()
+            try:
+                with redirect_stderr(stderr), self.assertRaises(SystemExit) as refused:
+                    judged_module.git(Path(directory), "diff", "--cached", "--name-only")
+            finally:
+                judged_module.subprocess.run = original
+            self.assertEqual(refused.exception.code, 2)
+            self.assertIn("git diff did not finish within", stderr.getvalue())
+            self.assertIn("refusing rather than holding the commit", stderr.getvalue())
+
+
 class JudgedTests(unittest.TestCase):
     def test_a_staged_file_is_read_from_the_index(self):
         repository = Repository({"crates/x/src/lib.rs": "committed\n"})
@@ -367,6 +410,7 @@ class HookWiringTests(unittest.TestCase):
         "check_swallowed_failures",
         "check_module_reachability",
         "check_too_many_arguments",
+        "check_catalogue_coverage",
     )
 
     def test_the_hook_judges_the_commit_it_is_committing(self):

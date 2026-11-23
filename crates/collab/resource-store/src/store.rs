@@ -52,6 +52,8 @@ use crate::query::{Filter, Page, Query};
 use crate::schema::Schema;
 use crate::value::{Cell, Value};
 
+mod readers;
+
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
 
@@ -89,6 +91,38 @@ fn content_resource(doc: &str) -> Option<(&str, &str)> {
     rest.split_once('/')
 }
 
+/// A resource one change wrote ([`Store::wrote`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wrote {
+    pub kind: String,
+    pub id: String,
+    /// What it holds as the change left it: its indexed fields and its content, by name.
+    pub holds: serde_json::Map<String, serde_json::Value>,
+    /// The resource it is nested in, when it is nested in one: its kind, id and indexed fields.
+    pub parent: Option<(String, String, serde_json::Map<String, serde_json::Value>)>,
+}
+
+/// Indexed `fields` as JSON: a scalar as itself, a set as the list of its members.
+fn fields_json(fields: &BTreeMap<String, Cell>) -> serde_json::Map<String, serde_json::Value> {
+    let scalar = |value: &Value| match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(flag) => serde_json::Value::Bool(*flag),
+        Value::Int(number) => serde_json::Value::from(*number),
+        Value::Float(number) => serde_json::Value::from(*number),
+        Value::Text(text) => serde_json::Value::String(text.clone()),
+    };
+    fields
+        .iter()
+        .map(|(name, cell)| {
+            let value = match cell {
+                Cell::One(value) => scalar(value),
+                Cell::Set(members) => members.iter().map(scalar).collect(),
+            };
+            (name.clone(), value)
+        })
+        .collect()
+}
+
 /// Why the store refused a write or a peer's changes.
 #[derive(Debug)]
 pub enum StoreError {
@@ -98,6 +132,8 @@ pub enum StoreError {
     Document(automerge::AutomergeError),
     /// A read was given where a write was asked for.
     NotAWrite,
+    /// A write places a resource where its type's reader rule does not.
+    Readers(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -106,6 +142,7 @@ impl std::fmt::Display for StoreError {
             Self::Missing { kind, id } => write!(f, "there is no {kind} `{id}`"),
             Self::Document(error) => write!(f, "the document refused the change: {error}"),
             Self::NotAWrite => write!(f, "that is a read, not a write"),
+            Self::Readers(reason) => f.write_str(reason),
         }
     }
 }
@@ -173,6 +210,8 @@ pub struct Store {
     changed: BTreeSet<u64>,
     /// The resource types every app declared: what a peer's change is checked against.
     schema: Schema,
+    /// The reader rule of each kind whose type names its readers, as [`Store::declare`] took it.
+    rules: BTreeMap<String, tilo_actions::surface::ReaderRule>,
     /// Per document, the changes it refused: kept beside it, never applied, and refusing
     /// every change built on them.
     refused: HashMap<String, BTreeSet<ChangeHash>>,
@@ -1196,6 +1235,91 @@ impl Store {
         (doc.length(ROOT) > 0).then(|| crate::wire::json_of(doc, &ROOT))
     }
 
+    /// What the change `hash` of the document `doc_id` wrote: each resource it made or changed,
+    /// by kind and id, with what it holds as the change left it ([`Wrote`]). A change of a
+    /// resource's content names that resource; a change of a document of resources names each
+    /// resource whose entry it changed. None for a document not in memory, or a change it lacks.
+    #[must_use]
+    pub fn wrote(&self, doc_id: &str, hash: ChangeHash) -> Vec<Wrote> {
+        let Some(doc) = self.docs.get(doc_id) else {
+            return Vec::new();
+        };
+        let Some(change) = doc.get_change_by_hash(&hash) else {
+            return Vec::new();
+        };
+        let after = [hash];
+        let now = crate::wire::AsOf {
+            doc,
+            heads: Some(&after),
+        };
+        if let Some((kind, id)) = content_resource(doc_id) {
+            let content = now.json(&ROOT);
+            return vec![self.wrote_one(kind, id, None, content)];
+        }
+        let before = crate::wire::AsOf {
+            doc,
+            heads: Some(change.deps()),
+        };
+        let entry = |look: &crate::wire::AsOf<'_>, key: &str| {
+            look.get(&ROOT, key)
+                .map(|(_, obj)| look.json(&obj))
+                .unwrap_or_default()
+        };
+        now.keys(&ROOT)
+            .into_iter()
+            .filter_map(|key| {
+                let id = key.strip_prefix(HELD)?;
+                let held = entry(&now, &key);
+                (held != entry(&before, &key)).then_some((id.to_owned(), held))
+            })
+            .filter_map(|(id, held)| {
+                let kind = held.get(KIND)?.as_str()?.to_owned();
+                let fields = read_as_of(doc, Some(&after), &id).map(|(_, resource)| resource);
+                let content = self.content_json(&kind, &id).unwrap_or_default();
+                Some(self.wrote_one(&kind, &id, fields, content))
+            })
+            .collect()
+    }
+
+    /// One resource [`Self::wrote`] names: its indexed fields (`fields`, or as the index holds
+    /// them now), its `content` beside them, and the resource it is nested in with what that
+    /// holds.
+    fn wrote_one(
+        &self,
+        kind: &str,
+        id: &str,
+        fields: Option<Resource>,
+        content: serde_json::Value,
+    ) -> Wrote {
+        let indexed = self.index.get(kind, id);
+        let (fields, parent) = match fields {
+            Some(resource) => (resource.fields, resource.parent),
+            None => (
+                indexed.map(|held| held.fields.clone()).unwrap_or_default(),
+                indexed.and_then(|held| held.parent.clone()),
+            ),
+        };
+        let mut holds = fields_json(&fields);
+        if let serde_json::Value::Object(content) = content {
+            holds.extend(content);
+        }
+        let parent = parent.map(|parent| {
+            let kind = self.index.kind_anywhere(&parent).unwrap_or_default();
+            let fields = self
+                .index
+                .get(&kind, &parent)
+                .map(|held| fields_json(&held.fields))
+                .unwrap_or_default();
+            (kind, parent, fields)
+        });
+        Wrote {
+            kind: kind.to_owned(),
+            id: id.to_owned(),
+            holds,
+            parent,
+        }
+    }
+
     /// The versions of the resource `id` of `kind`, oldest first: each change that made, changed
     /// or removed it, or changed its content, as its action stamped it. One whose document is
     /// not in memory has none.
@@ -1768,6 +1892,7 @@ impl Store {
 
     /// Takes the types `schema` declares into those a peer's change is checked against.
     pub fn declare(&mut self, schema: Schema) {
+        self.rules.extend(schema.readers);
         for ty in schema.types {
             self.schema.types.retain(|held| held.name != ty.name);
             self.schema.types.push(ty);
@@ -1815,6 +1940,7 @@ impl Store {
             crate::admit::within_verb(schema, &touched, stamp.as_ref())
                 .map_err(Refusal::Undeclared)?;
         }
+        self.judge_readers(doc_id, readers, &touched, &received.change)?;
         let admitted = admit.admit(&Proposal {
             doc: doc_id,
             readers,

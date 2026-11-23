@@ -32,6 +32,9 @@ struct Served {
 
 /// The app that keeps the tracker the issues are in.
 const TASKS: &str = "so.tilo.tasks";
+/// A search with many hits in one conversation.
+#[path = "hosted_search_many.rs"]
+mod many_hits;
 
 /// A rule about reading what is at `node`.
 pub(super) fn reading(node: String, answer: &str) -> Bound {
@@ -52,29 +55,38 @@ fn person_of(root: &SigningKey) -> String {
     hex::encode(root.verifying_key().to_bytes())
 }
 
-/// The conversation `root`'s person has with the agent `agent`: their direct conversation, as
-/// a turn's session names where its tools look.
+/// The conversation of `root`'s person with the agent `agent`.
 fn conversation_with(root: &SigningKey, agent: &str) -> Id {
-    Id::from_raw(format!("direct:{}/{}", person_of(root), agent))
+    chat::Chat::direct_id([MemberId::person(person_of(root)), MemberId::agent(agent)])
 }
 
-/// `person`'s session handed to the agent `agent` on a turn that `cause` gave it in
-/// `conversation`, held to `rules`: the caller the tools of such a turn act as on a server.
+/// The roster agent `agent` on a turn that `cause` gave it in `conversation`, held to `rules`:
+/// the caller the tools of such a turn act as on a server.
 fn on_a_turn(
     person: &Caller,
     agent: &str,
     (conversation, cause): (&Id, &Id),
     rules: Vec<tilo_action_policy::Rule>,
 ) -> Caller {
-    person
-        .clone()
-        .delegated_to(agent.to_owned())
+    let user = *person
+        .user_public_key()
+        .expect("a person's caller names their key");
+    let device = *person
+        .device_public_key()
+        .expect("a person's caller names their device");
+    let mut caller = Caller::delegated_agent(agent, user, device)
         .named(agent)
         .in_agent_session(format!("agent-session:test-{agent}"))
-        .on_turn(
-            tilo_action_policy::turn::Turn::new(conversation.to_string(), cause.to_string()),
-            rules,
-        )
+        .on_roster(0, user)
+        .on_roster_turn(tilo_action_policy::turn::Turn::new(
+            chat::summons::conversation_address(conversation),
+            cause.to_string(),
+        ))
+        .held_to(rules);
+    if let Some(workspace) = person.workspace() {
+        caller = caller.in_workspace(workspace);
+    }
+    caller
 }
 
 /// A model that searches for each of `queries` at once and then answers. Every request it was
@@ -146,6 +158,10 @@ macro_rules! service {
     };
 }
 
+/// What a read of Chat gives an agent of a direct conversation its person takes no part in.
+#[path = "chat_read_direct.rs"]
+mod chat_read_direct;
+
 /// What each tool step of a turn says in the server's log.
 #[path = "hosted_step_timing.rs"]
 mod step_timing;
@@ -214,6 +230,11 @@ impl Served {
             bound(&workspace),
         )
         .await;
+        let governor = self.workspaces.device_cert().clone();
+        self.workspaces
+            .prepare_application(&workspace, &governor, &crate::common::catalogue(), CHAT, "")
+            .await
+            .unwrap();
         let said = write_to_agent(
             &self.actions,
             &self.workspaces,
@@ -273,20 +294,83 @@ impl Served {
         .in_workspace(workspace)
     }
 
-    /// `root`'s person said `text` in their conversation with the agent at `when`, in seconds
-    /// since the Unix epoch: written as their own words of that moment. `when` is the time of a
-    /// post made in step with the others; a live post reads after what the conversation already
-    /// holds. The message's id.
+    /// `root`'s person said `text` in `conversation` at `when`, in seconds since the Unix
+    /// epoch: the server writes it into the chat's messages as that person's own words of that
+    /// moment. A live post reads after what the conversation already holds, so `when` is the
+    /// time of a post made in step with the others. The message's id.
     async fn said_at(
         &self,
         workspace: &str,
         root: &SigningKey,
-        _conversation: &Id,
-        (text, _when): (&str, i64),
+        conversation: &Id,
+        (text, when): (&str, i64),
     ) -> Id {
-        let person = person_of(root);
-        super::hosted_agent_turns::write_message(&self.workspaces, workspace, &person, SCOUT, text)
+        let invoke = chat::demo::post(conversation.as_str(), text, None);
+        self.wrote(workspace, root, (text, Some(when * 1000)), invoke)
             .await
+    }
+
+    /// `root`'s person imported into `conversation` what they wrote elsewhere at `when`, in
+    /// seconds since the Unix epoch: kept at that time whatever the conversation already holds,
+    /// which is what a message of an earlier day is to a search. The message's id.
+    async fn imported_at(
+        &self,
+        workspace: &str,
+        root: &SigningKey,
+        conversation: &Id,
+        (text, when): (&str, i64),
+    ) -> Id {
+        let invoke = chat::demo::import(conversation.as_str(), text, ("Ada", "Notes"), when * 1000);
+        self.wrote(workspace, root, (text, None), invoke).await
+    }
+
+    /// `root`'s person invoked `invoke` writing `text`, at `now_ms` when given: the id of the
+    /// message it wrote, once the server holds it.
+    async fn wrote(
+        &self,
+        workspace: &str,
+        root: &SigningKey,
+        (text, now_ms): (&str, Option<i64>),
+        invoke: ui::tilo_resource::Invoke<chat::parts::ChatMessages>,
+    ) -> Id {
+        let governor = self.workspaces.device_cert().clone();
+        let held = self
+            .workspaces
+            .resource_document(workspace, CHAT, "")
+            .await
+            .unwrap()
+            .unwrap();
+        let chat = chat::Chat::read(&automerge::AutoCommit::load(&held).unwrap()).unwrap();
+        let person = person_of(root);
+        self.workspaces
+            .author_application(
+                workspace,
+                &governor,
+                &crate::common::catalogue(),
+                CHAT,
+                chat::parts::part(0).as_str(),
+                |part| {
+                    chat::demo::apply_part_doc_as(
+                        part,
+                        &chat,
+                        |replica| replica.as_invoker(&person),
+                        now_ms,
+                        invoke,
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("a message is written: {error}"));
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let part = conversation_part(&self.workspaces, workspace).await;
+            if let Some((id, _)) = part.messages.iter().find(|(_, held)| held.text == text) {
+                return id.clone();
+            }
+            assert!(Instant::now() < deadline, "the server never holds {text:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// What the agent tool `name` answers `caller` with for `arguments` in `workspace`: its
@@ -442,23 +526,24 @@ pub(super) async fn narrow_agent(
 
 /// Answer the turn `message` gives the agent in `workspace`, on the server, with `model`.
 async fn answered(served: &Served, workspace: &str, message: &Id, model: Model) {
-    answered_knowing(served, workspace, message, model, None).await;
+    answered_knowing(served, (workspace, None), message, model, None).await;
 }
 
 /// [`answered`], by agents told that the devices `placed` holds are the server's own, where
-/// they are told any.
+/// they are told any. The agent acts for `person`, a root and a device of theirs, and they
+/// approve it; where none is named it acts for Ada.
 async fn answered_knowing(
     served: &Served,
-    workspace: &str,
+    (workspace, person): (&str, Option<(&SigningKey, &crate::support::Device)>),
     message: &Id,
     model: Model,
     placed: Option<tilo_server::environment::EnvironmentRegistry>,
 ) {
-    let agents = served
-        .alive
-        .approving(workspace, &[SCOUT])
-        .await
-        .scripted(model);
+    let agents = match person {
+        Some(person) => Box::pin(served.alive.approving_as(person, workspace, &[SCOUT], &[])).await,
+        None => Box::pin(served.alive.approving(workspace, &[SCOUT])).await,
+    }
+    .scripted(model);
     let agents = if let Some(placed) = placed {
         agents.knowing_placed(placed)
     } else {
@@ -466,14 +551,10 @@ async fn answered_knowing(
     };
     let deadline = tilo_test_env::hang_deadline();
     let turn = loop {
-        // The ask `message` made of the agent: a turn's cause is the ask it is owed, not the
-        // message that asked it.
-        let asked = asked_on(&served.workspaces, workspace).await;
-        let cause = ask_on(&asked, message, SCOUT).map(|ask| ask.at.id_string());
         let turns = agents.turns(workspace).await.unwrap();
         if let Some(turn) = turns
             .into_iter()
-            .find(|turn| Some(&turn.cause) == cause.as_ref())
+            .find(|turn| turn.cause == message.to_string())
         {
             break turn;
         }
@@ -936,6 +1017,139 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
     page.peer.close();
 }
 
+/// A turn finds what was said in its own conversation by words and by time, through the same
+/// search: "what did I say about the heron last week" is answered with last week's message and
+/// when it was written, not with the older one, today's or another topic's. With no words, a
+/// stretch of time lists what was said in it, the newest first. Nothing of it reaches a caller
+/// who may not read the conversation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
+    const DAY: i64 = 86_400;
+    let mut served = Served::start(1).await;
+    let (workspace, page, today) = served.workspace(|_| Vec::new()).await;
+    let conversation = conversation_with(&served.ada, SCOUT);
+    let now = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000_000).unwrap();
+    let mut said = Vec::new();
+    for (text, days_ago) in [
+        ("The heron count at the pond was nine.", 10),
+        ("Tell the vet the heron limped on Tuesday.", 3),
+        ("The otter needs a new ramp.", 2),
+    ] {
+        let when = now - days_ago * DAY;
+        let id = served
+            .imported_at(&workspace, &served.ada, &conversation, (text, when))
+            .await;
+        said.push((id, when));
+    }
+    let [(older, _), (last_week, limped_at), (otter, _)] = &said[..] else {
+        unreachable!("three messages were written");
+    };
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let turn = on_a_turn(&ada, SCOUT, (&conversation, &today), Vec::new());
+    let here = chat::summons::conversation_address(&conversation);
+    let ids =
+        |found: &[Found]| -> Vec<String> { found.iter().map(|hit| hit.resource.clone()).collect() };
+    let names = |found: &[Found], message: &Id| {
+        found
+            .iter()
+            .any(|hit| hit.resource.ends_with(message.as_str()))
+    };
+
+    // By words and by time: only last week's message about the heron, and when it was said.
+    let last_week_only = Within {
+        place: Some(here.clone()),
+        after: Some(now - 7 * DAY),
+        before: Some(now - DAY),
+    };
+    served
+        .finds_soon(&workspace, &turn, ("heron", last_week.as_str()))
+        .await;
+    let began = Instant::now();
+    let found = served
+        .found(&workspace, &turn, ("heron", &last_week_only))
+        .await;
+    eprintln!(
+        "a search narrowed to a conversation and a week answered in {:?}: {found:?}",
+        began.elapsed()
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(names(&found, last_week), "{found:?}");
+    assert_eq!(found[0].when, Some(*limped_at), "{found:?}");
+    // The conversation is named by its own id as well as by where it is.
+    let by_id = Within {
+        place: Some(conversation.to_string()),
+        ..last_week_only.clone()
+    };
+    let found = served.found(&workspace, &turn, ("heron", &by_id)).await;
+    assert_eq!(found.len(), 1, "{found:?}");
+
+    // By time alone: what was said in the last week, the newest first.
+    let this_week = Within {
+        place: Some(here.clone()),
+        after: Some(now - 7 * DAY),
+        before: None,
+    };
+    let found = served.found(&workspace, &turn, ("", &this_week)).await;
+    assert_eq!(found.len(), 3, "{:?}", ids(&found));
+    assert!(
+        names(&found[..1], &today),
+        "today's first: {:?}",
+        ids(&found)
+    );
+    assert!(names(&found[1..2], otter), "{:?}", ids(&found));
+    assert!(names(&found[2..], last_week), "{:?}", ids(&found));
+    assert!(!names(&found, older), "{:?}", ids(&found));
+
+    // Another conversation holds none of it, and no words with nothing narrowed find nothing.
+    let elsewhere = Within {
+        place: Some(chat::summons::conversation_address(&conversation_with(
+            &served.ada,
+            "helper",
+        ))),
+        ..Within::default()
+    };
+    let found = served.found(&workspace, &turn, ("heron", &elsewhere)).await;
+    assert!(found.is_empty(), "{found:?}");
+    let found = served
+        .found(&workspace, &turn, ("", &Within::default()))
+        .await;
+    assert!(found.is_empty(), "{found:?}");
+
+    // The whole way, as a turn's model asks it: the tool takes the conversation and the week
+    // from the query, and answers with the message and when it was written.
+    let asked_now = write_to_agent(
+        &served.actions,
+        &served.workspaces,
+        &workspace,
+        (&served.ada, &served.devices.1),
+        "What did I say about the heron last week?",
+    )
+    .await;
+    let query = format!(
+        "heron in:here after:{} before:{}",
+        Within::said_at(now - 7 * DAY).unwrap(),
+        Within::said_at(now - DAY).unwrap()
+    );
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    Box::pin(answered(
+        &served,
+        &workspace,
+        &asked_now,
+        searching(&[query.as_str()], &asked),
+    ))
+    .await;
+    let answers = tools_answered(&asked);
+    eprintln!("tilo_find {query:?} answered {answers:?}");
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    let lines: Vec<&str> = answers[0].lines().collect();
+    assert_eq!(lines.len(), 1, "one message of last week: {answers:?}");
+    assert!(
+        lines[0].starts_with("chat") && lines[0].ends_with(&Within::said_at(*limped_at).unwrap()),
+        "{answers:?}"
+    );
+    page.peer.close();
+}
+
 /// How the service decides an agent the workspace's own list does not hold.
 #[path = "hosted_across.rs"]
 mod across;
@@ -1059,91 +1273,6 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
             assert_eq!(file_read, 0, "a settled find reads no file");
         }
     }
-    page.peer.close();
-}
-
-/// A hosted turn's tools reach a tilolang app built into its server: Chat's record is listed
-/// through the package the server runs it from, a message is read by its words, and an action of
-/// Chat's on it is carried out as the agent, on its person's behalf.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_turn_lists_reads_and_changes_a_tl_app_through_its_package() {
-    let mut served = Served::start(1).await;
-    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let her_agent = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &said),
-        Vec::new(),
-    );
-    // What Chat publishes is listed under the app, through the record's own package.
-    let (listed, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_ls",
-            serde_json::json!({"path": "chat"}),
-        )
-        .await;
-    assert!(!failed, "Chat is listed: {listed}");
-    assert!(
-        listed.contains("tl.so.tilo.chat"),
-        "the listing names Chat's resources: {listed}"
-    );
-    // The search names her message by the path the tools take, as it names any resource.
-    let (found, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_find",
-            serde_json::json!({"query": "heron"}),
-        )
-        .await;
-    assert!(!failed, "her message is found: {found}");
-    let path = found
-        .lines()
-        .find(|line| line.contains("tl.so.tilo.chat"))
-        .and_then(|line| line.split("  ").next())
-        .expect("her message is found by its words")
-        .to_owned();
-    // Her message reads by the words she said.
-    let (read, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_read",
-            serde_json::json!({"path": path.clone()}),
-        )
-        .await;
-    assert!(!failed, "the message reads: {read}");
-    assert!(read.contains("heron"), "the message's words: {read}");
-    assert!(!read.contains("true"), "it is not pinned yet: {read}");
-    // Chat's own action on it is carried out as her agent, on her behalf.
-    let (pinned, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_do",
-            serde_json::json!({
-                "path": format!("{path}#pin"),
-                "args": {"pinned": true},
-            }),
-        )
-        .await;
-    assert!(!failed, "Chat's pin runs: {pinned}");
-    let (read, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_read",
-            serde_json::json!({"path": path.clone()}),
-        )
-        .await;
-    assert!(!failed, "the message reads again: {read}");
-    assert!(
-        read.contains("true"),
-        "the message is pinned, as it was written: {read}"
-    );
     page.peer.close();
 }
 

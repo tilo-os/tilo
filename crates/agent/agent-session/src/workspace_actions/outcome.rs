@@ -78,9 +78,6 @@ pub(super) fn speaks_for_a_member(caller: &Caller) -> bool {
     if !caller.acting().is_agent() {
         return false;
     }
-    if caller.is_session_delegated() {
-        return caller.acting_for_person().is_some();
-    }
     caller.user_public_key().is_some() && caller.device_public_key().is_some()
 }
 

@@ -215,7 +215,7 @@ Read from the tree; build on these rather than duplicating them.
 
 - **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Actor`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `crates/session/session/src/` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `crates/session/session/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/tilo/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
 
-- **The prompt UI exists**: `crates/sdk/ui-core/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
+- **The prompt UI exists**: `crates/ui/ui-core/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
 
 - **`docs/app-model/trust.md`**: Ed25519 publisher identity; signed root over `manifest_hash || payload_root_hash || publisher_identity` whose BLAKE3 *is* the `PackageId`; attestations signed over an 82-byte preimage deliberately excluding the `PackageId` to avoid a fixed point; revocation checked **at install and at every launch**, with no "trusted once" cache.
 
@@ -559,7 +559,7 @@ Reuse:
   no-privilege property.
 - `collab-types::caps` as the lease vocabulary. `Expiry` already *is* lease
   duration. Add `Scope::Elevated(ElevatedCap)` rather than a second enum.
-- `crates/sdk/ui-core/src/widget/permission_prompt.rs` for the lease prompt.
+- `crates/ui/ui-core/src/widget/permission_prompt.rs` for the lease prompt.
 - The `0600` capability-file handoff under `$XDG_RUNTIME_DIR/tilo/capabilities/`,
   which already deliberately does not let the sandbox see its own permissions.
 
@@ -583,10 +583,10 @@ Must change:
 
 ## Part 3 — Prototype status
 
-`crates/system/tinker/`, 42 tests, all green.
+`crates/vm/tinker/`, 42 tests, all green.
 
 ```bash
-cargo build -p tinker && ./crates/system/tinker/demo.sh
+cargo build -p tinker && ./crates/vm/tinker/demo.sh
 ```
 
 `demo.sh` drives the entire loop from a cold start and fails if the base

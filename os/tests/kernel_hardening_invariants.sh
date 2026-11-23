@@ -582,8 +582,8 @@ for required in \
 done
 [ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to staged, validated ESP plans'
 
-game_planner="$repo/crates/windows/compat-service/src/plan.rs"
-game_executor="$repo/crates/windows/compat-service/src/execute.rs"
+game_planner="$repo/crates/compat/compat-service/src/plan.rs"
+game_executor="$repo/crates/compat/compat-service/src/execute.rs"
 game_performance="$repo/crates/packaging/launcher/src/performance.rs"
 native_launcher="$repo/crates/packaging/launcher/src/run.rs"
 grep -Fq 'libc::SYS_sched_setattr' "$game_performance" \
@@ -803,7 +803,7 @@ done
 [ "$fail" -ne 0 ] || ok 'PrivateIPC user units run one process; their roots come from tmpfiles'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
-rollback_exec="$repo/crates/system/tilo-rollback/src/exec.rs"
+rollback_exec="$repo/crates/os/tilo-rollback/src/exec.rs"
 for required in \
   'Nice=10' \
   'CPUWeight=20' \
@@ -895,7 +895,7 @@ for unit_path in $procsubset_units; do
   done < <(sed -n 's/^Exec\(Start\|Stop\|Reload\)=[-+!:]*\([^ ]*\).*/\2/p' "$unit_path")
 done
 if grep -REn '/proc/(cmdline|sys/|cpuinfo|meminfo|modules|filesystems|crypto|version|uptime)' \
-    "$repo/crates/windows/windows-vm/src" >/dev/null; then
+    "$repo/crates/compat/windows-vm/src" >/dev/null; then
   bad 'ProcSubset=pid Windows VM controller reads a hidden non-process /proc path'
 fi
 # tilo-rollback-harden sources this library but must not reach its cmdline helper.
@@ -1118,7 +1118,7 @@ fi
 # and the checker must pass the shipped policy and fail every weakened copy. A
 # grep for fragments is satisfied by a signed sibling scope while the Tilo
 # scope itself accepts anything.
-# The checker is compiled (crates/system/image-policy-check): build the
+# The checker is compiled (crates/os/image-policy-check): build the
 # image's own binary, or use the one TILO_IMAGE_POLICY_CHECK_BIN names.
 image_policy_check="${TILO_IMAGE_POLICY_CHECK_BIN:-}"
 if [ -z "$image_policy_check" ]; then

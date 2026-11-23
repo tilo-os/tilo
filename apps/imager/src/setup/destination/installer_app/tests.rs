@@ -197,18 +197,9 @@ fn layout_with_theme(
 }
 
 fn invoke_provider(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
-    use ui::framework::HostDelivery as _;
-    let completed = app
-        .deliver_control(
-            ui::tilo_actions::OperationKind::View,
-            id,
-            doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
     assert!(
-        completed.is_some(),
-        "provider control must execute its view action"
+        ui::framework::press_control(app, id, doc, &automerge::ROOT),
+        "provider control must run its press"
     );
     app.sync(doc, &automerge::ROOT);
     assert_eq!(doc.length(automerge::ROOT), 0);

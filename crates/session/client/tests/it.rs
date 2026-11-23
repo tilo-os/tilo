@@ -111,6 +111,8 @@ mod server_restart;
 mod session_store;
 #[path = "surface_by_hash.rs"]
 mod surface_by_hash;
+#[path = "voice_browsers.rs"]
+mod voice_browsers;
 #[path = "window_input.rs"]
 mod window_input;
 #[path = "write_before_record.rs"]

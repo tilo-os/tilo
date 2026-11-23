@@ -25,7 +25,9 @@ use std::rc::Rc;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
+use tilo_desktop::emoji::EmojiLink;
 use tilo_desktop::overlays::{Anchor as Place, Overlay, Part, SwitcherScope};
+use tilo_desktop::super_peek::SuperPeek;
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 
@@ -258,6 +260,18 @@ pub enum OverlayEffect {
     /// Go to the window the switcher's walk reached, and close the switcher.
     #[effect(kind = "outside")]
     CommitSwitcher,
+    /// Write the picked emoji into the field the person types in, and close the picker.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    PickEmoji {
+        /// The emoji the person picked.
+        #[param("The emoji to write into the field the person types in")]
+        text: String,
+    },
+    /// Close the emoji picker without writing anything.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    CloseEmoji,
     /// Answer the question waiting on the person's avatar
     #[effect(kind = "outside")]
     #[effect(row, label = "session-answer-ask")]
@@ -280,6 +294,10 @@ pub fn overlays_surface() -> tilo_resource::surface::Surface {
 /// What [`overlays_surface`] describes of the stack's reading.
 #[derive(tilo_resource::JsonSchema)]
 #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a surface of its own, read by the view it is for"
+)]
 struct OverlaysSurface {
     /// The surface the shell shows over the windows: `none` at rest, or `overview`, `switcher`,
     /// `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`.
@@ -299,6 +317,50 @@ struct OverlaysSurface {
     ask_answer: String,
     /// Whether the question stands open on the person's avatar, rather than as its dot.
     ask_open: bool,
+    /// Whether the About sheet stands over the windows: what this computer is, and which Tilo it
+    /// runs.
+    about: bool,
+    /// Whether the emoji picker stands over the windows: the card that writes each pick into the
+    /// field the person types in.
+    emoji: bool,
+    /// The keys a held Super reaches, while it is held: each group's title and its rows. Nothing
+    /// when Super is not held.
+    peek: Option<Peek>,
+    /// What this computer's About sheet says: its name, the Tilo it runs, and where to read more.
+    about_sheet: Option<AboutSheet>,
+}
+
+/// What a held Super reaches, as the shell's card shows it: the groups of keys, in reading order.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+struct Peek {
+    groups: Vec<PeekGroup>,
+}
+
+/// One group of the peek: its title, and the keys under it.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+struct PeekGroup {
+    title: String,
+    hints: Vec<PeekHint>,
+}
+
+/// One hint of the peek: the keys of a chord, and what pressing them does.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+struct PeekHint {
+    keys: Vec<String>,
+    label: String,
+}
+
+/// What the About sheet says, as the session reads it from the Tilo this computer runs.
+#[derive(Clone, Debug, Serialize, tilo_resource::JsonSchema)]
+struct AboutSheet {
+    title: String,
+    /// This computer's name: what the sheet leads with, when it has one.
+    heading: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    version: String,
+    /// Tilo's home on the web, as the sheet links it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    home: String,
 }
 
 /// The window menu as it reads: the window it is for, where it stands, and what that window offers
@@ -353,6 +415,10 @@ struct Row {
 
 /// The surface stack as it reads: what stands over the windows, topmost first.
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a surface of its own, read by the view it is for"
+)]
 struct StackReading {
     stack: Vec<Surface>,
     here: &'static str,
@@ -363,6 +429,10 @@ struct StackReading {
     ask_detail: String,
     ask_answer: String,
     ask_open: bool,
+    about: bool,
+    emoji: bool,
+    peek: Option<Peek>,
+    about_sheet: Option<AboutSheet>,
 }
 
 /// One open surface.
@@ -422,10 +492,16 @@ pub struct ShellService {
     surfaces: Surfaces,
     /// What the stack's reading was last published from: the shell's surface, whether the
     /// switcher's panel shows, and the stack's own revision.
-    seen: Option<(u64, Overlay, bool, u64)>,
+    seen: Option<(u64, Overlay, bool, u64, bool, u64)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
     shortcuts: crate::panels::mount::Shortcuts,
+    /// The keys a held Super reaches, as the shell's card shows them.
+    peek: SuperPeek,
+    /// The picker's picks, written into the field the person types in beside dictation.
+    emoji: EmojiLink,
+    /// What this computer's About sheet says.
+    about: AboutSheet,
 }
 
 impl ShellService {
@@ -435,13 +511,24 @@ impl ShellService {
         handle: DesktopHandle,
         surfaces: Surfaces,
         shortcuts: crate::panels::mount::Shortcuts,
+        peek: SuperPeek,
+        emoji: EmojiLink,
     ) -> Self {
+        let copy = tilo_desktop::about::about_copy(tilo_desktop::about::AboutVariant::Native);
         Self {
             handle,
             state: ShellState::default(),
             surfaces,
             seen: None,
             shortcuts,
+            peek,
+            emoji,
+            about: AboutSheet {
+                title: copy.title,
+                heading: copy.heading.unwrap_or_default(),
+                version: copy.version,
+                home: copy.home,
+            },
         }
     }
 
@@ -451,20 +538,30 @@ impl ShellService {
         handle: &DesktopHandle,
         surfaces: Surfaces,
         shortcuts: crate::panels::mount::Shortcuts,
+        peek: SuperPeek,
+        emoji: EmojiLink,
     ) {
-        services
-            .borrow_mut()
-            .add(Box::new(Self::new(handle.clone(), surfaces, shortcuts)));
+        services.borrow_mut().add(Box::new(Self::new(
+            handle.clone(),
+            surfaces,
+            shortcuts,
+            peek,
+            emoji,
+        )));
     }
 
     /// What the stack's reading is made from beside the stack itself.
-    fn key(&self) -> (u64, Overlay, bool, u64) {
+    fn key(&self) -> (u64, Overlay, bool, u64, bool, u64) {
         let shell = &self.surfaces.overlays;
+        let views =
+            u64::from(self.surfaces.emoji_open()) | (u64::from(self.surfaces.about_open()) << 1);
         (
             shell.revision(),
             shell.here(),
             shell.revealed(tilo_clock::now()),
             self.handle.personal_ask_revision(),
+            self.peek.is_up(),
+            views,
         )
     }
 
@@ -585,6 +682,10 @@ impl ShellService {
 
     /// Close a surface the session itself puts up.
     fn close_surface(&mut self, part: &str) -> Result<(), ApiError> {
+        // The held Super's keys are a picture, and its hold ends it: there is nothing to close.
+        if part.trim() == crate::device_lists::PEEK {
+            return Ok(());
+        }
         let part = named(part)?;
         if !part.session_closes() {
             return Err(ApiError::Unavailable {
@@ -735,6 +836,13 @@ impl Service for ShellService {
                     OverlayEffect::CommitSwitcher => {
                         crate::windows::commit_switcher(&self.handle, &self.surfaces.overlays);
                     }
+                    OverlayEffect::PickEmoji { text } => {
+                        self.emoji.note_picked(text);
+                        self.surfaces.close(crate::device_lists::EMOJI);
+                    }
+                    OverlayEffect::CloseEmoji => {
+                        self.surfaces.close(crate::device_lists::EMOJI);
+                    }
                     OverlayEffect::AnswerAsk => self.handle.answer_personal_ask(),
                     OverlayEffect::PutOffAsk => self.handle.put_off_personal_ask(),
                 }
@@ -771,7 +879,17 @@ impl ShellService {
                     }),
                 })
                 .collect(),
-            here: self.surfaces.overlays.here().name(),
+            here: if self.surfaces.emoji_open() {
+                crate::device_lists::EMOJI
+            } else if self.surfaces.about_open() {
+                crate::device_lists::ABOUT
+            } else if self.peek.is_up() && self.surfaces.overlays.here() == Overlay::Rest {
+                // The held-Super card stands over the windows while the shell is otherwise at
+                // rest: a picture, which the part draws over the windows without taking keys.
+                crate::device_lists::PEEK
+            } else {
+                self.surfaces.overlays.here().name()
+            },
             switcher_revealed: self.surfaces.overlays.revealed(tilo_clock::now()),
             switcher_scope: self.surfaces.overlays.scope().name(),
             spotlight: self.surfaces.overlays.spotlight(),
@@ -782,7 +900,33 @@ impl ShellService {
                 .unwrap_or_default(),
             ask_detail: ask.as_ref().map(|ask| ask.body.clone()).unwrap_or_default(),
             ask_answer: ask.map(|ask| ask.action.title).unwrap_or_default(),
+            about: self.surfaces.about_open(),
+            emoji: self.surfaces.emoji_open(),
+            peek: self.peek_card(),
+            about_sheet: Some(self.about.clone()),
         }
+    }
+
+    /// The keys a held Super reaches, while it is held: the groups the session put up when the
+    /// hold began, as the chrome's own card reads them, so the shell shows exactly the glance the
+    /// session meant.
+    fn peek_card(&self) -> Option<Peek> {
+        let groups = self.peek.groups()?;
+        Some(Peek {
+            groups: groups
+                .into_iter()
+                .map(|(title, hints)| PeekGroup {
+                    title,
+                    hints: hints
+                        .into_iter()
+                        .map(|hint| PeekHint {
+                            keys: hint.keys,
+                            label: hint.label,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
     }
 
     /// The window menu as the shell offers it now.

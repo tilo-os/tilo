@@ -182,6 +182,9 @@ cmd_boot() {
   # private key, as the same systemd OEM credential as the libvirt adapter.
   local extra=()
   [ -z "${TILO_VM_ROOT_KEY_FILE:-}" ] || extra+=(--root-key "$TILO_VM_ROOT_KEY_FILE")
+  # TILO_VM_TICKET: the `tilo device add` ticket tilo-vm made for this VM; the
+  # guest spends it at first boot to join the person's devices.
+  [ -z "${TILO_VM_TICKET:-}" ] || extra+=(--ticket "$TILO_VM_TICKET")
   if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
     extra+=(--lan "$TILO_VM_LAN_PORT:$TILO_VM_LAN_PEER:$TILO_VM_LAN_MAC" --lan-model "$TILO_VM_LAN_MODEL")
   fi

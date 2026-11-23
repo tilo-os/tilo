@@ -282,7 +282,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             cache_dir,
             require_existing,
         } => {
-            let status = workspace_startup::inspect(&cache_dir, &tree_socket())?;
+            let status = workspace_startup::inspect(&cache_dir, &tree_socket()?)?;
             if require_existing {
                 status.require_existing()?;
             }
@@ -305,7 +305,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 let cache = cache_dir
                     .as_deref()
                     .context("recovery requires --cache-dir")?;
-                workspace_startup::inspect(cache, &tree_socket())?.require_existing()?;
+                workspace_startup::inspect(cache, &tree_socket()?)?.require_existing()?;
             }
             Box::pin(serve(
                 mount_point,
@@ -804,7 +804,7 @@ async fn open_tree(
     };
     set_aside_older_namespace_file(dir)?;
     let (tree, service) = tilo_fs::tree_sync::remote::start(
-        tree_socket(),
+        tree_socket()?,
         workspace,
         (
             credentials.device_public_key(),
@@ -819,9 +819,9 @@ async fn open_tree(
     Ok((Some(tree), namespace, Some(kept), Some(service)))
 }
 
-/// Where this device's workspace service serves the trees of the workspaces it belongs to.
-fn tree_socket() -> PathBuf {
-    tilo_paths::xdg::service_socket(tilo_fs::tree_sync::remote::SOCKET)
+/// Where this device's daemon serves the trees of the workspaces it belongs to.
+fn tree_socket() -> Result<PathBuf> {
+    tilo_device_identity::login::files_tree_socket().map_err(anyhow::Error::msg)
 }
 
 /// The directory the mount keeps its tree's documents in, each with the journal of the changes

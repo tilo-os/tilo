@@ -17,7 +17,7 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-use crate::common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, type_text};
+use crate::common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, press_at, type_text};
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -32,6 +32,9 @@ use tilo_session_core::shell::{LayoutPersonReading, LayoutWorkspaceReading};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
+/// The panel's sections stand one below another, taller than the bar's screen: a screen this tall
+/// shows them all, so a test presses one below the fold where a person would after scrolling.
+const TALL: i32 = 4000;
 const BTN_LEFT: u32 = 0x110;
 const PERSON: &str = "Pat";
 
@@ -1486,7 +1489,25 @@ impl media::audio::GraphControl for Card {
         Ok(())
     }
 
-    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
+    fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String> {
+        let mut graph = self.graph.lock().unwrap();
+        let media::audio::AudioGraph {
+            sinks,
+            sources,
+            playback_streams,
+            record_streams,
+            ..
+        } = &mut *graph;
+        for device in sinks.iter_mut().chain(sources.iter_mut()) {
+            if device.id == node_id {
+                device.muted = Some(muted);
+            }
+        }
+        for stream in playback_streams.iter_mut().chain(record_streams.iter_mut()) {
+            if stream.id == node_id {
+                stream.muted = Some(muted);
+            }
+        }
         Ok(())
     }
 
@@ -1566,6 +1587,77 @@ fn speaker() -> tilo_audio_service::sound::SoundService {
                 muted: Some(false),
                 channels: 2,
                 codec: None,
+            }],
+            ..media::audio::AudioGraph::default()
+        }),
+    };
+    let mut sound =
+        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
+    sound.settle();
+    sound
+}
+
+/// A sound service over a card in memory with a microphone: the panel's microphone mute and level
+/// are the sound's own.
+fn speaker_with_microphone() -> tilo_audio_service::sound::SoundService {
+    let card = Card {
+        graph: std::sync::Mutex::new(media::audio::AudioGraph {
+            sinks: vec![media::audio::AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".to_owned(),
+                description: "Speakers".to_owned(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            sources: vec![media::audio::AudioDevice {
+                id: 50,
+                serial: 50,
+                name: "node-50".to_owned(),
+                description: "Microphone".to_owned(),
+                is_default: true,
+                volume: Some(0.6),
+                muted: Some(false),
+                channels: 1,
+                codec: None,
+            }],
+            ..media::audio::AudioGraph::default()
+        }),
+    };
+    let mut sound =
+        tilo_audio_service::sound::SoundService::new(std::sync::Arc::new(card), None).unwrap();
+    sound.settle();
+    sound
+}
+
+/// A sound service over a card in memory playing one app's song, which the quick settings show as a
+/// stream of its own: its level, its mute, and where it plays.
+fn speaker_with_streams() -> tilo_audio_service::sound::SoundService {
+    let card = Card {
+        graph: std::sync::Mutex::new(media::audio::AudioGraph {
+            sinks: vec![media::audio::AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".to_owned(),
+                description: "Speakers".to_owned(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            playback_streams: vec![media::audio::AudioStream {
+                id: 70,
+                serial: 70,
+                app: "Music".to_owned(),
+                media_name: Some("A song".to_owned()),
+                playback: true,
+                target_id: None,
+                volume: Some(0.6),
+                muted: Some(false),
             }],
             ..media::audio::AudioGraph::default()
         }),
@@ -3045,4 +3137,391 @@ fn the_shell_loads_from_the_package_store_and_not_the_builds_copy() {
         "the installed shell draws the bar: {:?}",
         session.accessible_labels()
     );
+}
+
+/// A Nearby Send resource as a test publishes it: the rows the panel shows and the actions its
+/// presses reach, so the panel is read without a device fabric.
+struct Nearby {
+    reading: serde_json::Value,
+    calls: Rc<std::cell::RefCell<Vec<(String, serde_json::Map<String, serde_json::Value>)>>>,
+}
+
+impl tilo_session::Service for Nearby {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        vec![tilo_workspace_service::apps::nearby_send::resource(
+            "Nearby Send",
+        )]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == tilo_workspace_service::apps::nearby_send::RESOURCE)
+            .then(|| self.reading.clone())
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
+        if resource != tilo_workspace_service::apps::nearby_send::RESOURCE {
+            return Err(tilo_actions::ApiError::Unknown(
+                tilo_actions::ActionAddress::new(resource, action),
+            ));
+        }
+        self.calls
+            .borrow_mut()
+            .push((action.to_owned(), arguments.clone()));
+        Ok(tilo_service::Started::Done(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+}
+
+/// The Devices section lists what is in reach, and its rows run the resource's own actions: an
+/// offer is kept by naming the transfer the row showed, and a failed send is offered again.
+#[test]
+fn the_quick_settings_devices_section_keeps_an_offer_and_tries_again() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let nearby = Nearby {
+        reading: serde_json::json!({
+            "devices": [
+                {"name": "Ada's laptop", "kind": "device", "reachable": true,
+                 "address": "", "port": 0, "handle": "11111111111111111111111111111111"}
+            ],
+            "destinations": [
+                {"name": "Documents", "handle": "22222222222222222222222222222222", "remembered": false}
+            ],
+            "transfers": [
+                {"state": "offered", "progress": 0, "peer": "Ada's laptop", "destination": "",
+                 "time": 0, "incoming": true, "name": "notes.txt",
+                 "handle": "33333333333333333333333333333333"},
+                {"state": "failed", "progress": 40, "peer": "Ada's laptop", "destination": "",
+                 "time": 0, "incoming": false, "name": "report.pdf",
+                 "handle": "44444444444444444444444444444444"}
+            ],
+        }),
+        calls: Rc::clone(&calls),
+    };
+    let mut session = Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(speaker()),
+                Box::new(Device { charging: true }),
+                Box::new(nearby),
+            ],
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
+    )
+    .expect("session");
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    until_settled(&mut session, |session| says(session, &time(session).clock));
+    press_at(&mut session, "Volume, 40%", WIDTH, TALL);
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "notes.txt"));
+    assert!(
+        says(&session, "Ada's laptop offers this"),
+        "the offer names who made it: {:?}",
+        session.accessible_labels()
+    );
+    press_at(&mut session, "Keep it", WIDTH, TALL);
+    until_settled(&mut session, |_| {
+        calls.borrow().iter().any(|(action, _)| action == "accept")
+    });
+    assert!(
+        calls.borrow().iter().any(|(action, arguments)| {
+            action == "accept"
+                && arguments.get("transfer").and_then(|value| value.as_str())
+                    == Some("33333333333333333333333333333333")
+        }),
+        "the press names the offer the row showed: {:?}",
+        calls.borrow()
+    );
+    press_at(&mut session, "Try again", WIDTH, TALL);
+    until_settled(&mut session, |_| {
+        calls
+            .borrow()
+            .iter()
+            .any(|(action, _)| action == "retry-transfer")
+    });
+    keep(&mut session, "shell-devices-nearby");
+}
+
+/// Each app playing now stands on its own row: its level and mute, and where it plays, so one app
+/// can be silenced without the rest. The press is the sound's published `set-stream-muted`.
+#[test]
+fn the_quick_settings_silences_one_app_and_says_where_it_plays() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            services: vec![
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(speaker_with_streams()),
+                Box::new(Device { charging: true }),
+            ],
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
+    )
+    .expect("session");
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    until_settled(&mut session, |session| says(session, &time(session).clock));
+    press_at(&mut session, "Volume, 40%", WIDTH, TALL);
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "A song"));
+    assert!(
+        says(&session, "Play Music through"),
+        "the app's row says where it plays: {:?}",
+        session.accessible_labels()
+    );
+    let muted = |session: &Session| -> bool {
+        session
+            .read("sound")
+            .and_then(|reading| reading["streams"][0]["muted"].as_bool())
+            .unwrap_or(false)
+    };
+    assert!(!muted(&session), "the song plays at first");
+    press_at(&mut session, "Mute Music", WIDTH, TALL);
+    until_settled(&mut session, |session| muted(session));
+    assert!(
+        says(&session, "Unmute Music"),
+        "the row offers the app back: {:?}",
+        session.accessible_labels()
+    );
+    keep(&mut session, "shell-quick-settings-streams");
+}
+
+/// The hardware keys' readout: the volume key raises the sound and the shell says so over what it
+/// shows, from the reading the session publishes, without a window.
+#[test]
+fn a_volume_key_shows_the_readout_over_the_shell() {
+    const VOLUME_UP: u32 = 115;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = device_session(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &time(session).clock));
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key {
+                keycode: VOLUME_UP,
+                pressed,
+            })
+            .expect("the key is taken");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let osd = session
+        .read("session:osd")
+        .expect("the readout is published");
+    assert_eq!(
+        osd["visible"],
+        serde_json::json!(true),
+        "the key's readout stands: {osd}"
+    );
+    assert_eq!(osd["kind"], serde_json::json!("volume"), "{osd}");
+    assert!(
+        osd["level"].as_f64().is_some_and(|level| level > 0.4),
+        "the readout is the level the key set, above the 40% it started at: {osd}"
+    );
+    until_settled(&mut session, |session| says(session, "Volume"));
+    keep(&mut session, "shell-osd-volume");
+}
+
+/// A laptop's radios in memory, as the connectivity service reads them: the panel's tiles change
+/// the radios themselves, and the reading that follows is the service's, not the view's.
+#[derive(Default)]
+struct Radios {
+    readings: std::sync::Mutex<tilo_connectivity_service::device::Readings>,
+}
+
+impl tilo_connectivity_service::device::Device for Radios {
+    fn read(&self) -> tilo_connectivity_service::device::Readings {
+        self.readings.lock().unwrap().clone()
+    }
+
+    fn change(&self, change: &tilo_connectivity_service::device::Change) -> Result<(), String> {
+        let mut readings = self.readings.lock().unwrap();
+        match change {
+            tilo_connectivity_service::device::Change::Wifi(on) => {
+                readings.network.wifi.on = *on;
+            }
+            tilo_connectivity_service::device::Change::Airplane(on) => {
+                readings.network.airplane_mode = *on;
+            }
+            tilo_connectivity_service::device::Change::Bluetooth(on) => {
+                readings.bluetooth.on = *on;
+            }
+            tilo_connectivity_service::device::Change::Join { network, .. } => {
+                for reachable in &mut readings.network.wifi.networks {
+                    reachable.connected = reachable.name == *network;
+                }
+            }
+            tilo_connectivity_service::device::Change::Vpn { profile, on } => {
+                for vpn in &mut readings.vpn.profiles {
+                    if vpn.id == *profile {
+                        vpn.connected = *on;
+                    }
+                }
+            }
+            other => return Err(format!("{other:?} is not part of this laptop")),
+        }
+        Ok(())
+    }
+}
+
+/// A session whose laptop has Wi-Fi with one open network in reach and Bluetooth, the person's
+/// settings, and a sound card: what the panel's switches change.
+fn wireless_session() -> Session {
+    let radios = Radios::default();
+    {
+        let mut readings = radios.readings.lock().unwrap();
+        readings.network.wifi.available = true;
+        readings.network.wifi.on = true;
+        readings.network.wifi.networks = vec![tilo_connectivity_service::model::WifiNetwork {
+            name: "Cafe".to_owned(),
+            signal: 3,
+            secure: false,
+            ..tilo_connectivity_service::model::WifiNetwork::default()
+        }];
+        readings.bluetooth.available = true;
+        readings.vpn.profiles = vec![tilo_connectivity_service::model::VpnProfile {
+            name: "Work".to_owned(),
+            id: "work".to_owned(),
+            kind: "wireguard".to_owned(),
+            connected: false,
+        }];
+    }
+    let mut connectivity =
+        tilo_connectivity_service::Connectivity::new(std::sync::Arc::new(radios), None)
+            .expect("the radios serve");
+    connectivity.settle();
+    let mut session = Session::headless(
+        Options {
+            services: vec![
+                Box::new(connectivity),
+                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(speaker_with_microphone()),
+            ],
+            ..options()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
+    )
+    .expect("session");
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(1),
+        rate: 0,
+    });
+    until_settled(&mut session, |session| says(session, &time(session).clock));
+    session
+}
+
+/// The panel's switches are the published actions of the resources they name: the radios change,
+/// the person's settings change, and the sound's mute and the microphone's are the sound's own.
+#[test]
+fn the_quick_settings_switches_change_what_they_publish() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = wireless_session();
+    let published = |session: &Session, resource: &str| {
+        session.read(resource).expect("the resource is published")
+    };
+    press_at(&mut session, "Volume, 40%", WIDTH, TALL);
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "Cafe"));
+
+    // The network in reach stands in the panel; joining it is the network's row action, which
+    // lives on the row's own resource (`wifi-network:Cafe`) and has no root address yet, so it is
+    // not pressed here.
+    assert!(
+        says(&session, "Cafe"),
+        "the network in reach stands on the panel: {:?}",
+        session.accessible_labels()
+    );
+    press_at(&mut session, "Wi-Fi", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "network")["wifi"]["on"] == serde_json::json!(false)
+    });
+    press_at(&mut session, "Wi-Fi", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "network")["wifi"]["on"] == serde_json::json!(true)
+    });
+    press_at(&mut session, "Bluetooth", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "bluetooth")["on"] == serde_json::json!(true)
+    });
+    press_at(&mut session, "Do not disturb", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "settings:settings.notifications")["do_not_disturb"]
+            == serde_json::json!(true)
+    });
+    press_at(&mut session, "Rotation lock", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "settings:settings.display")["rotation_lock"] == serde_json::json!(true)
+    });
+    press_at(&mut session, "VPN", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "vpn")["profiles"][0]["connected"] == serde_json::json!(true)
+    });
+    press_at(&mut session, "Work", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "vpn")["profiles"][0]["connected"] == serde_json::json!(false)
+    });
+    press_at(&mut session, "Mute", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "sound")["muted"] == serde_json::json!(true)
+    });
+    press_at(&mut session, "Mute the microphone", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "sound")["input-muted"] == serde_json::json!(true)
+    });
+    press_at(&mut session, "Airplane mode", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "network")["airplane-mode"] == serde_json::json!(true)
+    });
+    keep(&mut session, "shell-quick-settings-switches");
+}
+
+/// The panel draws the tiles the person's setting keeps, and hiding one takes it off: the
+/// editor's press is the published `hide-control`, and the panel that follows draws without it.
+#[test]
+fn hiding_a_tile_takes_it_off_the_panel() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = device_session_over(WIDTH, TALL, Device { charging: true });
+    let controls = |session: &Session| -> Vec<String> {
+        session
+            .read("session:quick-settings")
+            .and_then(|reading| {
+                serde_json::from_value::<Vec<String>>(reading["controls"].clone()).ok()
+            })
+            .unwrap_or_default()
+    };
+    assert!(controls(&session).contains(&"wifi".to_owned()));
+    until_settled(&mut session, |session| says(session, &time(session).clock));
+    press_at(&mut session, "Volume, 40%", WIDTH, TALL);
+    until_settled(&mut session, |session| here(session) == "quick-settings");
+    until_settled(&mut session, |session| says(session, "Customise the panel"));
+    press_at(&mut session, "Customise the panel", WIDTH, TALL);
+    until_settled(&mut session, |session| says(session, "Hide Bluetooth"));
+    press_at(&mut session, "Hide Bluetooth", WIDTH, TALL);
+    until_settled(&mut session, {
+        |session| !controls(session).contains(&"bluetooth".to_owned())
+    });
+    assert!(
+        says(&session, "Not on the panel"),
+        "the editor offers the hidden tile back: {:?}",
+        session.accessible_labels()
+    );
+    keep(&mut session, "shell-quick-settings-editor");
 }

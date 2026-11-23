@@ -1,8 +1,4 @@
-//! A logged-in computer's synced folder runs on its own workspace service: the workspace's tree
-//! is a record of the member copy that service holds, and the folder is a plain folder synced
-//! both ways (no FUSE). A file the server holds appears in the folder, a file written in the
-//! folder reaches the server, and both still hold after the computer's device restarts, an edit
-//! made just before the restart included.
+//! A logged-in Linux computer's FUSE folder, both ways, across a restart.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,6 +22,7 @@ use tilo_workspace_service::device_documents::ServiceWrites;
 use tilo_workspace_service::workspaces::Workspaces;
 
 use super::Peer;
+use crate::device::account::Account;
 use crate::device::workspaces::ServiceWorkspaces;
 use tilo_api::daemon::folders::{Folder, Folders};
 
@@ -249,12 +246,12 @@ async fn reaches_server(
     .await;
 }
 
-/// The computer as `tilo login` leaves it running: its own workspace service, the session its
-/// login holds over that service's endpoint, and the peer showing the person's folders.
+/// The computer as `tilo login` leaves it running: its own workspace service, the person's
+/// account at their server, and the peer keeping the person's folders with them.
 struct Computer {
     own: Arc<ServiceWorkspaces>,
-    entered: tilo_session_client::device::Device,
-    peer: Peer,
+    peer: Arc<Peer>,
+    keeping: tokio::task::JoinHandle<()>,
 }
 
 impl Computer {
@@ -276,25 +273,16 @@ impl Computer {
             }
         })
         .await;
-        let entered = tilo_test_env::within(
-            "the login enters its workspace",
-            tilo_api::daemon::enter::connect(key, login, Some(own.lent())),
-        )
-        .await
-        .expect("the login enters");
-        tilo_test_env::within("the service holds the workspace", own.hold(&entered)).await;
-        let peer = Peer::open(dir, home, false).await.unwrap();
-        tilo_test_env::within(
-            "the folders are shown",
-            peer.reconcile(&entered, Some(&own)),
-        )
-        .await;
-        assert!(
-            peer.failures().is_empty(),
-            "every folder is shown: {:?}",
-            peer.failures()
-        );
-        Self { own, entered, peer }
+        let address = login.server_address.as_ref().unwrap();
+        let account = Arc::new(Account::at(
+            &own,
+            &address.endpoint_addr,
+            login.server_cert.device_public_key,
+            &login.workspace,
+        ));
+        let peer = Arc::new(Peer::open(dir, home).await.unwrap());
+        let keeping = tokio::spawn(Arc::clone(&peer).keep(Arc::clone(&own), account));
+        Self { own, peer, keeping }
     }
 
     /// Whether the folder's tree on this computer names `name` at its top.
@@ -313,11 +301,11 @@ impl Computer {
 
     /// Stop as the holder stops: the folders kept on disk, the store and the service let go.
     async fn stop(self) {
+        self.keeping.abort();
+        let _ = self.keeping.await;
         self.peer.stop(Duration::from_secs(20)).await;
         self.peer.shutdown(Duration::from_secs(5)).await;
         drop(self.peer);
-        self.entered.close();
-        drop(self.entered);
         self.own.shutdown().await;
     }
 }
@@ -372,7 +360,15 @@ fn folder_at(dir: &Path, home: &Path, workspace: &str) -> PathBuf {
     clippy::too_many_lines,
     reason = "one person's folder from its first sync through a restart, read top to bottom"
 )]
-async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
+async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
+    tilo_test_env::require_capability!(
+        Fuse,
+        tilo_fs::fuse_session::mountable(
+            Path::new("/dev/fuse"),
+            std::env::var_os("PATH").as_deref()
+        ),
+        "a workspace's folder is a FUSE mount"
+    );
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
@@ -430,6 +426,19 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
         "a file written in the folder reaches the server",
     )
     .await;
+    let written_by = hex::encode(root.verifying_key().to_bytes());
+    let agenda = server_tree(&hosted, &workspace)
+        .await
+        .children(ROOT_ID)
+        .into_iter()
+        .find(|(_, node)| node.name.as_bytes() == b"agenda.txt")
+        .map(|(_, node)| node.author.clone())
+        .expect("the server's tree holds the file the folder wrote");
+    assert_eq!(
+        agenda.as_deref(),
+        Some(written_by.as_str()),
+        "history names its writer"
+    );
     // An edit the computer took in just before it stops, which need not have gone out yet.
     std::fs::write(
         folder.join("late.txt"),
@@ -504,6 +513,78 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
         &folder.join("copy.txt"),
         b"Net 30, signed by both.\n",
         "another local writer's change reaches the folder",
+    )
+    .await;
+
+    computer.stop().await;
+    server.shutdown().await;
+}
+
+/// A workspace made on another device of the person's, after this computer started, reaches it
+/// through their server's account: the computer enters it where the server says it is kept,
+/// gives it a folder, and the folder syncs both ways.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .clone();
+    // The workspace the computer logged in to, which its login entered.
+    let studio = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .enter(&studio, &laptop_cert)
+        .await
+        .expect("a device of the person enters the workspace");
+    let login = login_to(&server, &studio, (&laptop_cert, &server_cert));
+    let (dir, home) = (state.path().join("laptop"), state.path().join("home"));
+    let computer = Computer::start(&dir, &home, (&laptop_key, &laptop_cert), &login).await;
+    put_on_server(&server, &studio, "brief.txt", b"Studio brief\n").await;
+    holds(
+        &home.join("Studio").join("brief.txt"),
+        b"Studio brief\n",
+        "the workspace logged in to gets a folder",
+    )
+    .await;
+
+    // Another device of the person's makes a workspace at their server.
+    let garden = hosted.create("Garden").await.unwrap().workspace;
+    put_on_server(&server, &garden, "seeds.txt", b"Tomatoes, basil\n").await;
+    holds(
+        &home.join("Garden").join("seeds.txt"),
+        b"Tomatoes, basil\n",
+        "the workspace made elsewhere gets a folder holding its files",
+    )
+    .await;
+    assert!(
+        computer
+            .own
+            .keeps(tilo_server_protocol::WorkspaceId::parse(&garden).unwrap())
+            .await,
+        "the computer's own service keeps the new workspace"
+    );
+    std::fs::write(home.join("Garden").join("rows.txt"), b"Three rows\n").unwrap();
+    reaches_server(
+        &server,
+        &garden,
+        "rows.txt",
+        b"Three rows\n",
+        "a file written in the new folder reaches the server",
     )
     .await;
 

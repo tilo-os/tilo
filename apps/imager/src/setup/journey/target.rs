@@ -498,7 +498,7 @@ impl Target {
                     } else {
                         ButtonRole::Plain
                     })
-                    .on_effect(move || {
+                    .on_click(move || {
                         select
                             .borrow_mut()
                             .push(InstallerPreviewEffect::SetTargetArchitecture {
@@ -553,7 +553,7 @@ impl Target {
                 &t("installer-preview-target-import"),
             )
             .with_enabled(!self.busy())
-            .on_effect(move || {
+            .on_click(move || {
                 choose
                     .borrow_mut()
                     .push(InstallerPreviewEffect::ChooseTargetHardwareReport);
@@ -567,7 +567,7 @@ impl Target {
                     &t("installer-preview-target-use-model"),
                 )
                 .role(ButtonRole::Plain)
-                .on_effect(move || {
+                .on_click(move || {
                     clear
                         .borrow_mut()
                         .push(InstallerPreviewEffect::ClearTargetHardwareReport);
@@ -581,7 +581,7 @@ impl Target {
                 &t("installer-preview-target-recheck"),
             )
             .role(ButtonRole::Plain)
-            .on_effect(move || {
+            .on_click(move || {
                 recheck
                     .borrow_mut()
                     .push(InstallerPreviewEffect::RecheckTargetHardware);

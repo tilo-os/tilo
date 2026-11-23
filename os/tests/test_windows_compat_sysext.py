@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[2]
 CONTAINERFILE = (REPO / "os/Containerfile").read_text()
 CATALOGUE = json.loads(
     (REPO / "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json").read_text())
-PLAN = (REPO / "crates/windows/compat-service/src/plan.rs").read_text()
+PLAN = (REPO / "crates/compat/compat-service/src/plan.rs").read_text()
 
 # What the compatibility service and the Windows VM name by absolute path.
 PAYLOAD_PATHS = (

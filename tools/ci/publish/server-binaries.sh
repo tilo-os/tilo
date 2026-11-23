@@ -9,8 +9,9 @@
 # Several images may be named at once: they are one feature resolution and one build, which is what
 # the development server image is (host-build.sh --dev names `host host-dev`, so every program it
 # carries comes from one compilation). `host-dev` is what the development server image adds to the
-# server OS: the dev-VM daemon and its CLI, compiled by the same check image and toolchain as
-# `host`, so a layer built later the same way passes the daemon's layer check there.
+# server OS: the runtime that runs the device's steps and the dev-VM CLI, compiled by the same
+# check image and toolchain as `host`, so a layer built later the same way passes the device's
+# layer check there.
 #
 # usage: server-binaries.sh IMAGE [IMAGE...] OUT    (IMAGE: api, vm-host, server, host or host-dev)
 #        server-binaries.sh --list IMAGE [IMAGE...]  the programs it would build, one per line
@@ -56,10 +57,10 @@ for image in "${images[@]}"; do
       # tilo-runtime already depends on the runtime packages the host serves from; one feature
       # resolution for its programs. The host joins its person's identity on first start with
       # `tilo login` and the ticket it was given, which reaches the daemon beside it, and whoever
-      # starts it reads the device key that login left with tilo-device-admin.
+      # starts it reads the device key that login left with `tilo device key`.
       packages+=(-p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail -p tilo-runtime --bin tilo-runtime \
-                 -p tilo-cli --bin tilo -p tilo-device-admin --bin tilo-device-admin)
-      bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime tilo tilo-device-admin) ;;
+                 -p tilo-cli --bin tilo)
+      bins+=(tilo-linux-vm tilo-hosted-jail tilo-runtime tilo) ;;
     server)
       # The command and the daemon beside it are what a volume first booting as one of a person's
       # devices runs: `tilo login` spends the ticket it was given, and reaches its own daemon,
@@ -98,11 +99,11 @@ for image in "${images[@]}"; do
              tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
              tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start) ;;
     host-dev)
-      # The dev-VM daemon and its CLI, as os/components.toml declares them, so this names no
-      # binary of its own.
-      read -ra dev_components <<<"$(python3 os/scripts/install-components.py --dry-run --format cargo vmd vm-cli)"
+      # The runtime that runs the device's steps and the dev-VM CLI, as os/components.toml
+      # declares them, so this names no binary of its own.
+      read -ra dev_components <<<"$(python3 os/scripts/install-components.py --dry-run --format cargo native-runtime-host device-steps vm-cli)"
       packages+=("${dev_components[@]}")
-      mapfile -t dev_bins < <(python3 os/scripts/install-components.py --dry-run --format bins vmd vm-cli)
+      mapfile -t dev_bins < <(python3 os/scripts/install-components.py --dry-run --format bins native-runtime-host device-steps vm-cli)
       bins+=("${dev_bins[@]}") ;;
     *)
       die "unknown server image $image: api, vm-host, server, host or host-dev" ;;

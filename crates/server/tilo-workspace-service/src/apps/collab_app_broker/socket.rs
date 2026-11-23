@@ -167,94 +167,29 @@ pub(super) fn bind_socket_stage(
     ))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
-    let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "broker socket staging path contains NUL",
-        )
-    })?;
-    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "broker socket destination path contains NUL",
-        )
-    })?;
-    #[cfg(target_os = "linux")]
-    // SAFETY: both pointers refer to live NUL-terminated path buffers.
-    // RENAME_NOREPLACE atomically refuses an occupied destination.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    // A filesystem without RENAME_NOREPLACE (gVisor's gofer mounts answer
-    // EINVAL) claims the name with a hard link, which refuses an occupied
-    // destination the same way, then drops the staging name.
-    #[cfg(target_os = "linux")]
-    let result = if result != 0
-        && matches!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EINVAL | libc::ENOSYS)
-        ) {
-        // SAFETY: both pointers refer to live NUL-terminated path buffers.
-        let linked = unsafe {
-            libc::linkat(
-                libc::AT_FDCWD,
-                source.as_ptr(),
-                libc::AT_FDCWD,
-                destination.as_ptr(),
-                0,
-            )
-        };
-        if linked == 0 {
-            // SAFETY: `source` is a live NUL-terminated path buffer.
-            unsafe { libc::unlink(source.as_ptr()) };
-            0
-        } else {
-            -1
-        }
-    } else {
-        result
-    };
-    #[cfg(target_os = "macos")]
-    // SAFETY: both pointers refer to live NUL-terminated path buffers.
-    // RENAME_EXCL atomically refuses an occupied destination.
-    let result = unsafe {
-        libc::renameatx_np(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let result = -1;
-    if result == 0 {
-        return Ok(());
+    match tilo_files::native::rename_file_noreplace(source, destination) {
+        // Once the fallback hard link succeeds, the destination socket is
+        // published even if unlinking the staging name then fails.
+        Ok(
+            tilo_files::native::FileRename::Moved
+            | tilo_files::native::FileRename::SourceUnlinkFailed(_),
+        ) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "broker socket destination appeared during publication",
+        )),
+        Err(error) => Err(error),
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return Err(std::io::Error::new(
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn rename_socket_noreplace(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "atomic no-replace broker socket publication is unsupported",
-    ));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EEXIST) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                "broker socket destination appeared during publication",
-            ));
-        }
-        Err(error)
-    }
+    ))
 }
 
 pub(super) struct SocketStage {
@@ -356,6 +291,20 @@ impl Drop for SocketOwnership {
 pub(super) async fn has_collab_launch_marker(
     stream: &tokio::net::UnixStream,
 ) -> Result<bool, BrokerError> {
+    Ok(peeked_marker(stream).await? == launcher::services::COLLAB_LAUNCH_MAGIC)
+}
+
+/// Whether the peer on `stream` opens as a person's shell
+/// ([`runtime_collab::wire::shell::SHELL_MAGIC`]), peeked without consuming it.
+pub(super) async fn has_shell_marker(stream: &tokio::net::UnixStream) -> Result<bool, BrokerError> {
+    Ok(peeked_marker(stream).await? == *runtime_collab::wire::shell::SHELL_MAGIC)
+}
+
+/// The first bytes the peer on `stream` sent, as long as a marker, without consuming them: waited
+/// for as long as the peer has not begun, and for `LAUNCH_MARKER_COMPLETION` once it has.
+async fn peeked_marker(
+    stream: &tokio::net::UnixStream,
+) -> Result<[u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()], BrokerError> {
     let incomplete =
         || BrokerError::failed("collaboration peer sent an incomplete protocol header".into());
     // A peer that has not begun is waited for as before; one that began has
@@ -378,7 +327,7 @@ pub(super) async fn has_collab_launch_marker(
         match stream.try_io(tokio::io::Interest::READABLE, || {
             peek_launch_marker(stream, &mut partial)
         }) {
-            Ok(marker) => return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC),
+            Ok(marker) => return Ok(marker),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {

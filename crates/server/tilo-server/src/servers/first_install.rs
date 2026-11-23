@@ -30,15 +30,15 @@ use super::{SERVERS, apply, person_workspace_id, read};
 /// confirm, so a slow helper is not taken for a refusal.
 const APPLY_WAIT: Duration = Duration::from_secs(150);
 
-/// Whether a ticket joined this machine to a person: the login it left beside
-/// the identity root's device key and certificate. A machine that founded its
-/// own workspace has none, and installs no plan.
+/// Whether a ticket joined this machine to a person: the certificate its login
+/// filed beside the identity root's device key. A machine that founded its own
+/// workspace has none, and installs no plan.
 #[must_use]
 pub fn joined(identity_root: &Path) -> bool {
     let paths = tilo_device_identity::IdentityPaths::under(identity_root);
-    tilo_device_identity::login::Place::here(paths)
-        .and_then(|place| tilo_device_identity::login::load(&place))
-        .is_ok_and(|login| login.is_some())
+    tilo_device_identity::login::served_device_key(&paths)
+        .and_then(|device| tilo_device_identity::login::ticket_cert(&paths, &device))
+        .is_some()
 }
 
 /// The drives this machine really has, as a plan's machine reports them.

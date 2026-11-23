@@ -4,10 +4,11 @@
 
 use ui::charts::{ChartPalette, FunctionPlane};
 use ui::interaction::InteractionEnvironment;
+use ui::motion::ReadingValue;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
+use ui::tokens::{EffectiveMotion, TextRole};
 use ui::widget::{CanvasNavigation, CanvasNavigationHint};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
@@ -16,7 +17,6 @@ use vello::peniko::{BlendMode, Fill};
 use crate::engine;
 use crate::model::{CalcModel, View2d};
 use crate::plot_panel::{CURVES, Formulas, PlotPanel};
-use crate::zoom::ZoomAnim2d;
 
 pub struct Graph2dScreen {
     pub canvas: Rect,
@@ -25,9 +25,71 @@ pub struct Graph2dScreen {
     /// Rebuilt only when the functions, view, domain or canvas change; colour is
     /// resolved from the theme at paint time.
     curve_cache: CurveCache,
-    /// While active, the cached curves are replayed under an affine instead of
-    /// re-sampling every frame.
-    zoom: ZoomAnim2d,
+    zoom: Zoom,
+}
+
+/// The view as drawn while a zoom eases: its scale moves to the model's as a reading, the point
+/// under the cursor stays pinned, and a burst of wheel notches retargets it rather than queueing.
+struct Zoom {
+    scale: ReadingValue,
+    /// The world point pinned under a screen point, about the canvas centre.
+    anchor: Option<(Point, Point, Point)>,
+    /// The view the cached curves were sampled at.
+    sampled: View2d,
+}
+
+impl Zoom {
+    fn new(view: View2d) -> Self {
+        Self {
+            scale: ReadingValue::new(view.scale),
+            anchor: None,
+            sampled: view,
+        }
+    }
+
+    fn begin(&mut self, target: View2d, pin: (Point, Point, Point), motion: EffectiveMotion) {
+        self.anchor = Some(pin);
+        self.scale
+            .take(target.scale, Some(motion), ui::motion::frame_now());
+    }
+
+    /// Land the view at once: a pan, an orbit or a mode switch carries no ease.
+    fn settle(&mut self, view: View2d) {
+        self.anchor = None;
+        self.sampled = view;
+        self.scale.snap(view.scale);
+    }
+
+    fn active(&self) -> bool {
+        self.scale.is_moving(ui::motion::frame_now())
+    }
+
+    /// The view as drawn now, the anchor under its screen point.
+    fn anchored(&self) -> Option<View2d> {
+        let (world, screen, center) = self.anchor.filter(|_| self.active())?;
+        let scale = self.scale.get(ui::motion::frame_now());
+        Some(View2d {
+            scale,
+            cx: world.x - (screen.x - center.x) / scale,
+            cy: world.y + (screen.y - center.y) / scale,
+        })
+    }
+
+    fn display(&self, model: &View2d) -> View2d {
+        self.anchored().unwrap_or(*model)
+    }
+
+    /// Maps geometry sampled at the settled view onto the drawn one, so the curves zoom without
+    /// re-evaluating any function.
+    fn curve_affine(&self, center: Point) -> Affine {
+        let (Some(view), true) = (self.anchored(), self.sampled.scale > 0.0) else {
+            return Affine::IDENTITY;
+        };
+        let k = view.scale / self.sampled.scale;
+        let bx = center.x * (1.0 - k) + view.scale * (self.sampled.cx - view.cx);
+        let by = center.y * (1.0 - k) - view.scale * (self.sampled.cy - view.cy);
+        Affine::new([k, 0.0, 0.0, k, bx, by])
+    }
 }
 
 impl Default for Graph2dScreen {
@@ -37,7 +99,7 @@ impl Default for Graph2dScreen {
             area: Rect::ZERO,
             panel: PlotPanel::new(CURVES),
             curve_cache: CurveCache::default(),
-            zoom: ZoomAnim2d::new(View2d::default()),
+            zoom: Zoom::new(View2d::default()),
         }
     }
 }
@@ -106,7 +168,6 @@ impl Graph2dScreen {
         self.panel.fit(&model.funcs, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
-        self.zoom.tick(model.view2d, theme.reduce_motion);
         self.layout(area, model);
     }
 
@@ -121,7 +182,7 @@ impl Graph2dScreen {
     ) {
         // The eased view drives the grid and trace, so they move with the
         // transformed curves.
-        let view = self.zoom.display();
+        let view = self.zoom.display(&model.view2d);
         self.draw_canvas(scene, t, tr, theme, model, (pointer.trace, &view));
         if let Some(environment) = pointer.hint {
             CanvasNavigationHint::paint(
@@ -199,7 +260,7 @@ impl Graph2dScreen {
             self.zoom.curve_affine(self.canvas.center())
         } else {
             self.ensure_curves(model);
-            self.zoom.mark_sampled(model.view2d);
+            self.zoom.sampled = model.view2d;
             Affine::IDENTITY
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.canvas);
@@ -212,9 +273,16 @@ impl Graph2dScreen {
         scene.pop_layer();
     }
 
-    /// Pins `anchor_world` under `screen` for the whole ease.
-    pub fn begin_zoom(&mut self, anchor_world: Point, screen: Point) {
-        self.zoom.begin(anchor_world, screen, self.canvas.center());
+    /// Pins `anchor_world` under `screen` and eases the scale to `target`'s.
+    pub fn begin_zoom(
+        &mut self,
+        target: View2d,
+        anchor_world: Point,
+        screen: Point,
+        motion: EffectiveMotion,
+    ) {
+        let pin = (anchor_world, screen, self.canvas.center());
+        self.zoom.begin(target, pin, motion);
     }
     pub fn settle_zoom(&mut self, v: View2d) {
         self.zoom.settle(v);
@@ -768,6 +836,47 @@ mod tests {
                 assert_eq!(point.x.to_bits(), column.to_bits(), "column {step}");
                 assert_eq!(point.y.to_bits(), (250.0 - column).to_bits(), "row {step}");
             }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// A wheel zoom eases with the point under the cursor pinned, a notch mid-ease goes on
+        /// from the drawn scale, and it rests exactly at the model's view.
+        fn a_zoom_eases_anchored_at_the_cursor_and_rests_at_the_target;
+
+        phase it_eases_pinned_retargets_and_rests;
+        {
+            let canvas = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut s = Graph2dScreen { canvas, ..Graph2dScreen::default() };
+            let cursor = Point::new(560.0, 220.0);
+            let start = View2d { cx: 0.0, cy: 0.0, scale: 64.0 };
+            let world = s.to_world(cursor, &start);
+            let pin = (world, cursor, s.canvas.center());
+            // The model's view at each scale keeps the cursor's point under it, as a wheel zoom sets it.
+            let (dx, dy) = (cursor.x - pin.2.x, cursor.y - pin.2.y);
+            let to = |scale| View2d { scale, cx: world.x - dx / scale, cy: world.y + dy / scale };
+            use ui::time::testing::with_monotonic_time as clock;
+            let mut at = ui::time::now();
+            let tick = ui::time::Duration::from_millis(16);
+            let motion = ui::tokens::EffectiveMotion::default();
+            clock(at, || s.zoom.begin(to(128.0), pin, motion));
+            at += tick;
+            let first = clock(at, || s.zoom.display(&to(128.0)));
+            assert!(first.scale > 64.0 && first.scale < 128.0, "between: {}", first.scale);
+            let affine = clock(at, || s.zoom.curve_affine(pin.2));
+            assert!((affine * cursor - cursor).hypot() < 1e-6, "the cursor's point maps to itself");
+            // Another notch mid-ease goes on from the scale drawn, never from where the first began.
+            clock(at, || s.zoom.begin(to(256.0), pin, motion));
+            let mut drawn = first.scale;
+            while clock(at, || s.zoom.active()) {
+                at += tick;
+                let view = clock(at, || s.zoom.display(&to(256.0)));
+                assert!(view.scale >= drawn - 1e-9, "no jump back: {} after {drawn}", view.scale);
+                let w = s.to_world(cursor, &view);
+                assert!((w - world).hypot() < 1e-9, "the point under the cursor stays pinned");
+                drawn = view.scale;
+            }
+            assert_eq!(drawn.to_bits(), 256.0_f64.to_bits(), "it rests exactly at the target");
         }
     }
 

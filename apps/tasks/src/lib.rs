@@ -663,7 +663,7 @@ fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
                 .with_accessible_name(tr("tasks-filters"))
                 .with_semantic_key("tasks.filters")
                 .bind_selection(&selection)
-                .on_view("tasks.filters", move |key| {
+                .on_choose("tasks.filters", move |key| {
                     chosen.open.set(None);
                     // A project's row is addressed by the resource it is
                     // published under, and opens that project's page.

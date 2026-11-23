@@ -138,7 +138,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // Alice's first write makes the record, and the governor holds it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "welcome").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     let message = alice_peer
         .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
@@ -161,7 +161,13 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
         MemberKey::generate("bob").unwrap(),
     )
     .unwrap();
-    let cleartext = write(&mut bob_peer, "reply", "hi", &phone.sk);
+    let cleartext = write(
+        &mut bob_peer,
+        "reply",
+        "hi",
+        &phone.sk,
+        &phone.cert.user_public_key,
+    );
     publish(&bob_session, &sealed(cleartext, &group, &phone.sk));
     tilo_test_env::within("the governor follows Bob's sealed write", async {
         while followed.recv().await.unwrap().app != APP {}
@@ -171,7 +177,13 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // A page writes its records as commits: the governor follows those too.
     let bob_client = bob_session.into_client();
     let message = sealed(
-        write(&mut bob_peer, "reply", "again", &phone.sk),
+        write(
+            &mut bob_peer,
+            "reply",
+            "again",
+            &phone.sk,
+            &phone.cert.user_public_key,
+        ),
         &group,
         &phone.sk,
     );

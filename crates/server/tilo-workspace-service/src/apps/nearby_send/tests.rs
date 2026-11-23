@@ -365,7 +365,7 @@ fn a_cancel_stops_a_transfer_and_a_retry_offers_it_again() {
     nearby
         .invoke(
             RESOURCE,
-            "retry",
+            "retry-transfer",
             &arguments(serde_json::json!({ "transfer": row })),
         )
         .expect("the transfer is offered again");

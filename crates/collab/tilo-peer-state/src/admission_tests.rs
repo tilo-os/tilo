@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let mut document = AutoCommit::new();
         document.put(ROOT, "value", "native").unwrap();
-        document.commit_edit("fixture", "value");
+        document.commit_edit("fixture", "value", &ac.user_public_key);
         let seed = SeedState {
             workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()]).unwrap(),
             documents: vec![SeedDocument {
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
 
         // The guest's device publishes a frame while it is a member.
         let mut guest_peer = peer.clone();
-        let before = frame(&mut guest_peer, &guest_key, now, "before");
+        let before = frame(&mut guest_peer, &guest_key, &guest.user_public_key, now, "before");
         peer.receive_from(origin, before, now)
             .expect("a member's frame is admitted");
 
@@ -404,7 +404,7 @@ tilo_test_env::scenario! {
 
         // The same device, with the same keys, writes a frame after the removal.
         let later = now + Duration::from_secs(30);
-        let after = frame(&mut guest_peer, &guest_key, later, "after");
+        let after = frame(&mut guest_peer, &guest_key, &guest.user_public_key, later, "after");
         assert!(
             peer.receive_from(origin, after, later).is_err(),
             "a removed device's frame is refused"
@@ -506,7 +506,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let mut document = AutoCommit::new();
         document.put(ROOT, "value", 1).unwrap();
-        document.commit_edit("fixture", "value");
+        document.commit_edit("fixture", "value", &ac.user_public_key);
         native
             .install_seed(
                 SeedState {
@@ -604,7 +604,7 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
         let before = doc.get_heads();
         doc.put(ROOT, "other", "B").unwrap();
-        doc.commit_edit("fixture", "other");
+        doc.commit_edit("fixture", "other", &bc.user_public_key);
         let old = native
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
@@ -655,7 +655,7 @@ tilo_test_env::scenario! {
             &checkpoint,
             native.workspace_id(),
             native.owner_certificates()[0].clone(),
-            vec![bc],
+            vec![bc.clone()],
             RevocationList::new(),
             now,
         )
@@ -673,7 +673,7 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
         let before = doc.get_heads();
         doc.put(ROOT, "new", "B2").unwrap();
-        doc.commit_edit("fixture", "new");
+        doc.commit_edit("fixture", "new", &bc.user_public_key);
         let next = reload
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
@@ -731,7 +731,7 @@ tilo_test_env::scenario! {
         let mut fresh = StatePeer::new(
             native.workspace_id(),
             native.owner_certificates()[0].clone(),
-            vec![bc],
+            vec![bc.clone()],
             RevocationList::new(),
             now,
         )
@@ -747,7 +747,7 @@ tilo_test_env::scenario! {
         if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
             let mut replacement = AutoCommit::new();
             replacement.put(ROOT, "attack", true).unwrap();
-            replacement.commit_edit("fixture", "attack");
+            replacement.commit_edit("fixture", "attack", &bc.user_public_key);
             envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
                 .encode()
                 .unwrap();
@@ -787,7 +787,7 @@ tilo_test_env::scenario! {
         };
         let mut doc = workspace::candidate(None, &changes).unwrap();
         doc.delete(ROOT, coverage::FIELD_V2).unwrap();
-        doc.commit_edit("fixture", "fixture");
+        doc.commit_edit("fixture", "fixture", &bc.user_public_key);
         let legacy = NeighbourMsg::SyncResp {
             workspace: workspace.clone(),
             changes: doc
@@ -947,14 +947,14 @@ tilo_test_env::scenario! {
 
         let before = document.get_heads();
         document.put(ROOT, "first", "A").unwrap();
-        document.commit_edit("fixture", "first");
+        document.commit_edit("fixture", "first", &author_cert.user_public_key);
         let first = author
             .publication_mut()
             .publish_incremental(app, record, document.save_after(&before), &author_key, now)
             .unwrap();
         let before = document.get_heads();
         document.put(ROOT, "second", "B").unwrap();
-        document.commit_edit("fixture", "second");
+        document.commit_edit("fixture", "second", &author_cert.user_public_key);
         let second = author
             .publication_mut()
             .publish_incremental(app, record, document.save_after(&before), &author_key, now)
@@ -1009,7 +1009,7 @@ tilo_test_env::scenario! {
         let mut joiner = StatePeer::new(
             &workspace,
             native.owner_certificates()[0].clone(),
-            vec![b_cert],
+            vec![b_cert.clone()],
             RevocationList::new(),
             now,
         )
@@ -1046,7 +1046,7 @@ tilo_test_env::scenario! {
         ));
         let heads = doc.get_heads();
         doc.put(ROOT, "note", "mine").unwrap();
-        doc.commit_edit("fixture", "note");
+        doc.commit_edit("fixture", "note", &b_cert.user_public_key);
         joiner
             .publication_mut()
             .publish_incremental("test.app", "tab:2", doc.save_after(&heads), &b_key, now)
@@ -1160,7 +1160,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &ac.user_public_key);
     native
         .install_seed(
             SeedState {
@@ -1600,7 +1600,7 @@ tilo_test_env::scenario! {
     // the redemption that reached it first and refuses the other, whichever of
     // the two arrives first.
     {
-        let (base, authority_key, _, _, now) = seeded();
+        let (base, authority_key, _, bc, now) = seeded();
         let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
             panic!("unexpected fixture shape")
         };
@@ -1629,7 +1629,7 @@ tilo_test_env::scenario! {
             automerge::ScalarValue::Bytes(logged(receipt([99; 32], [100; 32]))),
         )
         .unwrap();
-        left.commit_edit("fixture", "fixture");
+        left.commit_edit("fixture", "fixture", &bc.user_public_key);
         right.set_actor(automerge::ActorId::from(vec![101; 32]));
         right
             .put(
@@ -1638,7 +1638,7 @@ tilo_test_env::scenario! {
                 automerge::ScalarValue::Bytes(logged(receipt([102; 32], [103; 32]))),
             )
             .unwrap();
-        right.commit_edit("fixture", "fixture");
+        right.commit_edit("fixture", "fixture", &bc.user_public_key);
         let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
             changes: branch
                 .get_changes(&base_heads)
@@ -2015,7 +2015,7 @@ tilo_test_env::scenario! {
         ));
         let before = doc.get_heads();
         doc.put(ROOT, "joined", true).unwrap();
-        doc.commit_edit("fixture", "joined");
+        doc.commit_edit("fixture", "joined", &root.verifying_key().to_bytes());
         let message = existing
             .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
@@ -2044,6 +2044,26 @@ tilo_test_env::scenario! {
         cert.user_public_key = other_root.verifying_key().to_bytes();
         sign_device_cert(&mut cert, &other_root).unwrap();
         assert!(governor.admit_certificate(cert, &a, now).is_err());
+    }
+
+    phase a_members_further_device_is_admitted_and_a_strangers_is_not;
+    {
+        let (mut governor, a, _, _, now) = seeded();
+        let (_, mut cert, _) = add_member_with(&mut governor, &a, now, 0x45, 0x46);
+        cert.device_public_key = SigningKey::from_bytes(&[0x47; 32]).verifying_key().to_bytes();
+        sign_device_cert(&mut cert, &SigningKey::from_bytes(&[0x45; 32])).unwrap();
+        assert!(governor.admit_certificate(cert.clone(), &a, now).unwrap());
+        assert!(governor.permissions(cert.device_public_key, now).is_ok());
+
+        let stranger = SigningKey::from_bytes(&[0x48; 32]);
+        cert.user_public_key = stranger.verifying_key().to_bytes();
+        cert.device_public_key = SigningKey::from_bytes(&[0x49; 32])
+            .verifying_key()
+            .to_bytes();
+        sign_device_cert(&mut cert, &stranger).unwrap();
+        let refused = governor.admit_certificate(cert.clone(), &a, now).unwrap_err();
+        assert!(refused.contains("not a member"), "{refused}");
+        assert!(governor.permissions(cert.device_public_key, now).is_err());
     }
 
     phase expired_known_identity_does_not_block_governed_join;
@@ -2277,7 +2297,7 @@ tilo_test_env::scenario! {
                 automerge::ScalarValue::Bytes(vec![0]),
             )
             .unwrap();
-        candidate.commit_edit("fixture", "fixture");
+        candidate.commit_edit("fixture", "fixture", &root.verifying_key().to_bytes());
         let changes = candidate
             .get_changes(&[])
             .into_iter()
@@ -2388,7 +2408,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         &receiver.durable().unwrap(),
         native.workspace_id(),
         native.owner_certificates()[0].clone(),
-        vec![bc],
+        vec![bc.clone()],
         RevocationList::new(),
         now,
     )
@@ -2400,7 +2420,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "new", "forbidden").unwrap();
-    doc.commit_edit("fixture", "new");
+    doc.commit_edit("fixture", "new", &bc.user_public_key);
     let op = native
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
@@ -2580,7 +2600,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     .unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", 1).unwrap();
-    doc.commit_edit("fixture", "value");
+    doc.commit_edit("fixture", "value", &ac.user_public_key);
     native
         .install_seed(
             SeedState {
@@ -2653,8 +2673,15 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
         Some((receipt.clone(), true))
     );
     let bytes = browser.durable().unwrap();
-    let mut browser =
-        StatePeer::restore(&bytes, workspace, ac, vec![bc], RevocationList::new(), now).unwrap();
+    let mut browser = StatePeer::restore(
+        &bytes,
+        workspace,
+        ac,
+        vec![bc.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
     crate::state::CHECKPOINT_DECODES.with(|count| count.set(0));
     for _ in 0..100 {
         let fork = browser.clone();
@@ -2684,7 +2711,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let heads = browser.document_heads("test.app", "tab:1").unwrap();
     assert_eq!(heads, doc.get_heads());
     doc.put(ROOT, "value", 2).unwrap();
-    doc.commit_edit("fixture", "value");
+    doc.commit_edit("fixture", "value", &bc.user_public_key);
     let local = browser
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
@@ -2861,16 +2888,22 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     );
 }
 
-/// A frame `author` signs as `key`: one change to its record, as a device
-/// publishes it.
-fn frame(author: &mut StatePeer, key: &SigningKey, now: SystemTime, name: &str) -> NeighbourMsg {
+/// A frame `author` signs as `key`, made by the person whose root key is
+/// `person`: one change to its record, as a device publishes it.
+fn frame(
+    author: &mut StatePeer,
+    key: &SigningKey,
+    person: &[u8; 32],
+    now: SystemTime,
+    name: &str,
+) -> NeighbourMsg {
     let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit_edit("fixture", "fixture");
+    doc.commit_edit("fixture", "fixture", person);
     author
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)

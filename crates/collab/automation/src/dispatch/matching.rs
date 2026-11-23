@@ -8,7 +8,7 @@ use tilo_actions::params::ParamType;
 use super::event::{ConnectorEvent, Event};
 use super::{Cause, MAX_CHAIN_DEPTH};
 use crate::AutomationInvocationId;
-use crate::shortcut::{ActorFilter, EVENT_INPUT, Shortcut, TriggerSpec};
+use crate::shortcut::{ActorFilter, ChangeFilter, EVENT_INPUT, Shortcut, TriggerSpec};
 
 /// Who a firing runs as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +153,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
                 actions,
                 fields,
                 by,
+                filter,
             },
             Event::Record(change),
         ) => {
@@ -161,6 +162,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
             // the record's changes acts on.
             change.kind == *kind
                 && actor_counts(*by, &change.actor)
+                && (filter.is_empty() || filter.holds(&ChangeFilter::subject(change)))
                 && ((actions.is_empty() && fields.is_empty() && !change.housekeeping)
                     || verbs_of(&change.did)
                         .iter()

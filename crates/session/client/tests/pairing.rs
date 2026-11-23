@@ -26,9 +26,9 @@ use tilo_session_client::{Cmd, Outbox};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_enrollment::certification::answer_pairing;
-use tilo_enrollment::requester::certify;
 use tilo_server_client::CertificationOutcome;
+use tilo_server_client::certification::answer_pairing;
+use tilo_server_client::certify::certify;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_client::{CertifyError, ServerAddress, pending_pairings};
 use tilo_server_client::{MemberApprover, MemberServer as _};

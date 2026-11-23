@@ -94,6 +94,29 @@ pub(super) async fn member_service(
     service
 }
 
+/// A device that joins names its person as they asked, among the workspace's people: the serving
+/// device that let it in writes the name, and its member list shows it.
+#[tokio::test]
+async fn a_device_that_joins_names_its_person_in_the_workspace() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Named", 12).await;
+    let member = member_service(member_state.path(), device).await;
+    member
+        .workspaces()
+        .join_member_as(&invitation, Some("Ada Lovelace"))
+        .await
+        .expect("the invitation is redeemed");
+    let named = serving
+        .workspaces()
+        .members(&created.workspace)
+        .await
+        .unwrap()
+        .iter()
+        .any(|member| member["name"] == "Ada Lovelace");
+    assert!(named, "the serving device names the person who joined");
+}
+
 #[tokio::test]
 async fn a_device_joins_a_workspace_its_invitation_names_and_holds_its_governance() {
     let serving_state = tempfile::tempdir().unwrap();
@@ -404,6 +427,7 @@ async fn change_of(
     workspace: &str,
     (app, document): (&str, &str),
     (key, value): (&str, &str),
+    person: [u8; 32],
 ) -> Vec<u8> {
     use automerge::transaction::Transactable as _;
     use collab_types::claim::CommitNamed as _;
@@ -422,7 +446,7 @@ async fn change_of(
         .put(automerge::ROOT, key, value)
         .expect("the record's field");
     // A change names the action it makes: the debug build refuses to sign one that does not.
-    opened.commit_edit(app, key);
+    opened.commit_edit(app, key, &person);
     opened.save_after(&heads)
 }
 
@@ -465,6 +489,7 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
         ("value", "by-the-serving-device"),
     )
     .await;
+    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
     let workspace_id = copies
@@ -482,6 +507,7 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
                 &workspace,
                 ("test.app", "record"),
                 ("value", "written"),
+                person,
             )
             .await,
             false,
@@ -528,6 +554,7 @@ async fn served_answers_with_the_refusal_of_a_write_the_workspace_refused() {
         ("value", "by-the-serving-device"),
     )
     .await;
+    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
     let workspace_id = copies
@@ -540,6 +567,7 @@ async fn served_answers_with_the_refusal_of_a_write_the_workspace_refused() {
         &workspace,
         ("test.app", "record"),
         ("value", "a-change"),
+        person,
     )
     .await;
     let write = copies
@@ -608,6 +636,7 @@ async fn served_answers_a_write_whose_answer_was_lost_once_it_is_asked_again() {
         ("value", "by-the-serving-device"),
     )
     .await;
+    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
     let workspace_id = copies
@@ -627,6 +656,7 @@ async fn served_answers_a_write_whose_answer_was_lost_once_it_is_asked_again() {
                 &workspace,
                 ("test.app", "record"),
                 ("value", "written"),
+                person,
             )
             .await,
             false,
@@ -676,6 +706,7 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
         ("value", "by-the-serving-device"),
     )
     .await;
+    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
     let workspace_id = copies
@@ -688,6 +719,7 @@ async fn a_write_made_while_the_serving_device_is_away_is_kept_and_reaches_it_la
         &workspace,
         ("test.app", "record"),
         ("value", "written-while-away"),
+        person,
     )
     .await;
     copies.set_member_link(workspace_id, false);
@@ -763,6 +795,7 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
         ("value", "by-the-serving-device"),
     )
     .await;
+    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
 
@@ -795,6 +828,7 @@ async fn a_write_before_the_workspace_is_held_here_waits_and_lands_once_it_is() 
         &workspace,
         ("test.app", "record"),
         ("value", "written-while-joining"),
+        person,
     )
     .await;
     copies
@@ -951,6 +985,7 @@ async fn a_serving_devices_write_reaches_a_member_copys_followers() {
         &workspace,
         ("test.app", "record"),
         ("value", "from-the-serving-device"),
+        serving.workspaces().serving_certificate().user_public_key,
     )
     .await;
     serving

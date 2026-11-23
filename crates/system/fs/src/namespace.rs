@@ -10,12 +10,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
+use crate::node::{FileAttr, FileType, INodeNo};
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId, FileNameV1, FileNodeKind,
     MAX_FILE_NAME_BYTES, TreeChunk,
 };
-use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
 use uuid::Uuid;
 
@@ -645,7 +645,7 @@ impl Namespace {
         // Name the founding change now, as the making of the tree's root folder: a merge made
         // later settles a pending change without its name, and a device signs only the changes
         // that name what made them.
-        let ambient = ACTING.with(|acting| acting.borrow().clone());
+        let ambient = ns.acting();
         let index = ns.doc.index_mut();
         index.name_as(
             &fs_protocol::tree::document_id(),
@@ -670,9 +670,21 @@ impl Namespace {
             .map_or_else(|| self.author.clone(), |person| person.id().to_owned())
     }
 
-    /// Write `action` into the tree as whoever this thread acts for ([`acting_as`]).
+    /// Whom this thread's file actions are done by: what it acts as ([`acting_as`]), else the
+    /// person whose certified device this mount is. Every change names who made it, or the
+    /// workspace refuses it; a bare mount, a test's, names nobody.
+    fn acting(&self) -> Option<tilo_actions::ActionContext> {
+        ACTING.with(|acting| acting.borrow().clone()).or_else(|| {
+            self.person.as_ref().map(|person| {
+                tilo_actions::ActionContext::default()
+                    .with_invoker(tilo_actions::ActionInvoker::member(person.clone()))
+            })
+        })
+    }
+
+    /// Write `action` into the tree as whoever this thread acts for ([`Self::acting`]).
     fn write_action(&mut self, action: &fs_protocol::FileAction) -> bool {
-        let ambient = ACTING.with(|acting| acting.borrow().clone());
+        let ambient = self.acting();
         let written = self.doc.write_action(action, ambient.as_ref());
         if let Err(error) = &written {
             tracing::warn!(?error, ?action, "a file action did not apply to the tree");

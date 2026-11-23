@@ -1604,9 +1604,9 @@ impl Task {
 
     /// `frame` as this device sends it: an invocation in it signed under this
     /// device's own key, so the host runs it as this device's and anyone can
-    /// check who asked. Whatever an app wrote in its place is replaced; every
-    /// other message goes as it is, and a frame that does not decode is the
-    /// host's to refuse.
+    /// check who asked. An invocation an agent's own key signed goes as it is,
+    /// for the host to check against that key; so does every other message, and
+    /// a frame that does not decode is the host's to refuse.
     async fn signed_frame(
         &self,
         workspace_id: WorkspaceId,
@@ -1617,7 +1617,10 @@ impl Task {
         let Ok(mut decoded) = RemoteActionFrame::decode(&frame) else {
             return Ok(frame);
         };
-        if !matches!(decoded.message, RemoteActionMessage::Invoke(_)) {
+        // An agent's call is signed by the agent's own key already, and goes as the agent's:
+        // this device carries it and never signs it over as its own.
+        if !matches!(&decoded.message, RemoteActionMessage::Invoke(request) if request.signed.is_none())
+        {
             return Ok(frame);
         }
         tilo_server_protocol::invocation::sign_message(
@@ -1706,7 +1709,13 @@ impl Task {
                 (joined.presence_seq, frame)
             })
             .collect();
+        let wanted = joined.live_session.call_keys_wanted();
         let _ = tilo_live::presence::say(&joined.live_session, &numbered);
+        // A page that joined another call needs that call's keys: its live session is settled
+        // again, which asks for them.
+        if joined.live_session.call_keys_wanted() != wanted {
+            self.live_sessions_due.insert(workspace_id);
+        }
     }
 
     /// Apply one command while disconnected; what it publishes commits at once.

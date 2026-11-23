@@ -345,6 +345,12 @@ pub const INCOMING_MESSAGE_FACET: &str = "incoming-message";
 /// Contract tag on the declaration of such a verb, so a surface and a
 /// catalogue show it.
 pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
+/// Facet a writer sets on a change that copies another member's change (a
+/// service mirroring a message back in, a sync of something written
+/// elsewhere): the actor bytes of the member whose change it copies
+/// (`agent:<id>`, a person's id). A trigger tells a copy of a change from a
+/// new one by it, whoever wrote the copy.
+pub const ORIGIN_FACET: &str = "origin";
 
 /// Facet the executor writes on a change of what only some members read
 /// ([`Action::readers`](crate::Action::readers)): the members who alone read

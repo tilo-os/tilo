@@ -26,8 +26,9 @@ TypeScript: `workspaces.list/create/delete`, `keys.list/create/mint/revoke`,
 as a typed object over a read and `field-edit`, `res.many(action, items)` for several
 actions as one step per call, `Refused`, `AskPending` and
 `ProtocolError`, `SurfaceChanged` when an app's surface moved past the
-generated types, and for a key the API turns away `KeyRevoked`, `KeyExpired`
-or `KeyRefused`.
+generated types, `UnsupportedVersion` when the server speaks another API
+major version, `Unreachable` when it cannot be reached, and for a key the
+API turns away `KeyRevoked`, `KeyExpired` or `KeyRefused`.
 
 A key is `TILO_API_KEY` and the API server is `TILO_API_URL`
 (`https://api.tilo.sh` by default). `tilo sdk gen` writes per-app types into

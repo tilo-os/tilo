@@ -376,10 +376,19 @@ fn bind(
     Ok(Request { workspace, device })
 }
 
+/// What each call of each workspace this relay carries allows, by the tag its tracks name
+/// ([`collab_types::calls::tag`]).
+type CallsByTag =
+    Arc<Mutex<BTreeMap<WorkspaceId, BTreeMap<String, collab_types::calls::CallRule>>>>;
+
 /// One admitted session: its publication, the scope it hears, and the watch it is cut by.
 struct Permit {
     engine: Arc<Engine>,
     changed: tokio::sync::watch::Receiver<u64>,
+    /// What the workspace's calls allow: the call tracks it carries for this session.
+    calls: CallsByTag,
+    /// The person the session's device is (their root as hex).
+    person: String,
     device: [u8; 32],
     workspace: WorkspaceId,
     workspace_name: String,
@@ -427,6 +436,21 @@ impl SessionAuthorization for Permit {
     fn changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         Some(self.changed.clone())
     }
+
+    fn call(&self, direction: Direction, call: &str) -> bool {
+        let may = self
+            .calls
+            .lock_recover()
+            .get(&self.workspace)
+            .and_then(|calls| calls.get(call))
+            .map_or(collab_types::calls::Directions::BOTH, |rule| {
+                rule.may(Some(&self.person))
+            });
+        match direction {
+            Direction::Publish => may.publish,
+            Direction::Subscribe => may.subscribe,
+        }
+    }
 }
 
 /// One joined live session: through which relay, and the session itself.
@@ -447,7 +471,10 @@ struct Shared {
     /// member the workspace removed is a change the open sessions re-observe,
     /// so its session is cut on the removal and not on its next request.
     rosters: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
-    /// Told when a workspace's membership or keys moved.
+    /// What each workspace's calls allowed when this device last read it: a call that ended or
+    /// denied someone is a change the open sessions re-observe, so its tracks stop on it.
+    calls: CallsByTag,
+    /// Told when a workspace's membership, keys or calls moved.
     changed: tokio::sync::watch::Sender<u64>,
     live_sessions: Mutex<BTreeMap<WorkspaceId, Joined>>,
     /// How far each workspace's live session came here, as it was last settled ([`LiveState`]).
@@ -563,9 +590,16 @@ impl Shared {
             .unwrap_or(0);
         keys_current(grant.epoch, newest)?;
         let scope = scope_of(request.workspace);
+        let person = devices
+            .iter()
+            .find(|admitted| admitted.device == request.device)
+            .map(|admitted| hex::encode(admitted.cert.user_public_key))
+            .unwrap_or_default();
         Ok(Arc::new(Permit {
             engine: Arc::clone(&self.engine),
             changed: self.changed.subscribe(),
+            calls: Arc::clone(&self.calls),
+            person,
             device: request.device,
             workspace: request.workspace,
             workspace_name: request.workspace.to_string(),
@@ -693,6 +727,10 @@ impl Shared {
         };
         self.observe(workspace, keys.epoch());
         self.observe_roster(workspace, &devices);
+        // What the workspace's calls allow: whose call media the live session opens and sends,
+        // and which call tracks this relay carries for whom.
+        let (rules, persons) = self.engine.call_gate(&workspace.to_string());
+        self.observe_calls(workspace, &rules);
         let roster = Roster::new(devices.iter().map(|device| device.device));
         let scope = scope_of(workspace);
         let kept = {
@@ -710,8 +748,8 @@ impl Shared {
             let epoch = keys.epoch();
             live_session.set_keys(keys);
             live_session.set_roster(roster);
-            let (rules, persons) = self.engine.call_gate(&workspace.to_string());
             live_session.set_calls(rules, persons);
+            self.hand_call_keys(workspace, &live_session);
             self.stand(
                 workspace,
                 LiveState::Open {
@@ -759,15 +797,32 @@ impl Shared {
         tracing::debug!(%workspace, relay = %hex::encode(serving),
             local = serving == self.device, epoch,
             "the live session opened");
-        // What the workspace's calls allow: whose call media the live session opens and sends.
-        let (rules, persons) = self.engine.call_gate(&workspace.to_string());
         live_session.set_calls(rules, persons);
+        self.hand_call_keys(workspace, &live_session);
         let open = LiveState::Open {
             relay: relayer(&devices, serving, self.device),
             epoch,
             lent,
         };
         self.keep(workspace, serving, live_session, open);
+    }
+
+    /// Hand `live_session` the keys of the call media it needs now when this device holds them:
+    /// the key group of its call's rule's generation, which only the devices the call admits are
+    /// given. Asking for them takes this device into the group; the keys arriving changes the
+    /// workspace's keys, and the workspace is settled again on it.
+    fn hand_call_keys(&self, workspace: WorkspaceId, live_session: &LiveSession) {
+        let Some((channel, generation)) = live_session.call_keys_wanted() else {
+            return;
+        };
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: collab_types::scope::MEDIA_APP.to_owned(),
+            cluster_id: workspace.to_string(),
+            document: collab_types::calls::media_document(&channel, generation),
+        };
+        if let Ok(crate::engine::SealKeys::Here(keys)) = self.engine.document_seal_keys(&route) {
+            live_session.set_call_keys(&channel, generation, keys);
+        }
     }
 
     /// `workspace` 's keys are not here (`held`), and none were lent: the live session opens when they
@@ -914,6 +969,23 @@ impl Shared {
         }
     }
 
+    /// Note what `workspace` 's calls allow now, and tell the sessions open on this relay when that
+    /// moved.
+    fn observe_calls(
+        &self,
+        workspace: WorkspaceId,
+        rules: &BTreeMap<String, collab_types::calls::CallRule>,
+    ) {
+        let by_tag: BTreeMap<String, collab_types::calls::CallRule> = rules
+            .iter()
+            .map(|(channel, rule)| (collab_types::calls::tag(channel), rule.clone()))
+            .collect();
+        let moved = self.calls.lock_recover().insert(workspace, by_tag.clone()) != Some(by_tag);
+        if moved {
+            self.bump();
+        }
+    }
+
     /// Whether this device is in `workspace` 's live session now.
     fn joined(&self, workspace: WorkspaceId) -> bool {
         self.live_sessions
@@ -971,6 +1043,7 @@ impl Shared {
     /// Stop carrying `workspace` : the live session is closed and its sessions cut.
     fn withdraw(&self, workspace: WorkspaceId) {
         self.rosters.lock_recover().remove(&workspace);
+        self.calls.lock_recover().remove(&workspace);
         let gone = self.live_sessions.lock_recover().remove(&workspace);
         if gone.is_some() {
             self.bump();
@@ -1034,6 +1107,7 @@ impl Live {
             device,
             epochs: Mutex::new(BTreeMap::new()),
             rosters: Mutex::new(BTreeMap::new()),
+            calls: Arc::default(),
             changed,
             live_sessions: Mutex::new(BTreeMap::new()),
             states: Mutex::new(BTreeMap::new()),
@@ -1211,7 +1285,14 @@ impl crate::sync::SayPresence for Say {
             .get(&workspace)
             .map(|joined| Arc::clone(&joined.live_session))
             .ok_or_else(|| "this workspace has no live session".to_owned())?;
-        tilo_live::presence::say(&live_session, frames).map_err(|error| error.to_string())
+        let wanted = live_session.call_keys_wanted();
+        tilo_live::presence::say(&live_session, frames).map_err(|error| error.to_string())?;
+        // A device that joined another call needs that call's keys: the workspace is settled
+        // again, which asks for them.
+        if live_session.call_keys_wanted() != wanted {
+            self.0.nudge(workspace).notify_one();
+        }
+        Ok(())
     }
 }
 

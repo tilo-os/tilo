@@ -176,6 +176,10 @@ crate::effects::effect_family!(DiskUnlockEffect => answer);
 
 crate::area::pane_area! {
     DiskUnlockArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Permissions);
     fn poll(&self) {
         DiskUnlockArea::poll(self);
     }

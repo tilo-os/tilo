@@ -149,7 +149,7 @@ if [ "$crate_name" = "runtime_dylib" ]; then
         ${dylib_link[@]+"${dylib_link[@]}"}
 fi
 
-# A runtime engine (crates/runtime/engines/*) is a Rust dylib
+# A runtime engine (crates/engines/loadable/*) is a Rust dylib
 # chained on the runtime: one app maps it beside libruntime_dylib.so. It
 # needs prefer-dynamic to link against the runtime at all (a dylib that links
 # another Rust dylib otherwise carries a second libstd), and the runtime's

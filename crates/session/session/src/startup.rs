@@ -73,54 +73,22 @@ pub enum Failure {
 }
 
 /// The headless identity command a `tilo-session` command line asks for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     /// `--provision-identity` : establish the machine's identity, then stop.
     Provision,
     /// `--verify-collaboration-identity` : prove the identity this device holds verifies, then
     /// stop.
     Verify,
-    /// `--pair-device-link-file FILE`: enroll this new device, then stop.
-    PairDevice(PathBuf),
-    /// Private stdin from a first-use session, tied to that session's lifetime.
-    PairDeviceFromOnboarding {
-        requester: tilo_enrollment::client::ProcessLease,
-        status: PathBuf,
-    },
 }
 
 /// What the identity flags among `args` (the program's arguments, without the
 /// program) ask for, and `None` for a command line that starts a session.
 ///
 /// # Errors
-/// Conflicting identity commands, or a pairing flag with no link file.
+/// Conflicting identity commands.
 pub fn command(args: &[String]) -> Result<Option<Command>, String> {
     let asked = |flag: &str| args.iter().any(|arg| arg == flag);
-    if let [flag, pid, start_time, status] = args
-        && flag == "--pair-device-link-stdin"
-    {
-        let pid = pid.parse().map_err(|_| "invalid pairing requester PID")?;
-        let start_time = start_time
-            .parse()
-            .map_err(|_| "invalid pairing requester start time")?;
-        return Ok(Some(Command::PairDeviceFromOnboarding {
-            requester: tilo_enrollment::client::ProcessLease::from_parts(pid, start_time),
-            status: PathBuf::from(status),
-        }));
-    }
-    if asked("--pair-device-link-stdin") {
-        return Err("the pairing helper needs a requester lease and a progress path".to_owned());
-    }
-    if let Some(pairing) = args.iter().position(|arg| arg == "--pair-device-link-file") {
-        if asked("--provision-identity") || asked("--verify-collaboration-identity") {
-            return Err("device pairing cannot run with another identity command".to_owned());
-        }
-        let file = args
-            .get(pairing.saturating_add(1))
-            .filter(|arg| !arg.starts_with("--"))
-            .ok_or_else(|| "--pair-device-link-file needs a file".to_owned())?;
-        return Ok(Some(Command::PairDevice(PathBuf::from(file))));
-    }
     match (
         asked("--provision-identity"),
         asked("--verify-collaboration-identity"),
@@ -155,105 +123,7 @@ pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     match command {
         Command::Verify => verify_only(identity_dir, &paths),
         Command::Provision => provision(&identity_path, identity_dir, &paths, host_desktop),
-        Command::PairDevice(file) => match pair_device_from_file(identity_dir, &file) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("could not pair this device: {error:#}");
-                ExitCode::FAILURE
-            }
-        },
-        Command::PairDeviceFromOnboarding { requester, status } => {
-            match pair_device_from_onboarding(identity_dir, requester, &status) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => {
-                    if let Err(write_error) =
-                        tilo_enrollment::client::PairingStatus::failed(&error).write(&status)
-                    {
-                        eprintln!("could not report pairing progress: {write_error:#}");
-                    }
-                    eprintln!("could not pair this device: {error:#}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
     }
-}
-
-/// This first-use command runs as the new device's own account, before it
-/// opens a session. The signed answer selects the identity through the same
-/// durable installer the nearby path uses.
-fn pair_device_from_file(identity_dir: &Path, file: &Path) -> anyhow::Result<()> {
-    use anyhow::Context as _;
-    use tilo_identity::enrollment::{given_token, spend_token};
-
-    let link = given_token(file)?.context("the file contains no device pairing link")?;
-    let link = zeroize::Zeroizing::new(link);
-    let joined = pair_device(identity_dir, &link, None, None)?;
-    spend_token(file)?;
-    println!("Paired as {}", joined.label);
-    Ok(())
-}
-
-fn pair_device_from_onboarding(
-    identity_dir: &Path,
-    requester: tilo_enrollment::client::ProcessLease,
-    status: &Path,
-) -> anyhow::Result<()> {
-    use std::io::Read as _;
-    use tilo_enrollment::client::PairingStatus;
-
-    requester.validate()?;
-    let mut link = zeroize::Zeroizing::new(String::new());
-    let limit = tilo_enrollment::local_link::MAX_LINK_BYTES;
-    std::io::stdin()
-        .take(u64::try_from(limit)?.saturating_add(1))
-        .read_to_string(&mut link)?;
-    if link.len() > limit {
-        anyhow::bail!("the device pairing link is too long");
-    }
-    let joined = pair_device(identity_dir, &link, Some(requester), Some(status))?;
-    PairingStatus::complete(
-        joined.code,
-        hex::encode(joined.identity),
-        joined.record_path,
-    )
-    .write(status)
-}
-
-fn pair_device(
-    identity_dir: &Path,
-    link: &str,
-    requester_lease: Option<tilo_enrollment::client::ProcessLease>,
-    status: Option<&Path>,
-) -> anyhow::Result<tilo_enrollment::request::JoinedDevice> {
-    use tilo_enrollment::client::PairingStatus;
-    use tilo_enrollment::request::{JoinOptions, PairingProgress};
-    use tilo_identity::enrollment::{DECLARATION, Method, Methods};
-
-    Methods::of_image(Path::new(DECLARATION))?.ensure(Method::Token)?;
-    let root = tilo_identity::provisioning::collaboration_identity_root();
-    let name = tilo_paths::session::host_name()
-        .filter(|name| tilo_server_protocol::valid_device_label(name));
-    let options = JoinOptions {
-        identity_root: &root,
-        label: name.as_deref().unwrap_or("Tilo device"),
-        timeout: 60,
-        kind: tilo_enrollment::EnrollmentKind::PersonalDevice,
-        identity_dir: Some(identity_dir),
-        requester_lease,
-        port: 0,
-        person_uid: None,
-    };
-    tilo_enrollment::local_link::redeem(link, options, |progress| {
-        if let PairingProgress::Waiting { code, label } = progress {
-            if let Some(status) = status {
-                PairingStatus::waiting(code, label).write(status)?;
-            } else {
-                println!("Pairing code: {code}");
-            }
-        }
-        Ok(())
-    })
 }
 
 /// Prove the identity this device holds verifies, as a release check runs it on an installed

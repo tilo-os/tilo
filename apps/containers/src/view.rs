@@ -101,7 +101,7 @@ pub(crate) fn section_list(
     NavList::new(vec![NavSection::untitled("sections", items)])
         .selected(place_id(selected))
         .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-sections"))
-        .on_view("containers-sections", move |id| {
+        .on_choose("containers-sections", move |id| {
             if let Some(place) = Place::parse(&id) {
                 intents.push(Intent::ShowSection(place));
             }
@@ -155,7 +155,7 @@ pub(crate) fn primary(
         Button::new(id, label)
             .with_icon(icon)
             .role(ButtonRole::Primary)
-            .on_view(intents.sender(intent)),
+            .on_open(intents.sender(intent)),
     )
 }
 
@@ -303,7 +303,7 @@ pub(crate) fn container_list(
     .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-containers"))
     .with_sort_state(sort)
     .selectable(true)
-    .on_view("containers-list", move |index| {
+    .on_choose("containers-list", move |index| {
         if let Some(id) = ids.get(index) {
             select.push(Intent::Select(Some(id.clone())));
         }
@@ -328,7 +328,7 @@ fn containers_empty(engine: &Engine, intents: &Intents) -> Element {
                 .with_icon(Icon::Box)
                 .with_message(CATALOG.t("containers-empty-containers-hint"))
                 .with_action("New container")
-                .on_view(intents.sender(Intent::NewContainer)),
+                .on_open(intents.sender(Intent::NewContainer)),
         )
     } else {
         engine_missing(engine, intents)
@@ -342,7 +342,7 @@ pub(crate) fn engine_missing(engine: &Engine, intents: &Intents) -> Element {
         .with_icon(Icon::Box)
         .with_message(CATALOG.t("containers-engine-missing-hint"))
         .with_action("Try again")
-        .on_effect(intents.sender(Intent::Reconnect));
+        .on_click(intents.sender(Intent::Reconnect));
     if !engine.live
         && let Some(detail) = crate::podman::unreachable_detail(&engine.connection)
     {
@@ -492,7 +492,7 @@ fn verb_button(
         .and_then(|row| ui::tilo_actions::ActionBinding::unit_for(&row, verb_id).ok());
     match binding {
         Some(binding) => button.on_action(binding),
-        None => button.on_view(intents.sender(intent)),
+        None => button.on_open(intents.sender(intent)),
     }
 }
 
@@ -539,7 +539,7 @@ fn tabs(selected: DetailTab, intents: &Intents) -> ui::widget::ViewTabs {
             .collect(),
         index,
     )
-    .on_view("container-tabs", move |i| {
+    .on_choose("container-tabs", move |i| {
         if let Some(tab) = DetailTab::ALL.get(i) {
             intents.push(Intent::ShowTab(*tab));
         }
@@ -891,7 +891,7 @@ pub(crate) fn images_page(
                 .with_icon(Icon::Layers)
                 .with_message(CATALOG.t("containers-empty-images-hint"))
                 .with_action("Pull image")
-                .on_view(intents.sender(Intent::PullImage)),
+                .on_open(intents.sender(Intent::PullImage)),
         );
     }
     let rows: Vec<Element> = engine
@@ -962,7 +962,7 @@ pub(crate) fn volumes_page(
                 .with_icon(Icon::HardDrive)
                 .with_message(CATALOG.t("containers-empty-volumes-hint"))
                 .with_action("New volume")
-                .on_view(intents.sender(Intent::NewVolume)),
+                .on_open(intents.sender(Intent::NewVolume)),
         );
     }
     let rows: Vec<Element> = engine
@@ -1104,7 +1104,7 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
                 &CATALOG.t("containers-stop-download"),
             )
             .role(ButtonRole::Secondary)
-            .on_view(move || stop.push(Intent::StopPull)),
+            .on_open(move || stop.push(Intent::StopPull)),
         ));
     }
     column
@@ -1217,7 +1217,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             actions.push(Box::new(
                 Button::icon_only("containers-new", Icon::Plus, &CATALOG.t("containers-new"))
                     .role(ButtonRole::Primary)
-                    .on_view(intents.sender(Intent::NewContainer)),
+                    .on_open(intents.sender(Intent::NewContainer)),
             ));
         }
         return shell
@@ -1279,7 +1279,7 @@ fn detail_commands(parts: &Parts) -> Element {
                         Icon::PanelRight,
                         &CATALOG.t("containers-close-details"),
                     )
-                    .on_view(intents.sender(Intent::Select(None))),
+                    .on_open(intents.sender(Intent::Select(None))),
                 )),
             )
         },

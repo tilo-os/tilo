@@ -1,0 +1,33 @@
+[package]
+name = "tilo-theme-painter-wasm"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+# The toolkit links it into every app that is not the thin runtime, so it is MIT with the
+# SDK (LICENSING.md).
+license = "MIT"
+description = "The interpreter (wasmi) a theme's painter set loaded from wasm runs on: fuel-bounded, memory-capped, no imports."
+
+# The code the runtime leaves out. The toolkit names it in every build but
+# the thin one; there the painter engine (crates/engines/loadable/theme-painter)
+# links it into its own library, which the toolkit opens the first time a
+# theme names a painter set.
+[dependencies]
+# The painter interface the module implements and the bytes it exchanges.
+tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
+# The interpreter, its limits and its failures: one wasm host layer for every host.
+tilo-wasm-host = { version = "0.1.0", path = "../../runtime/tilo-wasm-host", default-features = false }
+wasmi = { version = "1.1", default-features = false, features = ["std"] }
+# A call's guest state is behind a lock: one call at a time on one module.
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# The modules the tests refuse and bound, written as WAT.
+wat = "1"
+
+[lints]
+workspace = true

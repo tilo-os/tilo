@@ -4341,7 +4341,7 @@
     },
     "open-word-processor": {
      "walked": true,
-     "took_ms": 1945,
+     "took_ms": 3313,
      "controls": [
       "5:27 AM",
       "BackgroundLayer",
@@ -4648,7 +4648,7 @@
     },
     "open-tasks": {
      "walked": true,
-     "took_ms": 3922,
+     "took_ms": 3934,
      "controls": [
       "5:28 AM",
       "Add sheet",
@@ -4716,7 +4716,7 @@
     },
     "open-file-explorer": {
      "walked": true,
-     "took_ms": 2370,
+     "took_ms": 3818,
      "controls": [
       "5:28 AM",
       "Back",
@@ -4963,7 +4963,7 @@
     },
     "open-activity": {
      "walked": true,
-     "took_ms": 4289,
+     "took_ms": 5583,
      "controls": [
       "5:28 AM",
       "Activity",
@@ -5014,7 +5014,7 @@
     },
     "open-photos": {
      "walked": true,
-     "took_ms": 2305,
+     "took_ms": 10268,
      "controls": [
       "5:28 AM",
       "Activity",
@@ -5078,7 +5078,7 @@
     },
     "open-calendar": {
      "walked": true,
-     "took_ms": 1708,
+     "took_ms": 7841,
      "controls": [
       "5:28 AM",
       "Albums",
@@ -5188,7 +5188,7 @@
     },
     "open-tl-notes": {
      "walked": true,
-     "took_ms": 2295,
+     "took_ms": 3779,
      "controls": [
       "5:28 AM",
       "BackgroundLayer",
@@ -5291,7 +5291,7 @@
     },
     "open-tl-tasks": {
      "walked": true,
-     "took_ms": 1378,
+     "took_ms": 2600,
      "controls": [
       "5:28 AM",
       "BackgroundLayer",
@@ -5348,7 +5348,7 @@
     },
     "open-tl-chat": {
      "walked": true,
-     "took_ms": 1898,
+     "took_ms": 3192,
      "controls": [
       "5:28 AM",
       "BackgroundLayer",
@@ -5414,7 +5414,7 @@
     },
     "open-tl-agent": {
      "walked": true,
-     "took_ms": 1246,
+     "took_ms": 5161,
      "controls": [
       "5:29 AM",
       "All asks",
@@ -5469,7 +5469,7 @@
     },
     "open-tl-today": {
      "walked": true,
-     "took_ms": 1271,
+     "took_ms": 7715,
      "controls": [
       "5:29 AM",
       "All asks",
@@ -5527,7 +5527,7 @@
     },
     "open-tl-board": {
      "walked": true,
-     "took_ms": 977,
+     "took_ms": 7044,
      "controls": [
       "5:30 AM",
       "Allow",
@@ -5585,7 +5585,7 @@
     },
     "everything-open": {
      "walked": true,
-     "took_ms": 3076,
+     "took_ms": 3916,
      "controls": [
       "5:30 AM",
       "Allow",
@@ -16642,7 +16642,7 @@
    "steps": {
     "signed-in": {
      "walked": true,
-     "took_ms": 2498,
+     "took_ms": 3093,
      "controls": [
       "5:33 AM",
       "Dock",
@@ -21204,7 +21204,7 @@
     },
     "open-code-editor": {
      "walked": true,
-     "took_ms": 1182,
+     "took_ms": 1520,
      "controls": [
       "1189794726555942914",
       "5:33 AM",
@@ -21231,7 +21231,7 @@
     },
     "open-word-processor": {
      "walked": true,
-     "took_ms": 1081,
+     "took_ms": 2690,
      "controls": [
       "1189794726555942914",
       "1189794726555942916",
@@ -21261,7 +21261,7 @@
     },
     "open-chat": {
      "walked": true,
-     "took_ms": 1052,
+     "took_ms": 1328,
      "controls": [
       "1189794726555942916",
       "1189794726555942918",
@@ -21292,7 +21292,7 @@
     },
     "open-settings": {
      "walked": true,
-     "took_ms": 1159,
+     "took_ms": 1956,
      "controls": [
       "1189794726555942918",
       "1189794726555942920",
@@ -21323,7 +21323,7 @@
     },
     "open-sheets": {
      "walked": true,
-     "took_ms": 2155,
+     "took_ms": 5140,
      "controls": [
       "1189794726555942920",
       "1189794726555942922",
@@ -21356,7 +21356,7 @@
     },
     "open-tasks": {
      "walked": true,
-     "took_ms": 3095,
+     "took_ms": 3161,
      "controls": [
       "1189794726555942922",
       "1189794726555942924",
@@ -21461,7 +21461,7 @@
     },
     "open-terminal": {
      "walked": true,
-     "took_ms": 1305,
+     "took_ms": 2649,
      "controls": [
       "1189794726555942928",
       "1189794726555942930",
@@ -21499,7 +21499,7 @@
     },
     "open-pdf-viewer": {
      "walked": true,
-     "took_ms": 2413,
+     "took_ms": 3295,
      "controls": [
       "1189794726555942930",
       "1189794726555942932",
@@ -21537,7 +21537,7 @@
     },
     "open-activity": {
      "walked": true,
-     "took_ms": 1997,
+     "took_ms": 2035,
      "controls": [
       "1189794726555942932",
       "1189794726555942934",
@@ -21575,7 +21575,7 @@
     },
     "open-photos": {
      "walked": true,
-     "took_ms": 3240,
+     "took_ms": 4392,
      "controls": [
       "1189794726555942934",
       "1189794726555942936",
@@ -21615,7 +21615,7 @@
     },
     "open-calendar": {
      "walked": true,
-     "took_ms": 3401,
+     "took_ms": 6736,
      "controls": [
       "1189794726555942936",
       "1189794726555942938",
@@ -21657,7 +21657,7 @@
     },
     "open-tl-notes": {
      "walked": true,
-     "took_ms": 2118,
+     "took_ms": 4899,
      "controls": [
       "1189794726555942938",
       "1189794726555942940",
@@ -21699,7 +21699,7 @@
     },
     "open-tl-tasks": {
      "walked": true,
-     "took_ms": 1707,
+     "took_ms": 3243,
      "controls": [
       "1189794726555942940",
       "1189794726555942942",
@@ -21741,7 +21741,7 @@
     },
     "open-tl-chat": {
      "walked": true,
-     "took_ms": 1483,
+     "took_ms": 4741,
      "controls": [
       "1189794726555942942",
       "1189794726555942944",
@@ -21794,7 +21794,7 @@
     },
     "open-tl-agent": {
      "walked": true,
-     "took_ms": 2502,
+     "took_ms": 5969,
      "controls": [
       "1189794726555942944",
       "1189794726555942946",
@@ -21841,7 +21841,7 @@
     },
     "open-tl-today": {
      "walked": true,
-     "took_ms": 1840,
+     "took_ms": 9629,
      "controls": [
       "1189794726555942946",
       "1189794726555942948",
@@ -21888,7 +21888,7 @@
     },
     "open-tl-board": {
      "walked": true,
-     "took_ms": 1766,
+     "took_ms": 7948,
      "controls": [
       "1189794726555942948",
       "1189794726555942950",

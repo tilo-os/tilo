@@ -99,7 +99,7 @@ fn role(value: &str) -> Result<RootRole, &'static str> {
 impl InstallerPreview {
     fn windows_view_button(&self, id: &str, label: &str, effect: InstallerPreviewEffect) -> Button {
         let commands = self.commands.clone();
-        Button::new(id, &t(label)).on_view(move || commands.borrow_mut().push(effect.clone()))
+        Button::new(id, &t(label)).on_open(move || commands.borrow_mut().push(effect.clone()))
     }
 
     pub(super) fn windows_review_projection(&self) -> serde_json::Value {
@@ -517,7 +517,7 @@ impl InstallerPreview {
                     &format!("windows.suggestion.{index}"),
                     &suggestion.path.to_string_lossy(),
                 )
-                .on_effect(move || commands.borrow_mut().push(effect.clone())),
+                .on_click(move || commands.borrow_mut().push(effect.clone())),
             ));
         }
         for value in [
@@ -621,7 +621,7 @@ impl InstallerPreview {
                                 &[("path", source.to_string_lossy().into())],
                             ),
                         )
-                        .on_effect(move || {
+                        .on_click(move || {
                             commands
                                 .borrow_mut()
                                 .push(InstallerPreviewEffect::SelectWindowsRoot {

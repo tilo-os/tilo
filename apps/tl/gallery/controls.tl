@@ -104,6 +104,9 @@ view controls(g: Gallery) {
                 on station(i): set(step, i)
             }
         }
+        ui.Section("Meters") {
+            ui.LevelMeter(source: "alsa_input.example", label: "Microphone level")
+        }
         ui.Section("Days and times") {
             form {
                 field("Starts") {

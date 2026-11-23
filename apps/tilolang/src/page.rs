@@ -9,22 +9,38 @@
 //! component patches a host sends over its socket.
 
 // A page runs on one thread: what it awaits never moves to another.
-#![allow(
-    clippy::future_not_send,
-    reason = "a page's futures run on its one thread"
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "a page's futures run on its one thread"
+    )
 )]
 
+#[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
+#[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(target_arch = "wasm32")]
 use tilo_app_window::AppWindow;
+#[cfg(target_arch = "wasm32")]
 use tilo_render_protocol::patch::local;
-use tilolang_tilo::bundle::{Bundle, IDS_FILE, IMPORTS_DIR, WASM_FILE};
-use tilolang_tilo::host::{Host, RootView};
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
+use tilolang_tilo::bundle::Bundle;
+#[cfg(target_arch = "wasm32")]
+use tilolang_tilo::bundle::{IDS_FILE, IMPORTS_DIR, WASM_FILE};
+use tilolang_tilo::host::Host;
+#[cfg(target_arch = "wasm32")]
+use tilolang_tilo::host::RootView;
+#[cfg(target_arch = "wasm32")]
+use tilolang_tilo::instance::{Config, Instance, Mode};
+use tilolang_tilo::instance::{GlobalLocale, Locale, Platform};
+#[cfg(target_arch = "wasm32")]
 use ui::widget::{AppModel, DrawChild as _, ModelPath, Widget};
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast as _;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 /// Install the package whose payload is served under `base` (a URL ending in `/`): its module,
@@ -37,6 +53,7 @@ use wasm_bindgen::prelude::*;
 /// # Errors
 /// A file could not be fetched, the payload is not a tilolang package, or a package is already
 /// installed in the page.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(js_name = installTilolangPackage)]
 pub async fn install_package(base: String, scenarios: Option<String>) -> Result<String, JsValue> {
     let base = if base.ends_with('/') {
@@ -81,6 +98,7 @@ pub async fn install_package(base: String, scenarios: Option<String>) -> Result<
 /// The modules of the packages the module `wasm` uses, and of those they use, each before those
 /// that use it. A package the payload carries no module of (a native app's, whose actions run at
 /// its own API) is not one.
+#[cfg(target_arch = "wasm32")]
 async fn imports(base: &str, wasm: &[u8]) -> Result<Vec<Vec<u8>>, JsValue> {
     let mut wanted: Vec<String> = uses(wasm);
     let mut seen: Vec<String> = Vec::new();
@@ -100,16 +118,19 @@ async fn imports(base: &str, wasm: &[u8]) -> Result<Vec<Vec<u8>>, JsValue> {
     Ok(fetched)
 }
 
+#[cfg(target_arch = "wasm32")]
 fn uses(wasm: &[u8]) -> Vec<String> {
     tilolang_tilo::tilolang::PackageMeta::from_wasm(wasm).map_or_else(Vec::new, |meta| meta.uses)
 }
 
+#[cfg(target_arch = "wasm32")]
 thread_local! {
     /// The scenarios the page asked its first window to open with.
     static STAGED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The bytes at `url`; `None` when the server has nothing there.
+#[cfg(target_arch = "wasm32")]
 async fn fetch(url: &str) -> Result<Option<Vec<u8>>, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let response: web_sys::Response =
@@ -126,6 +147,12 @@ async fn fetch(url: &str) -> Result<Option<Vec<u8>>, JsValue> {
     Ok(Some(js_sys::Uint8Array::new(&buffer).to_vec()))
 }
 
+/// Browser pages share the toolkit's catalogues, language and region formats on the page's one
+/// thread. Because a browser page has no desktop settings watcher or on-disk language packs,
+/// `words_revision` can only reflect in-page `I18nManager` or region-format changes, not an
+/// external catalogue changing while the page runs.
+static PAGE_LOCALE: GlobalLocale = tilo_app_window::platform_locale!(GlobalLocale);
+
 /// What the instance asks of the page: the installed package, the platform's words, and the
 /// person's clock, as the window reads them.
 struct PagePlatform {
@@ -141,46 +168,20 @@ impl Platform for PagePlatform {
         0
     }
 
-    fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), tilo_app_window::i18n::value_of(value)))
-            .collect();
-        tilo_app_window::i18n::t_args(id, &args)
+    fn locale(&self) -> Option<&dyn Locale> {
+        Some(&PAGE_LOCALE)
     }
 
-    /// The package's words, and the one language its window speaks: the person's when the
-    /// package ships it, the package's source language otherwise.
-    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
-        if window {
-            ui::i18n::speak_window_language(catalogues);
-        } else {
-            tilo_app_window::i18n::add_shared_catalogues(catalogues);
-        }
+    fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
+        tilo_app_window::i18n::phrase(id, args)
     }
 
     fn now(&self) -> String {
-        format!("{:.0}", ui::clock::local_now().timestamp())
+        tilolang_tilo::instance::wall_now()
     }
 
-    fn zone(&self) -> i64 {
-        i64::from(ui::clock::local_now().offset().seconds())
-    }
-
-    fn zone_name(&self) -> Option<String> {
-        ui::time::local_zone_name()
-    }
-
-    fn shown(&self, kind: &str, value: &str) -> String {
-        tilo_app_window::date::shown_text(kind, value)
-    }
-
-    fn sentence(&self, kind: &str, value: &str) -> String {
-        tilo_app_window::date::sentence_text(kind, value)
-    }
-
-    fn clock(&self, hour: u32, minute: u32) -> String {
-        ui::clock::hour_minute(hour, minute)
+    fn moment(&self) -> tilolang_tilo::instance::Zoned {
+        tilolang_tilo::instance::wall_moment()
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
@@ -191,9 +192,11 @@ impl Platform for PagePlatform {
 
 /// How often the window and its instance answer each other in one frame before the frame is
 /// drawn: what the person did, the change it planned written down, and the views it moved.
+#[cfg(target_arch = "wasm32")]
 const EXCHANGES: usize = 8;
 
 /// The window of the installed package, running its instance in the page. See the module docs.
+#[cfg(target_arch = "wasm32")]
 pub struct PageWindow {
     view: AppWindow,
     instance: Instance,
@@ -201,6 +204,7 @@ pub struct PageWindow {
     activation: Cell<bool>,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl PageWindow {
     /// The window of `bundle` for the person `me`, over a store of its own.
     #[must_use]
@@ -224,6 +228,7 @@ impl PageWindow {
                 // What the app hands outside (a post, a mail) stays in the page: it has no
                 // development log to write, and no connector to reach.
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+                link_home: None,
             },
             platform,
             Rc::new(tilolang_tilo::names::Installed),
@@ -288,6 +293,7 @@ impl PageWindow {
 }
 
 /// The window is the framework's surface of the app: what a capture stages runs in its instance.
+#[cfg(target_arch = "wasm32")]
 impl ui::framework::ResourceSurface<crate::resource::Workspace> for PageWindow {
     fn present(&mut self, _state: &Rc<crate::resource::WorkspaceState>) {}
 
@@ -297,6 +303,7 @@ impl ui::framework::ResourceSurface<crate::resource::Workspace> for PageWindow {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 impl ui::component_lifecycle::WindowActivation for PageWindow {
     fn take_window_activation_intent(&self) -> bool {
         self.activation.replace(false)
@@ -304,6 +311,7 @@ impl ui::component_lifecycle::WindowActivation for PageWindow {
 }
 
 /// The window is named by what it shows, as the app window's window names it.
+#[cfg(target_arch = "wasm32")]
 impl ui::component_lifecycle::WindowTitle for PageWindow {
     fn window_title(&self) -> Option<&str> {
         self.view.title()
@@ -311,6 +319,7 @@ impl ui::component_lifecycle::WindowTitle for PageWindow {
 }
 
 /// The window stands for the app window's window in the layout and in every walk of the widgets.
+#[cfg(target_arch = "wasm32")]
 impl ui::widget::Decorator for PageWindow {
     type Inner = dyn Widget;
 
@@ -412,5 +421,81 @@ impl ui::widget::Decorator for PageWindow {
 
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         Widget::take_structure_change(&mut self.view)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Restores thread-local region formats, clock zone and i18n state (including an unset
+    /// `person_locale` override) even if an assertion fails.
+    struct ThreadLocaleGuard {
+        prev_locale: String,
+        prev_person: Option<String>,
+    }
+
+    impl ThreadLocaleGuard {
+        fn enter(person: Option<&str>) -> Self {
+            tilo_app_window::i18n::ensure();
+            Self {
+                prev_locale: ui::i18n::I18nManager::current_locale(),
+                prev_person: ui::i18n::set_person_locale(person),
+            }
+        }
+    }
+
+    impl Drop for ThreadLocaleGuard {
+        fn drop(&mut self) {
+            let _ = ui::i18n::set_person_locale(self.prev_person.as_deref());
+            ui::i18n::I18nManager::set_locale(&self.prev_locale);
+            ui::format::region::install_here(None, None);
+        }
+    }
+
+    /// The browser page host agrees with every other host on the shared table of dates, times,
+    /// clocks, week starts and German typed dates, and moves `words_revision` on in-page display
+    /// locale changes.
+    #[test]
+    fn a_page_packages_dates_week_and_language_agree_with_every_other_host() {
+        use std::rc::Rc;
+        use tilolang_tilo::instance::testing::{
+            LocalAgreementHost, assert_platform_agrees, compile_probe,
+        };
+
+        let _guard = ThreadLocaleGuard::enter(Some("en-US"));
+        ui::i18n::I18nManager::set_locale("en-US");
+
+        let (compiled, actions) = compile_probe();
+        let bundle = Arc::new(Bundle::new(&compiled, []));
+        let platform = Rc::new(PagePlatform {
+            bundle,
+            wake: ui::wake::WakeHandle::new(),
+        });
+        let utc = ui::clock::Zone::of(ui::format::TimeZone::UTC);
+        let mut harness = LocalAgreementHost::open(
+            "PagePlatform",
+            Rc::clone(&platform) as Rc<dyn Platform>,
+            move |formats| {
+                ui::format::region::install_here(Some(formats), Some(utc.clone()));
+            },
+            |locale| {
+                let _ = ui::i18n::set_person_locale(Some(locale));
+            },
+        );
+        assert_platform_agrees(&mut harness, &actions);
+
+        let catalog_rev = || {
+            platform
+                .words_revision()
+                .wrapping_sub(ui::format::region::revision())
+        };
+        let rev_before = catalog_rev();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_ne!(
+            catalog_rev(),
+            rev_before,
+            "switching display locale moves words_revision"
+        );
     }
 }

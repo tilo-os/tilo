@@ -79,8 +79,6 @@ mod delete_workspace;
 mod desktop_services;
 #[path = "dev_session_apps.rs"]
 mod dev_session_apps;
-#[path = "device_agents.rs"]
-mod device_agents;
 #[path = "device_branch.rs"]
 mod device_branch;
 #[path = "device_record.rs"]
@@ -117,6 +115,8 @@ mod german_surfaces;
 mod hosted_browser;
 #[path = "hosted_windows.rs"]
 mod hosted_windows;
+#[path = "idle_notes.rs"]
+mod idle_notes;
 #[path = "import_readiness.rs"]
 mod import_readiness;
 #[path = "input_method.rs"]

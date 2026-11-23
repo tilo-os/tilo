@@ -143,9 +143,9 @@ impl Founder for OnRuntime {
     fn ask(
         &self,
         workspace: WorkspaceId,
-        action: &str,
+        target: tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        self.0.ask(workspace, action, arguments)
+        self.0.ask(workspace, target, arguments)
     }
 }

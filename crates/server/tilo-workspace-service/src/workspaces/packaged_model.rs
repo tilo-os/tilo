@@ -31,10 +31,8 @@
 
 use std::collections::BTreeMap;
 
-use super::authority::WorkspaceOp;
 use super::genesis::publish_genesis;
 use super::{CollaborationError, Workspaces, system_time};
-use crate::service_authority::ServiceOperation;
 use tilo_actions::MemberId;
 use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::tapp;
@@ -265,12 +263,6 @@ impl Workspaces {
         package: &[u8],
     ) -> Result<bool, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            governor,
-            None,
-            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
-            now,
-        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "packaged application creation requires exact governor ownership",
@@ -364,12 +356,6 @@ impl Workspaces {
             now_ms,
         } = action;
         let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            governor,
-            None,
-            WorkspaceOp::Host(ServiceOperation::AuthorApplications),
-            now,
-        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "packaged application actions require exact governor ownership",

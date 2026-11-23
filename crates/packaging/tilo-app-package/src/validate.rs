@@ -481,7 +481,7 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
         }
     }
     for mime in &m.providers.mime {
-        if !valid_mime(mime) {
+        if !tilo_mime::valid_mime(mime) {
             return Err(ManifestError::BadProviderMime(mime.clone()));
         }
     }
@@ -761,30 +761,6 @@ pub(crate) fn valid_extension(ext: &str) -> bool {
         && ext
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
-}
-
-pub(crate) fn valid_mime(mime: &str) -> bool {
-    let Some((top, subtype)) = mime.split_once('/') else {
-        return false;
-    };
-    mime.len() <= 255
-        && !subtype.contains('/')
-        && top != "*"
-        && subtype != "*"
-        && valid_mime_token(top)
-        && valid_mime_token(subtype)
-}
-
-fn valid_mime_token(token: &str) -> bool {
-    !token.is_empty()
-        && token.len() <= 127
-        && token.bytes().all(|b| {
-            b.is_ascii_alphanumeric()
-                || matches!(
-                    b,
-                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
-                )
-        })
 }
 
 pub(crate) fn valid_scheme(scheme: &str) -> bool {

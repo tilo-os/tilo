@@ -1,7 +1,7 @@
 """The account's session unit, and a restart of it nobody asked for.
 
 The account's desktop runs as the system unit `tilo-vm-session@<account>.service`
-(crates/dev/tilo-vmd/data/tilo-vm-session@.service): its main process is
+(crates/os/tilo-device-steps/data/tilo-vm-session@.service): its main process is
 `tilo-session`, the wrapper that runs the compositor and exits when it does.
 `Restart=always` starts a fresh session two seconds later, with every window gone.
 Nothing else in the run would notice: the user journal P03 reads does not hold a
@@ -139,7 +139,7 @@ def dump_script(account: str) -> str:
         "echo '=== systemd-oomd'; journalctl -b -u systemd-oomd --no-pager -o short-precise 2>/dev/null "
         "| tail -n 20 | cut -c1-400; "
         "echo '=== system journal'; journalctl -b --no-pager -o short-precise 2>/dev/null "
-        "| grep -aE 'tilo-vm-session|systemd-coredump|oom|logind.*(Removed|Session)|tilo-vmd' "
+        "| grep -aE 'tilo-vm-session|systemd-coredump|oom|logind.*(Removed|Session)|tilo-device-' "
         "| tail -n 60 | cut -c1-400; "
         "echo '=== user manager'; journalctl -b _UID=$uid --no-pager -o short-precise 2>/dev/null "
         "| grep -aiE 'graphical-session|tilo-graphical|stopp|fail|killed|signal|dumped' | tail -n 60 | cut -c1-400; true"
@@ -183,8 +183,8 @@ def dump(ctx, label: str, fields: dict[str, str] | None) -> tuple[str, str]:
     return f"data/{name}", (f"{how}; the kernel and systemd-oomd said: {killer}" if killer else how)
 
 
-# The file a run's own environment for the session goes in, beside tilo-vmd's (50-tilo-vm-layers.conf
-# and the others it writes and removes by name): tilo-vmd never touches it.
+# The file a run's own environment for the session goes in, beside the device steps' (50-tilo-vm-layers.conf
+# and the others they write and remove by name): the steps never touch it.
 ENVIRONMENT_DROPIN = "90-acceptance-session.conf"
 
 

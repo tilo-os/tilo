@@ -10,7 +10,7 @@ does not fan out into unrelated builds:
 | Desktop session | A dispatch of `desktop-package-{arch}`; `publish-desktop-payload` publishes the OS payload | Both native architectures' host-package jobs, run serially per architecture | Install-tested Debian, RPM, Arch and Nix packages; the immutable OS payload under `publish-desktop-payload` |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
 | Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the sealed image booted in a VM under Secure Boot | The signed server image, its UKI signed for Secure Boot, in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `gen<N>`, `<version>` and `latest` |
-| Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package jobs; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
+| Tilo Installer | Relevant protected `main` pushes build the native packages; `imager-vX.Y.Z` for releases, with t's installer media checks dispatched on the published OS release | Six native host-package jobs; `medium/imager-{arch}` builds and packages the live installer medium with its internal bundle, `medium/cycle-{arch}` proves the graphical install, `medium/internal-cycle-x86_64` the USB-free round trip, `medium/whpx-aarch64` and `target-policy/imager-{arch}` the Windows on ARM medium and the TPM boot bundle | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 | Python and TypeScript SDKs | A `vX.Y.Z` tag (t's `publish-sdks`, `on = ["tag:v…"]`) | The two packages built and read back, and their suites, which the publish needs | `tilo-sdk` on PyPI and `tilo-sdk` on npm, at the tag's version; re-running the tag's step skips what is already published |
 
 The SDKs are the one family with no build artifact of their own: the tag's version is written
@@ -50,7 +50,9 @@ Pull requests use the cheapest job that proves the affected boundary:
   not part of an ordinary change's run.
 - Desktop changes run the preflight contracts. Full distribution builds happen
   when `desktop-package-{arch}` is dispatched; the job builds cold, because a
-  payload that can be published never compiles through a shared cache.
+  payload that can be published never compiles through a shared cache. The Arch
+  and Nix packages also build on their own, in `package/arch` and `package/nix`:
+  one userspace each, install-tested and kept with their checksums.
 - Full OS builds (`tools/ci/publish/os-image.sh`) do not run on ordinary
   `main` pushes. Every OS image carries the Browser's Chromium engine
   runtime, built from the pinned CEF distribution in the image build.
@@ -273,8 +275,8 @@ path. A local machine builds the same two layers with `os/build-host.sh`.
 
 The development server image a dev VM runs as a server is that path's own, and never waits for
 the release image: `image-host-dev` builds the server image's stages on the cached `host-base`
-and then the additions of `os/Containerfile.host-dev` (the dev-VM daemon and CLI, tilo-vmd's
-units, base.json). Its programs come from `host-binaries-dev`, which compiles the server image's
+and then the additions of `os/Containerfile.host-dev` (the runtime that runs the device's
+steps, the dev-VM CLI, their units, base.json). Its programs come from `host-binaries-dev`, which compiles the server image's
 `os/components.toml` components and the dev additions without LTO, as the development OS is
 compiled, so the compiler cache keeps a one-crate change to that crate's compile and the links
 instead of the release image's whole-program ones. `test-image-host-dev` proves the sealed image

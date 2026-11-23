@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# Tilo development server image: the server image plus what tilo-vmd needs
+# Tilo development server image: the server image plus what the device's steps need
 # ----------------------------------------------------------------------------
 # NEVER A RELEASE. It merges system extensions at boot, which the server image
 # masks (os/Containerfile.host): a component layer under /var/lib/extensions
@@ -15,15 +15,18 @@
 # stages build on `final`, the server image's own last stage of the same base,
 # programs and units, and it is sealed after (seal-host-dev). It adds:
 #
-#   * the dev-VM daemon (os/components.toml's `vmd`, with the component
-#     manifest it reads) and the CLI (`vm-cli`, which applies the layers an
+#   * the device's daemon and its steps (os/components.toml's
+#     `native-runtime-host` and `device-steps`, with the component manifest
+#     the steps read) and the
+#     CLI (`vm-cli`, which applies the layers an
 #     installation leaves for the first boot), placed by
 #     os/scripts/install-components.py as the dev image places them, from the
 #     programs t's host-binaries-dev check compiled without LTO
 #     (tools/ci/publish/server-binaries.sh `host host-dev`);
-#   * tilo-vmd's boot units from crates/dev/tilo-vmd/data, the ones
-#     TILO_VM_UNITS names (tools/ci/publish/host-build.sh chooses them);
-#   * /usr/share/tilo-vm/base.json, what the daemon checks every layer against:
+#   * the device steps' boot units from crates/os/tilo-device-steps/data, the ones
+#     TILO_VM_UNITS names (tools/ci/publish/host-build.sh chooses them), and the
+#     step units, polkit rule and directories every image with tilo-runtime has;
+#   * /usr/share/tilo-vm/base.json, what the device checks every layer against:
 #     the target and toolchain read off the server's own programs, the check
 #     image that compiled them and the Cargo.lock they were built from
 #     (os/scripts/finalize-dev-image.py --base-only);
@@ -49,7 +52,7 @@ RUN --network=none \
     --mount=type=bind,from=dev-builder,source=/out,target=/out,ro \
     python3 /run/tilo-dev/os/scripts/install-components.py \
       --manifest /run/tilo-dev/os/components.toml \
-      --from /out --dest /image vmd vm-cli
+      --from /out --dest /image native-runtime-host device-steps vm-cli
 
 # ---- The development server image -------------------------------------------
 FROM final AS dev-server
@@ -63,13 +66,14 @@ RUN test "$(cat /usr/lib/tilo/image-flavour)" = server \
 
 COPY --from=dev-component-files /image/ /
 # The manifest links the CLI's PATH name to `tilo`, the multicall that runs a
-# moved program from /usr/libexec/tilo; the server ships no `tilo` and links its
-# own programs' names straight to them (os/Containerfile.host), so this one is
-# linked the server's way.
-RUN test ! -e /usr/bin/tilo \
-    && test "$(readlink /usr/bin/tilo-vm)" = tilo \
+# moved program from /usr/libexec/tilo. The server links its own programs'
+# names straight to them (os/Containerfile.host), and its `tilo` is the command
+# line its first boot logs in with, so this one is linked the server's way.
+RUN test "$(readlink /usr/bin/tilo-vm)" = tilo \
     && ln -sfn ../libexec/tilo/tilo-vm /usr/bin/tilo-vm
 COPY vm-units/ /usr/lib/systemd/system/
+COPY device-steps/49-tilo-device-steps.rules /etc/polkit-1/rules.d/49-tilo-device-steps.rules
+COPY device-steps/tilo-device-control.conf /usr/lib/tmpfiles.d/tilo-device-control.conf
 
 # The base the development image is built on: the server image's own base, in
 # the store as host-build.sh loaded it, and the builder image t's check
@@ -85,14 +89,14 @@ RUN --network=none \
       --base-image "$TILO_BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --builder-image "$TILO_BUILDER_IMAGE" \
-      --built-binary /usr/libexec/tilo/tilo-server --built-binary /usr/libexec/tilo/tilo-vmd \
+      --built-binary /usr/libexec/tilo/tilo-server --built-binary /usr/libexec/tilo/tilo-runtime \
       --built-binary /usr/libexec/tilo/tilo-vm \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl unmask systemd-sysext.service \
     && systemctl enable systemd-sysext.service ${TILO_VM_UNITS} \
     && test "$(readlink /etc/systemd/system/systemd-confext.service)" = /dev/null \
     && test "$(readlink /etc/systemd/system/systemd-sysext.socket)" = /dev/null \
-    && /usr/bin/tilo-vmd --version && /usr/bin/tilo-vm --version \
+    && /usr/bin/tilo-vm --version \
     && test "$(sha256sum < /run/tilo-dev/os/components.toml)" = "$(sha256sum < /usr/share/tilo/components.toml)" \
     && systemd-sysext --version >/dev/null \
     && bootc container lint

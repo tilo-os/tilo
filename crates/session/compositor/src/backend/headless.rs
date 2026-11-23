@@ -165,7 +165,7 @@ pub struct HeadlessBackend {
 /// four fifths of a second — so every headless backend in the process composites on the same
 /// one instead of paying for it again, and a caller may make it ahead of time
 /// ([`warm_display`]).
-fn display() -> Result<EGLDisplay, BackendError> {
+pub(crate) fn display() -> Result<EGLDisplay, BackendError> {
     static DISPLAY: std::sync::OnceLock<Result<EGLDisplay, String>> = std::sync::OnceLock::new();
     DISPLAY
         .get_or_init(|| {
@@ -266,7 +266,10 @@ impl HeadlessBackend {
                 output
                     .output
                     .change_current_state(None, None, None, Some(position.into()));
-                state.mark_redraw(&output.output);
+                state.mark_redraw(
+                    &output.output,
+                    tilo_frame_metrics::paint_reason::PRESENTATION,
+                );
                 moved = true;
             }
             state.space.map_output(&output.output, position);

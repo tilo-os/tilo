@@ -10,7 +10,7 @@ description = "A server's offers to a person's account, read from what its hoste
 jiff.workspace = true
 # The hosted-VM service's control requests and metering; the keeper that wakes
 # its windows is the VM program's, so this reads the crate without `supervisor`.
-linux-vm = { path = "../../runtime/linux-vm", default-features = false }
+linux-vm = { path = "../../vm/linux-vm", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }

@@ -609,8 +609,8 @@ fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<T
     // The one api every close goes through: what a person closed is
     // remembered here, so it can be reopened, whatever closed it. A window
     // only moving keeps nothing to undo.
-    if leaving == Leaving::Closed {
-        workspace.note_close(strip, group, tab, None);
+    if leaving.closes() {
+        workspace.note_close(strip, group, tab, None, leaving);
     }
     let groups = &mut strip_at_mut(workspace, strip)?.window_groups;
     let window = groups.get_mut(group).ok_or("group was removed")?;

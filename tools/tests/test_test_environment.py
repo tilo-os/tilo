@@ -499,7 +499,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             self.assertEqual(provided["runtime"]["TILO_FONT_ASSET_CACHE"], str(cache))
             (catalog,) = (cache / "catalogs").glob("*-fixtures")
             self.assertEqual((catalog / "manifest.toml").read_bytes(),
-                             (ROOT / "crates/sdk/ui-core/assets/fonts/manifest.toml").read_bytes())
+                             (ROOT / "crates/ui/ui-core/assets/fonts/manifest.toml").read_bytes())
 
     def test_a_missing_renderer_fails_where_it_is_promised(self) -> None:
         if Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json").exists():

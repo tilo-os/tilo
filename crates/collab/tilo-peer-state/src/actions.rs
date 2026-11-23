@@ -271,6 +271,8 @@ struct Inner {
     replay: Mutex<ActionReplayWindow>,
     /// The calls visitors made, per client address ([`visitors`]).
     visitors: Mutex<visitors::VisitorWindows>,
+    /// The uploads callers keep open between the steps of their content puts.
+    content_puts: tilo_actions::remote::HostedContentPuts,
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
     /// Endpoints keyed apart from the device they answer for, by endpoint
@@ -323,6 +325,7 @@ impl ActionService {
             uncertified: Mutex::default(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
+            content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds,
             callers: Mutex::default(),
             endpoints: Mutex::default(),
@@ -351,6 +354,7 @@ impl ActionService {
             uncertified: Mutex::default(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
+            content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
             endpoints: Mutex::default(),
@@ -454,6 +458,42 @@ impl ActionService {
         (!Arc::ptr_eq(dispatcher, &self.0.dispatcher)).then(|| Arc::clone(dispatcher))
     }
 
+    /// The content store a content put goes to: the one provider [`Self::authorize`] handed the
+    /// request to, else the dispatcher's, else the first provider beside it that keeps one.
+    fn content_puts(
+        &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+    ) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
+        if let Some(alone) = self.alone(dispatcher) {
+            return alone.content_puts();
+        }
+        self.0.dispatcher.content_puts().or_else(|| {
+            self.0
+                .providers
+                .lock_recover()
+                .iter()
+                .find_map(tilo_actions::remote::ActionProvider::content_puts)
+        })
+    }
+
+    /// One step of bytes a caller hands the content store `dispatcher` reaches. A step writes at
+    /// most one piece: short enough to answer in place.
+    fn put_content(
+        &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+        caller: &Caller,
+        step: &tilo_actions::remote::ContentPutStep,
+    ) -> Result<tilo_actions::remote::ContentPutAnswer, tilo_actions::remote::ActionCallError> {
+        let Some(puts) = self.content_puts(dispatcher) else {
+            return Err(tilo_actions::remote::ActionCallError::Unavailable {
+                reason: tilo_actions::remote::CONTENT_PUTS_UNAVAILABLE.into(),
+            });
+        };
+        self.0
+            .content_puts
+            .step(puts.as_ref(), caller, step.clone())
+    }
+
     /// What owns invocation `id` for `caller`: the dispatcher where it keeps the invocation,
     /// else the first provider beside it that does. A provider that observes an invocation is the
     /// one that ran it, so what follows or cancels it is asked there.
@@ -520,21 +560,7 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None))
-    }
-
-    /// [`Self::remote`] for `agent`, which this device's person handed the requests to: every
-    /// request names it, and the device that answers acts on each as that agent, for this
-    /// device's person, under the agent's grants there.
-    #[must_use]
-    pub fn remote_for_agent(
-        &self,
-        endpoint: &Endpoint,
-        addr: &EndpointAddr,
-        workspace: &str,
-        agent: neighbour_wire::actions::HandedAgent,
-    ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None, Some(agent)))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None))
     }
 
     /// [`Self::remote`] for a device this device places `workspace`'s work on: every request
@@ -549,7 +575,7 @@ impl ActionService {
         placement: &crate::join::TransportHint,
     ) -> RemoteDevice {
         let placement = postcard::to_allocvec(placement).ok();
-        RemoteDevice(self.device_at(endpoint, addr, workspace, placement, None))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, placement))
     }
 
     /// The connection to one device, opened on first use and kept while it
@@ -560,14 +586,12 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
         placement: Option<Vec<u8>>,
-        agent: Option<neighbour_wire::actions::HandedAgent>,
     ) -> Arc<Device> {
         Arc::new(Device {
             endpoint: endpoint.clone(),
             addr: addr.clone(),
             workspace: workspace.to_owned(),
             placement,
-            agent,
             target: self.device_of(*addr.id.as_bytes()),
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
@@ -690,7 +714,7 @@ impl ActionService {
         // admitted only to what the workspace's grants to any key open, decided here, so no
         // dispatcher behind this one ever meets a caller off the roster it did not open to.
         let Some(certificate) = certificate else {
-            if action.agent.is_some() || !opened {
+            if !opened {
                 return Err(not_permitted(
                     source,
                     "a key the workspace holds no certificate for asks what it opens to no visitor",
@@ -720,10 +744,6 @@ impl ActionService {
                 Caller::bot(installation.clone(), certificate.user_public_key, source)
             }
             _ => Caller::authenticated(certificate.user_public_key, source),
-        };
-        let caller = match &action.agent {
-            None => caller,
-            Some(agent) => handed(caller, agent)?,
         };
         Ok((
             caller
@@ -809,16 +829,11 @@ impl ActionService {
                     result,
                 })
             }
-            // An agent the person's device handed its requests to asks its person here, where its
-            // session is, as an agent of this device does; a device itself confirms nothing here.
-            RemoteActionMessage::Confirm {
-                correlation,
-                request,
-            } if caller.is_session_delegated() && caller.acting().is_agent() => {
-                let result = await_answer(dispatcher.confirm(caller, request)).await;
-                Some(RemoteActionMessage::ConfirmResponse {
+            // Bytes a caller hands the device's content store, kept open between steps here.
+            RemoteActionMessage::ContentPutRequest { correlation, step } => {
+                Some(RemoteActionMessage::ContentPutResponse {
                     correlation: *correlation,
-                    result: result.map(Box::new),
+                    result: self.put_content(dispatcher, caller, step),
                 })
             }
             // A request this device does not answer is said so, never left
@@ -1113,40 +1128,6 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
     }
 }
 
-/// `caller`, a person at their own device, as the agent the device says it handed the request
-/// to: that agent, for the person, held to what both the person and the agent's grants allow,
-/// under the id the person's device gives an agent of that client
-/// ([`tilo_actions::remote::device_agent_id`]). The claim only narrows, so the device's word is
-/// taken for it; a caller that is already not the person (an agent's or a bot's own device)
-/// hands nothing on.
-fn handed(
-    caller: Caller,
-    agent: &neighbour_wire::actions::HandedAgent,
-) -> Result<Caller, tilo_actions::remote::ActionCallError> {
-    use tilo_actions::remote::ActionCallError;
-    if !caller.acting().is_person() {
-        return Err(ActionCallError::NotPermitted);
-    }
-    let said = |text: &str| !text.trim().is_empty() && text.len() <= MAX_HANDED;
-    if !(said(&agent.client) && said(&agent.session)) {
-        return Err(ActionCallError::InvalidRequest {
-            reason: "the agent the request names has no client or session".into(),
-        });
-    }
-    let person = caller
-        .user_public_key()
-        .copied()
-        .ok_or(ActionCallError::NotPermitted)?;
-    let id = tilo_actions::remote::device_agent_id(&person, &agent.client);
-    Ok(caller
-        .delegated_to(id)
-        .named(&agent.client)
-        .in_agent_session(agent.session.clone()))
-}
-
-/// The longest client or session a handed agent is named by.
-const MAX_HANDED: usize = 256;
-
 /// The answer a dispatcher's pending gives, or the refusal of one it
 /// abandoned.
 async fn await_answer<T: Send + 'static>(
@@ -1172,9 +1153,6 @@ struct Device {
     /// What every request carries of where this device serves the workspace, when it places the
     /// workspace's work on the device ([`ActionService::placing`]).
     placement: Option<Vec<u8>>,
-    /// The agent this device's person handed every request to, when it is one
-    /// ([`ActionService::remote_for_agent`]).
-    agent: Option<neighbour_wire::actions::HandedAgent>,
     target: [u8; 32],
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
@@ -1215,6 +1193,24 @@ impl RemoteDevice {
             completer.complete(reply.and_then(answer));
         });
         result
+    }
+
+    /// One step of a content put into the device's content store: what a caller hands a device
+    /// bytes by before it invokes an action that names them by hash.
+    pub fn content_put(
+        &self,
+        step: tilo_actions::remote::ContentPutStep,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::ContentPutAnswer, tilo_actions::remote::ActionCallError>,
+    > {
+        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
+        self.ask(
+            RemoteActionMessage::ContentPutRequest { correlation, step },
+            |answer| match answer {
+                RemoteActionMessage::ContentPutResponse { result, .. } => result,
+                _ => Err(unexpected()),
+            },
+        )
     }
 
     /// Invoke `request` on the device and follow it until it settles there:
@@ -1279,8 +1275,10 @@ impl Device {
             self.endpoint.connect(self.addr.clone(), ACTIONS_ALPN),
         )
         .await
-        .map_err(|_| unavailable("the device did not answer"))?
-        .map_err(|error| unavailable(&error.to_string()))?;
+        .map_err(|_| {
+            tilo_actions::remote::ActionCallError::unavailable("the device did not answer")
+        })?
+        .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))?;
         *self.connection.lock_recover() = Some(connection.clone());
         Ok(connection)
     }
@@ -1298,18 +1296,18 @@ impl Device {
                 target: self.target,
                 message,
                 placement: self.placement.clone(),
-                agent: self.agent.clone(),
             },
             now_ns(),
             self.key.as_ref(),
         )
-        .map_err(|error| unavailable(&error.to_string()))?;
-        let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed)))
-            .map_err(|error| unavailable(&error.to_string()))?;
+        .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))?;
+        let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed))).map_err(
+            |error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()),
+        )?;
         let answer = self.exchange(&bytes).await?;
         RemoteActionFrame::decode(&answer)
             .map(|frame| frame.message)
-            .map_err(|error| unavailable(&error.to_string()))
+            .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))
     }
 
     /// Write `bytes` on a stream of this device's own, and read the one
@@ -1319,31 +1317,30 @@ impl Device {
         bytes: &[u8],
     ) -> Result<Vec<u8>, tilo_actions::remote::ActionCallError> {
         let connection = self.connection().await?;
-        let (mut send, mut recv) = connection
-            .open_bi()
-            .await
-            .map_err(|error| unavailable(&error.to_string()))?;
+        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| {
+            tilo_actions::remote::ActionCallError::unavailable(error.to_string())
+        })?;
         write_frame(&mut send, bytes)
             .await
-            .map_err(|error| unavailable(&error))?;
-        send.finish()
-            .map_err(|error| unavailable(&error.to_string()))?;
+            .map_err(tilo_actions::remote::ActionCallError::unavailable)?;
+        send.finish().map_err(|error| {
+            tilo_actions::remote::ActionCallError::unavailable(error.to_string())
+        })?;
         read_frame(&mut recv)
             .await
-            .map_err(|error| unavailable(&error))?
-            .ok_or_else(|| unavailable("the device closed without answering"))
-    }
-}
-
-/// What a peer did not answer, as the caller reads it.
-fn unavailable(reason: &str) -> tilo_actions::remote::ActionCallError {
-    tilo_actions::remote::ActionCallError::Unavailable {
-        reason: reason.to_owned(),
+            .map_err(tilo_actions::remote::ActionCallError::unavailable)?
+            .ok_or_else(|| {
+                tilo_actions::remote::ActionCallError::unavailable(
+                    "the device closed without answering",
+                )
+            })
     }
 }
 
 fn unexpected() -> tilo_actions::remote::ActionCallError {
-    unavailable("the device answered with an unexpected message")
+    tilo_actions::remote::ActionCallError::unavailable(
+        "the device answered with an unexpected message",
+    )
 }
 
 const fn unanswered() -> tilo_actions::remote::ActionCallError {
@@ -1394,7 +1391,7 @@ fn follow(
     >,
 ) {
     if budget.rounds == 0 || tilo_clock::now() >= budget.until {
-        done.complete(Err(unavailable(
+        done.complete(Err(tilo_actions::remote::ActionCallError::unavailable(
             "the device did not finish the action in time",
         )));
         return;
@@ -1605,28 +1602,6 @@ impl ActionProvider for RemoteDevice {
             RemoteActionMessage::Cancel { invocation: *id },
             |answer| match answer {
                 RemoteActionMessage::CancelResponse { result, .. } => result,
-                _ => Err(unexpected()),
-            },
-        )
-    }
-
-    /// The person put `request` to on the device, where an agent this device handed its requests
-    /// to works: that device asks them as it asks about any of its agents' steps.
-    fn confirm(
-        &self,
-        _caller: &Caller,
-        request: &tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionCallError>,
-    > {
-        let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
-        self.ask(
-            RemoteActionMessage::Confirm {
-                correlation,
-                request: Box::new(request.clone()),
-            },
-            |answer| match answer {
-                RemoteActionMessage::ConfirmResponse { result, .. } => result.map(|answer| *answer),
                 _ => Err(unexpected()),
             },
         )

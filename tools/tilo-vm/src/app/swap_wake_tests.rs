@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(unix)]
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Guest {
     state: &'static str,
@@ -62,82 +60,52 @@ fn guest(root: &Path, state: &'static str) -> Guest {
     }
 }
 
-const DAEMON: &str = r"
-import json,sys
-log,protocol=sys.argv[1:]
-assert open(log).read()=='domstate\ndompmwakeup\n'
-print(json.dumps({'tilo_device_admin':{'device':'test','label':'test','route':'direct','via':'test','session':1}}),flush=True)
-for line in sys.stdin:
- request=json.loads(line)
- method=request['method']
- with open(log,'a') as file: file.write(method+'\n')
- if method=='hello':
-  result={'protocol':int(protocol),'daemon_version':'test','root':'test','arch':'x86_64','awake':{'held':True,'until':123,'hold_until':456}}
- elif method=='swap':
-  assert request['params']['account']=='test-account'
-  assert request['params']['component']=='shell'
-  assert request['params']['layer']=='a'*64
-  result={'account':'test-account','generation':8,'changed':False,'policy':'no_restart','actions':[]}
- else: raise RuntimeError(method)
- print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
-";
-
 tilo_test_env::scenario! {
     fn a_swap_wakes_only_a_managed_guest_that_sleeps;
 
-    phase managed_swap_wakes_before_strict_transport_and_retains_hello_lease;
+    phase a_sleeping_guest_is_woken_before_its_device_is_asked;
     {
-        for compatible in [true, false] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut guest = guest(dir.path(), "pmsuspended");
-            let entry = VmEntry {
-                hypervisor: "libvirt".into(),
-                ..VmEntry::default()
-            };
-            let vm = Vm {
-                name: "test",
-                entry: &entry,
-            };
-            let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
-            let protocol = if compatible {
-                tilo_vm_protocol::PROTOCOL_VERSION
-            } else {
-                0
-            };
-            let line = CommandLine::new("python3", &["-c", DAEMON])
-                .arg(guest.log.display().to_string())
-                .arg(protocol.to_string());
-            let connected = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
-                Remote::over_peer("test", &line)
-            });
-            if compatible {
-                let (mut remote, _) = connected.unwrap();
-                let lease = remote.hello.awake.as_ref().unwrap();
-                assert!(lease.held);
-                assert_eq!(lease.hold_until, Some(456));
-                let applied = remote
-                    .call(Swap {
-                        account: "test-account".into(),
-                        component: "shell".into(),
-                        layer: "a".repeat(64),
-                        info: None,
-                        partner: None,
-                    })
-                    .unwrap();
-                assert_eq!(applied.generation, 8);
-                assert!(!applied.changed);
-                assert_eq!(
-                    std::fs::read_to_string(&guest.log).unwrap(),
-                    "domstate\ndompmwakeup\nhello\nswap\n"
-                );
-            } else {
-                assert!(matches!(connected, Err(CliError::ProtocolMismatch { .. })));
-                assert_eq!(
-                    std::fs::read_to_string(&guest.log).unwrap(),
-                    "domstate\ndompmwakeup\nhello\n"
-                );
-            }
-        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut guest = guest(dir.path(), "pmsuspended");
+        let entry = VmEntry {
+            hypervisor: "libvirt".into(),
+            ..VmEntry::default()
+        };
+        let vm = Vm {
+            name: "test",
+            entry: &entry,
+        };
+        let adapter = hypervisor::adapter(&entry.hypervisor).unwrap();
+        let log = guest.log.clone();
+        let device = crate::remote::fixture::Device::serving(move |action, params| {
+            assert_eq!(
+                std::fs::read_to_string(&log).unwrap(),
+                "domstate\ndompmwakeup\n",
+                "the guest was woken before its device was asked"
+            );
+            assert_eq!(action, "swap");
+            assert_eq!(params["account"], "test-account");
+            Ok(serde_json::json!({
+                "account": "test-account", "generation": 8, "changed": false,
+                "policy": "no_restart", "actions": [],
+            }))
+        });
+        let mut remote = swap_transport(adapter.as_ref(), &vm, &mut guest, || {
+            Remote::connect("test", &device.machine, &device.route)
+        })
+        .unwrap();
+        let applied = remote
+            .call(Swap {
+                account: "test-account".into(),
+                component: "shell".into(),
+                layer: "a".repeat(64),
+                info: None,
+                partner: None,
+            })
+            .unwrap();
+        assert_eq!(applied.generation, 8);
+        assert!(!applied.changed);
+        assert_eq!(device.asked().len(), 1);
     }
 
     phase wake_failure_stops_before_transport;
@@ -216,117 +184,4 @@ tilo_test_env::scenario! {
             assert_eq!(std::fs::read_to_string(&guest.log).unwrap(), "domstate\n");
         }
     }
-}
-
-#[cfg(unix)]
-const POWER: &str = r"#!/usr/bin/env python3
-import os,sys
-root=os.environ['TILO_SWAP_WAKE_FIXTURE']
-state=root+'/state'
-method=sys.argv[-2]
-with open(root+'/calls','a') as file: file.write(method+'\n')
-if method=='domstate': print(open(state).read())
-elif method=='dompmwakeup': open(state,'w').write('running')
-else: raise RuntimeError(method)
-";
-
-#[cfg(unix)]
-const COMPONENT_PEER: &str = r"#!/usr/bin/env python3
-import json,os,sys
-root=os.environ['TILO_SWAP_WAKE_FIXTURE']
-assert open(root+'/state').read()=='running'
-for line in sys.stdin:
- request=json.loads(line)
- method=request['method']
- with open(root+'/calls','a') as file: file.write(method+'\n')
- if method=='hello':
-  result={'protocol':int(os.environ['TILO_SWAP_WAKE_PROTOCOL']),'daemon_version':'test','root':'test','arch':'x86_64'}
- elif method=='status':
-  result={'protocol':int(os.environ['TILO_SWAP_WAKE_PROTOCOL']),'daemon_version':'test','accounts':[],'seat0':None,'storage':{'layers_bytes':0,'free_bytes':None,'total_bytes':None},'issues':[]}
-  open(root+'/state','w').write('pmsuspended')
- elif method=='swap':
-  assert request['params']['account']=='test-account'
-  assert request['params']['component']=='shell'
-  assert request['params']['layer']=='a'*64
-  result={'account':'test-account','generation':8,'changed':False,'policy':'no_restart','actions':[]}
- else: raise RuntimeError(method)
- print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
-";
-
-#[cfg(unix)]
-#[test]
-fn component_swap_resumes_both_initial_and_preapply_connections() {
-    use std::os::unix::fs::PermissionsExt as _;
-    if let Some(root) = std::env::var_os("TILO_SWAP_WAKE_FIXTURE") {
-        run_component_swap(&PathBuf::from(root));
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    for (name, script) in [("virsh", POWER), ("ssh", COMPONENT_PEER)] {
-        let path = root.join(name);
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    std::fs::write(root.join("state"), "pmsuspended").unwrap();
-    std::fs::write(
-        root.join("vms.toml"),
-        "[vms.fixture]\nhypervisor = 'libvirt'\nssh = 'root@127.0.0.1'\n",
-    )
-    .unwrap();
-    let mut paths = vec![root.to_path_buf()];
-    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "app::swap_wake_tests::component_swap_resumes_both_initial_and_preapply_connections",
-            "--exact",
-            "--nocapture",
-        ])
-        .env("PATH", std::env::join_paths(paths).unwrap())
-        .env("TILO_VM_SSH", root.join("ssh"))
-        .env("TILO_SWAP_WAKE_FIXTURE", root)
-        .env(
-            "TILO_SWAP_WAKE_PROTOCOL",
-            tilo_vm_protocol::PROTOCOL_VERSION.to_string(),
-        )
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
-    assert_eq!(
-        std::fs::read_to_string(root.join("calls")).unwrap(),
-        "domstate\ndompmwakeup\nhello\nstatus\ndomstate\ndompmwakeup\nhello\nswap\n"
-    );
-}
-
-#[cfg(unix)]
-fn run_component_swap(root: &Path) {
-    let mut app = App {
-        json: true,
-        local: false,
-        target: Some("fixture".into()),
-        worktree: None,
-        registry_path: root.join("vms.toml"),
-        runner: SystemRunner { cwd: None },
-        receipt: Receipt::new(root, vec![]),
-        warnings: Vec::new(),
-        peer: None,
-    };
-    let outcome = app
-        .swap(
-            Some("test-account".into()),
-            "shell".into(),
-            &format!("layer:{}", "a".repeat(64)),
-            None,
-            None,
-            false,
-            KernelFlags::default(),
-        )
-        .unwrap();
-    assert_eq!(outcome.data["generation"], 8);
 }

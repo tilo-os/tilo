@@ -82,13 +82,19 @@ action pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin, on: n.pinned) {
 window's title, a reference to it, its history and its title field's placeholder all read those
 words, translated in the app's catalogue, so no view writes the fallback itself. A type's resources
 are named by its first text field; `(title: subject)` names the one that does it instead, as a
-draft whose first field is the address it goes from is called by its subject:
+draft whose first field is the address it goes from is called by its subject. Every member
+reads a type's resources unless it says who does: `(readers: author)` makes each one its author's
+alone, sealed to the keys of their devices, so no other member lists, finds, counts or opens it;
+`until sent` hands it to every member once its `Bool` field `sent` holds, for good (setting it
+back is refused); `(readers: guests)` seals it to the people a `Set<Actor>` field names, and a
+change of them moves it to the new ones. The store works out the readers; no action names them:
 
 ```
-type Draft (title: subject, untitled: "New message") {
+type Draft (title: subject, untitled: "New message", readers: author until sent) {
     from: Text
     to: Text
     subject: Text
+    sent: Bool = false
 }
 ```
 
@@ -140,9 +146,10 @@ pages are two actions.
 ## Effects
 
 An effect is something a replay cannot compute again: a draw, the time, a service outside
-Tilo, a person told something. The action that uses one declares it (`uses random`,
-`uses time`, `uses web`, `uses notify`) and the compiler refuses it anywhere else (E121); a
-view never reads one, since it is drawn again from what it is shown.
+Tilo, a person told something, an image's pixels decoded on the device. The action that uses one
+declares it (`uses random`, `uses time`, `uses web`, `uses notify`, `uses image`) and the compiler
+refuses it anywhere else (E121); a view never reads one, since it is drawn again from what it is
+shown.
 
 ```
 action roll(die: Die) uses random {
@@ -178,6 +185,20 @@ they made in an app. A paste reads what is on the clipboard now, as an `Option<T
 `Option<File>` — an image the device keeps for the app once pasted. An action that copies or
 pastes declares `uses clipboard`; a view does neither, since it is drawn again from what it is
 shown.
+
+`file.image_info()` says what an image's own container states: its upright width and height, the
+capture time, the EXIF orientation, and the place the camera recorded. `file.cropped(x, y, width,
+height)`, `file.turned(quarters)`, `file.resized(width, height)` and `file.encoded(format: "png")`
+work on its pixels and answer a new `File` kept in the content store. The decode turns the picture
+upright first, so a crop fraction and a size are of the picture a viewer shows, and a turn is
+clockwise. An action that reads or makes pixels declares `uses image`; a view does not, since it is
+drawn again from what it is shown.
+
+`file.choose(a, accept: [...])` asks the person for files and runs `a` with what they chose: the one
+file the next parameter takes, or every file when it is a `List<File>`. `file.choose_folder(a,
+accept: [...])` asks for a folder and runs `a` with the files it holds, each with the path it stands
+at inside it (`file.path`); `file.path` is that path, or the file's own name when one file was
+chosen, and never a host path. Both stand on a control, since they ask the person at the window.
 
 ```
 action remind(t: Task) uses notify {
@@ -306,7 +327,10 @@ of whoever applied the action.
 
 The standard library is one of these packages (`tilo.std`, `crates/lang/tilolang/std/app.tl`):
 the frames every window gets. Every package compiles with it and sees its declarations as
-`std.X`, whether or not it writes a `use`.
+`std.X`, whether or not it writes a `use`. Like any package it is read from its source: the
+tool, run in a checkout, compiles against that checkout's library, so an edit of it takes effect
+at the next command without rebuilding the tool. The copy built into the tool is the packaged
+release's, used where no checkout holds one.
 
 The agent library is the other shipped one (`tilo.agent`,
 `crates/lang/tilolang/src/agent.rs`): the words a session talks to a workspace with. Its

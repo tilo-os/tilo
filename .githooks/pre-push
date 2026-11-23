@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Lint the packages a push to main changes before the refs leave: the
-# repository's format check over the changed files, and Clippy over the host's
-# targets with the features the workspace's whole build gives each package. A
-# push to any other branch is not linted. The rest of what
-# a push can break - the crates that use something it renamed or removed, the
-# packages as they ship, the page's wasm32 build - is t's own families
-# (`clippy`, `clippy-{arch}`, `clippy-shipped`, `clippy-page`) on every change
-# (`t main` names the one that broke it): run here, those rebuilds took minutes
-# and lost the race to main's next commit on every retry.
+# Lint the packages a push to main changes before the refs leave - and the
+# packages that build directly on them through a path dependency - with the
+# repository's format check over the changed files and Clippy over the host's
+# targets with the features the workspace's whole build gives each package; a
+# package the page family names is linted for wasm32 too. A push to any other
+# branch is not linted. What a change reaches through the direct dependants, and
+# the packages as they ship, is t's own families (`clippy`, `clippy-{arch}`,
+# `clippy-shipped`, `clippy-page`) on every change (`t main` names the one that
+# broke it): run here, those rebuilds took minutes and lost the race to main's
+# next commit on every retry.
 # tools/ci/pre_push_lint.py selects the packages and, where t is installed,
 # asks t for its per-package clippy checks of them: t answers a package whose
 # build reads nothing a rebase changed from its result cache, so a push retried

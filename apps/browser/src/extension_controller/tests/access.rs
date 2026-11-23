@@ -196,15 +196,13 @@ tilo_test_env::scenario! {
         // Its row's button revokes it: the engine holds the extension to its
         // manifest at once, and the Browser keeps that it holds none of it.
         let mut rows = controller.library_rows(|_| true);
-        let pressed = rows[0]
-            .deliver_control(
-                ui::tilo_actions::OperationKind::Effect,
-                &format!("browser.extension.revoke.{id}"),
-                &mut automerge::AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(pressed.is_some(), "the row's button answers");
+        let pressed = ui::framework::press_control(
+            rows[0].as_mut(),
+            &format!("browser.extension.revoke.{id}"),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT,
+        );
+        assert!(pressed, "the row's button answers");
         assert_eq!(queued(&controller), [format!("Revoke({id:?})")]);
         let before = window.commands().len();
         run_queued(&mut controller);

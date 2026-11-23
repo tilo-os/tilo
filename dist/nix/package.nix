@@ -37,10 +37,19 @@ let
   # fixed-output fetches, laid out as that cache: <sha256>/<file>, regular files. The script
   # also writes its prepared catalogs into the cache, so the build copies it somewhere writable.
   fontArtifacts = builtins.fromJSON
-    (builtins.readFile ../../crates/sdk/ui-core/assets/fonts/artifacts.json);
+    (builtins.readFile ../../crates/ui/ui-core/assets/fonts/artifacts.json);
   fontAssetCache = runCommand "tilo-font-artifacts" { } (lib.concatMapStrings (font: ''
     install -Dm644 ${fetchurl { inherit (font) url sha256; }} "$out/${font.sha256}/${font.file}"
   '') fontArtifacts.assets);
+  # The doc codecs' fixture build script prepares its sample documents the same way
+  # (tools/test-assets.py, crates/doc/fixtures/artifacts.json). A Nix build has no trust root to
+  # fetch them with, so they arrive as fixed-output fetches, laid out as the seed that script
+  # reads first.
+  docFixtureArtifacts = builtins.fromJSON
+    (builtins.readFile ../../crates/doc/fixtures/artifacts.json);
+  docFixtureSeed = runCommand "tilo-doc-fixtures" { } (lib.concatMapStrings (asset: ''
+    install -Dm644 ${fetchurl { inherit (asset) url sha256; }} "$out/${asset.sha256}/${asset.file}"
+  '') docFixtureArtifacts.assets);
 in
 rustPlatform.buildRustPackage rec {
   pname = "tilo-session";
@@ -55,7 +64,6 @@ rustPlatform.buildRustPackage rec {
         "${repoRoot}/flake.nix"
         "${repoRoot}/flake.lock"
         "${repoRoot}/dist/nix"
-        "${repoRoot}/.forgejo"
         "${repoRoot}/.codex"
       ]);
   };
@@ -116,6 +124,7 @@ rustPlatform.buildRustPackage rec {
     export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
     export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts"
     cp -r --no-preserve=mode ${fontAssetCache} "$TILO_FONT_ASSET_CACHE"
+    export TILO_TEST_ASSET_SEED=${docFixtureSeed}
   '';
 
   installPhase = ''

@@ -317,7 +317,7 @@ impl Desktop {
         ));
         let heads = edit.get_heads();
         edit.put(ROOT, field, value).unwrap();
-        edit.commit_edit("fixture", field);
+        edit.commit_edit("fixture", field, &self.cert.user_public_key);
         let change = edit.save_after(&heads);
         self.link()
             .publish(|peer| {

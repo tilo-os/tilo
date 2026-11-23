@@ -37,9 +37,7 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
 /// records can still drain after upgrading.
 pub fn owned_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let mut kinds: BTreeSet<String> = declared_in(app_dir)?.into_iter().collect();
-    for dependency in direct_path_dependencies(app_dir)? {
-        kinds.extend(declared_in(&dependency)?);
-    }
+    kinds.extend(dependency_kinds(app_dir)?);
     if keeps_waiting_actions(app_dir)? {
         kinds.insert(tilo_actions::surface::CHAIN_UNSENT_KIND.to_owned());
     }
@@ -82,23 +80,77 @@ fn implements_chained(dir: &Path) -> Result<bool> {
     Ok(false)
 }
 
+/// The kinds the app at `app_dir` holds through the local crates it depends
+/// on directly, less those another app holds: a crate another app is also
+/// built from names it in `[package.metadata.tilo] apps`, and the kinds that
+/// app's name is the namespace of (`model-providers.root`) are that app's.
+fn dependency_kinds(app_dir: &Path) -> Result<Vec<String>> {
+    let app = package_name(&read_manifest(app_dir)?);
+    let mut kinds = Vec::new();
+    for dir in direct_path_dependencies(app_dir)? {
+        let others: Vec<String> = tilo_metadata(&read_manifest(&dir)?)
+            .and_then(|tilo| tilo.get("apps"))
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .filter(|other| *other != app)
+            .map(|other| format!("{other}."))
+            .collect();
+        kinds.extend(
+            declared_in(&dir)?
+                .into_iter()
+                .filter(|kind| !others.iter().any(|other| kind.starts_with(other.as_str()))),
+        );
+    }
+    Ok(kinds)
+}
+
 /// The directories of the path crates `app_dir/Cargo.toml` lists as normal
-/// dependencies, the SDK's own crates excepted.
+/// dependencies, less the SDK's own: those say `framework = true` in
+/// `[package.metadata.tilo]`, and the kinds they declare are the framework's.
 fn direct_path_dependencies(app_dir: &Path) -> Result<Vec<PathBuf>> {
-    let path = app_dir.join("Cargo.toml");
-    let manifest: toml::Table = toml::from_str(
-        &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
-    )
-    .with_context(|| format!("parsing {}", path.display()))?;
+    let manifest = read_manifest(app_dir)?;
     let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table) else {
         return Ok(Vec::new());
     };
-    Ok(dependencies
+    let mut own = Vec::new();
+    for dir in dependencies
         .values()
         .filter_map(|dependency| dependency.get("path")?.as_str())
         .filter_map(|path| app_dir.join(path).canonicalize().ok())
-        .filter(|dir| !dir.components().any(|part| part.as_os_str() == "sdk"))
-        .collect())
+    {
+        let framework = tilo_metadata(&read_manifest(&dir)?)
+            .and_then(|tilo| tilo.get("framework"))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false);
+        if !framework {
+            own.push(dir);
+        }
+    }
+    Ok(own)
+}
+
+fn read_manifest(dir: &Path) -> Result<toml::Table> {
+    let path = dir.join("Cargo.toml");
+    toml::from_str(
+        &std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", path.display()))
+}
+
+fn package_name(manifest: &toml::Table) -> String {
+    manifest
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The crate's `[package.metadata.tilo]` table.
+fn tilo_metadata(manifest: &toml::Table) -> Option<&toml::Value> {
+    manifest.get("package")?.get("metadata")?.get("tilo")
 }
 
 /// Every kind declared under `crate_dir/src`, sorted and without repeats.
@@ -435,23 +487,6 @@ impl VisitMut for Kinds {
 mod tests {
     use std::path::Path;
 
-    /// The directories of the path crates `app_dir/Cargo.toml` lists as
-    /// normal dependencies, the SDK's own crates excepted.
-    fn direct_local_dependencies(app_dir: &Path) -> Vec<std::path::PathBuf> {
-        let manifest: toml::Table =
-            toml::from_str(&std::fs::read_to_string(app_dir.join("Cargo.toml")).unwrap()).unwrap();
-        let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table)
-        else {
-            return Vec::new();
-        };
-        dependencies
-            .values()
-            .filter_map(|dependency| dependency.get("path")?.as_str())
-            .map(|path| app_dir.join(path).canonicalize().unwrap())
-            .filter(|dir| !dir.components().any(|part| part.as_os_str() == "sdk"))
-            .collect()
-    }
-
     #[test]
     fn every_app_manifest_declares_the_record_kinds_its_sources_hold() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -469,7 +504,6 @@ mod tests {
             "expected the app fleet, found {}",
             apps.len()
         );
-        let mut dependency_kinds = std::collections::HashMap::new();
         let mut missing = Vec::new();
         for app in apps {
             let manifest = tilo_app_package::Manifest::from_toml_str(
@@ -477,15 +511,7 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("{}: {error}", app.display()));
             let mut kinds = super::declared_in(&app).unwrap();
-            for dependency in direct_local_dependencies(&app) {
-                kinds.extend(
-                    dependency_kinds
-                        .entry(dependency.clone())
-                        .or_insert_with(|| super::declared_in(&dependency).unwrap())
-                        .iter()
-                        .cloned(),
-                );
-            }
+            kinds.extend(super::dependency_kinds(&app).unwrap());
             if super::keeps_waiting_actions(&app).unwrap() {
                 kinds.push(tilo_actions::surface::CHAIN_UNSENT_KIND.to_owned());
             }

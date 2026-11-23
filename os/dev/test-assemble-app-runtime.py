@@ -203,7 +203,7 @@ class AssemblyNamespaces(unittest.TestCase):
                 "assert seed.is_dir(), 'the font seed is not in the namespace'\n"
                 "subprocess.run([sys.executable, "
                 f"{str(repo / 'tools/font-catalog.py')!r}, 'prepare', "
-                f"{str(repo / 'crates/sdk/ui-core/assets/fonts')!r}, "
+                f"{str(repo / 'crates/ui/ui-core/assets/fonts')!r}, "
                 "str(stage / 'work/fonts'), '--scope', 'product', "
                 "'--cache', str(stage / 'work/font-cache')], check=True)\n"
                 "assert (stage / 'work/fonts/manifest.toml').is_file()\n"
@@ -357,7 +357,7 @@ class EngineRuntimeShips(unittest.TestCase):
         return ASSEMBLER.engine_pins(SOURCE.parents[2])
 
     def test_the_browser_pins_exactly_the_engine_the_source_names(self):
-        source = (SOURCE.parents[2] / 'crates/sdk/tilo-webview/src/chromium/runtime.rs').read_text()
+        source = (SOURCE.parents[2] / 'crates/engines/tilo-webview/src/chromium/runtime.rs').read_text()
         version = re.search(r'pub const RUNTIME_REF: &str = "([^"]+)";', source).group(1)
         self.assertEqual(self.pinned(), [version])
 
@@ -657,7 +657,7 @@ class RuntimeFonts(unittest.TestCase):
         calls, cache = self.fetch({'HOME': '/tmp'})
         self.assertEqual(cache, '/target/font-artifacts')
         self.assertEqual(calls, [['python3', '/src/tools/font-catalog.py', 'root',
-                                  '/src/crates/sdk/ui-core/assets/fonts', '--scope', 'product']])
+                                  '/src/crates/ui/ui-core/assets/fonts', '--scope', 'product']])
 
     def test_a_cache_the_caller_names_is_kept(self):
         self.assertEqual(self.fetch({'TILO_FONT_ASSET_CACHE': '/cache'})[1], '/cache')

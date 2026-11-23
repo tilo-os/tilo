@@ -347,7 +347,7 @@ class RunnerTests(unittest.TestCase):
     def test_build_uses_compiler_exact_paths_for_all_three_targets(self):
         source_dir = self.artifacts / "source"
         validator = (
-            source_dir / "crates/system/cloud-source-gdrive/tests/validate_docx.py"
+            source_dir / "crates/integrations/cloud-source-gdrive/tests/validate_docx.py"
         )
         validator.parent.mkdir(parents=True)
         validator.write_text("validator")

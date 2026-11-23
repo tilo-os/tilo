@@ -20,12 +20,12 @@
   runtime that serves a workspace — is not part of that side and stays AGPL.
 - **Bundled fonts:** OFL-1.1, LPPL-1.3c, or GPL-3.0-or-later with the Font
   Exception 2.0. The
-  [font manifest](crates/sdk/ui-core/assets/fonts/manifest.toml) lists the
+  [font manifest](crates/ui/ui-core/assets/fonts/manifest.toml) lists the
   license for each file and links its
-  [license and copyright notices](crates/sdk/ui-core/assets/fonts/LICENSES/).
+  [license and copyright notices](crates/ui/ui-core/assets/fonts/LICENSES/).
 - **Third-party code and data retain their upstream licenses.** This includes
   [vendored code](vendor/), [spelling dictionaries](apps/osk/data/), and
-  [Unicode emoji data](crates/text/emoji/data/LICENSE-UNICODE.txt).
+  [Unicode emoji data](crates/ui/emoji/data/LICENSE-UNICODE.txt).
 
 The MIT SDK and the MIT client side do not grant permission to incorporate
 additional AGPL code into a nonfree app. In particular, the shared

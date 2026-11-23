@@ -19,7 +19,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 # Reach the contact directory through its engine library in the runtime
 # bundle (libtilo_contact_directory_engine.so,
-# crates/runtime/engines/contact-directory) instead of the runtime. The
+# crates/engines/loadable/contact-directory) instead of the runtime. The
 # release collection enables it (dist/apps/app-collections.toml); a `thin`
 # build without it (`tilo-app dev`) links tilo-contact-directory statically,
 # because an engine library links only through
@@ -27,10 +27,10 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
-tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
+tilo-contact-directory = { path = "../../crates/integrations/tilo-contact-directory" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/engines/loadable/contact-directory", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verbs and typed action arguments.
@@ -44,7 +44,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 # RFC 6350 content lines: folding, parameter quoting and TEXT escaping.
-pim-lines = { path = "../../crates/text/pim-lines" }
+pim-lines = { path = "../../crates/engines/pim-lines" }
 
 # --- Host-native file open/save (XDG Desktop Portal) ------------------
 # Import (open) and Export (save) go through

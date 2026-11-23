@@ -20,7 +20,7 @@ spec = importlib.util.spec_from_file_location("font_catalog", ROOT / "tools/font
 fc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fc)
 
-FONTS = ROOT / "crates/sdk/ui-core/assets/fonts"
+FONTS = ROOT / "crates/ui/ui-core/assets/fonts"
 ONE_FONT = "NotoSansMath-Regular.ttf"
 
 
@@ -272,7 +272,7 @@ class CacheLockTest(unittest.TestCase):
 class CatalogTest(unittest.TestCase):
     def test_reviewed_payload_is_staged_and_corruption_is_never_substituted(self):
         with self.subTest(phase='reviewed payload and product staging'):
-            source = fc.prepared_root(ROOT / "crates/sdk/ui-core/assets/fonts", "fixtures")
+            source = fc.prepared_root(ROOT / "crates/ui/ui-core/assets/fonts", "fixtures")
             self.assertEqual(fc.verify(source, "fixtures"), (37, 55771564))
             with tempfile.TemporaryDirectory() as tmp:
                 dest = Path(tmp) / "fonts"
@@ -371,7 +371,7 @@ def build_script_package():
     The crate's manifest is the source of the dependencies and the workspace's lock is the source
     of their versions, so the test compiles the script with what the product is built with.
     """
-    crate = tomllib.loads((ROOT / "crates/sdk/font-catalog/Cargo.toml").read_text())
+    crate = tomllib.loads((ROOT / "crates/ui/font-catalog/Cargo.toml").read_text())
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]
     lines = ["[package]", 'name = "font-catalog-build-script"', 'version = "0.0.0"',
              'edition = "2024"', 'build = "build.rs"', "", "[build-dependencies]"]
@@ -409,8 +409,8 @@ class CatalogBuildTest(unittest.TestCase):
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory()
         root = Path(cls.directory.name)
-        source = ROOT / "crates/sdk/font-catalog"
-        package = root / "crates/sdk/font-catalog"
+        source = ROOT / "crates/ui/font-catalog"
+        package = root / "crates/ui/font-catalog"
         (package / "src").mkdir(parents=True)
         (package / "src/lib.rs").write_text("")
         (package / "build.rs").write_bytes((source / "build.rs").read_bytes())
@@ -431,8 +431,8 @@ class CatalogBuildTest(unittest.TestCase):
         # build that compiled it ran it once without one — a checkout's tool and catalog, which
         # are this repository's, are what the tests below give it.
         (root / "tools").symlink_to(ROOT / "tools")
-        (root / "crates/sdk/ui-core/assets").mkdir(parents=True)
-        (root / "crates/sdk/ui-core/assets/fonts").symlink_to(FONTS)
+        (root / "crates/ui/ui-core/assets").mkdir(parents=True)
+        (root / "crates/ui/ui-core/assets/fonts").symlink_to(FONTS)
 
     @classmethod
     def tearDownClass(cls):
@@ -468,7 +468,7 @@ class CatalogBuildTest(unittest.TestCase):
                 self.assertNotIn("cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT=", result.stdout)
 
     def test_installed_python_prepares_the_real_verified_catalog_offline(self):
-        source = ROOT / "crates/sdk/ui-core/assets/fonts"
+        source = ROOT / "crates/ui/ui-core/assets/fonts"
         fc.prepared_root(source, "fixtures")
         # Cargo's own layout, as above: the catalog is published beside the profile
         # directory, in `font-catalogs/<manifest>-fixtures`, and the crate names it from

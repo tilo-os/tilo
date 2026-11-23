@@ -108,6 +108,7 @@ mod tests {
             label: id.into(),
             host: "cloud.example".into(),
             health,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount: Some(format!("/home/ada/Remote/{id}").into()),
         }
     }

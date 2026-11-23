@@ -36,7 +36,7 @@ fn a_holder_that_is_no_member_writes_redemptions_and_nothing_else() {
         sign_join_proof, verify_join_proof,
     };
 
-    let (mut peer, authority_key, _, _, now) = seeded();
+    let (mut peer, authority_key, _, bc, now) = seeded();
     let now_ns = ns_since_epoch(now);
     let workspace = peer.workspace_id().to_owned();
     let (holder_key, holder) = device_of(91, 92, "Holder");
@@ -122,7 +122,7 @@ fn a_holder_that_is_no_member_writes_redemptions_and_nothing_else() {
         let heads = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
         doc.put(ROOT, "name", "Taken").unwrap();
-        doc.commit_edit("rename", "name");
+        doc.commit_edit("rename", "name", &bc.user_public_key);
         let changes = doc
             .get_changes(&heads)
             .into_iter()

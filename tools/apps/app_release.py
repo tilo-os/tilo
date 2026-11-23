@@ -39,7 +39,6 @@ BINARY_INPUTS = {
     "tools/ci/images.toml",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
-    ".forgejo/actions/restore-cargo-downloads/action.yml",
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
@@ -71,7 +70,6 @@ VERIFICATION_INPUTS = {
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
 GLOBAL_PREFIXES = (".cargo/", "vendor/", "tools/web/wasm-split/")
 FULL_REBUILD_PREFIXES = (
-    ".forgejo/actions/restore-cargo-downloads/",
     "dist/apps/",
     "tools/apps/",
 )
@@ -80,11 +78,11 @@ FULL_REBUILD_PREFIXES = (
 FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
 # Runtime engines are built with every runtime and signed into its
 # bundle, so a change reaching one changes the runtime every app names.
-ENGINES = "crates/runtime/engines"
+ENGINES = "crates/engines/loadable"
 
 
 def runtime_engines(root: Path = ROOT) -> set[str]:
-    """The packages under crates/runtime/engines/, which build-thin-apps.sh builds."""
+    """The packages under crates/engines/loadable/, which build-thin-apps.sh builds."""
     return {
         tomllib.loads(manifest.read_text())["package"]["name"]
         for manifest in sorted((root / ENGINES).glob("*/Cargo.toml"))

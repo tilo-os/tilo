@@ -20,7 +20,7 @@ assistant-conversation-unavailable = The conversation cannot be shown here
 assistant-conversation-with = Conversation with { $name }
 
 assistant-start-sub-agent = Start a sub-agent
-assistant-job-prompt = Say what the sub-agent should do. { $name } picks its role and its model.
+assistant-job-prompt = Say what you want done. { $name } answers here, or starts a sub-agent for the work.
 assistant-job-placeholder = The job
 assistant-job-start = Start sub-agent
 assistant-job-cancel = Cancel

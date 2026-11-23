@@ -37,7 +37,7 @@
  * this page's own device: the sender its frames carry (peer.voice in
  * peer.mjs adapts the wasm peer).
  */
-import {hex} from './hex.mjs';
+import {hex, unhex} from './hex.mjs';
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createPictureEncoder, createPictureInbox, openSource, pictureObject} from './voice-video.mjs';
 import {callIdOf} from './voice-controls.mjs';
@@ -76,8 +76,10 @@ export function microphoneIssue(error) {
  * `capture_failed`) or null, and `phase` is `idle`, `joining`,
  * `connecting`, `live`, `reconnecting` or `ended`; `admitted` says whether the
  * host granted the call (an ended call that never was is a refusal), and each
- * member is `{device, user, publishes, camera, screen, muted, deafened,
- * speaking, self}`.
+ * member is `{device, user, name, service, publishes, camera, screen, muted,
+ * deafened, speaking, self}`: `name` and `service` are a bridged person's name
+ * on the other service and the one the call reaches them through, and `null`
+ * for a person of the workspace.
  */
 export function createVoiceCall({
   signalling,
@@ -164,6 +166,10 @@ export function createVoiceCall({
     return grant.members.map(member => ({
       device: member.device,
       user: member.user,
+      // A bridged person is shown by the name they have on the other service,
+      // marked as reached through it; a person of the workspace has neither.
+      name: member.name ?? null,
+      service: member.service ?? null,
       publishes: member.publishes,
       camera: member.camera === true,
       screen: member.screen === true,
@@ -219,6 +225,8 @@ export function createVoiceCall({
    * it was already played. */
   function heard(frame) {
     if (!inCall() || state.deafened) return;
+    let payload;
+    try { payload = bytesOfHex(frame.opus); } catch { return; }
     counters.heard += 1;
     const played = heardUpTo.get(frame.from);
     // A live session joined again announces the first object of its stream again,
@@ -226,7 +234,7 @@ export function createVoiceCall({
     if (played !== undefined && frame.sequence <= played && frame.sequence !== 0) return;
     heardUpTo.set(frame.from, frame.sequence);
     try {
-      audioSession?.play({publisherId: frame.from, timestamp: BigInt(frame.timestamp48k), duration: 960, payload: bytesOfHex(frame.opus), gain: gainOf(frame.from)});
+      audioSession?.play({publisherId: frame.from, timestamp: BigInt(frame.timestamp48k), duration: 960, payload, gain: gainOf(frame.from)});
     } catch (error) {
       report({type: 'voice-play-error', error});
     }
@@ -437,12 +445,14 @@ export function createVoiceCall({
     const person = grant?.members.find(member => member.device === picture.from)?.user;
     const source = picture.source;
     if (!person || (source !== 'camera' && source !== 'screen')) return;
+    let object;
+    try { object = bytesOfHex(picture.object); } catch { return; }
     counters.pictures += 1;
     if (picture.keyframe) {
       asking.delete(`${picture.from}|${source}`);
       ready.add(`${picture.from}|${source}`);
     }
-    inbox.admit({person, stream: `${picture.from}/${generation}`, source, object: bytesOfHex(picture.object ?? '')}, picture.keyframe);
+    inbox.admit({person, stream: `${picture.from}/${generation}`, source, object}, picture.keyframe);
   }
 
   /** What the live session says the call shows of this page: the layers its encoders
@@ -705,8 +715,4 @@ export function createVoiceCall({
 export const hexOfBytes = hex;
 
 /** Bytes from hex, as the live session's voice events carry an Opus frame. */
-export function bytesOfHex(text) {
-  const bytes = new Uint8Array(text.length >> 1);
-  for (let index = 0; index < bytes.length; index++) bytes[index] = parseInt(text.slice(index * 2, index * 2 + 2), 16);
-  return bytes;
-}
+export const bytesOfHex = unhex;

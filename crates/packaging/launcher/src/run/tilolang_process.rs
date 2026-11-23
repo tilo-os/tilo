@@ -8,7 +8,6 @@ use super::{
     LaunchError, LaunchOptions, compile_app_baseline, find_runtime_bundle, stage_seccomp_blob,
 };
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -313,32 +312,12 @@ pub fn launch_tilolang_process(
         .args(&argv)
         .env_clear()
         .stdin(std::process::Stdio::null());
-    let placed = [
+    let placed = vec![
         (socket.as_raw_fd(), runtime_portal::process_link::CHILD_FD),
         (clone3.as_raw_fd(), CLONE3_COMPAT_FD),
         (baseline.as_raw_fd(), BASELINE_FD),
     ];
-    // SAFETY: only async-signal-safe calls between fork and exec: each descriptor is moved above every
-    // target slot first, so no dup2 overwrites one not yet placed, then placed at its slot without
-    // close-on-exec.
-    unsafe {
-        command.pre_exec(move || {
-            let mut moved = [(0, 0); 3];
-            for (slot, (from, to)) in moved.iter_mut().zip(placed) {
-                let fd = libc::fcntl(from, libc::F_DUPFD_CLOEXEC, 256);
-                if fd < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                *slot = (fd, to);
-            }
-            for (from, to) in moved {
-                if libc::dup2(from, to) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            }
-            Ok(())
-        });
-    }
+    crate::inherit::hand_down(&mut command, placed, false);
     let status = command.status()?;
     drop((socket, clone3, baseline));
     Ok(status)

@@ -4,8 +4,10 @@
 //! so sheets occlude each other. Drag orbits, the wheel zooms.
 
 use ui::charts::ChartPalette;
+use ui::motion::ReadingValue;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::EffectiveMotion;
 use ui::widget::{CanvasNavigation, CanvasNavigationHint};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
@@ -15,7 +17,6 @@ use crate::engine;
 use crate::graph2d::Pointer;
 use crate::model::CalcModel;
 use crate::plot_panel::{Formulas, PlotPanel, SURFACES};
-use crate::zoom::ZoomAnim3d;
 
 /// Half-width of the sampled domain, in x and y.
 const DOM: f64 = 7.0;
@@ -36,9 +37,12 @@ pub struct Graph3dScreen {
     /// when the surfaces, the orbit or zoom, the domain or the canvas changes;
     /// the colour is resolved from the theme at paint time.
     surface_cache: SurfaceCache,
-    /// While active, the cached cells are replayed scaled about the canvas
+    /// The zoom as drawn: it glides to the model's while a wheel burst eases on,
+    /// and the cells projected at the settled zoom play scaled about the canvas
     /// centre instead of re-projecting.
-    zoom: ZoomAnim3d,
+    zoom: ReadingValue,
+    /// The zoom the cached cells were projected at.
+    sampled_zoom: f64,
 }
 
 impl Default for Graph3dScreen {
@@ -48,7 +52,8 @@ impl Default for Graph3dScreen {
             area: Rect::ZERO,
             panel: PlotPanel::new(SURFACES),
             surface_cache: SurfaceCache::default(),
-            zoom: ZoomAnim3d::new(crate::model::View3d::default().zoom),
+            zoom: ReadingValue::new(crate::model::View3d::default().zoom),
+            sampled_zoom: crate::model::View3d::default().zoom,
         }
     }
 }
@@ -143,7 +148,6 @@ impl Graph3dScreen {
         self.panel.fit(&model.surfaces, tr, theme);
         self.layout(area, model);
         self.panel.side_mut().tick(theme);
-        self.zoom.tick(model.view3d.zoom, theme.reduce_motion);
         self.layout(area, model);
     }
 
@@ -190,11 +194,13 @@ impl Graph3dScreen {
     fn draw_surfaces(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
         // The projection scale is proportional to zoom, so the cached cells
         // replay scaled about the centre; one re-projection when settled.
-        let tt = if self.zoom.active() {
-            t * Affine::scale_about(self.zoom.scale_factor(), self.canvas.center())
+        let now = ui::motion::frame_now();
+        let tt = if self.zoom.is_moving(now) {
+            let sampled = self.sampled_zoom.max(f64::EPSILON);
+            t * Affine::scale_about(self.zoom.get(now) / sampled, self.canvas.center())
         } else {
             self.ensure_surfaces(model);
-            self.zoom.mark_sampled(model.view3d.zoom);
+            self.sampled_zoom = model.view3d.zoom;
             t
         };
 
@@ -234,16 +240,19 @@ impl Graph3dScreen {
         stroke_path(scene, t, 1.0, rule(FLOOR_OUTLINE_ALPHA), &floor.outline);
     }
 
-    pub fn begin_zoom(&mut self) {
-        self.zoom.begin();
+    /// Ease the zoom to `target` on `motion`.
+    pub fn begin_zoom(&mut self, target: f64, motion: EffectiveMotion) {
+        self.zoom
+            .take(target, Some(motion), ui::motion::frame_now());
     }
     /// Orbit, edit and mode switch re-project anyway.
     pub fn settle_zoom(&mut self, z: f64) {
-        self.zoom.settle(z);
+        self.sampled_zoom = z;
+        self.zoom.snap(z);
     }
     /// Drives the app's frame pump.
     pub fn zoom_active(&self) -> bool {
-        self.zoom.active()
+        self.zoom.is_moving(ui::motion::frame_now())
     }
 
     /// Samples every visible surface and stores the theme-independent geometry.

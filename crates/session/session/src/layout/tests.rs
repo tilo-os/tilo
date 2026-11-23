@@ -2034,3 +2034,95 @@ fn a_layout_that_cannot_be_read_settles_the_looks_until_the_workspaces_move() {
         "once the workspaces move it is read again"
     );
 }
+
+/// While the reads follow the service's writes, a write that landed elsewhere in the workspace (a
+/// message, a presence) reads no layout again: only a write that reached the layout does, as its
+/// notice asks for it. A session whose reads follow nothing still reads again on every landing.
+#[test]
+fn a_layout_is_read_again_for_a_write_of_it_not_for_a_write_elsewhere() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x62; 32]);
+    let key = SigningKey::from_bytes(&[0x63; 32]);
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let person = hex::encode(cert.user_public_key);
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    service.found(&engine, workspace, "Studio");
+    engine.bind(workspace);
+    let mut studio = Workspace::new(workspace, "Studio");
+    studio.strips = vec![Strip::new(
+        StripId(tilo_desktop_model::IdMinter::new(salt).mint()),
+        "Main",
+    )];
+    let tree = Layout {
+        workspaces: vec![studio],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    let session = |notices: Option<reads::Notices>| {
+        let (wake, heard) = woken();
+        let layouts = Layouts::new(
+            Arc::new(crate::continuations::Continuations::default()),
+            wake,
+            person.clone(),
+            None,
+        );
+        *layouts.notices.borrow_mut() = notices;
+        layouts.attach(&engine, &service.reads(), &service.writes());
+        let mut shown = tree.clone();
+        look(&layouts, &engine, &mut shown);
+        // The first of these takes in the answers the look read.
+        let _ = layouts.settled(layouts.version(&engine), &shown);
+        assert!(
+            layouts.settled(layouts.version(&engine), &shown),
+            "a look that read everything has nothing more to read"
+        );
+        (layouts, shown, heard)
+    };
+    let workspaces = service.workspaces();
+    let (following, shown, heard) =
+        session(Some(Box::new(move || Some(workspaces.document_writes()))));
+    let (blind, blind_shown, _) = session(None);
+
+    engine.arrivals().landed();
+    assert!(
+        following.settled(following.version(&engine), &shown),
+        "a write that landed elsewhere reads no layout again where the reads follow the writes"
+    );
+    assert!(
+        !blind.settled(blind.version(&engine), &blind_shown),
+        "where they follow nothing, every landing is a layout to read again"
+    );
+
+    // Another session of the person's renames the strip: the write reaches the layout, and its
+    // notice reads it again where the reads follow the writes.
+    let (other, mut moved, _) = session(None);
+    moved.external_revision += 1;
+    moved.workspaces[0].strips[0].name = "Moved".to_owned();
+    other.capture(&engine, &moved);
+    other.finish_writes(&engine, &moved, std::time::Duration::from_secs(30));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while following.settled(following.version(&engine), &shown) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            heard.recv_timeout(left).is_ok(),
+            "the write of the layout is read again, and its new answer wakes the loop"
+        );
+    }
+}

@@ -34,7 +34,7 @@ workspace-default-name = My workspace
 
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.
-model-none-linked = No model is linked for this kind of work. Link one in Settings.
+model-none-linked = No model is linked for this kind of work. Choose one in Settings, under Agent models.
 model-choice-unusable = { $model } from { $provider } can no longer be used. Choose another model in Settings.
 model-choice-gone = { $model } can no longer be used. Choose another model in Settings.
 model-no-key = { $provider } has no API key here yet. Add it in Settings.
@@ -47,6 +47,14 @@ model-settings-unreadable = Your model settings could not be read. Try again in 
 model-cannot-take-picture = { $model } does not read pictures. Choose a model that does in Settings.
 model-workspace-refuses = This workspace does not let its content go to { $provider }.
 model-day-limit = { $agent } has used today's { $limit }. Raise its limit to let it go on.
+model-timed-out = The model didn't answer in time.
+model-cancelled = The model call was stopped.
+model-truncated = The model's answer was cut off.
+model-refused = The model declined this request.
+model-context-limit = The conversation is longer than the model can take. Choose a model with more room in Settings, under Agent models.
+model-rate-limited = The model is busy right now. Try again in a moment.
+model-unsupported = The model cannot do this. Choose another model in Settings, under Agent models.
+model-nothing-to-work-with = No model is linked for this workspace's agents. Choose one in Settings, under Agent models.
 tilo-devices = Your devices
 tilo-devices-keep-device = Keep a device of the person's
 tilo-devices-keep-fact = Keep what a device says of itself
@@ -58,7 +66,7 @@ so-tilo-device-nearby-send-send = Send files to a nearby device
 so-tilo-device-nearby-send-accept = Keep a file a nearby device offered
 so-tilo-device-nearby-send-decline = Turn down a file a nearby device offered
 so-tilo-device-nearby-send-cancel = Stop a transfer, sent or received
-so-tilo-device-nearby-send-retry = Offer again a transfer that failed
+so-tilo-device-nearby-send-retry-transfer = Offer again a transfer that failed
 so-tilo-device-nearby-send-share = Share a resource with people, opening the invitation sheet
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.

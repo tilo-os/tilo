@@ -11,13 +11,33 @@
     "to": "so.tilo.mail tl.so.tilo.mail.Account#new_message",
     "test": "apps/tilolang/tests/hosted/mail.rs:1589"
   },
+  "so.tilo.mail mail.mailbox#discard-draft": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Mail#discard",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2218"
+  },
+  "so.tilo.mail mail.mailbox#forward": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Thread#forward",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2218"
+  },
+  "so.tilo.mail mail.mailbox#open": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Mailbox#open",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2287"
+  },
   "so.tilo.mail mail.mailbox#reply": {
     "to": "so.tilo.mail tl.so.tilo.mail.Thread#reply",
     "test": "apps/tilolang/tests/hosted/mail.rs:1661"
   },
+  "so.tilo.mail mail.mailbox#reply-all": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Thread#reply_all",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2218"
+  },
   "so.tilo.mail mail.mailbox#send-message": {
     "to": "so.tilo.mail tl.so.tilo.mail.Draft#send",
     "test": "apps/tilolang/tests/hosted/mail.rs:896"
+  },
+  "so.tilo.mail mail.mailbox#show-draft": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Draft#open",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2218"
   },
   "so.tilo.mail mail.messages#archive": {
     "to": "so.tilo.mail tl.so.tilo.mail.Thread#archive",
@@ -31,13 +51,45 @@
     "to": "so.tilo.mail tl.so.tilo.mail.Thread#mark_read",
     "test": "apps/tilolang/tests/hosted/mail.rs:703"
   },
+  "so.tilo.mail mail.messages#move-messages": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Thread#move_to",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2162"
+  },
+  "so.tilo.mail mail.messages#trash": {
+    "to": "so.tilo.mail tl.so.tilo.mail.Thread#delete",
+    "test": "apps/tilolang/tests/hosted/mail.rs:2162"
+  },
+  "so.tilo.mail tilo.accounts#remove-account": {
+    "to": "so.tilo.settings tilo.accounts#remove-account",
+    "test": "crates/integrations/accounts/src/person.rs:761"
+  },
+  "so.tilo.mail tilo.accounts#save-account": {
+    "to": "so.tilo.settings tilo.accounts#save-account",
+    "test": "crates/integrations/accounts/src/person.rs:680"
+  },
+  "so.tilo.notes notes.notebook#append-to-note": {
+    "to": "so.tilo.notes tl.so.tilo.notes.Notebook#append_to_note",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:1087"
+  },
+  "so.tilo.notes notes.notebook#delete-tag": {
+    "to": "so.tilo.notes tl.so.tilo.notes.Notebook#delete_tag",
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:672"
+  },
+  "so.tilo.notes notes.notebook#new-tag": {
+    "to": "so.tilo.notes tl.so.tilo.notes.Notebook#new_tag",
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:672"
+  },
+  "so.tilo.notes notes.notebook#open-resource": {
+    "to": "so.tilo.notes tl.so.tilo.notes.Note#open",
+    "test": "apps/tilolang/tests/hosted/narrow.rs:194"
+  },
   "so.tilo.notes notes.pages#delete": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#delete",
-    "test": "crates/platform/tilolang-tilo/tests/notes.rs:218"
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:218"
   },
   "so.tilo.notes notes.pages#duplicate": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#duplicate",
-    "test": "crates/platform/tilolang-tilo/tests/notes.rs:181"
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:181"
   },
   "so.tilo.notes notes.pages#import-markdown-files": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#import_dropped",
@@ -57,7 +109,7 @@
   },
   "so.tilo.notes notes.pages#move-note": {
     "to": "so.tilo.notes tl.so.tilo.notes.Notebook#move_to",
-    "test": "crates/platform/tilolang-tilo/tests/notes.rs:116"
+    "test": "crates/lang/tilolang-tilo/tests/notes.rs:116"
   },
   "so.tilo.notes notes.pages#move-up": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#move_up",
@@ -73,7 +125,7 @@
   },
   "so.tilo.notes notes.pages#rename": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#retitle",
-    "test": "crates/platform/tilolang-tilo/tests/link_editor.rs:262"
+    "test": "crates/lang/tilolang-tilo/tests/link_editor.rs:262"
   },
   "so.tilo.notes notes.pages#tag": {
     "to": "so.tilo.notes tl.so.tilo.notes.Note#tag",
@@ -83,16 +135,44 @@
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
     "test": "crates/session/session/tests/youtube_client.rs:57"
   },
+  "so.tilo.tube tube.library#open-playlist": {
+    "to": "so.tilo.tube tl.so.tilo.tube.Playlist#open",
+    "test": "crates/session/session/tests/youtube_client.rs:225"
+  },
   "so.tilo.tube tube.library#open-video": {
     "to": "so.tilo.tube tl.so.tilo.tube.Video#open",
     "test": "crates/session/session/tests/youtube_client.rs:145"
   },
   "so.tilo.tube tube.library#search": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#search",
-    "test": "crates/platform/tilolang-youtube/tests/origin.rs:209"
+    "test": "crates/integrations/tilolang-youtube/tests/origin.rs:209"
+  },
+  "so.tilo.tube tube.library#seek": {
+    "to": "so.tilo.video-player video-player.library#seek",
+    "test": "apps/video-player/src/app/tests.rs:1025"
+  },
+  "so.tilo.tube tube.library#toggle-playback": {
+    "to": "so.tilo.video-player video-player.library#toggle-playback",
+    "test": "apps/video-player/src/app/tests.rs:1025"
+  },
+  "so.tilo.tube tube.watch-history#clear": {
+    "to": "so.tilo.tube tl.so.tilo.tube.YouTube#delete_history",
+    "test": "crates/session/session/tests/youtube_client.rs:225"
+  },
+  "so.tilo.tube tube.watch-history#forget": {
+    "to": "so.tilo.tube tl.so.tilo.tube.Video#forget",
+    "test": "crates/session/session/tests/youtube_client.rs:225"
   },
   "so.tilo.tube tube.watch-history#import-previous": {
     "to": "so.tilo.tube tl.so.tilo.tube.YouTube#carry_native_tube",
-    "test": "crates/platform/tilolang-youtube/tests/native_tube.rs:123"
+    "test": "crates/integrations/tilolang-youtube/tests/native_tube.rs:123"
+  },
+  "so.tilo.tube tube.watch-history#progress": {
+    "to": "so.tilo.tube tl.so.tilo.tube.Video#progress",
+    "test": "crates/session/session/tests/youtube_client.rs:225"
+  },
+  "so.tilo.session notifications.banners#open": {
+    "to": "so.tilo.session notifications.banners#open-banner",
+    "test": "crates/session/session/src/notifications/tests.rs:1666"
   }
 }

@@ -53,8 +53,8 @@ or troubleshooting control, not an optimization recommendation.
 | `VELLO_DIRECT_PATH_DISPATCH` | Default-on         | Bounded direct GPU path-count/tiling dispatch, avoiding setup dispatches. Not used for full CPU rendering.                                                                                                                 |
 | `VELLO_ZERO_GRADIENT_REUSE`  | Default-on         | Reuses an engine-owned zero-gradient texture for scenes without gradient ramps.                                                                                                                                            |
 
-Sources: [offscreen.rs](../crates/sdk/ui-core/src/offscreen.rs),
-[render_thread.rs](../crates/sdk/ui-core/src/render_thread.rs),
+Sources: [offscreen.rs](../crates/ui/ui-core/src/offscreen.rs),
+[render_thread.rs](../crates/ui/ui-core/src/render_thread.rs),
 [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs),
 [shaders.rs](../vendor/vello/src/shaders.rs),
 [Vello renderer](../vendor/vello/src/lib.rs).
@@ -99,7 +99,7 @@ these are not production defaults.
 | `VELLO_GPU_DISPATCH_TIMESTAMPS` | Exact-1, off             | Per-dispatch GPU timing; requires `VELLO_GPU_TIMESTAMPS=1`, inside-pass query support, GPU execution, and no `wgpu-profiler` feature. The harness rejects the missing-parent-flag combination.                                                                                                                                                                                                                   |
 
 Sources: [bump_budget.rs](../vendor/vello/src/bump_budget.rs),
-[gpu.rs](../crates/sdk/ui-core/src/gpu.rs),
+[gpu.rs](../crates/ui/ui-core/src/gpu.rs),
 [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs). Tracked GPU bytes exclude
 driver-private allocations. CPU XRGB bytes written, GPU readback payload,
 GPU-to-GPU copies, and physical VRAM are separate metrics. The completion/map
@@ -126,9 +126,9 @@ animation. Likewise keep UI scale, text scale, theme, and overlays constant.
 `TILO_SHOTS_THEME` selects the offscreen launch fixture (`light`,
 `high-contrast`, otherwise dark); it is not a renderer optimization switch.
 
-Sources: [app.rs](../crates/sdk/ui-core/src/app.rs),
-[profiling.rs](../crates/sdk/ui-core/src/profiling.rs),
-[WebView profiling](../crates/sdk/tilo-webview/src/profile.rs).
+Sources: [app.rs](../crates/ui/ui-core/src/app.rs),
+[profiling.rs](../crates/ui/ui-core/src/profiling.rs),
+[WebView profiling](../crates/engines/tilo-webview/src/profile.rs).
 
 ## Startup warmup and DMA-BUF routing
 
@@ -139,7 +139,7 @@ selection. Keep their values identical across steady-state comparisons.
 | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path                                                | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result.                                                                                                                                                             |
 
-Sources: [ui-core startup](../crates/sdk/ui-core/src),
+Sources: [ui-core startup](../crates/ui/ui-core/src),
 [session startup](../crates/session/session/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs).
 
@@ -386,7 +386,7 @@ application can enable them through dependency feature unification):
 | `media/realtime`            | Off (the session enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry.                      |
 | `tilo-session/dev-overrides` | Off                       | The test-control socket `tilo-vm` and the capture harnesses drive a desktop through, and the deterministic boundaries `shots` and the integration tests need. A dev image builds it; a production image never does. Not a frame-rate optimization. |
 
-See [UI features](../crates/sdk/ui-core/Cargo.toml) and
+See [UI features](../crates/ui/ui-core/Cargo.toml) and
 [session features](../crates/session/session/Cargo.toml). `--no-default-features`
 changes the workload/capability set; document it in any benchmark recipe rather
 than silently comparing different feature sets.

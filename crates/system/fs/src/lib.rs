@@ -37,7 +37,7 @@ pub mod eviction;
 pub mod file_watch;
 #[cfg(feature = "filesystem")]
 pub mod fs;
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
 pub mod fuse_session;
 #[cfg(feature = "filesystem")]
 pub mod hydration;
@@ -53,6 +53,8 @@ pub mod namespace;
 pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
+#[cfg(feature = "filesystem")]
+pub mod node;
 #[cfg(feature = "document-media")]
 pub mod public_content;
 #[cfg(feature = "filesystem")]
@@ -64,7 +66,9 @@ pub mod smart_monitor;
 #[cfg(feature = "filesystem")]
 pub mod storage;
 pub mod store;
-#[cfg(feature = "filesystem")]
+/// macOS's working folder while its file provider extension cannot yet write one: built for the
+/// Mac alone, and for the unit tests that keep it honest on any host.
+#[cfg(all(feature = "filesystem", unix, any(target_os = "macos", test)))]
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;

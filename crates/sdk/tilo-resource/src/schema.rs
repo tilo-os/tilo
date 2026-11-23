@@ -540,7 +540,12 @@ pub(crate) fn param_schema(param: &ActionParam) -> Value {
 }
 
 /// The arguments object of a declaration, as serde reads it.
-pub(crate) fn args_schema(params: &[ActionParam]) -> Value {
+///
+/// This is the one projection of an action's parameters to a JSON Schema:
+/// what its own typed call publishes, what a generic invoke takes, and what
+/// every other caller reads to know the shape of a call (a model's function,
+/// an MCP tool's `inputSchema`, a REST body).
+pub fn args_schema(params: &[ActionParam]) -> Value {
     object(
         params
             .iter()

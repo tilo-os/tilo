@@ -94,6 +94,9 @@ mod computer_agent;
 #[path = "workspace_actions/computer_restart.rs"]
 mod computer_restart;
 #[cfg(test)]
+#[path = "workspace_actions/front_page_canvas.rs"]
+mod front_page_canvas;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
 #[cfg(test)]
@@ -110,6 +113,18 @@ mod bulk_import;
 #[path = "workspace_actions/chain_parts_restart.rs"]
 mod chain_parts_restart;
 #[cfg(test)]
+#[path = "workspace_actions/chat_after_join.rs"]
+mod chat_after_join;
+#[cfg(test)]
+#[path = "workspace_actions/chat_group.rs"]
+mod chat_group;
+#[cfg(test)]
+#[path = "workspace_actions/chat_restart.rs"]
+mod chat_restart;
+#[cfg(test)]
+#[path = "workspace_actions/computer_models.rs"]
+mod computer_models;
+#[cfg(test)]
 #[path = "workspace_actions/delete_workspace.rs"]
 mod delete_workspace;
 #[cfg(test)]
@@ -124,6 +139,9 @@ mod device_writes;
 #[cfg(test)]
 #[path = "workspace_actions/encrypted_resource.rs"]
 mod encrypted_resource;
+#[cfg(test)]
+#[path = "workspace_actions/feedback_journey.rs"]
+mod feedback_journey;
 #[cfg(test)]
 #[path = "workspace_actions/files_founded_page.rs"]
 mod files_founded_page;
@@ -143,6 +161,9 @@ mod governed_agent;
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_agent_questions.rs"]
+mod hosted_agent_questions;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_agent_sessions.rs"]
 mod hosted_agent_sessions;
 #[cfg(test)]
@@ -155,6 +176,9 @@ mod hosted_agent_turns;
 #[path = "workspace_actions/hosted_browser.rs"]
 mod hosted_browser;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_consent_notification.rs"]
+mod hosted_consent_notification;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
@@ -166,9 +190,6 @@ mod hosted_mail_account_migrate;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
-#[cfg(test)]
-#[path = "workspace_actions/hosted_questions.rs"]
-mod hosted_questions;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_secret_use.rs"]
 mod hosted_secret_use;
@@ -226,6 +247,9 @@ mod resource_support;
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 #[cfg(test)]
+#[path = "workspace_actions/slow_read.rs"]
+mod slow_read;
+#[cfg(test)]
 #[path = "workspace_actions/throughput.rs"]
 mod throughput;
 #[cfg(test)]
@@ -280,27 +304,10 @@ use crate::support::{Device, enrol, ready, start_peer};
 use tilo_actions::MemberId;
 
 const SHEETS: &str = "so.tilo.sheets";
-const TASKS: &str = "so.tilo.tasks";
-/// The kind an issue of a tracker is published under: an item of the part that keeps it.
-const ISSUE: &str = "tasks.issues.issues";
-
-/// The id and kind of the first resource of kind `kind` among `resources`, however deep.
-fn published_item(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    kind: &str,
-) -> Option<(String, String)> {
-    resources.iter().find_map(|resource| {
-        if resource.kind == kind {
-            Some((resource.id.as_str().to_owned(), resource.kind.clone()))
-        } else {
-            published_item(&resource.children, kind)
-        }
-    })
-}
 const EBOOK: &str = "so.tilo.ebook";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_https_host() {
+async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
     use tilo_actions::remote::ViewResourceQuery;
     let (identity_key, _) = tilo_user_identity::UserIdentity::generate("Resource fixture", 1);
     let host = enrol(
@@ -326,47 +333,64 @@ async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_h
         Browser::open_workspace(&hosted, &browser_device, &host, &workspace.workspace).await;
     let mut source = crate::common::open_in(
         &workspace.workspace,
-        TASKS,
+        "so.tilo.chat",
         &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
-    // Issues are kept in the parts of the tracker's issues, filed through the chain the
-    // tracker publishes beside its record.
-    let chain = tasks::issue_list::chain();
+    let mut doc = source.read(Clone::clone).unwrap();
+    crate::common::add_channel(&mut doc, "ada", "general", None);
+    let general = crate::common::channel(&doc, chat::model::ChannelKind::Text);
     source
-        .invoke(
-            &ActionAddress::new(ui::resource::chain_resource_id(&chain), "create"),
-            serde_json::json!({"title": "Hello é, filed natively"})
-                .as_object()
-                .unwrap(),
-            false,
-        )
+        .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    let (id, kind) =
-        published_item(&source.resources(), ISSUE).expect("the page publishes the issue");
-    let part = chain.part(0);
+    // Messages are kept in the parts of the chat's messages, posted through
+    // the chain the chat publishes beside its record.
+    let message = resource_support::on_messages(
+        &mut source,
+        "post",
+        &serde_json::json!({"channel": general.id, "text": "Hello é, shared natively"}),
+    );
+    let (id, kind) = resource_support::published_message(&source, &message);
+    assert_eq!(
+        kind, "chat.messages.messages",
+        "an item of the part keeping it"
+    );
+    let part = chat::parts::part(0);
+    let attached = serde_json::json!({"app": "so.tilo.chat", "record": part.as_str(),
+        "id": id, "kind": kind, "label": "Native selection",
+        "span": {"start": 6, "end": 7, "unit": "Chars"}});
+    let shared = resource_support::on_messages(
+        &mut source,
+        "share-resource",
+        &serde_json::json!({"channel": general.id, "attached": attached, "text": "Discuss this resource"}),
+    );
+    let shared = source
+        .read_resource(&part, chat::messages::read_part)
+        .unwrap()
+        .messages
+        .iter()
+        .find(|(message, _)| message.as_str() == shared)
+        .map(|(_, message)| message.clone())
+        .unwrap();
+    let shared_at = shared
+        .attachments
+        .iter()
+        .find_map(tilo_reference::Attached::at)
+        .expect("the record it shared");
+    assert_eq!(serde_json::to_value(shared_at).unwrap(), attached);
     let record = DocumentRoute {
-        app_id: TASKS.into(),
+        app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
         document: source.wire_document().into(),
     };
     browser
         .peer
-        .write(
-            record,
-            &collab_types::DocumentMutation::Snapshot(
-                source.read(|doc| doc.clone().save()).unwrap(),
-            ),
-        )
+        .write(record, &source.take_mutation().unwrap().unwrap())
         .unwrap();
-    // The issue's own record is the part, published on its own route.
-    let route = DocumentRoute {
-        app_id: TASKS.into(),
-        cluster_id: workspace.workspace.clone(),
-        document: part.as_str().to_owned(),
-    };
+    // The message's own record is the part, published on its own route.
+    let route = resource_support::part_route(&workspace.workspace, &part);
     for (changed, mutation) in source.take_document_mutations().unwrap() {
         assert_eq!(changed, part);
         browser.peer.write(route.clone(), &mutation).unwrap();
@@ -380,7 +404,7 @@ async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_h
     let source_views = source
         .read_resource(&part, |doc| {
             crate::common::catalogue().resource_views(
-                TASKS,
+                "so.tilo.chat",
                 doc,
                 &ViewResourceQuery {
                     id: id.clone(),
@@ -430,7 +454,7 @@ async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_h
     // empty rather than refused, and a query naming no app is unchanged.
     let matching = browser
         .catalogue(CatalogueQuery {
-            app_id: Some(TASKS.into()),
+            app_id: Some("so.tilo.chat".into()),
             ..query.clone()
         })
         .await
@@ -482,9 +506,8 @@ async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_h
     assert_eq!(locator.provider, provider);
     for wanted in [
         ViewResourceQuery {
-            id: ui::tilo_resource::items::item_resource_id_in(
-                "tasks.issues",
-                "issues",
+            id: ui::tilo_resource::items::item_resource_id::<chat::parts::ChatMessages>(
+                "messages",
                 &ui::tilo_resource::Id::from_raw("missing"),
             ),
             kind: kind.clone(),
@@ -511,7 +534,7 @@ async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_h
     assert!(
         browser
             .catalogue(CatalogueQuery {
-                provider: Some("record:so.tilo.tasks:missing-source".into()),
+                provider: Some("record:so.tilo.chat:missing-source".into()),
                 ..query.clone()
             })
             .await
@@ -619,7 +642,7 @@ async fn an_existing_native_chain_item_discovers_local_views_over_the_governed_h
     hosted.server.shutdown().await;
 }
 
-/// Deterministically changes authority after a real snapshot of a part is read.
+/// Deterministically changes authority after a real Chat snapshot is read.
 struct DeliveryReadFixture {
     /// The host's workspaces, which hold the documents this service reads.
     workspaces: tilo_server::workspaces::Workspaces,
@@ -729,7 +752,21 @@ async fn start_browser(
     state: &Path,
     page: Option<&str>,
 ) -> Hosted {
-    let options = Options::offering(crate::common::catalogue);
+    start_lending(root, host, state, page, None).await
+}
+
+/// A host lending its workspaces' reporters `feedback_reviewer`.
+async fn start_lending(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    page: Option<&str>,
+    feedback_reviewer: Option<Arc<dyn tilo_agent_session::FeedbackReviewer>>,
+) -> Hosted {
+    let options = Options {
+        feedback_reviewer,
+        ..Options::offering(crate::common::catalogue)
+    };
     let options = match page {
         Some(origin) => options.serving(origin),
         None => options,

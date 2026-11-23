@@ -18,8 +18,6 @@ pub const SETUP_HANDOFF_MAGIC: &str = "TILO_SETUP_HANDOFF_V1";
 pub struct LocalIdentity<'a> {
     pub identity_dir: &'a Path,
     pub system: &'a tilo_device_identity::IdentityPaths,
-    /// This machine's list of the person's devices, which gains the image's.
-    pub personal_devices: &'a Path,
 }
 
 #[derive(Clone, Debug)]
@@ -265,23 +263,120 @@ pub fn apply_setup_handoff(
     Ok(())
 }
 
+/// Make the image one of the person's devices before it ever runs: this
+/// machine holds their root, so it certifies the image's new device key on
+/// the spot, with no network and nothing for the image to redeem. The key and
+/// certificate go where a device that logged in with a ticket keeps them
+/// (`var/lib/tilo`), so the image's first boot takes them up the same way,
+/// and the image's account names the person as this machine knows them.
+#[cfg(unix)]
 fn enroll_local_identity(
     root: &Path,
     profile: &InstallProfile,
     local: &LocalIdentity<'_>,
     label: &str,
 ) -> Result<(), String> {
-    imager_backend::local_enrollment::enroll(
-        &imager_backend::local_enrollment::LocalEnrollment {
-            target_root: root,
-            username: profile.user.username.trim(),
-            local_identity_dir: local.identity_dir,
-            local_system: local.system,
-            local_personal_devices: local.personal_devices,
-        },
-        &profile.user.full_name,
+    use tilo_device_identity::{IdentityPaths, persist};
+
+    let username = profile.user.username.trim();
+    if !safe_account_name(username) {
+        return Err("The account name must be a lowercase Linux user name.".into());
+    }
+    if label.len() > 64 {
+        return Err("The device name must be at most 64 bytes.".into());
+    }
+    let person = tilo_identity::store::load_person_root(local.identity_dir)
+        .map_err(|error| format!("This machine cannot certify another device: {error}"))?;
+    let user = person.group_public_key();
+    let source_cert = persist::read_device_cert(&local.system.device_cert)
+        .map_err(|error| format!("This machine's device certificate: {error}"))?;
+    if source_cert.user_public_key != user {
+        return Err("This machine's device certificate belongs to a different person.".into());
+    }
+
+    let fresh = |error: io::Error| format!("reserve a fresh target identity tree: {error}");
+    let target = fs::symlink_metadata(root).map_err(fresh)?;
+    if !target.is_dir() || !tilo_files::native::private::private_to_me(&target) {
+        return Err("The handoff directory must be private to this account.".into());
+    }
+    let var = root.join("var");
+    fs::create_dir(&var).map_err(fresh)?;
+    let paths = IdentityPaths::under(var.join("lib/tilo"));
+    let identity_dir = var
+        .join("home")
+        .join(username)
+        .join(".config/tilo/identity");
+
+    let failed = |error: &dyn std::fmt::Display| format!("Could not enroll the device: {error}");
+    let (device, _) = persist::load_or_create_device_key(&paths).map_err(|e| failed(&e))?;
+    let cert = signed_at_once(tilo_server_client::certification::issue_device_cert(
+        &person,
+        device.verifying_key().to_bytes(),
         label,
+        tilo_server_client::certification::IssuedRole::Device,
+    ))
+    .map_err(|e| failed(&e))?;
+    let now = ui::time::unix_now_ns();
+    persist::install_device_cert(&paths, &cert, now).map_err(|e| failed(&e))?;
+    tilo_identity::provisioning::complete_enrolled_device_named(
+        &identity_dir,
+        &paths,
+        now,
+        &profile.user.full_name,
+        person.avatar_color(),
+        person.profile_photo().cloned(),
     )
+    .map_err(|e| failed(&e))?;
+    // Both machines know each other as the person's devices from the start.
+    let identity_id = hex::encode(user);
+    tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
+        .remember_certificate(&identity_id, source_cert)
+        .map_err(|e| failed(&e))?;
+    tilo_identity::device_fleet::DeviceFleetStore::at(local.identity_dir, local.system.clone())
+        .remember_certificate(&identity_id, cert)
+        .map_err(|e| failed(&e))?;
+    Ok(())
+}
+
+/// See the Unix `enroll_local_identity`: the image's accounts own their
+/// files, so only a Unix machine prepares an image its identity enrolls.
+#[cfg(not(unix))]
+fn enroll_local_identity(
+    _root: &Path,
+    _profile: &InstallProfile,
+    _local: &LocalIdentity<'_>,
+    _label: &str,
+) -> Result<(), String> {
+    Err("This machine cannot enroll the image with its identity.".into())
+}
+
+/// The root this machine holds signs as it is asked, so its certificate is
+/// ready the first time it is polled.
+#[cfg(unix)]
+fn signed_at_once<T>(signing: impl std::future::Future<Output = T>) -> T {
+    let mut signing = std::pin::pin!(signing);
+    match signing
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(signed) => signed,
+        std::task::Poll::Pending => unreachable!("a held root signs without waiting"),
+    }
+}
+
+/// A Linux account name the image's home directory is made under.
+#[cfg(unix)]
+fn safe_account_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 32
+        && bytes
+            .first()
+            .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'_'))
+        && bytes
+            .iter()
+            .skip(1)
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), String> {
@@ -609,7 +704,6 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     use std::sync::OnceLock;
     static SYSTEM: OnceLock<tilo_device_identity::IdentityPaths> = OnceLock::new();
     static IDENTITY_DIR: OnceLock<PathBuf> = OnceLock::new();
-    static PERSONAL_DEVICES: OnceLock<PathBuf> = OnceLock::new();
     let system = SYSTEM.get_or_init(tilo_identity::provisioning::collaboration_identity_paths);
     let identity_dir = IDENTITY_DIR.get_or_init(|| {
         tilo_identity::store::IdentityRegistryStore::from_env().map_or_else(
@@ -617,19 +711,9 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
             |store| store.identity_dir().to_path_buf(),
         )
     });
-    let personal_devices = PERSONAL_DEVICES.get_or_init(|| {
-        tilo_server_protocol::personal_device_peer_path(
-            system
-                .user_pubkey
-                .parent()
-                .and_then(Path::parent)
-                .unwrap_or_else(|| Path::new("/var/lib/tilo")),
-        )
-    });
     Ok(LocalIdentity {
         identity_dir,
         system,
-        personal_devices,
     })
 }
 
@@ -641,27 +725,33 @@ fn dirs_fallback() -> PathBuf {
 mod tests {
     use super::*;
 
+    /// An image this machine writes, with no network and no daemon running
+    /// anywhere, boots later as one of the person's devices: its first boot
+    /// takes up the key and certificate the way a computer that logged in
+    /// with a ticket does, its daemon finds itself certified by the person,
+    /// and this machine verifies the image's certificate against their root.
     #[cfg(unix)]
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one handoff checks the relocated identity and both ends of the enrollment"
+        reason = "one image, from writing it to both ends of its first boot"
     )]
-    fn handoff_writes_wifi_and_a_certified_device_without_the_root_secret() {
+    fn an_image_written_offline_boots_as_the_persons_device() {
+        use tilo_device_identity::{IdentityPaths, login, persist};
+        use tilo_identity::{device_fleet::DeviceFleetStore, provisioning, store};
+
         let local_dir = tempfile::tempdir().unwrap();
         let identity_dir = local_dir.path().join("identity");
-        let local_system =
-            tilo_device_identity::IdentityPaths::under(local_dir.path().join("system"));
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        let local_system = IdentityPaths::under(local_dir.path().join("system"));
+        provisioning::ensure_collaboration_identity(
             &identity_dir,
             &local_system,
-            tilo_identity::provisioning::IdentityStorage::Files,
+            provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        let local_cert =
-            tilo_device_identity::persist::read_device_cert(&local_system.device_cert).unwrap();
+        let local_cert = persist::read_device_cert(&local_system.device_cert).unwrap();
         let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
-        tilo_identity::store::update_identity_presentation(
+        store::update_identity_presentation(
             &identity_dir,
             "primary",
             "Source name",
@@ -669,12 +759,14 @@ mod tests {
             Some(photo.clone()),
         )
         .unwrap();
-        let identity_id = hex::encode(local_cert.user_public_key);
-        let personal_devices = local_dir.path().join("personal-device-peers.json");
+        let person = store::load_person_root(&identity_dir)
+            .unwrap()
+            .group_public_key();
+        assert_eq!(local_cert.user_public_key, person);
+        let identity_id = hex::encode(person);
         let local = LocalIdentity {
             identity_dir: &identity_dir,
             system: &local_system,
-            personal_devices: &personal_devices,
         };
         let dir = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -691,12 +783,13 @@ mod tests {
         assert!(!access.path().join("var").exists());
         fs::remove_dir_all(access.path()).unwrap();
 
+        // Writing the image.
         profile.enroll_local_identity = true;
         let staged = stage_setup_handoff(&profile, "correct-horse", &local)
             .unwrap()
             .unwrap();
-        let paths = tilo_device_identity::IdentityPaths::under(staged.path().join("var/lib/tilo"));
-        let first_key = fs::read(&paths.device_privkey).unwrap();
+        let written = IdentityPaths::under(staged.path().join("var/lib/tilo"));
+        let first_key = fs::read(&written.device_privkey).unwrap();
         let retry = InstallProfile {
             wifi_ssid: String::new(),
             ..profile.clone()
@@ -706,12 +799,11 @@ mod tests {
             error.contains("reserve a fresh target identity tree"),
             "{error}"
         );
-        assert_eq!(fs::read(&paths.device_privkey).unwrap(), first_key);
+        assert_eq!(fs::read(&written.device_privkey).unwrap(), first_key);
 
-        // A staged image is read from a different filesystem path after transfer.
+        // The image is read from another path once it is on the machine.
         let installed = dir.path().join("installed");
         fs::rename(staged.path(), &installed).unwrap();
-
         let connection = fs::read_to_string(
             installed.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
         )
@@ -726,86 +818,100 @@ mod tests {
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
         assert!(media.contains("\"device_label\":\"orange-pi\""));
-        let paths = tilo_device_identity::IdentityPaths::under(installed.join("var/lib/tilo"));
-        assert!(
-            tilo_device_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
-        );
-        assert!(!installed.join("var/home").read_dir().unwrap().any(|home| {
-            home.unwrap()
+        let home = installed.join("var/home");
+        assert!(!home.read_dir().unwrap().any(|account| {
+            account
+                .unwrap()
                 .path()
                 .join(".config/tilo/identity/secrets")
                 .exists()
         }));
-        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+
+        // The image's key and certificate are where a ticket's login keeps them.
+        let paths = IdentityPaths::under(installed.join("var/lib/tilo"));
+        let cert = persist::read_device_cert(&paths.device_cert).unwrap();
+        assert_eq!(
+            persist::read_device_cert(&paths.device_cert_for_user(&person)).unwrap(),
+            cert
+        );
+        let device = persist::load_device_key(&paths).unwrap();
+        assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
         assert_ne!(
             cert.device_public_key, local_cert.device_public_key,
-            "target must get a new device key, not the setup machine's"
+            "the image gets its own device key, not the setup machine's"
         );
-        assert_eq!(cert.user_public_key, local_cert.user_public_key);
+        assert_eq!(cert.user_public_key, person);
         assert!(cert.capabilities.can_own_workspaces);
+        assert!(!cert.capabilities.can_admit_devices);
         assert_eq!(cert.device_label, "orange-pi");
-        assert!(!installed.join("var/lib/tilo/enrollment-commits").exists());
-        assert!(!installed.join("var/lib/tilo/enrollment-staging").exists());
-        let direct: Vec<String> = serde_json::from_slice(
-            &fs::read(tilo_server_protocol::personal_device_peer_path(
-                &installed.join("var/lib/tilo"),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);
-        let target_identity = installed.join(format!(
-            "var/home/{}/.config/tilo/identity",
+
+        // First boot, a month later: the session takes up the enrolled
+        // device and provisioning finds it ready, as for a ticket's login.
+        let boot = cert.issued_at_ns + 30 * 24 * 60 * 60 * 1_000_000_000;
+        assert!(tilo_device_identity::joined_device_is_ready(&paths, boot).unwrap());
+        let target_identity = home.join(format!(
+            "{}/.config/tilo/identity",
             profile.user.username.trim()
         ));
-        let target_record =
-            tilo_identity::store::resolve_active_identity(&target_identity).unwrap();
+        assert!(provisioning::complete_enrolled_device(&target_identity, &paths, boot).unwrap());
+        assert!(matches!(
+            provisioning::ensure_collaboration_identity(
+                &target_identity,
+                &paths,
+                provisioning::IdentityStorage::Files,
+            )
+            .unwrap(),
+            provisioning::ProvisionOutcome::Existing
+        ));
+        let target_record = store::resolve_active_identity(&target_identity).unwrap();
         let presentation = tilo_identity_client::load_metadata_from_path(&target_record).unwrap();
+        assert_eq!(presentation.group_public_key, person);
         assert_eq!(presentation.display_name, "Ada");
         assert_eq!(presentation.avatar_color, [3, 4, 5]);
         assert_eq!(presentation.profile_photo, Some(photo));
-        assert_eq!(presentation.group_public_key, local_cert.user_public_key);
-        let registry = tilo_identity::store::IdentityRegistryStore::at(&target_identity)
+        let registry = store::IdentityRegistryStore::at(&target_identity)
             .load_reconciled()
             .unwrap();
         assert_eq!(registry.identities[&identity_id].record_path, target_record);
-        let target_fleet =
-            tilo_identity::device_fleet::DeviceFleetStore::at(&target_identity, paths)
-                .load(&identity_id)
-                .unwrap();
-        assert!(
-            target_fleet
+        // Its daemon serves it as the person's device.
+        let place = login::Place::at(dir.path().join("device-state"), paths.clone());
+        assert_eq!(
+            login::certified_by(&place, &cert.device_public_key),
+            vec![person]
+        );
+        assert!(login::claimed(&place, &cert.device_public_key));
+        let knows = |fleet: &tilo_identity::device_fleet::DeviceFleet, key: [u8; 32]| {
+            fleet
                 .certificates
                 .iter()
-                .any(|item| item.device_public_key == cert.device_public_key)
-        );
-        assert!(
-            target_fleet
-                .certificates
-                .iter()
-                .any(|item| item.device_public_key == local_cert.device_public_key)
-        );
-        let local_fleet =
-            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, local_system.clone())
-                .load(&identity_id)
-                .unwrap();
-        assert!(
-            local_fleet
-                .certificates
-                .iter()
-                .any(|item| item.device_public_key == cert.device_public_key)
-        );
-        let local_direct: Vec<String> =
-            serde_json::from_slice(&fs::read(&personal_devices).unwrap()).unwrap();
-        assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
+                .any(|known| known.device_public_key == key)
+        };
+        let target_fleet = DeviceFleetStore::at(&target_identity, paths)
+            .load(&identity_id)
+            .unwrap();
+        assert!(knows(&target_fleet, cert.device_public_key));
+        assert!(knows(&target_fleet, local_cert.device_public_key));
+
+        // The setup machine holds the image's certificate, and it verifies
+        // against the person's root.
+        let local_fleet = DeviceFleetStore::at(&identity_dir, local_system.clone())
+            .load(&identity_id)
+            .unwrap();
+        let held = local_fleet
+            .certificates
+            .iter()
+            .find(|known| known.device_public_key == cert.device_public_key)
+            .expect("the setup machine keeps the image's certificate");
+        assert_eq!(held.user_public_key, person);
+        assert!(held.issuer.is_none(), "the person's root signed it itself");
+        tilo_user_identity::verify_device_cert_at(held, boot).unwrap();
 
         let other_identity = local_dir.path().join("other-identity");
-        let other_paths =
-            tilo_device_identity::IdentityPaths::under(local_dir.path().join("other-system"));
-        tilo_identity::provisioning::ensure_collaboration_identity(
+        let other_paths = IdentityPaths::under(local_dir.path().join("other-system"));
+        provisioning::ensure_collaboration_identity(
             &other_identity,
             &other_paths,
-            tilo_identity::provisioning::IdentityStorage::Files,
+            provisioning::IdentityStorage::Files,
         )
         .unwrap();
         let mismatched = LocalIdentity {
@@ -830,11 +936,9 @@ mod tests {
             let identity_dir = local_dir.path().join("identity");
             let local_system =
                 tilo_device_identity::IdentityPaths::under(local_dir.path().join("system"));
-            let personal_devices = local_dir.path().join("personal-device-peers.json");
             let local = LocalIdentity {
                 identity_dir: &identity_dir,
                 system: &local_system,
-                personal_devices: &personal_devices,
             };
             let profile = InstallProfile {
                 wifi_ssid: "studio".into(),

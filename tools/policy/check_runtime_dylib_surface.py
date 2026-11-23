@@ -2,7 +2,7 @@
 """Keep OS internals and dead weight out of the shared app runtime.
 
 Every thin app maps one Rust dylib, ``libruntime_dylib.so``
-(crates/runtime/runtime-dylib), so each crate in it costs every app process
+(crates/sdk/runtime-dylib), so each crate in it costs every app process
 its load-time relocations and the memory they dirty, and every device
 downloads it. Two rules hold for its dependency graph:
 
@@ -14,7 +14,7 @@ downloads it. Two rules hold for its dependency graph:
 - **No dead weight.** Every crate in the runtime is reached by at least one
   app of the default collection without going through the runtime.
 - **No moved engine.** An engine that has a library of its own beside the
-  runtime (crates/runtime/engines/) is loaded by its apps, or opened by the
+  runtime (crates/engines/loadable/) is loaded by its apps, or opened by the
   toolkit on first use; its crates never re-enter the runtime, through any
   dependency or app's feature. The workspace-hack's own edges do not count:
   its library names no crate, so they put nothing on the runtime's link
@@ -54,7 +54,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = "runtime-dylib"
 # The runtime's manifest: the file each finding about its graph names.
-MANIFEST = "crates/runtime/runtime-dylib/Cargo.toml"
+MANIFEST = "crates/sdk/runtime-dylib/Cargo.toml"
 TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 # Crates the toolkit itself needs: if the resolved runtime lacks them, the
 # check is not looking at the runtime and must fail rather than pass.
@@ -81,7 +81,7 @@ DENIED = {
                        "runtime daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime
-# (crates/runtime/engines/): only its app maps them.
+# (crates/engines/loadable/): only its app maps them.
 ENGINES = {
     "tilo-typst-engine": "Typst's engine library (libtilo_typst_engine.so)",
     "typst": "Typst, which Typst Editor loads from libtilo_typst_engine.so",
@@ -165,7 +165,7 @@ ENGINES = {
                          "libtilo_settings_engine.so",
     # The catalogue itself is no longer here: every text field resolves
     # `:name:` and the picker opens for every app, so `emoji` is the
-    # toolkit's (crates/sdk/ui-core) and belongs in the runtime every app
+    # toolkit's (crates/ui/ui-core) and belongs in the runtime every app
     # maps (docs/measurements/runtime-size.md). The engine library Chat,
     # Notes and the on-screen keyboard still name is emptied out as they
     # migrate.
@@ -273,15 +273,15 @@ LAZY_EDGES = {
 TABLES = {
     "mime_guess": "an extension table of ~1400 string slices; the runtime looks types up "
                   "through tilo-mime",
-    "bip39": "a wordlist of 2048 string slices; threshold-identity encodes recovery phrases "
-             "itself",
+    "bip39": "a wordlist of 2048 string slices; tilo-user-identity encodes recovery "
+             "phrases itself",
 }
 
 
 def engines() -> list[str]:
     """Every runtime engine's package, as build-thin-apps.sh finds them."""
     names = []
-    for manifest in sorted((ROOT / "crates/runtime/engines").glob("*/Cargo.toml")):
+    for manifest in sorted((ROOT / "crates/engines/loadable").glob("*/Cargo.toml")):
         match = re.search(r'^name = "([^"]+)"', manifest.read_text(), re.M)
         if match:
             names.append(match.group(1))

@@ -14,7 +14,7 @@ use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitReques
 pub type Committed = (OwnerCommitRequest, OwnerCommitReceipt);
 
 /// Why the owner committed none of a device's writes ([`NativeWorkspaceOwner::write`]).
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub enum WriteRefusal {
     /// The sealed history of `record` of `app` has no room for the writes, and this device could
     /// not compact it: the writes wait until it can.

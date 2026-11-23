@@ -36,6 +36,10 @@ service = [
     "dep:libc",
     "dep:tempfile",
     "dep:sd-notify",
+    "dep:app-registry",
+    "dep:tilo-clock",
+    "dep:semver",
+    "dep:tilo-os-search",
 ]
 test-support = ["dep:tilo-test-env"]
 # Honour the developer-only environment overrides (`package_store::dev_env`)
@@ -47,18 +51,25 @@ dev-overrides = ["service", "package-store/dev-overrides"]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
-bounded-command = { path = "../../system/bounded-command", optional = true }
+bounded-command = { path = "../../platform/bounded-command", optional = true }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry; the daemon (`service`) also writes its store and
 # keeps none of its own.
 package-store = { path = "../package-store" }
-app-cli = { path = "../app-cli", optional = true }
+# The wire and the typed client, which `app` shares without depending on the service.
+package-service-client = { path = "../package-service-client" }
+# Payload blobs a thin package does not carry, from a registry server.
+app-registry = { path = "../app-registry", optional = true }
+tilo-clock = { path = "../../platform/tilo-clock", optional = true }
+# The version requirement an update resolves against.
+semver = { workspace = true, optional = true }
+app-cli = { path = "../../os/app-cli", optional = true }
 runtime-bundle = { path = "../runtime-bundle", optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "io-util", "time", "sync"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio", "postcard"] }
 
 # Daemon plumbing.
 clap = { workspace = true, optional = true }
@@ -84,10 +95,11 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tokio = { workspace = true, features = ["net", "fs", "signal", "process"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# Registers the runtime's GNOME Shell and KRunner search providers after an install.
+tilo-os-search = { path = "../../integrations/os-search", optional = true }
 
 [dev-dependencies]
-# The tests read the packages they install.
-app-registry = { path = "../app-registry" }
 getrandom.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true

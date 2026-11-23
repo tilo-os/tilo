@@ -160,7 +160,7 @@ mod durable_local_matrix {
         directories: Rc<LocalActionDirectoryRegistry>,
         worker: Connection,
         stream: Option<runtime_collab::InvocationStream>,
-        authorize: collaboration::invocation_scope::PublishedInvocationAuthorizer,
+        originals: crate::apps::collab_app_broker::OriginalLookup,
         bridge_task: tokio::task::JoinHandle<()>,
     }
     impl Rig {
@@ -207,7 +207,7 @@ mod durable_local_matrix {
                 .invocation_host()
                 .expect("actual broker journal available after normal stop/open");
             let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
-            let (worker, authorize) =
+            let (worker, originals) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
             publish_directory(handle).await;
@@ -231,7 +231,7 @@ mod durable_local_matrix {
                 directories,
                 worker,
                 stream: Some(stream),
-                authorize,
+                originals,
                 bridge_task,
             }
         }
@@ -316,7 +316,7 @@ mod durable_local_matrix {
         async fn delivered_effect(&self, env: &Environment, id: tilo_actions::InvocationId) -> u64 {
             let delivered = self.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
-            let request = collaboration::invocation_scope::PublishedInvocationRequest {
+            let request = crate::apps::collab_app_broker::InvocationRequest {
                 wire_id: delivered.id,
                 invocation: id,
                 address: tilo_actions::ActionAddress {
@@ -327,8 +327,8 @@ mod durable_local_matrix {
                 actor: delivered.actor,
                 presence: None,
             };
-            let lease = (self.authorize)(&request).unwrap();
-            lease.check().unwrap();
+            let original_call = (self.originals)(&request).unwrap();
+            original_call.check_lifecycle().unwrap();
             let path = env.root.path().join("effect-count");
             let prior = std::fs::read_to_string(&path).map_or(0, |n| n.parse::<usize>().unwrap());
             std::fs::write(path, (prior + 1).to_string()).unwrap();

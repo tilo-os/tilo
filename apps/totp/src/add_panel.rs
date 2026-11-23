@@ -483,7 +483,7 @@ fn text_field(
     }
     if let Some(msg) = on_change {
         let queue = Rc::clone(sheet);
-        input = input.on_change_view(move |_| queue.borrow_mut().queue.push_back(msg));
+        input = input.on_change(move |_| queue.borrow_mut().queue.push_back(msg));
     }
     let mut field = Field::new(label, input).with_label_placement(Some(LabelPlacement::Above));
     if let Some(problem) = sheet.borrow().problem.as_ref().filter(|p| p.field == id) {
@@ -502,7 +502,7 @@ fn choice(
     let segments = labels.iter().map(Segment::new).collect();
     [
         Box::new(Text::new(label).with_role(TextRole::Label)),
-        Box::new(ToggleGroup::new(segments, selected).on_view(id, set)),
+        Box::new(ToggleGroup::new(segments, selected).on_choose(id, set)),
     ]
 }
 
@@ -518,14 +518,14 @@ fn import_section(sheet: &Shared, values: &Values, uri_expanded: bool) -> Vec<El
                 .icon(Icon::Image)
                 .secondary(t("totp-add-scan-description"))
                 .disclosure()
-                .on_effect(queued(sheet, Msg::PickImage)),
+                .on_click(queued(sheet, Msg::PickImage)),
         ),
         Box::new(
             ListRow::new("totp-paste-link", t("totp-add-link-title"))
                 .icon(Icon::ExternalLink)
                 .secondary(t("totp-add-link-description"))
                 .disclosure()
-                .on_view(queued(sheet, Msg::ExpandLink)),
+                .on_open(queued(sheet, Msg::ExpandLink)),
         ),
     ]))];
     if uri_expanded {

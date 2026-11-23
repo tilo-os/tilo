@@ -23,7 +23,7 @@ web-features = []
 thin = ["dep:runtime-dylib"]
 # Play Spotify and reach YouTube Music through their engine libraries in the
 # runtime bundle (libtilo_spotify_engine.so and libtilo_youtube_engine.so,
-# under crates/runtime/engines/) instead of the executable. The release
+# under crates/engines/loadable/) instead of the executable. The release
 # collection enables it (dist/apps/app-collections.toml); a `thin` build
 # without it (`tilo-app dev`) links librespot and rustypipe statically,
 # because an engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
@@ -42,12 +42,12 @@ audio = ["dep:gstreamer", "media/decode"]
 live = ["dep:rustypipe", "dep:tilo-innertube", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 
 [dependencies]
-tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }
+tilo-spotify = { path = "../../crates/integrations/tilo-spotify", optional = true }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-spotify-engine = { path = "../../crates/runtime/engines/spotify", optional = true }
-tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
+tilo-spotify-engine = { path = "../../crates/engines/loadable/spotify", optional = true }
+tilo-youtube-engine = { path = "../../crates/engines/loadable/youtube", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -56,7 +56,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Ctrl+K palette and the on-screen affordances both dispatch — one source of
 # truth, one replay path.
 tilo-actions = { path = "../../crates/collab/actions" }
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+media = { package = "tilo-media", path = "../../crates/engines/tilo-media" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -64,7 +64,7 @@ uuid.workspace = true
 url.workspace = true
 base64.workspace = true
 # Portal-selected cover art is normalised through the shared preview decoder.
-tilo-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/engines/thumbnail" }
 tracing.workspace = true
 hex.workspace = true
 sha2.workspace = true
@@ -87,13 +87,13 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 # Its queries, compiled once beside it (in the YouTube engine library in a
 # release) rather than in this executable.
-tilo-innertube = { path = "../../crates/platform/tilo-innertube", optional = true }
+tilo-innertube = { path = "../../crates/integrations/tilo-innertube", optional = true }
 
 [dev-dependencies]
 # Tests build their image fixtures.
 image = { workspace = true, features = ["png"] }
 test-http = { path = "../../tools/test-http" }
-tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
+tilo-oauth = { path = "../../crates/integrations/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env", features = ["document"] }

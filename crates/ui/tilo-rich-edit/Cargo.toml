@@ -1,0 +1,59 @@
+[package]
+name = "tilo-rich-edit"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+autotests = false
+description = "Rich text edited in place: the block editor, rich text lines, the rich message input and their menus, built on the Tilo UI toolkit."
+
+[features]
+# The editor's test hooks (a menu opened by hand, a drawn table read back), for the tests of the apps
+# that embed it.
+test-support = ["tilo-ui/test-support"]
+
+# `tilo-component-scan` is read by build.rs, which an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["tilo-component-scan"]
+
+[dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+jiff.workspace = true
+tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
+taffy = { workspace = true, features = ["content_size"] }
+winit.workspace = true
+vello.workspace = true
+automerge.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
+
+[dev-dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core", features = ["test-support"] }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+image.workspace = true
+vello_encoding.workspace = true
+serde_json.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

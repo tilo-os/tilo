@@ -21,7 +21,7 @@ pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 pub const PERSONAL_WORKSPACE: &str = "personal";
 
 /// Directory under the user's data home that holds every workspace.
-pub const WORKSPACES_DIR: &str = "tilo-workspaces";
+pub use package_store::state::WORKSPACES_DIR;
 
 /// Directory under the user's data home that holds each app's records of the person's own, shared by
 /// the app's launches in every workspace.
@@ -86,21 +86,14 @@ pub fn workspace_slug(workspace_id: Option<&str>) -> String {
     // `.` and `..` survive the character filter and are the two names that resolve somewhere other
     // than a child.
     if mapped.chars().all(|c| c == '.') {
-        return format!("workspace_{}", hex_digest(raw));
+        return format!("workspace_{}", package_store::state::fnv1a(raw));
     }
     // A very long id would hit NAME_MAX and fail the mkdir with an error that says nothing about
     // workspaces.
     if mapped.len() > 128 {
-        return format!("workspace_{}", hex_digest(raw));
+        return format!("workspace_{}", package_store::state::fnv1a(raw));
     }
     mapped
-}
-
-/// Short, stable, collision-resistant name for an id we refuse to use verbatim.
-fn hex_digest(raw: &str) -> String {
-    let mut hasher = fnv::FnvHasher::default();
-    std::hash::Hasher::write(&mut hasher, raw.as_bytes());
-    format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
 /// The user's data home, as the *launcher's* own environment describes it.
@@ -113,27 +106,7 @@ pub fn host_app_dir(data_home: &Path, workspace: &str, package_id: &str) -> Path
     data_home
         .join(WORKSPACES_DIR)
         .join(workspace)
-        .join(sanitise_component(package_id))
-}
-
-/// A package id is a reverse-DNS string from a manifest, untrusted for the same reason a workspace id
-/// is.
-fn sanitise_component(raw: &str) -> String {
-    let mapped: String = raw
-        .trim()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if mapped.is_empty() || mapped.chars().all(|c| c == '.') {
-        return format!("pkg_{}", hex_digest(raw));
-    }
-    mapped
+        .join(package_store::state::sanitise(package_id))
 }
 
 /// Create the directory this launch gets.
@@ -232,7 +205,7 @@ fn refuse_symlink(path: &Path) -> io::Result<()> {
 pub fn local_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
     data_home
         .join(PERSON_DIR)
-        .join(sanitise_component(package_id))
+        .join(package_store::state::sanitise(package_id))
 }
 
 /// Create the person directory this launch binds.
@@ -426,6 +399,41 @@ mod tests {
                 assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
                 assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
             }
+        }
+
+        phase install_path_names_stay_pinned;
+        // On-disk names under `WORKSPACES_DIR` and `PERSON_DIR` must stay byte-for-byte
+        // identical across releases so updates never lose an app's data.
+        {
+            let data = Path::new("/data");
+            assert_eq!(WORKSPACES_DIR, package_store::state::WORKSPACES_DIR);
+            for (package_id, expected) in [
+                ("so.tilo.notes", "so.tilo.notes"),
+                ("dev/tilo notes", "dev_tilo_notes"),
+                ("", "pkg_cbf29ce484222325"),
+                ("..", "pkg_07da1a07b4a03f2d"),
+                ("...", "pkg_f7d93e17ec4b1219"),
+                ("so.tilo.büro", "so.tilo.b_ro"),
+            ] {
+                assert_eq!(
+                    host_app_dir(data, PERSONAL_WORKSPACE, package_id),
+                    data.join(WORKSPACES_DIR)
+                        .join(PERSONAL_WORKSPACE)
+                        .join(expected),
+                    "host_app_dir package_id={package_id:?}"
+                );
+                assert_eq!(
+                    local_person_dir(data, package_id),
+                    data.join(PERSON_DIR).join(expected),
+                    "local_person_dir package_id={package_id:?}"
+                );
+            }
+            assert_eq!(workspace_slug(Some("..")), "workspace_07da1a07b4a03f2d");
+            let long_workspace = "a".repeat(129);
+            assert_eq!(
+                workspace_slug(Some(&long_workspace)),
+                "workspace_ba20d66a82fdb40c"
+            );
         }
 
         phase the_font_index_is_one_directory_for_every_app;

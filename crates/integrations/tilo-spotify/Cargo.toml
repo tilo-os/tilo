@@ -1,0 +1,33 @@
+[package]
+name = "tilo-spotify"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[features]
+default = []
+native = ["dep:librespot-core", "dep:librespot-playback", "dep:gstreamer", "dep:gstreamer-app", "dep:tokio", "dep:tilo-clock", "dep:tilo-rt", "dep:tilo-media"]
+
+[dependencies]
+# The core and playback crates alone: the `librespot` umbrella also pulls in
+# its OAuth login helper (and with it a second reqwest), which Music never uses.
+librespot-core = { version = "=0.8.0", optional = true, default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { version = "=0.8.0", optional = true, default-features = false }
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["sync", "time"] }
+tilo-clock = { path = "../../platform/tilo-clock", optional = true }
+tilo-rt = { path = "../../platform/tilo-rt", optional = true }
+tilo-media = { path = "../../engines/tilo-media", optional = true, features = ["voice"] }
+account-credentials = { path = "../account-credentials" }
+accounts = { path = "../accounts" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

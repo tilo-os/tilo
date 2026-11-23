@@ -1,0 +1,121 @@
+//! The trees of the workspaces this daemon holds, served on a socket to the files daemon that
+//! mounts them ([`tilo_fs::tree_sync::remote`]).
+//!
+//! The daemon is the device's one workspace service, so the mount syncs through it: a
+//! connection is taken from a process of this account alone, the keys of a tree's group come
+//! from the daemon's own identity service, the bytes a mount lacks are asked of the daemon's
+//! record content, and the bytes it keeps are the ones that record content hands the
+//! workspace. The access list the mount enforces is the workspaces' own: each one's policy
+//! and members, and the grants apps hold in it through portals, as its shared
+//! desktop record keeps them. It is made again on every change of what a decision reads, and at
+//! the moment a member's time-limited grant lapses.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use tilo_workspace_service::files::Folders;
+use tilo_workspace_service::files::socket::{self, Daemons, Keys, Offers, Serving};
+use tilo_workspace_service::service::ServiceSlot;
+use tokio::sync::{Notify, watch};
+
+use super::workspaces::ServiceWorkspaces;
+
+/// The trees' socket while it is served, and where each mounted folder stands.
+pub(crate) struct FilesTree {
+    _serving: Serving,
+    access: tokio::task::JoinHandle<()>,
+    /// Where each folder a mount holds stands: how much it has to send and to fetch.
+    _folders: Folders,
+}
+
+impl Drop for FilesTree {
+    fn drop(&mut self) {
+        self.access.abort();
+    }
+}
+
+/// Serve the trees of the workspaces `workspaces` holds at `path`, for the mounts of `person`
+/// on `device`, with their keys from the identity service at `identity`; each mount joins
+/// `daemons`, through which the daemon's record content reads and keeps its files' bytes.
+/// `None` before the daemon's broker serves record content: a mount would have no bytes to read.
+pub(crate) fn serve(
+    path: &Path,
+    workspaces: &Arc<ServiceWorkspaces>,
+    daemons: Arc<Daemons>,
+    identity: PathBuf,
+    (person, device): (String, [u8; 32]),
+) -> Option<FilesTree> {
+    let content = workspaces.record_content_service()?;
+    let service = ServiceSlot::default();
+    service.install(Arc::clone(workspaces.service()));
+    let keys: Keys = Arc::new(move |workspace| {
+        let keys = tilo_fs::hydration::FileKeys::new(workspace, identity.clone());
+        Box::pin(async move {
+            let keys = keys.access().await.map_err(|error| format!("{error:#}"))?;
+            keys.to_bytes()
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| format!("{error:#}"))
+        })
+    });
+    let (told, access) = watch::channel(None);
+    let copies = workspaces.copies().clone();
+    let follows = tilo_rt::app().spawn(follow_access(copies, (person, device), told));
+    let folders = Folders::new(Arc::new(|| {}));
+    let serving = socket::serve(
+        path,
+        service,
+        content,
+        // Every process of this account is admitted, as the socket's own check of its peer
+        // decides: the mount is the account's, as the daemon is.
+        Arc::new(|_, _| true),
+        Offers {
+            daemons,
+            keys,
+            access,
+        },
+        folders.clone(),
+    );
+    Some(FilesTree {
+        _serving: serving,
+        access: follows,
+        _folders: folders,
+    })
+}
+
+/// Tell the mounts the workspaces' access list each time it changes, as long as they listen.
+async fn follow_access(
+    copies: tilo_workspace_service::workspaces::Workspaces,
+    (person, device): (String, [u8; 32]),
+    told: watch::Sender<Option<String>>,
+) {
+    let changed = Arc::new(Notify::new());
+    let watch = tilo_identity::policy_change::Watch::new({
+        let changed = Arc::clone(&changed);
+        move || changed.notify_one()
+    });
+    loop {
+        let seen = watch.arm();
+        let listed = copies.files_access(&person, Some(device)).await;
+        if let Some(at) = listed.refresh_at {
+            tilo_identity::policy_change::wake_at(at.saturating_mul(1_000_000));
+        }
+        match serde_json::to_string(&listed.authority) {
+            Ok(json) => {
+                told.send_if_modified(|was| {
+                    let new = was.as_deref() != Some(json.as_str());
+                    if new {
+                        *was = Some(json);
+                    }
+                    new
+                });
+            }
+            Err(error) => tracing::warn!(%error, "the workspaces' file access list is not JSON"),
+        }
+        if told.is_closed() {
+            return;
+        }
+        if tilo_identity::policy_change::epoch() == seen {
+            changed.notified().await;
+        }
+    }
+}

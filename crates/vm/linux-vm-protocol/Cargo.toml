@@ -1,0 +1,32 @@
+[package]
+name = "linux-vm-protocol"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The AF_VSOCK protocol between Tilo and the agent inside a Linux VM guest."
+
+[lib]
+name = "linux_vm_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
+
+[target.'cfg(unix)'.dependencies]
+# The hybrid control socket is reached by path.
+tilo-files = { path = "../../platform/tilo-files" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

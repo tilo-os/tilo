@@ -21,7 +21,7 @@ Scenarios:
               `terminal#run` (a step that asks first, which a device puts to its person
               unless they let their other devices' agents act without asking), waited on
               for E2E_ASKED_S; then E2E_READY is written, a note titled E2E_TITLE made with
-              `notes#new-note` once E2E_GO exists, found again with `tilo_find`
+              `notes#new_note` once E2E_GO exists, found again with `tilo_find`
   refused     initialize, then what follows the answer
   browser     initialize, tools/list, `tilo_ls`; with E2E_NAVIGATE=1 the Browser that is open
               sent to E2E_URL; the page's form read with `browser/page#read-page-forms`; then
@@ -250,7 +250,7 @@ def work(client: Client, out: dict) -> None:
     title = os.environ["E2E_TITLE"]
     out["open_notes"] = do(client, "notes#open", None, 60)
     out["notes_listing"] = until(client, "tilo_ls", {"path": "notes"},
-                                 lambda text: "#new-note" in text, 30)
+                                 lambda text: "#new_note" in text, 30)
     # A step that asks first: a command run in Terminal (which starts first if it is not
     # running), put to the device's person unless they let their other devices' agents act
     # without asking. The call waits while the person is asked. The harness is told the agent
@@ -267,7 +267,7 @@ def work(client: Client, out: dict) -> None:
     while not os.path.exists(go) and time.monotonic() < deadline:
         time.sleep(0.5)
     out["go"] = os.path.exists(go)
-    out["new_note"] = do(client, "notes#new-note", {"title": title}, 60)
+    out["new_note"] = do(client, "notes#new_note", {"title": title}, 60)
     # The API's "nothing matches <title>" names the title too: that is not the note.
     out["found_note"] = until(client, "tilo_find", {"query": title, "app": "notes"},
                               lambda text: title in text and not text.startswith("nothing matches"), 30)

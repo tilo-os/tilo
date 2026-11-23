@@ -68,6 +68,7 @@ fn shared(tree: Layout) -> SharedDesktop {
     SharedDesktop {
         tree,
         records: vec![(100, "notes".into())],
+        items: Vec::new(),
         authors: [(100, "ada".to_owned()), (101, "grace".to_owned())].into(),
         opened_by: std::collections::BTreeMap::new(),
     }
@@ -121,6 +122,7 @@ tilo_test_env::scenario! {
             &mut doc,
             &as_written.tree,
             &as_written.records,
+            &as_written.items,
             &as_written.authors
         ));
         doc.commit();
@@ -178,6 +180,7 @@ tilo_test_env::scenario! {
             &mut doc,
             &held.tree,
             &held.records,
+            &held.items,
             &held.authors
         ));
         doc.commit();
@@ -214,7 +217,7 @@ tilo_test_env::scenario! {
         desktop_doc::seed(&mut doc, &tree);
         doc.commit();
         assert!(
-            desktop_doc::write_shared(&mut doc, &tree, &records, &authors),
+            desktop_doc::write_shared(&mut doc, &tree, &records, &[], &authors),
             "the layout sheds the view the older page put in it"
         );
         doc.commit();
@@ -235,7 +238,7 @@ tilo_test_env::scenario! {
             "a viewer writes nothing in the workspace"
         );
         assert!(
-            !desktop_doc::write_shared(&mut doc, &theirs_tree, &records, &authors),
+            !desktop_doc::write_shared(&mut doc, &theirs_tree, &records, &[], &authors),
             "changing their view writes nothing of the workspace's layout"
         );
 
@@ -297,6 +300,7 @@ tilo_test_env::scenario! {
             &mut local,
             &held.tree,
             &held.records,
+            &held.items,
             &held.authors
         ));
         local.commit();

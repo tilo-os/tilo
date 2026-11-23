@@ -156,6 +156,10 @@ pub(crate) struct Shared {
     /// The sends the session's send action took, which the pass carries out.
     #[cfg(target_os = "linux")]
     pub(crate) sends: crate::send_to::Sends,
+    /// The resources a Nearby Send action asked to share, which the pass opens the invitation
+    /// sheet for.
+    #[cfg(target_os = "linux")]
+    pub(crate) nearby_shares: Rc<RefCell<Vec<String>>>,
     /// The services the session serves its apps itself.
     #[cfg(target_os = "linux")]
     pub(crate) table: crate::services::Served,

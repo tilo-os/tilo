@@ -246,10 +246,7 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
     durable.dedup();
     println!("durable workspace shards: {}", durable.len());
     for workspace_id in durable {
-        let files =
-            tilo_server::workspace_files::WorkspaceFiles::open(&cfg.state_root, workspace_id)?;
-        let members = files.load_membership()?.len();
-        println!("  {workspace_id}\tmembers={members}");
+        println!("  {workspace_id}");
     }
     if let Some(metrics) = tilo_server::workspace_files::load_metrics(&cfg.state_root)? {
         println!("metrics:");
@@ -295,8 +292,8 @@ fn cmd_revoke_device(
         "compromised" => tilo_user_identity::RevocationReason::Compromised,
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
-    let root = tilo_server::root_signer::load_root(Some(identity_dir))?;
-    tilo_server::root_signer::revoke_device(&cfg.state_root, root.as_ref(), pk, reason)?;
+    let root = tilo_identity::store::load_person_root(identity_dir)?;
+    tilo_server::root_signer::revoke_device(&cfg.state_root, &root, pk, reason)?;
     println!("revoked device {} ({reason:?})", hex::encode(pk));
     println!("a running tilo-server disconnects the device within one second");
     Ok(())

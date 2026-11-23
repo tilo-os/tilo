@@ -539,9 +539,9 @@ pub struct KeysConfig {
 pub enum KeyRole {
     /// Founds groups and commits them to the access policy.
     Committer,
-    /// Asks for access and follows the commits others write, but never founds a group or
-    /// commits: a page or an agent, whose device key signs asynchronously and which may not hold
-    /// the grants a commit is decided on.
+    /// Asks for access and follows the commits others write, but founds and commits no group
+    /// but a call's media group ([`WorkspaceKeys::settles`]): a page or an agent, which may not
+    /// hold the grants a commit of any other group is decided on.
     Follower,
 }
 
@@ -585,8 +585,9 @@ struct PeerEntry {
     peer: GroupPeer,
     /// The request this device asks with while it waits, re-sent on `retry`.
     request: Option<MlsAccessRequestV1>,
-    /// A request whose signature the device's ownership has not answered yet.
-    signing: Option<(MlsAccessRequestV1, SignFuture<'static>)>,
+    /// A request, or a frame its peer staged, whose signature the device's ownership has not
+    /// answered yet.
+    signing: Option<(Owed, SignFuture<'static>)>,
     retry: Backoff,
     /// When the next request mints a fresh member key: an admission whose
     /// Welcome never arrived here is then answered again.
@@ -615,6 +616,28 @@ struct PeerEntry {
     /// A Welcome refused for a device this device's view of the membership
     /// did not name ([`WELCOME_WAIT`]).
     welcome: Option<HeldWelcome>,
+}
+
+/// What a signature the device's ownership owes is for ([`WorkspaceKeys::take_signing`]).
+pub struct Owed(Signing);
+
+enum Signing {
+    /// An access request.
+    Request(MlsAccessRequestV1),
+    /// The frame the group's peer staged: its genesis or a commit.
+    Frame,
+}
+
+/// Whether `scope` is a call's media group ([`collab_types::calls::media_document`]): the only
+/// group a [`KeyRole::Follower`] founds and commits.
+#[must_use]
+pub fn is_call_media(scope: &KeyScope) -> bool {
+    matches!(
+        scope,
+        KeyScope::Document { app, document, readers: None, .. }
+            if app == collab_types::scope::MEDIA_APP
+                && collab_types::calls::parse_media_document(document).is_some()
+    )
 }
 
 /// A Welcome a waiting device holds for its view of the membership.
@@ -1108,6 +1131,21 @@ impl WorkspaceKeys {
             .is_some_and(|store| store.role == KeyRole::Follower)
     }
 
+    /// Whether this device founds `group` and commits it to its readers, as well as asking for
+    /// it. A committer settles every group it takes part in. A follower settles only a call's
+    /// media group: who reads one is the devices of the people the current generation of the
+    /// call's rule admits, which a follower reads from the workspace's governance as every member
+    /// does, and every member judges each frame of it against that rule ([`key_group::backs`]).
+    /// No grant of a role decides it, so a page in a call founds its keys and admits the others
+    /// in it when no other device of the call would.
+    fn settles(&self, group: WorkspaceId) -> bool {
+        !self.reads_only()
+            || self
+                .directory
+                .document_scope(group)
+                .is_some_and(is_call_media)
+    }
+
     /// Whether a request waits on its signature from the device's ownership: [`Self::signatures`]
     /// then has something to await.
     #[must_use]
@@ -1116,50 +1154,119 @@ impl WorkspaceKeys {
     }
 
     /// Await every signature the device's ownership owes, keeping each signed request for the next
-    /// [`Self::pump`] to send.
+    /// [`Self::pump`] to send and settling each signed frame.
     pub async fn signatures(&mut self) {
-        for (workspace, request, signing) in self.take_signing() {
+        for (workspace, owed, signing) in self.take_signing() {
             let signed = signing.await;
-            self.signed(workspace, request, signed);
+            self.signed(workspace, owed, signed, tilo_clock::now());
         }
     }
 
-    /// The access requests whose signatures the device's ownership owes, taken out of the service
-    /// so a shared one is not held while they are awaited; each answer goes back with
-    /// [`Self::signed`].
+    /// The signatures the device's ownership owes, taken out of the service so a shared one is
+    /// not held while they are awaited; each answer goes back with [`Self::signed`].
     pub fn take_signing(
         &mut self,
-    ) -> Vec<(
-        WorkspaceId,
-        MlsAccessRequestV1,
-        collab_types::signer::SignFuture<'static>,
-    )> {
+    ) -> Vec<(WorkspaceId, Owed, collab_types::signer::SignFuture<'static>)> {
         self.peers
             .iter_mut()
             .filter_map(|(workspace, entry)| {
-                let (request, signing) = entry.signing.take()?;
-                Some((*workspace, request, signing))
+                let (owed, signing) = entry.signing.take()?;
+                Some((*workspace, owed, signing))
             })
             .collect()
     }
 
-    /// Keep `request`, signed by the device's ownership, for the next [`Self::pump`] to send.
+    /// Take the device's ownership's answer to what it `owed` for `workspace`: keep a signed
+    /// request for the next [`Self::pump`] to send, and found or commit with a signed frame.
     pub fn signed(
         &mut self,
         workspace: WorkspaceId,
-        mut request: MlsAccessRequestV1,
+        owed: Owed,
         signed: Result<[u8; 64], collab_types::signer::SignError>,
+        now: Instant,
     ) {
-        match signed {
-            Ok(signature) => {
-                if let Some(entry) = self.peers.get_mut(&workspace) {
-                    request.signature = collab_types::Signature::from_bytes(signature);
-                    entry.request = Some(request);
-                    self.queued = true;
-                }
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
+            return;
+        };
+        match (owed.0, signed) {
+            (Signing::Request(mut request), Ok(signature)) => {
+                request.signature = collab_types::Signature::from_bytes(signature);
+                entry.request = Some(request);
+                self.queued = true;
             }
-            Err(error) => tracing::warn!(%error, "group access request was not signed"),
+            (Signing::Frame, Ok(signature)) => {
+                let finished = entry.peer.signed(signature, &store.vault);
+                self.finish(workspace, finished, now);
+            }
+            (_, Err(error)) => {
+                tracing::warn!(%error, %workspace, "group frame or request was not signed");
+            }
         }
+    }
+
+    /// Have the device's ownership sign the frame `workspace`'s peer staged (`message`): at once
+    /// when it answers in this pass, or later through [`Self::signatures`].
+    fn sign_staged(&mut self, workspace: WorkspaceId, message: Vec<u8>, now: Instant) {
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
+            return;
+        };
+        let key = Arc::clone(&store.signer);
+        let mut signing: SignFuture<'static> = Box::pin(async move { key.sign(message).await });
+        match signing
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        {
+            std::task::Poll::Ready(answer) => {
+                self.signed(workspace, Owed(Signing::Frame), answer, now);
+            }
+            std::task::Poll::Pending => {
+                entry.signing = Some((Owed(Signing::Frame), signing));
+                self.queued = true;
+            }
+        }
+    }
+
+    /// Settle what a signed frame of `workspace`'s did: a group founded admits the requests it
+    /// holds at once, and a commit is spaced from the next.
+    fn finish(
+        &mut self,
+        workspace: WorkspaceId,
+        finished: key_group::Result<Option<key_group::Signed>>,
+        now: Instant,
+    ) {
+        let Some(entry) = self.peers.get_mut(&workspace) else {
+            return;
+        };
+        match finished {
+            Ok(Some(key_group::Signed::Founded(true))) => {
+                entry.dirty = true;
+                entry.wanted = true;
+            }
+            Ok(Some(key_group::Signed::Reconciled(outcome))) => {
+                if !outcome.refused.is_empty() {
+                    tracing::warn!(%workspace, refused = outcome.refused.len(), "malformed group access requests refused");
+                }
+                if !outcome.changed() {
+                    return;
+                }
+                tracing::debug!(%workspace, admitted = ?outcome.admitted, removed = ?outcome.removed, "key group changed");
+                entry.committed_at = Some(now);
+            }
+            Ok(Some(key_group::Signed::Founded(false)) | None) => {
+                // The group moved while the frame waited on its signature: look again.
+                entry.dirty = true;
+                self.queued = true;
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "group could not be founded or committed");
+                return;
+            }
+        }
+        let seal_check = entry.peer.seal_check();
+        self.register_seal_check(workspace, seal_check);
+        self.bump(workspace);
+        self.queued = true;
     }
 
     /// Run the governance protocol once: apply what arrived, move groups to
@@ -1568,8 +1675,8 @@ impl WorkspaceKeys {
         now: Instant,
         wall: u64,
     ) {
-        // A reader admits no one.
-        if self.reads_only() || request.workspace != workspace {
+        // A reader admits no one into a group it does not settle.
+        if !self.settles(workspace) || request.workspace != workspace {
             return;
         }
         if !self.peers.contains_key(&workspace)
@@ -1673,8 +1780,14 @@ impl WorkspaceKeys {
             return;
         }
         // While this device cannot tell who holds the workspace's keys it
-        // commits nothing and removes no one; nor does a reader.
-        let Some(allowed) = allowed.filter(|_| store.role == KeyRole::Committer) else {
+        // commits nothing and removes no one; nor does a reader in a group it
+        // does not settle, nor a device whose last frame waits on its signature.
+        let settles = store.role == KeyRole::Committer
+            || self
+                .directory
+                .document_scope(workspace)
+                .is_some_and(is_call_media);
+        let Some(allowed) = allowed.filter(|_| settles && entry.signing.is_none()) else {
             entry.turn_at = None;
             return;
         };
@@ -1697,22 +1810,16 @@ impl WorkspaceKeys {
             return;
         }
         entry.turn_at = None;
-        let outcome = match entry.peer.reconcile_now(&allowed, &store.vault) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::warn!(%error, %workspace, "group membership change failed");
-                return;
+        match entry.peer.stage_reconcile(&allowed, &store.vault) {
+            Ok(key_group::Staged::Sign(message)) => self.sign_staged(workspace, message, now),
+            Ok(key_group::Staged::Done(outcome)) => {
+                self.finish(
+                    workspace,
+                    Ok(Some(key_group::Signed::Reconciled(outcome))),
+                    now,
+                );
             }
-        };
-        if !outcome.refused.is_empty() {
-            tracing::warn!(%workspace, refused = outcome.refused.len(), "malformed group access requests refused");
-        }
-        if outcome.changed() {
-            tracing::debug!(%workspace, admitted = ?outcome.admitted, removed = ?outcome.removed, "key group changed");
-            entry.committed_at = Some(now);
-            let seal_check = entry.peer.seal_check();
-            self.register_seal_check(workspace, seal_check);
-            self.bump(workspace);
+            Err(error) => tracing::warn!(%error, %workspace, "group membership change failed"),
         }
     }
 
@@ -1830,7 +1937,7 @@ impl WorkspaceKeys {
                     return;
                 }
                 std::task::Poll::Pending => {
-                    entry.signing = Some((request, signing));
+                    entry.signing = Some((Owed(Signing::Request(request)), signing));
                     return;
                 }
             }
@@ -1880,7 +1987,11 @@ impl WorkspaceKeys {
         let Some(entry) = self.peers.get(&workspace) else {
             return;
         };
-        if entry.peer.knows_group() || self.groups_seen.contains(&workspace) || self.reads_only() {
+        if entry.peer.knows_group()
+            || entry.signing.is_some()
+            || self.groups_seen.contains(&workspace)
+            || !self.settles(workspace)
+        {
             return;
         }
         let due = self.directory.founds(workspace) && (entry.wanted || now >= entry.founding.at);
@@ -1888,7 +1999,11 @@ impl WorkspaceKeys {
             .allowed_devices(workspace, wall)
             .zip(self.device())
             .is_some_and(|(allowed, device)| allowed.contains(&device));
-        let (Some(entry), Some(store)) = (self.peers.get_mut(&workspace), &self.store) else {
+        let Some(entry) = self
+            .peers
+            .get_mut(&workspace)
+            .filter(|_| self.store.is_some())
+        else {
             return;
         };
         // Looked at again on every pass, a policy re-check's included.
@@ -1896,16 +2011,9 @@ impl WorkspaceKeys {
         if !reads || !due {
             return;
         }
-        match entry.peer.found_now(&store.vault) {
-            Ok(true) => {
-                // The requests it holds are admitted at once.
-                entry.dirty = true;
-                entry.wanted = true;
-                let seal_check = entry.peer.seal_check();
-                self.register_seal_check(workspace, seal_check);
-                self.bump(workspace);
-            }
-            Ok(false) => {}
+        match entry.peer.stage_found() {
+            Ok(Some(message)) => self.sign_staged(workspace, message, now),
+            Ok(None) => {}
             Err(error) => tracing::warn!(%error, %workspace, "group could not be created"),
         }
     }
@@ -1983,7 +2091,7 @@ impl WorkspaceKeys {
                 rejoin: false,
                 founding: Founding {
                     at: found_at,
-                    allowed: !self.reads_only(),
+                    allowed: self.settles(workspace),
                 },
                 wanted: true,
                 held: Vec::new(),
@@ -2238,12 +2346,12 @@ impl SharedKeys {
             return;
         };
         let mut answered = Vec::with_capacity(owed.len());
-        for (workspace, request, signing) in owed {
-            answered.push((workspace, request, signing.await));
+        for (workspace, owed, signing) in owed {
+            answered.push((workspace, owed, signing.await));
         }
         let queued = self.with_service(|service| {
-            for (workspace, request, signed) in answered {
-                service.signed(workspace, request, signed);
+            for (workspace, owed, signed) in answered {
+                service.signed(workspace, owed, signed, tilo_clock::now());
             }
             std::mem::take(&mut service.queued)
         });

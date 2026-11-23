@@ -607,7 +607,7 @@ pub(crate) fn empty_pane(
         Some((label, request)) => state
             .with_action(label)
             .with_action_id(EMPTY_ACTION)
-            .on_view(queue(shared, request)),
+            .on_open(queue(shared, request)),
         None => state,
     })
 }

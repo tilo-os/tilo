@@ -522,7 +522,7 @@ faces() {
   local catalogue="$repo/target/prepared-fonts" face
   if [ ! -f "$catalogue/TiloSans[wdth,wght].ttf" ]; then
     PATH="/opt/homebrew/bin:$PATH" python3 "$repo/tools/font-catalog.py" prepare \
-      "$repo/crates/sdk/ui-core/assets/fonts" "$catalogue" --scope product >&2 \
+      "$repo/crates/ui/ui-core/assets/fonts" "$catalogue" --scope product >&2 \
       || die "Tilo Sans could not be prepared: tools/font-catalog.py takes Python 3.11 and, once, the network"
   fi
   mkdir -p "$1"

@@ -46,7 +46,7 @@ impl Placeholder {
                 .with_message(t("db-no-connections-hint"))
                 .with_action(t("db-new-connection"))
                 .with_action_id("db.new-connection")
-                .on_view(move || link.ask(Intent::NewConnection)),
+                .on_open(move || link.ask(Intent::NewConnection)),
         }
     }
 }
@@ -175,7 +175,7 @@ impl PageButton {
             link: link.clone(),
             button: Button::icon_only(id, icon, label)
                 .control_size(ControlSize::Small)
-                .on_view(move || ask.ask(intent.clone())),
+                .on_open(move || ask.ask(intent.clone())),
             forward,
         }
     }

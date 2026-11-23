@@ -30,8 +30,7 @@ impl RecordRead {
         Self {
             attached,
             governed: !attached
-                && (runtime.admission == crate::workspace_access::AdmissionMode::Governed
-                    || runtime.device_access.is_some()),
+                && (runtime.workspace_authority.is_some() || runtime.device_access.is_some()),
             access: runtime
                 .device_access
                 .as_ref()
@@ -123,7 +122,7 @@ pub(super) async fn handle_open_document(
     // The workspace's one admission for a device reading its records, as a
     // link's other end is admitted before it is sent any, and what this device
     // may read of them.
-    let runtime = crate::workspace_io::fresh_membership(&ws).await?;
+    let runtime = ws.lock().await;
     if !session.admits(&runtime, peer, WorkspaceOperation::State) {
         return refused(tilo_server_protocol::refusal::Refusal::NotAMember(
             "device not in workspace membership".into(),

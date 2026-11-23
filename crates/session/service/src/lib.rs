@@ -24,16 +24,7 @@ pub mod lines;
 pub mod notice;
 pub mod questions;
 mod worker;
-/// What a resource of a kind this crate publishes from outside a document is
-/// called, in the person's language: the kind's entry in the catalogue beside
-/// this crate, read the way a declaration's words are.
-mod i18n {
-    tilo_resource::declared_catalogue!(CATALOGUE);
-
-    pub(crate) fn name(kind: &str, source: &str) -> String {
-        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
-    }
-}
+tilo_resource::declared_names!();
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
@@ -292,6 +283,13 @@ pub trait Service {
     /// document of its own keeps none, and takes no store.
     fn lend_content(&mut self, _store: &mut dyn FnMut(&str) -> tilo_content::ContentStore) {}
 
+    /// Mint the links to the resources this service publishes under the page `home` is (a
+    /// `tilolang_tilo::share::LinkHome` as JSON): where the workspace's host serves them on the
+    /// web, as the session lends it to an app's window. `None` where the host serves no page, and
+    /// then `share-link` is refused with the system's words. A service with no link of its own
+    /// takes none.
+    fn lend_link_home(&mut self, _home: Option<&str>) {}
+
     /// Have `wake` called whenever an origin this service keeps in step answers, so the
     /// session's loop polls it and the answer lands in its documents.
     fn wake_origins(&mut self, _wake: Wake) {}
@@ -523,6 +521,14 @@ impl Services {
     pub fn lend_content(&mut self, store: &mut dyn FnMut(&str) -> tilo_content::ContentStore) {
         for service in &mut self.started {
             service.lend_content(store);
+        }
+    }
+
+    /// Lend every service the page the workspace's resources open on the web: what a resource's
+    /// `share-link` mints under (see [`Service::lend_link_home`]).
+    pub fn lend_link_home(&mut self, home: Option<&str>) {
+        for service in &mut self.started {
+            service.lend_link_home(home);
         }
     }
 

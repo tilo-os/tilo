@@ -1,13 +1,10 @@
 """Contract checks for the Windows direct-install orchestration boundary."""
 
 import importlib.util
-import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
-import urllib.request
-import zipfile
 from unittest import mock
 from types import SimpleNamespace
 
@@ -19,22 +16,21 @@ SPEC.loader.exec_module(module)
 
 
 class OrchestratorContract(unittest.TestCase):
-    def test_medium_binds_actual_imager_checkout_and_pinned_os_separately(self):
+    def test_medium_binds_the_pinned_source_and_images_separately(self):
         data = {"verify_key": Path("key"), "cosign_command_json": None,
                 "cosign_key_arg": None, "source_revision": "a" * 40,
                 "generic_image": module.PUBLIC + "b" * 64}
-        identity = {"run_id": "9001", "build_revision": "c" * 40,
+        identity = {"run_id": "t-0123456789ab", "build_revision": "a" * 40,
                     "os_source_revision": "a" * 40, "live_base_image": data["generic_image"]}
         verifier = SimpleNamespace(signed_medium_identity=mock.Mock(return_value=identity))
         spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _: None))
         with mock.patch.object(module.importlib.util, "spec_from_file_location", return_value=spec), \
                 mock.patch.object(module.importlib.util, "module_from_spec", return_value=verifier):
-            self.assertEqual(module.verify_identity(data, Path("work"), "generic", 9001,
-                                                    "c" * 40), identity)
-            for field in ("build_revision", "os_source_revision", "run_id"):
+            self.assertEqual(module.verify_identity(data, Path("work"), "generic"), identity)
+            for field in ("build_revision", "os_source_revision", "live_base_image"):
                 verifier.signed_medium_identity.return_value = {**identity, field: "9" * 40}
-                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "pinned CI"):
-                    module.verify_identity(data, Path("work"), "generic", 9001, "c" * 40)
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "pinned source or images"):
+                    module.verify_identity(data, Path("work"), "generic")
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -49,7 +45,7 @@ class OrchestratorContract(unittest.TestCase):
         self.inputs.update({
             "schema": "tilo.windows-direct-install.v2",
             "source_revision": "a" * 40,
-            "imager_run": 101,
+            "medium_outputs": str(self.work / "outputs"),
             "generic_image": module.PUBLIC + "b" * 64,
             "lenovo_image": module.BOARD + "c" * 64,
             "source_raw": str(self.work / "source.raw"),
@@ -59,40 +55,26 @@ class OrchestratorContract(unittest.TestCase):
         self.config = self.work / "input.json"
         self.config.write_text(json.dumps(self.inputs), encoding="utf-8")
 
-    def test_artifact_download_streams_and_retains_only_complete_zip(self):
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w") as bundle:
-            bundle.writestr("proof.json", "{}")
-        payload = archive.getvalue()
+    def test_output_copy_refuses_a_changed_retained_copy(self):
+        source = self.work / "outputs" / "whpx" / "medium.whpx-source.json"
+        source.parent.mkdir(parents=True)
+        source.write_text("identity", encoding="utf-8")
+        destination = self.work / "ci" / "medium.whpx-source.json"
+        destination.parent.mkdir()
+        module.copy_output(source, destination)
+        self.assertEqual(destination.read_text(encoding="utf-8"), "identity")
+        self.assertFalse(destination.with_name("medium.whpx-source.json.part").exists())
+        destination.write_text("changed", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "differs from t's output"):
+            module.copy_output(source, destination)
 
-        class BoundedResponse(io.BytesIO):
-            def read(self, size=-1):
-                if not 0 < size <= 1024 * 1024:
-                    raise AssertionError("artifact download must use bounded reads")
-                return super().read(size)
-
-        destination = self.work / "artifact.zip"
-        metadata = [{"id": 17, "name": "proof", "expired": False}]
-        with mock.patch.object(module, "fgj_run", return_value={"id": 9001}), \
-                mock.patch.object(module, "command", side_effect=[json.dumps(metadata).encode(), b"test-token\n"]), \
-                mock.patch.object(module.urllib.request, "build_opener") as opener:
-            opener.return_value.open.return_value = BoundedResponse(payload)
-            module.download_artifact(101, "proof", destination)
-            request = opener.return_value.open.call_args.args[0]
-            self.assertEqual(request.full_url,
-                             "https://code.tilo.so/api/v1/repos/tilo/tilo/actions/artifacts/17/zip")
-        self.assertEqual(destination.read_bytes(), payload)
-        self.assertFalse(destination.with_suffix(".zip.part").exists())
-
-    def test_artifact_redirect_does_not_forward_forgejo_credentials(self):
-        request = urllib.request.Request("https://code.tilo.so/archive",
-                                         headers={"Authorization": "token secret"})
-        redirected = module.ArtifactRedirect().redirect_request(
-            request, None, 302, "Found", {}, "https://storage.example/signed")
-        self.assertIsNone(redirected.get_header("Authorization"))
-        with self.assertRaisesRegex(ValueError, "HTTPS"):
-            module.ArtifactRedirect().redirect_request(
-                request, None, 302, "Found", {}, "http://storage.example/signed")
+    def test_config_names_the_check_outputs_directory(self):
+        data = module.pinned_config(self.config)
+        self.assertTrue(Path(data["medium_outputs"]).is_absolute())
+        self.inputs["medium_outputs"] = "outputs"
+        self.config.write_text(json.dumps(self.inputs), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "medium_outputs must be an absolute path"):
+            module.pinned_config(self.config)
 
     def test_input_rejects_mutable_image_and_relative_source(self):
         data = module.pinned_config(self.config)
@@ -175,18 +157,6 @@ class OrchestratorContract(unittest.TestCase):
         record.write_text(json.dumps({"steps": ["install"]}))
         with self.assertRaisesRegex(ValueError, "did not complete"):
             module.scenario_argv(data, self.work, "generic", data["source_raw"], out)
-
-    def test_forgejo_run_must_be_successful_and_host_pinned(self):
-        response = {"run": {"index_in_repo": 101, "id": 9001, "status": "success"}}
-        with mock.patch.object(module, "command", return_value=json.dumps(response)) as invoked:
-            self.assertEqual(module.fgj_run(101)["id"], 9001)
-        argv = invoked.call_args.args[0]
-        self.assertEqual(argv[:3], ["fgj", "--hostname", "code.tilo.so"])
-        self.assertIn("-R", argv)
-        response["run"]["status"] = "waiting"
-        with mock.patch.object(module, "command", return_value=json.dumps(response)):
-            with self.assertRaisesRegex(ValueError, "not completed successfully"):
-                module.fgj_run(101)
 
 
 if __name__ == "__main__":

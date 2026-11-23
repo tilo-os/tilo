@@ -1458,7 +1458,7 @@ fn stand_in(session: &Session, workspace: &str) {
         .expect("the session takes the switch");
 }
 
-/// What the projection says about the app's own new-note action: the question a window bar asks to
+/// What the projection says about the app's own `new_note` action: the question a window bar asks to
 /// offer New note.
 fn may_make_a_note(
     projection: &collab_types::action_authority::AppActionAuthorityProjection,
@@ -1466,7 +1466,7 @@ fn may_make_a_note(
     projection
         .authority()
         .decide(
-            &projection.app_node().action("new-note"),
+            &projection.app_node().action("new_note"),
             ActionKind::Undoable,
             &Context::at_secs(tilo_clock::unix_now()),
         )
@@ -2230,4 +2230,176 @@ fn a_session_dropped_while_its_app_runs_leaves_no_launcher_behind() {
     });
     drop(launcher);
     tilo_test_env::recv("the launcher of a test that is over", &ended);
+}
+
+/// The window groups of the workspace in front, each by its id with its tabs' ids.
+fn group_ids(session: &Session) -> Vec<(u64, Vec<u64>)> {
+    session.handle().read(|tree| {
+        tree.active_workspace().map_or_else(Vec::new, |workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+                .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                .collect()
+        })
+    })
+}
+
+/// Each start the launcher writing to `started` made: its pid, and the tab it was told its window
+/// takes.
+fn starts_told(started: &Path) -> Vec<(u32, Option<u64>)> {
+    fs::read_to_string(started)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let (pid, tab) = line.split_once(' ')?;
+            Some((pid.parse().ok()?, tab.trim().parse().ok()))
+        })
+        .collect()
+}
+
+/// Opening an app is never undoing a close: once its window was closed, the workspace's open of the
+/// app (the row search and agents run) makes a new window with a tab of its own, and the app is
+/// told that new tab. Only the explicit reopen brings the closed window back, in the tab and the
+/// window group it had.
+#[test]
+fn opening_an_app_after_closing_its_window_makes_a_new_window() {
+    close_then_open_again("0");
+}
+
+/// An app that ends badly after the person closed its window (a crash on the way out) leaves the
+/// window closed: nothing comes back to say it stopped, and opening it again makes a new window.
+#[test]
+fn an_app_failing_after_its_window_closed_brings_nothing_back() {
+    close_then_open_again("1");
+}
+
+/// Open [`PROBE`] through the workspace's open of it, close its window as the person does, let its
+/// process end with `status`, and open it again: a new window. Then the explicit reopen puts the
+/// closed one back where it was.
+fn close_then_open_again(status: &str) {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let stops = home.home().join("stops");
+    fs::create_dir_all(&stops).unwrap();
+    installed_probe_package(&mut home);
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            // Each start records its pid and the tab it was told, and runs until the test asks it
+            // to end (as an app does once its last window closed) or the test is over.
+            "printf '%s %s\\n' \"$$\" \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{started}'\n\
+             while [ ! -e \"{stops}/$$\" ] && [ -e '{started}' ]; do sleep 0.05; done\n\
+             exit \"$(cat \"{stops}/$$\" 2>/dev/null || echo 0)\"\n",
+            started = started.display(),
+            stops = stops.display(),
+        ),
+    )
+    .unwrap();
+    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let (workspace, _) = front_workspace(&session);
+    let open = |apps: &Apps| {
+        apps.invoke(
+            tilo_actions::remote::application_open_target(&workspace, PROBE),
+            serde_json::Map::new(),
+        )
+        .expect("the workspace opens the app");
+    };
+    let show = |session: &mut Session, id: u64, pid: u32| {
+        let mut mapped = window(id, PROBE);
+        mapped.pid = Some(pid);
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(mapped).unwrap());
+        until(session, "the app's window is on the session", |session| {
+            shown_windows(session).contains(&Some(id))
+        });
+    };
+
+    open(&apps);
+    until(&mut session, "the app runs", |_| {
+        starts_told(&started).len() == 1
+    });
+    let (first_pid, told) = starts_told(&started)[0];
+    show(&mut session, 11, first_pid);
+    let closed = group_ids(&session);
+    let [(closed_group, ref closed_tabs)] = closed[..] else {
+        panic!("one window: {closed:?}");
+    };
+    assert_eq!(
+        told,
+        Some(closed_tabs[0]),
+        "the app is told the tab it opens in"
+    );
+
+    // The person closes the window, the app's window goes with it, and its process ends.
+    invoke(
+        &mut session,
+        CHROME_RESOURCE,
+        "close-window",
+        serde_json::json!({"group": closed_group.to_string()}),
+    );
+    until(&mut session, "the window is closed", |session| {
+        group_ids(session).is_empty()
+    });
+    session.desktop().with_policy(|policy| policy.unmap(11));
+    fs::write(stops.join(first_pid.to_string()), status).unwrap();
+    tilo_test_env::exited("the closed app's process", first_pid);
+    for _ in 0..50 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(
+        group_ids(&session).is_empty(),
+        "nothing comes back when the closed app ends: {:?}",
+        group_ids(&session)
+    );
+
+    // Opening the app again makes a new window: a group and a tab that never were.
+    open(&apps);
+    until(&mut session, "the app runs again", |_| {
+        starts_told(&started).len() == 2
+    });
+    let (second_pid, told) = starts_told(&started)[1];
+    let opened = group_ids(&session);
+    let [(opened_group, ref opened_tabs)] = opened[..] else {
+        panic!("one window opened: {opened:?}");
+    };
+    assert_ne!(opened_group, closed_group, "a new window group: {opened:?}");
+    assert_ne!(
+        opened_tabs, closed_tabs,
+        "a new tab, not the closed one: {opened:?}"
+    );
+    assert_eq!(
+        told,
+        Some(opened_tabs[0]),
+        "the app is told the new tab, not the one that closed"
+    );
+    show(&mut session, 12, second_pid);
+
+    // The app ends. The explicit reopen puts the closed window back where it was, in its own tab
+    // and group, and asks the app for its window there.
+    fs::write(stops.join(second_pid.to_string()), "0").unwrap();
+    tilo_test_env::exited("the app's second process", second_pid);
+    session
+        .handle()
+        .dispatch(tilo_session_core::desktop::navigation::ChromeEffect::ReopenClosed { app: None })
+        .expect("the session takes the reopen");
+    until(&mut session, "the closed window is back", |session| {
+        group_ids(session)
+            .iter()
+            .any(|(group, tabs)| *group == closed_group && tabs == closed_tabs)
+    });
+    until(
+        &mut session,
+        "the app is asked for the reopened window",
+        |_| starts_told(&started).len() == 3,
+    );
+    assert_eq!(
+        starts_told(&started)[2].1,
+        Some(closed_tabs[0]),
+        "the reopened window takes the tab it had"
+    );
 }

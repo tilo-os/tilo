@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use collab_types::WorkspaceId;
 use tilo_server_protocol::metrics::WorkspaceEgress;
 use tilo_server_protocol::{
-    ComputeAccelerator, DeviceMeshProfile, MetricsSnapshot, PowerAvailability, ProcessLease,
-    ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
+    ComputeAccelerator, DeviceMeshProfile, MetricsSnapshot, PowerAvailability, ServerConfig,
+    ServiceCapabilities, TrustPolicy, WorkSetting,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -160,11 +160,6 @@ fn json_encodings_are_pinned() {
             workspaces: BTreeMap::new(),
             ..snapshot
         }
-    );
-
-    assert_json(
-        &ProcessLease::from_parts(4242, 987_654_321),
-        r#"{"pid":4242,"start_time":987654321}"#,
     );
 
     // An invitation a workspace keeps, asked for by the secret its link carries.

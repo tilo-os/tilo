@@ -751,7 +751,9 @@ impl Compositor {
         let outputs = self.data.state.surface_outputs();
         surface.borrow_mut().outputs_changed(&outputs);
         self.data.state.surfaces.push(Box::new(surface));
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::FORCE);
     }
 
     /// Connect a client over a socket pair; the returned end is the client's (`wl_display`
@@ -1034,7 +1036,9 @@ impl Compositor {
         }
         // The visual alert fades frame by frame, so every frame it covers is a new one to draw.
         if a11y::flashing(&self.data.state, Instant::now()) {
-            self.data.state.mark_redraw_all();
+            self.data
+                .state
+                .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
         }
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.sync_keyboard_owner();
@@ -1078,7 +1082,9 @@ impl Compositor {
         {
             self.a11y.magnifier.zoom = zoom.min(f64::from(u8::MAX)) as u8;
         }
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
     }
 
     /// The magnifier's zoom; 1 is off.
@@ -1105,7 +1111,9 @@ impl Compositor {
         self.seed_visuals();
         // X clients draw their own pointers: they hear the theme at once.
         self.sync_x11();
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
         self.display.flush_clients()?;
         Ok(())
     }
@@ -1256,7 +1264,9 @@ impl Compositor {
     /// otherwise miss.
     pub fn flash(&mut self) {
         a11y::flash_all(&self.data.state, Instant::now());
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
     }
 
     /// How held keys repeat, for clients (the seat's repeat info) and surfaces alike.
@@ -1311,7 +1321,9 @@ impl Compositor {
             Some(effect) => self.data.state.effects.insert(id, effect),
             None => self.data.state.effects.remove(&id),
         };
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::ANIMATION);
     }
 
     /// How every window is framed (its corners, its shadow, its edge) from the next frame on. A
@@ -1319,7 +1331,9 @@ impl Compositor {
     /// [`Compositor::set_window_frame_for`].
     pub fn set_window_frame(&mut self, frame: WindowFrame) {
         self.data.state.frame = frame;
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Frame the window `id` with `frame` instead of the desktop's, or as the desktop frames
@@ -1329,14 +1343,18 @@ impl Compositor {
             Some(frame) => self.data.state.window_frames.insert(id, frame),
             None => self.data.state.window_frames.remove(&id),
         };
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// Lay the windows out again, as the policy asks: for a card an app draws, whose place the
     /// floating layer moved.
     pub fn rearrange(&mut self) {
         self.data.state.rearrange();
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// The windows that closed and are still drawn from the last buffer they showed, with the place
@@ -1354,7 +1372,9 @@ impl Compositor {
     /// Let go of the snapshot of the window `id` : it is gone from the next frame on.
     pub fn release_snapshot(&mut self, id: u64) {
         self.data.state.release_snapshot(id);
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::ANIMATION);
     }
 
     /// Night light's colour temperature, while it is on.
@@ -1999,7 +2019,7 @@ impl Compositor {
         let state = &mut self.data.state;
         if state.pointer_parked != parked {
             state.pointer_parked = parked;
-            state.mark_redraw_all();
+            state.mark_redraw_all(tilo_frame_metrics::paint_reason::CURSOR);
         }
     }
 
@@ -2236,11 +2256,15 @@ impl Compositor {
         a11y::begin_frame(&mut self.data.state, Instant::now());
         // The visual alert fades frame by frame, so each frame it covers is a new one to draw.
         if a11y::flashing(&self.data.state, Instant::now()) {
-            self.data.state.mark_redraw_all();
+            self.data
+                .state
+                .mark_redraw_all(tilo_frame_metrics::paint_reason::PRESENTATION);
         }
         let (drew, layers) = self.prepare_surfaces();
         if drew {
-            self.data.state.mark_redraw_all();
+            self.data
+                .state
+                .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         // A surface that drew its layers and drew none this frame leaves what it drew
         // behind it — a sheet whose card has gone, a panel taken down — and nothing else redraws
@@ -2254,7 +2278,9 @@ impl Compositor {
             .collect();
         if layer_counts != self.data.state.layer_counts {
             self.data.state.layer_counts = layer_counts;
-            self.data.state.mark_redraw_all();
+            self.data
+                .state
+                .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         // What the surfaces draw over the windows, by the window each part is of: a floating window
         // stands over the ones beneath it whole, so they are drawn around the card the shell covers
@@ -2268,7 +2294,9 @@ impl Compositor {
             .collect();
         if self.data.state.covers != covers {
             self.data.state.covers = covers;
-            self.data.state.mark_redraw_all();
+            self.data
+                .state
+                .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         let over_window = self
             .data
@@ -2278,7 +2306,9 @@ impl Compositor {
             .find_map(|surface| surface.drawn_over_window());
         if self.data.state.over_window != over_window {
             self.data.state.over_window = over_window;
-            self.data.state.mark_redraw_all();
+            self.data
+                .state
+                .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
         // A frame can move windows (a strip panning, a group resizing): the policy places them
         // where the surfaces just laid them out.
@@ -2292,6 +2322,8 @@ impl Compositor {
         self.data.backend.render(&mut self.data.state)?;
         let drawn = self.data.state.frames_drawn();
         if drawn > drawn_before {
+            let (why, clients) = self.data.state.take_redraw_reasons();
+            self.recorder.mark_paint_reasons(why, &clients);
             self.recorder.mark_submit(
                 submitting.elapsed(),
                 self.data.backend.presents_async(),
@@ -2615,7 +2647,9 @@ impl Compositor {
     /// while the person's own display keeps showing them as they are.
     pub fn protect_app(&mut self, app_id: &str, private: bool) {
         self.data.state.capture.protection.app(app_id, private);
-        self.data.state.mark_redraw_all();
+        self.data
+            .state
+            .mark_redraw_all(tilo_frame_metrics::paint_reason::CAPTURE);
     }
 
     /// The processes whose clients disconnected since the last look: the apps that exited.

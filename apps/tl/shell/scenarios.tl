@@ -2531,3 +2531,256 @@ fn backup_done() -> device.Notice {
         seen: true,
     )
 }
+
+/// The emoji picker over the person's work: the toolkit's card, open where the shell draws the
+/// screen, its search ready for the first key.
+scenario "the emoji picker" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 667,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "emoji", emoji: true))
+}
+
+/// What this computer is, over the person's work.
+scenario "the About sheet" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(
+        device.overlays,
+        device.Overlays(
+            here: "about",
+            about: true,
+            about_sheet: .some(
+                device.AboutSheet(
+                    title: "About Tilo",
+                    heading: "studio-laptop",
+                    version: "Tilo 0.1.0 (6f2c1ab)",
+                    home: "https://tilo.so",
+                ),
+            ),
+        ),
+    )
+}
+
+/// Holding Super: the keys it reaches, said over the person's work and in the way of nothing.
+scenario "holding Super" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 667,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+    stage(
+        device.overlays,
+        device.Overlays(
+            here: "none",
+            peek: .some(
+                device.Peek(
+                    groups: [
+                        device.PeekGroup(
+                            title: "Windows",
+                            hints: [
+                                device.PeekHint(keys: ["Tab"], label: "Next window"),
+                                device.PeekHint(keys: ["`"], label: "Its tabs"),
+                                device.PeekHint(keys: ["Left"], label: "A window left"),
+                                device.PeekHint(keys: ["Right"], label: "A window right"),
+                            ],
+                        ),
+                        device.PeekGroup(
+                            title: "Apps",
+                            hints: [
+                                device.PeekHint(keys: ["E"], label: "Files"),
+                                device.PeekHint(keys: ["T"], label: "Terminal"),
+                                device.PeekHint(keys: ["Space"], label: "Search"),
+                            ],
+                        ),
+                    ],
+                ),
+            ),
+        ),
+    )
+}
+
+/// A window whose app stopped answering: its own place says so, with Wait and Force quit, where
+/// the person is working.
+scenario "a window that stopped answering" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 667,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                    not_responding: true,
+                ),
+            ],
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+}
+
+/// A window that runs on another device: its place says which app it is, the device it runs on,
+/// and that it opens there.
+scenario "a window on another device" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 667,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Launch checklist",
+            name: "Launch checklist — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Launch checklist",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    elsewhere: true,
+                    device: "9f2c",
+                    device_name: "Mia's laptop",
+                    recency: 1,
+                    focused: true,
+                    preview: "none",
+                ),
+            ],
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+}

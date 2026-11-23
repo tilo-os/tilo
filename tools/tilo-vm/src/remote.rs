@@ -1,1061 +1,621 @@
-//! The transports to a VM's tilo-vmd: SSH, and for a device beyond the
-//! LAN, the peer network through `tilo-device-admin dial`.
+//! How tilo-vm reaches a device: the action frames of the device's own daemon endpoint, signed
+//! with this machine's device key, as every other device of the person asks it. Each step is one
+//! action on the device's `devices/<device>/vm`, admitted by the grants of the person's own
+//! workspace; bytes go into the device's content store before the step that names them.
 
-use std::io::{BufReader, Read as _};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::io::{Read, Write as _};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
-use tilo_vm_protocol::{Call, Client, ClientError, HelloResult};
+use ed25519_dalek::SigningKey;
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider as _, Caller, ContentPutAnswer, ContentPutStep, InvokeArgument,
+    InvokeRequest, MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, Pending, ReceiptStatus,
+    RemoteActionTarget,
+};
+use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
+use tilo_device_protocol::{
+    Call, RpcError, Status, StatusResult, TreeFile, TreeManifest, TreeSymlink,
+};
+use tilo_peer_state::actions::{ActionService, NoActions, REPLY_DEADLINE, RemoteDevice};
 
+use crate::config::DeviceRoute;
 use crate::error::CliError;
-use crate::hypervisor::{CommandLine, SshEndpoint};
 
 mod keepawake;
 
-pub const DEFAULT_DAEMON: &str = "tilo-vmd rpc";
+/// The provider a device answers its steps under.
+pub const PROVIDER: &str = "so.tilo.devices";
 
-/// The daemon an installed Tilo image runs (`vmd` in os/components.toml), for
-/// `--local`: the machine's own tilo-vmd, with no SSH and no dev-VM registry.
-pub const LOCAL_DAEMON: &str = "/usr/libexec/tilo/tilo-vmd";
-
-/// The command that serves this machine's daemon over stdin/stdout.
-/// `TILO_VM_LOCAL_DAEMON` names another one (a drop-in or a test's stand-in),
-/// as `TILO_VM_SSH` names another ssh.
-pub fn local_daemon_command() -> CommandLine {
-    if let Some(line) = std::env::var_os("TILO_VM_LOCAL_DAEMON").filter(|line| !line.is_empty()) {
-        let words: Vec<String> = line
-            .to_string_lossy()
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        if let Some((program, args)) = words.split_first() {
-            return CommandLine::new(
-                program,
-                &args.iter().map(String::as_str).collect::<Vec<_>>(),
-            );
-        }
-    }
-    CommandLine::new(LOCAL_DAEMON, &["rpc"])
+/// The resource a device's steps act on.
+pub fn resource(device: &str) -> String {
+    format!("devices/{device}/vm")
 }
 
-/// `--local` runs the daemon that composes this machine's `/usr`, restarts its
-/// units and manages its accounts, so it is root's. A clear refusal beats a
-/// half-applied first boot.
-pub fn require_root() -> Result<(), CliError> {
-    match effective_uid() {
-        Some(0) => Ok(()),
-        Some(uid) => Err(CliError::LocalNotRoot { uid }),
-        None => Err(CliError::Unsupported {
-            what: "--local on this machine".into(),
-            alternative: "run it on the Tilo machine whose tilo-vmd it applies to".into(),
-        }),
+/// The identity this machine asks as: its device key, certified by the person, and the person's
+/// own workspace, whose grants decide what the device lets it do.
+#[derive(Clone)]
+pub struct Machine {
+    pub key: SigningKey,
+    pub user: [u8; 32],
+    pub workspace: String,
+    /// Where `tilo` keeps this identity: `None` for the person's own login, else the environment
+    /// that scopes tilo-vm's own person ([`Machine::own`]).
+    pub scope: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for Machine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Machine")
+            .field("device", &hex::encode(self.key.verifying_key().to_bytes()))
+            .field("workspace", &self.workspace)
+            .finish_non_exhaustive()
     }
 }
 
-/// The process's effective uid, from `/proc/self/status` (Linux, which is the
-/// only place an installed Tilo server runs `--local`).
-fn effective_uid() -> Option<u32> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    let line = status.lines().find(|line| line.starts_with("Uid:"))?;
-    line.split_whitespace().nth(2)?.parse().ok()
-}
-
-/// The already-imported daemon must apply its own replacement: the old RPC
-/// process keeps executing its old mount-composition code after a sysext swap.
-/// Preserve the configured RPC flags and the authenticated daemon's state root.
-pub(crate) fn imported_daemon_command(
-    configured: Option<&str>,
-    root: &str,
-    layer: &str,
-) -> Result<Vec<String>, CliError> {
-    if layer.len() != 64
-        || !layer
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(invalid_handoff(
-            "expected an absolute state root and an imported SHA-256 layer",
-        ));
-    }
-    daemon_command_at(configured, root, &format!("layers/{layer}"))
-}
-
-/// Where, under the state root, a replacement tilo-vmd is unpacked over plain
-/// SSH when the VM's own speaks another protocol: no upload through a daemon
-/// reaches it then, and this tilo-vm's own daemon takes over the swap.
-pub(crate) const BRIDGE_DIR: &str = "vmd-bridge";
-
-/// The state root the configured daemon command names, or tilo-vmd's default.
-pub(crate) fn configured_root(configured: Option<&str>) -> String {
-    let mut words = configured.unwrap_or(DEFAULT_DAEMON).split_whitespace();
-    while let Some(word) = words.next() {
-        if word == "--root" {
-            if let Some(root) = words.next() {
-                return root.to_owned();
-            }
-        } else if let Some(root) = word.strip_prefix("--root=") {
-            return root.to_owned();
-        }
-    }
-    "/var/lib/tilo-vm".into()
-}
-
-/// The configured daemon command, started from the tilo-vmd unpacked into
-/// [`BRIDGE_DIR`].
-pub(crate) fn bridge_daemon_command(
-    configured: Option<&str>,
-    root: &str,
-) -> Result<Vec<String>, CliError> {
-    daemon_command_at(configured, root, BRIDGE_DIR)
-}
-
-/// The shell line that unpacks a layer's tar from stdin into [`BRIDGE_DIR`],
-/// owned by whoever unpacks it, as the daemon imports a layer.
-pub(crate) fn bridge_unpack_line(root: &str) -> String {
-    let dir = crate::vmbuild::sh_quote(&format!("{root}/{BRIDGE_DIR}"));
-    format!("rm -rf {dir} && mkdir -p {dir} && tar -x --no-same-owner -C {dir}")
-}
-
-fn invalid_handoff(detail: &str) -> CliError {
-    CliError::io("prepare imported daemon handoff")(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        detail.to_owned(),
-    ))
-}
-
-/// The configured daemon command with its tilo-vmd taken from the layer tree
-/// at `tree` under the state root, and that root.
-fn daemon_command_at(
-    configured: Option<&str>,
-    root: &str,
-    tree: &str,
-) -> Result<Vec<String>, CliError> {
-    let path = std::path::Path::new(root);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-        || root.chars().any(char::is_control)
-    {
-        return Err(invalid_handoff(
-            "expected an absolute state root and an imported SHA-256 layer",
-        ));
-    }
-    let mut words: Vec<String> = configured
-        .unwrap_or(DEFAULT_DAEMON)
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect();
-    let executable = words
-        .iter()
-        .position(|word| {
-            std::path::Path::new(word)
-                .file_name()
-                .is_some_and(|name| name == "tilo-vmd")
-        })
-        .ok_or_else(|| {
-            invalid_handoff("configured daemon must invoke tilo-vmd rpc for a daemon upgrade")
-        })?;
-    if words.get(executable.saturating_add(1)).map(String::as_str) != Some("rpc") {
-        return Err(invalid_handoff(
-            "configured daemon must invoke tilo-vmd rpc for a daemon upgrade",
-        ));
-    }
-    *words
-        .get_mut(executable)
-        .ok_or_else(|| invalid_handoff("configured daemon has no executable"))? = path
-        .join(tree)
-        .join("usr/libexec/tilo/tilo-vmd")
-        .to_string_lossy()
-        .into_owned();
-    let mut command = Vec::new();
-    let mut arguments = words.into_iter();
-    while let Some(word) = arguments.next() {
-        if word == "--root" {
-            arguments
-                .next()
-                .ok_or_else(|| invalid_handoff("configured --root has no value"))?;
-        } else if !word.starts_with("--root=") {
-            command.push(word);
-        }
-    }
-    command.extend(["--root".into(), root.into()]);
-    Ok(command)
-}
-
-/// The VM's own `known_hosts`, beside its key. Local VMs all answer on
-/// 127.0.0.1 with forwarded ports, and a recreated VM has new host keys, so
-/// one shared `~/.ssh/known_hosts` entry per port would refuse the next VM.
-pub fn known_hosts_path(key: &str) -> String {
-    format!("{key}.known_hosts")
-}
-
-pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=10",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ServerAliveInterval=15",
-    ]
-    .map(str::to_owned)
-    .to_vec();
-    if interactive {
-        args.push("-t".into());
-    }
-    if let Some(key) = key {
-        args.extend([
-            "-o".into(),
-            format!("UserKnownHostsFile={}", known_hosts_path(key)),
-            "-i".into(),
-            key.to_owned(),
-        ]);
-    }
-    args.extend([
-        "-p".into(),
-        endpoint.port.to_string(),
-        format!("{}@{}", endpoint.user, endpoint.host),
-    ]);
-    args
-}
-
-pub fn ssh_command(
-    endpoint: &SshEndpoint,
-    key: Option<&str>,
-    remote: &[String],
-    interactive: bool,
-) -> CommandLine {
-    let mut command = ssh_transport(endpoint, key, interactive);
-    command.args.extend(as_root(endpoint, remote));
-    command
-}
-
-pub fn ssh_transport(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> CommandLine {
-    let program = std::env::var("TILO_VM_SSH").unwrap_or_else(|_| "ssh".into());
-    let mut command = CommandLine::new(&program, &[]);
-    command.args = ssh_args(endpoint, key, interactive);
-    command
-}
-
-/// Everything tilo-vm runs remotely runs as root (tilo-vmd manages users,
-/// units, sysext and seats; bootc and the VM lock are root's). A VM is
-/// reached as root with its own key. A device usually lets only its owner's
-/// account in over SSH (the installer's dev SSH setup refuses root), so
-/// there the command goes through `sudo -n`, which `vm add-device` checks.
-/// ssh hands the remote words to the login shell joined by spaces, so the
-/// same line runs as `sh -c` under sudo; with no command, a root login shell.
-pub fn as_root(endpoint: &SshEndpoint, remote: &[String]) -> Vec<String> {
-    if endpoint.user == "root" {
-        return remote.to_vec();
-    }
-    if remote.is_empty() {
-        return vec!["sudo".into(), "-i".into()];
-    }
-    vec![
-        "sudo".into(),
-        "-n".into(),
-        "--".into(),
-        "sh".into(),
-        "-c".into(),
-        crate::vmbuild::sh_quote(&remote.join(" ")),
-    ]
-}
-
-pub fn rsync_path_as_root(endpoint: &SshEndpoint, line: &str) -> String {
-    if endpoint.user == "root" {
-        return line.to_owned();
-    }
-    let line = line
-        .strip_suffix("rsync")
-        .map_or_else(|| line.to_owned(), |head| format!("{head}rsync \"$@\""));
-    format!("sudo -n -- sh -c {} rsync", crate::vmbuild::sh_quote(&line))
-}
-
-pub fn sudo_refusal(stderr: &str) -> Option<String> {
-    stderr.lines().map(str::trim).find_map(|line| {
-        let rest = line.strip_prefix("sudo: ")?;
-        (rest.contains("password is required")
-            || rest.contains("a terminal is required")
-            || rest.contains("not in the sudoers")
-            || rest.contains("not allowed to execute"))
-        .then(|| rest.to_owned())
-    })
-}
-
-struct Forward<T>(tilo_vm_protocol::Request, std::marker::PhantomData<T>);
-
-impl<T> From<Forward<T>> for tilo_vm_protocol::Request {
-    fn from(call: Forward<T>) -> Self {
-        call.0
-    }
-}
-
-impl<T: serde::de::DeserializeOwned + serde::Serialize> Call for Forward<T> {
-    type Output = T;
-}
-
-pub struct Remote {
-    child: Child,
-    /// `None` only while dropping: closing its stdin ends the session.
-    client: Option<Client<BufReader<ChildStdout>, ChildStdin>>,
-    pub hello: HelloResult,
-    /// Over the peer network: the dial helper closes the connection itself
-    /// once its stdin ends, so the device's session ends at once.
-    peer: bool,
-    /// Dials the same SSH route again, for a renewal whose connection was
-    /// lost mid-build; `None` over the peer network.
-    redial: Option<Redial>,
-}
-
-type Redial = Box<dyn FnMut() -> Result<Remote, CliError> + Send>;
-
-impl Remote {
-    pub(crate) fn keep_awake_while<T>(
-        &mut self,
-        build: impl FnOnce() -> T,
-    ) -> Result<(T, Result<(), CliError>), CliError> {
-        keepawake::during(
-            std::time::Duration::from_secs(60),
-            || self.renew_or_redial(std::time::Duration::from_secs(10)),
-            build,
-        )
-    }
-
-    /// A build outlasts many renewals, and one slow round trip over a busy
-    /// link ends the connection that renewal went over (its handshake times
-    /// out and its transport is reaped). The device is usually still there,
-    /// so the lease is taken again over a new connection instead of the
-    /// finished build being thrown away.
-    fn renew_or_redial(&mut self, timeout: std::time::Duration) -> Result<(), CliError> {
-        let lapsed = match self.renew_sleep_lease(timeout) {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
-        };
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            return Err(lapsed);
-        }
-        let Some(mut redial) = self.redial.take() else {
-            return Err(lapsed);
-        };
-        match redial() {
-            Ok(fresh) => {
-                *self = fresh;
-                self.renew_sleep_lease(timeout)
-            }
-            Err(_) => Err(lapsed),
-        }
-    }
-
-    fn renew_sleep_lease(&mut self, timeout: std::time::Duration) -> Result<(), CliError> {
-        let client = self
-            .client
-            .as_mut()
-            .ok_or_else(|| CliError::from(ClientError::Closed))?;
-        let hello = keepawake::hello(client, &mut self.child, timeout)?;
-        let lease = hello.awake.as_ref().ok_or_else(|| {
-            CliError::io("renew the device sleep lease")(std::io::Error::other(
-                "the daemon did not report its sleep lease",
-            ))
-        })?;
-        if !lease.held {
-            return Err(CliError::io("renew the device sleep lease")(
-                std::io::Error::other(
-                    lease
-                        .problem
-                        .as_deref()
-                        .unwrap_or("the sleep lock is not held"),
-                ),
-            ));
-        }
-        self.hello = hello;
-        Ok(())
-    }
-
-    pub fn connect(
-        vm: &str,
-        endpoint: &SshEndpoint,
-        key: Option<&str>,
-        daemon: Option<&str>,
-        debug: Vec<String>,
-    ) -> Result<Self, CliError> {
-        let remote: Vec<String> = daemon
-            .unwrap_or(DEFAULT_DAEMON)
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
-        let line = ssh_command(endpoint, key, &remote, false);
-        Self::connect_line(vm, &line, endpoint, debug)
-    }
-
-    fn spawn(line: &CommandLine) -> Result<Child, std::io::Error> {
-        let mut command = Command::new(&line.program);
-        command
-            .args(&line.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        for (key, value) in &line.env {
-            command.env(key, value);
-        }
-        command.spawn()
-    }
-
-    /// The JSON-RPC session on a spawned daemon's pipes.
-    fn handshake(
-        child: &mut Child,
-    ) -> Result<(Client<BufReader<ChildStdout>, ChildStdin>, HelloResult), ClientError> {
-        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-            return Err(ClientError::Closed);
-        };
-        let mut client = Client::new(BufReader::new(stdout), stdin);
-        client.enable_binary_uploads();
-        let hello = client.hello(env!("CARGO_PKG_VERSION"))?;
-        Ok((client, hello))
-    }
-
-    fn connect_line(
-        vm: &str,
-        line: &CommandLine,
-        endpoint: &SshEndpoint,
-        debug: Vec<String>,
-    ) -> Result<Self, CliError> {
-        let mut child = Self::spawn(line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                CliError::ToolMissing {
-                    tool: "ssh".into(),
-                    purpose: "reach the VM".into(),
-                }
-            } else {
-                CliError::io("start ssh")(e)
-            }
-        })?;
-        match Self::handshake(&mut child) {
-            Ok((client, hello)) => {
-                let (vm, line, endpoint) = (vm.to_owned(), line.clone(), endpoint.clone());
-                let redial: Redial =
-                    Box::new(move || Self::connect_line(&vm, &line, &endpoint, debug.clone()));
-                Ok(Self {
-                    child,
-                    client: Some(client),
-                    hello,
-                    peer: false,
-                    redial: Some(redial),
-                })
-            }
-            Err(ClientError::Io(_) | ClientError::Closed) => {
-                let _ = child.kill();
-                let status = child.wait().ok().and_then(|s| s.code());
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
-                let stderr = stderr.trim().to_owned();
-                if let Some(detail) = sudo_refusal(&stderr) {
-                    return Err(CliError::SudoRefused {
-                        vm: vm.into(),
-                        ssh: endpoint.ssh_spec(),
-                        user: endpoint.user.clone(),
-                        detail,
-                    });
-                }
-                if status == Some(127)
-                    || stderr.contains("command not found")
-                    || stderr.contains("No such file")
-                {
-                    Err(CliError::DaemonMissing {
-                        vm: vm.into(),
-                        bootc: None,
-                    })
-                } else {
-                    let detail = if stderr.is_empty() {
-                        "connection closed".into()
-                    } else {
-                        stderr
-                    };
-                    Err(CliError::Unreachable {
-                        vm: vm.into(),
-                        detail,
-                        debug,
-                    })
-                }
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(error.into())
-            }
-        }
-    }
-
-    /// The daemon of this machine, started as a child over stdin/stdout: what
-    /// an installed server applies its incoming layers through before anything
-    /// else of its own runs.
-    pub fn connect_local(line: &CommandLine) -> Result<Self, CliError> {
-        let mut child = Self::spawn(line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                CliError::LocalDaemon {
-                    detail: format!("{} is not installed", line.program),
-                }
-            } else {
-                CliError::io(format!("start {}", line.program))(e)
-            }
-        })?;
-        match Self::handshake(&mut child) {
-            Ok((client, hello)) => {
-                let line = line.clone();
-                let redial: Redial = Box::new(move || Self::connect_local(&line));
-                Ok(Self {
-                    child,
-                    client: Some(client),
-                    hello,
-                    peer: false,
-                    redial: Some(redial),
-                })
-            }
-            Err(ClientError::Io(_) | ClientError::Closed) => {
-                let _ = child.kill();
-                let status = child.wait().ok().and_then(|s| s.code());
-                let mut stderr = String::new();
-                if let Some(mut pipe) = child.stderr.take() {
-                    let _ = pipe.read_to_string(&mut stderr);
-                }
-                let stderr = stderr.trim();
-                Err(CliError::LocalDaemon {
-                    detail: if stderr.is_empty() {
-                        format!(
-                            "{} ended without answering (exit {})",
-                            line.program,
-                            status.map_or_else(|| "?".into(), |code| code.to_string())
-                        )
-                    } else {
-                        stderr.to_owned()
-                    },
-                })
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(error.into())
-            }
-        }
-    }
-
-    /// The replacement daemon of an imported layer, started on this machine:
-    /// the local counterpart of [`Self::handoff`], with no SSH.
-    pub(crate) fn handoff_here(&self, line: &CommandLine) -> Result<Self, CliError> {
-        let replacement = Self::connect_local(line)?;
-        if replacement.hello.root != self.hello.root || replacement.hello.arch != self.hello.arch {
-            return Err(CliError::io("upgrade the guest daemon")(
-                std::io::Error::other(
-                    "imported daemon answered for a different state root or architecture",
-                ),
-            ));
-        }
-        Ok(replacement)
-    }
-
-    pub(crate) fn handoff(
-        &self,
-        vm: &str,
-        line: &CommandLine,
-        endpoint: &SshEndpoint,
-        debug: Vec<String>,
-    ) -> Result<Self, CliError> {
-        if self.peer {
-            return Err(CliError::io("upgrade the guest daemon")(
-                std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "daemon handoff requires the existing SSH route; reconnect on the LAN before swapping vmd",
-                ),
-            ));
-        }
-        let replacement = Self::connect_line(vm, line, endpoint, debug)?;
-        if replacement.hello.root != self.hello.root || replacement.hello.arch != self.hello.arch {
-            return Err(CliError::io("upgrade the guest daemon")(
-                std::io::Error::other(
-                    "imported daemon answered for a different state root or architecture",
-                ),
-            ));
-        }
-        Ok(replacement)
-    }
-
-    pub fn over_peer(vm: &str, line: &CommandLine) -> Result<(Self, PeerSession), CliError> {
-        let mut child = Command::new(&line.program)
-            .args(&line.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    peer_tool_missing()
-                } else {
-                    CliError::io("start tilo-device-admin")(e)
-                }
-            })?;
-        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-            return Err(CliError::io("start tilo-device-admin")(
-                std::io::Error::other("no pipes"),
-            ));
-        };
-        let mut stdout = BufReader::new(stdout);
-        let mut first = String::new();
-        let session = match std::io::BufRead::read_line(&mut stdout, &mut first) {
-            Ok(n) if n > 0 => serde_json::from_str::<PeerPreamble>(&first)
-                .map(|preamble| preamble.tilo_device_admin)
-                .ok(),
-            _ => None,
-        };
-        let Some(session) = session else {
-            drop(stdin);
-            return Err(peer_failure(vm, &mut child));
-        };
-        let mut client = Client::new(stdout, stdin);
-        match client.hello(env!("CARGO_PKG_VERSION")) {
-            Ok(hello) => Ok((
-                Self {
-                    child,
-                    client: Some(client),
-                    hello,
-                    peer: true,
-                    redial: None,
-                },
-                session,
-            )),
-            Err(ClientError::Io(_) | ClientError::Closed) => {
-                drop(client);
-                Err(peer_failure(vm, &mut child))
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(error.into())
-            }
-        }
-    }
-
-    pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
-        let request = params.into();
-        self.client
-            .as_mut()
-            .ok_or_else(|| CliError::from(ClientError::Closed))?
-            .call(Forward::<C::Output>(request, std::marker::PhantomData))
-            .map_err(CliError::from)
-    }
-
-    pub fn upload(&mut self, bytes: impl std::io::Read) -> Result<String, CliError> {
-        let client = self
-            .client
-            .as_mut()
-            .ok_or_else(|| CliError::from(ClientError::Closed))?;
-        client.upload(bytes).map_err(CliError::from)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub struct PeerSession {
-    pub device: String,
-    pub label: String,
-    pub route: String,
-    pub via: String,
-    pub session: u64,
-}
-
-impl PeerSession {
-    pub fn describe(&self) -> String {
-        format!("{} {}", self.route, self.via).trim().to_owned()
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct PeerPreamble {
-    tilo_device_admin: PeerSession,
-}
-
-pub fn peer_tool() -> String {
-    if let Some(tool) = std::env::var_os("TILO_DEVICE_ADMIN").filter(|tool| !tool.is_empty()) {
-        return tool.to_string_lossy().into_owned();
-    }
-    let name = format!("tilo-device-admin{}", std::env::consts::EXE_SUFFIX);
+/// The `tilo` command tilo-vm asks: the one built beside this tilo-vm when there is one (a
+/// checkout's build, or CI's tilo-vm with the command it built), else the one on `PATH`.
+pub(crate) fn tilo_program() -> PathBuf {
     std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(&name)))
+        .and_then(|exe| Some(exe.parent()?.join("tilo")))
         .filter(|beside| beside.is_file())
-        .map_or(name, |beside| beside.display().to_string())
+        .unwrap_or_else(|| "tilo".into())
 }
 
-fn peer_tool_missing() -> CliError {
-    CliError::ToolMissing {
-        tool: "tilo-device-admin".into(),
-        purpose: "reach a device beyond this network over the peer network; build it beside tilo-vm (cargo build --release -p tilo-device-admin, then copy target/release/tilo-device-admin next to tilo-vm), or name it in TILO_DEVICE_ADMIN".into(),
+impl Machine {
+    /// The person's own login on this machine (`tilo login`), or the person whose root it holds;
+    /// `None` when it has neither.
+    pub fn here() -> Result<Option<Self>, CliError> {
+        let keys = tilo_identity::provisioning::collaboration_identity_paths();
+        let place =
+            tilo_device_identity::login::Place::here(keys).map_err(|error| login_error(&error))?;
+        Self::at(&place, None)
     }
-}
 
-pub fn peer_dial(route: &crate::config::PeerRoute, identity_root: &std::path::Path) -> CommandLine {
-    let mut line = CommandLine::new(&peer_tool(), &["dial", "--identity-root"]);
-    line.args.push(identity_root.display().to_string());
-    line.args
-        .extend(["--endpoint".into(), route.endpoint.clone()]);
-    line.args.extend(["--device".into(), route.device.clone()]);
-    if let Some(relay) = &route.relay {
-        line.args.extend(["--relay".into(), relay.clone()]);
+    /// The throwaway person tilo-vm makes for itself under `dir` when this machine has none (CI,
+    /// a fresh builder), and the environment that scopes `tilo` to it.
+    pub fn own(dir: &Path) -> Result<Option<Self>, CliError> {
+        let place = tilo_device_identity::login::Place::at(
+            dir.join("state/tilo/device"),
+            tilo_device_identity::IdentityPaths::under(dir.join("identity")),
+        );
+        Self::at(&place, Some(dir.to_path_buf()))
     }
-    if let Some(home) = &route.home_relay {
-        line.args.extend(["--home-relay".into(), home.clone()]);
+
+    /// The environment `tilo` runs in for this identity.
+    pub fn env(&self) -> Vec<(String, String)> {
+        self.scope.as_deref().map(own_env).unwrap_or_default()
     }
-    line
-}
 
-fn peer_failure(vm: &str, child: &mut Child) -> CliError {
-    let status = child.wait().ok().and_then(|status| status.code());
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    let detail = stderr
-        .lines()
-        .rev()
-        .map(|line| line.trim().trim_start_matches("tilo-device-admin: "))
-        .find(|line| !line.is_empty())
-        .unwrap_or("the dial ended without a word")
-        .to_owned();
-    CliError::PeerRoute {
-        vm: vm.into(),
-        failure: crate::error::PeerFailure::from_exit(status),
-        detail,
-    }
-}
-
-/// The guest's VM lock, which VM-wide swaps, gc and upgrades take too.
-pub const VM_LOCK: &str = "/var/lib/tilo-vm/locks/vm.lock";
-
-pub fn vm_lock_command() -> Vec<String> {
-    vec![format!(
-        "mkdir -p /var/lib/tilo-vm/locks && flock --nonblock {VM_LOCK} sh -c 'echo locked; exec sleep 600'"
-    )]
-}
-
-pub enum LockOutcome {
-    Held(VmLock),
-    Busy,
-    Unreachable(String),
-}
-
-pub struct VmLock {
-    child: Child,
-}
-
-impl VmLock {
-    pub fn wait_for_shutdown(&mut self, timeout: std::time::Duration) -> bool {
-        let started = std::time::Instant::now();
-        while started.elapsed() < timeout {
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+    fn at(
+        place: &tilo_device_identity::login::Place,
+        scope: Option<PathBuf>,
+    ) -> Result<Option<Self>, CliError> {
+        // A computer a ticket logged in acts in its person's own workspace, as the certificate the
+        // login filed names them.
+        if let Some(device) = tilo_device_identity::login::served_device_key(place.keys())
+            && let Some(cert) = tilo_device_identity::login::ticket_cert(place.keys(), &device)
+        {
+            let key = tilo_device_identity::persist::load_device_key(place.keys())
+                .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
+            return Ok(Some(Self {
+                key,
+                user: cert.user_public_key,
+                workspace: tilo_server_protocol::servers::person_workspace_id(
+                    &cert.user_public_key,
+                ),
+                scope,
+            }));
         }
-        false
+        let Ok(user) = tilo_device_identity::persist::read_public_key(&place.keys().user_pubkey)
+        else {
+            return Ok(None);
+        };
+        let workspace = founded(scope.as_deref().map(own_env).unwrap_or_default())?;
+        let key = tilo_device_identity::persist::load_device_key(place.keys())
+            .map_err(|error| login_error(&anyhow::anyhow!("{error}")))?;
+        Ok(Some(Self {
+            key,
+            user,
+            workspace,
+            scope,
+        }))
     }
 }
 
-impl Drop for VmLock {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+/// The workspace the daemon `tilo` reaches in `env` founded for its person, as it answers
+/// `tilo device key` with no login.
+fn founded(env: Vec<(String, String)>) -> Result<String, CliError> {
+    let output = std::process::Command::new(tilo_program())
+        .args(["device", "key"])
+        .envs(env)
+        .output()
+        .map_err(CliError::io("run tilo device key"))?;
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()
+        .and_then(|answer| answer.get("workspace")?.as_str().map(str::to_owned))
+        .ok_or_else(|| CliError::CommandFailed {
+            command: "tilo device key".into(),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+}
+
+/// The environment that keeps `tilo` to tilo-vm's own person under `dir`.
+pub fn own_env(dir: &Path) -> Vec<(String, String)> {
+    [
+        ("TILO_IDENTITY_ROOT", "identity"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CONFIG_HOME", "config"),
+    ]
+    .into_iter()
+    .map(|(name, sub)| (name.to_owned(), dir.join(sub).display().to_string()))
+    .collect()
+}
+
+fn login_error(error: &anyhow::Error) -> CliError {
+    CliError::NotLoggedIn {
+        detail: error.to_string(),
     }
 }
 
-pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
-    let line = ssh_command(endpoint, key, &vm_lock_command(), false);
-    let spawned = Command::new(&line.program)
-        .args(&line.args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match spawned {
-        Ok(child) => child,
-        Err(error) => return LockOutcome::Unreachable(error.to_string()),
-    };
-    let mut first = String::new();
-    if let Some(stdout) = child.stdout.take() {
-        let _ = std::io::BufRead::read_line(&mut BufReader::new(stdout), &mut first);
-    }
-    if first.trim() == "locked" {
-        return LockOutcome::Held(VmLock { child });
-    }
-    let status = child.wait().ok().and_then(|s| s.code());
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = pipe.read_to_string(&mut stderr);
-    }
-    match status {
-        Some(1) => LockOutcome::Busy,
-        _ => LockOutcome::Unreachable(if stderr.trim().is_empty() {
-            "no answer".into()
-        } else {
-            stderr.trim().to_owned()
-        }),
-    }
+/// One device, asked over its daemon's action frames.
+pub struct Remote {
+    vm: String,
+    device: Arc<RemoteDevice>,
+    caller: Caller,
+    resource: String,
+    /// The endpoint the connection goes out on: it lives as long as the device is asked.
+    endpoint: iroh::Endpoint,
+    /// What the device answered `status` with when it was reached: its version, architecture,
+    /// tools, accounts and boot.
+    pub status: StatusResult,
 }
 
-impl Drop for Remote {
-    fn drop(&mut self) {
-        drop(self.client.take());
-        if self.peer {
-            let started = std::time::Instant::now();
-            while started.elapsed() < std::time::Duration::from_secs(3) {
-                if matches!(self.child.try_wait(), Ok(Some(_))) {
-                    return;
+impl Remote {
+    /// Reach `route`'s device as `machine` and ask its `status`, which is also how an unreachable
+    /// or refusing device shows.
+    pub fn connect(vm: &str, machine: &Machine, route: &DeviceRoute) -> Result<Self, CliError> {
+        let device: [u8; 32] = hex::decode(&route.device)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| CliError::Config {
+                path: vm.into(),
+                detail: format!("{} is not a device key", route.device),
+            })?;
+        let mut addr =
+            iroh::EndpointAddr::new(iroh::EndpointId::from_bytes(&device).map_err(|error| {
+                CliError::Config {
+                    path: vm.into(),
+                    detail: error.to_string(),
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            })?);
+        for address in &route.addresses {
+            if let Ok(socket) = address.parse() {
+                addr = addr.with_ip_addr(socket);
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let relay = route.relay.as_deref().and_then(|url| url.parse().ok());
+        let runtime = tilo_rt::app().handle();
+        let _entered = runtime.enter();
+        let server = tilo_server_client::ServerAddress::through(addr, relay);
+        let endpoint = runtime
+            .block_on(server.bind(Some(machine.key.to_bytes())))
+            .map_err(|error| CliError::Unreachable {
+                vm: vm.into(),
+                detail: error.to_string(),
+                debug: vec![],
+            })?;
+        let service = ActionService::new(machine.key.clone(), Arc::new(NoActions));
+        let device = Arc::new(service.remote(&endpoint, &server.addr(), &route.workspace));
+        let mut remote = Self {
+            vm: vm.into(),
+            device,
+            caller: Caller::authenticated(machine.user, machine.key.verifying_key().to_bytes()),
+            resource: resource(&route.device),
+            endpoint,
+            status: unanswered(),
+        };
+        remote.status = remote.call(Status { account: None })?;
+        Ok(remote)
     }
+
+    /// Ask `status` again, after the device changed.
+    pub fn refresh(&mut self) -> Result<&StatusResult, CliError> {
+        self.status = self.call(Status { account: None })?;
+        Ok(&self.status)
+    }
+
+    /// Run one step and wait for what it completes with; its progress goes to stderr as it comes.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "callers build the step in the call, as they would an action's arguments"
+    )]
+    pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
+        let serde_json::Value::Object(argument) = serde_json::to_value(&params)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?
+        else {
+            return Err(CliError::InvalidInput(format!(
+                "{} takes an object",
+                C::ACTION
+            )));
+        };
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.into(),
+                address: ActionAddress::new(&self.resource, C::ACTION),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        match settle(&self.device, &self.caller, request)
+            .map_err(|error| self.refused(C::ACTION, error))?
+        {
+            InvocationUpdate::Succeeded { output, .. } => {
+                serde_json::from_value(output.value.unwrap_or_default()).map_err(|error| {
+                    CliError::CommandFailed {
+                        command: C::ACTION.into(),
+                        status: "unreadable answer".into(),
+                        stderr: error.to_string(),
+                    }
+                })
+            }
+            InvocationUpdate::Failed { error, .. } => Err(CliError::Remote(failure(error))),
+            InvocationUpdate::Cancelled { message, .. } => Err(CliError::CommandFailed {
+                command: C::ACTION.into(),
+                status: "cancelled".into(),
+                stderr: message.unwrap_or_default(),
+            }),
+            _ => Err(self.refused(C::ACTION, ActionCallError::Unanswered)),
+        }
+    }
+
+    /// Why a step never ran, as the person reads it.
+    fn refused(&self, action: &str, error: ActionCallError) -> CliError {
+        match error {
+            ActionCallError::UnknownAction => CliError::DeviceTooOld {
+                vm: self.vm.clone(),
+                action: action.into(),
+            },
+            ActionCallError::NotPermitted => CliError::NotGranted {
+                vm: self.vm.clone(),
+                resource: self.resource.clone(),
+            },
+            other => CliError::Unreachable {
+                vm: self.vm.clone(),
+                detail: other.to_string(),
+                debug: vec![],
+            },
+        }
+    }
+
+    fn put_step(&self, step: ContentPutStep) -> Result<ContentPutAnswer, CliError> {
+        answered(self.device.content_put(step)).map_err(|error| self.refused("content", error))
+    }
+
+    /// Which of `hashes` the device already holds.
+    fn have(&self, hashes: &[String]) -> Result<Vec<bool>, CliError> {
+        let mut present = Vec::with_capacity(hashes.len());
+        for batch in hashes.chunks(MAX_HAVE_HASHES) {
+            match self.put_step(ContentPutStep::Have {
+                hashes: batch.to_vec(),
+            })? {
+                ContentPutAnswer::Have { present: held } if held.len() == batch.len() => {
+                    present.extend(held);
+                }
+                _ => return Err(unexpected("have")),
+            }
+        }
+        Ok(present)
+    }
+
+    /// Put `bytes` into the device's content store unless it holds them already, and name them by
+    /// their blake3 hex.
+    pub fn put(&mut self, bytes: &[u8]) -> Result<String, CliError> {
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        if self.have(std::slice::from_ref(&hash))?.first() != Some(&true) {
+            self.send(len(bytes.len()), bytes, &hash)?;
+        }
+        Ok(hash)
+    }
+
+    /// [`Self::put`] for what `reader` yields, read whole: a layer tar is one blob on the device.
+    pub fn put_reader(&mut self, mut reader: impl Read) -> Result<String, CliError> {
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(CliError::io("read the layer"))?;
+        self.put(&bytes)
+    }
+
+    /// Send `size` bytes from `reader`, which hash to `hash`, in chunks the device takes.
+    fn send(&self, size: u64, mut reader: impl Read, hash: &str) -> Result<(), CliError> {
+        let ContentPutAnswer::Begun { upload } = self.put_step(ContentPutStep::Begin { size })?
+        else {
+            return Err(unexpected("begin"));
+        };
+        // One append is one signed frame between devices, so a chunk is what one frame carries.
+        let mut chunk = vec![0; MAX_CONTENT_FRAME_BYTES];
+        let mut offset = 0_u64;
+        loop {
+            let read = reader
+                .read(&mut chunk)
+                .map_err(CliError::io("read what is sent"))?;
+            if read == 0 {
+                break;
+            }
+            let piece = chunk.get(..read).unwrap_or_default();
+            self.put_step(ContentPutStep::append(upload, offset, piece))?;
+            offset = offset.saturating_add(len(read));
+        }
+        match self.put_step(ContentPutStep::Finish { upload })? {
+            ContentPutAnswer::Finished { content } if content.ends_with(hash) => Ok(()),
+            _ => Err(unexpected("finish")),
+        }
+    }
+
+    /// Put every file of `files` under `root` the device does not hold yet, then the manifest
+    /// that names them all by hash. Files are read as they are hashed and sent, never held whole
+    /// together, so an image layout of many gigabytes goes as well as a worktree. Returns the
+    /// manifest's hash and how many bytes went.
+    pub fn put_tree(&mut self, root: &Path, files: &[PathBuf]) -> Result<(String, u64), CliError> {
+        let mut manifest = TreeManifest::default();
+        let mut sizes = Vec::new();
+        for relative in files {
+            let path = root.join(relative);
+            let meta = std::fs::symlink_metadata(&path)
+                .map_err(CliError::io(format!("read {}", path.display())))?;
+            let shown = relative.to_string_lossy().replace('\\', "/");
+            if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(&path)
+                    .map_err(CliError::io(format!("read {}", path.display())))?;
+                manifest.symlinks.push(TreeSymlink {
+                    path: shown,
+                    target: target.to_string_lossy().into_owned(),
+                });
+            } else if meta.is_file() {
+                manifest.entries.push(TreeFile {
+                    path: shown,
+                    mode: mode(&meta),
+                    hash: hash_file(&path)?,
+                });
+                sizes.push((path, meta.len()));
+            }
+        }
+        let hashes: Vec<String> = manifest.entries.iter().map(|e| e.hash.clone()).collect();
+        let held = self.have(&hashes)?;
+        let mut sent = 0_u64;
+        let mut seen = std::collections::BTreeSet::new();
+        for (((path, size), hash), held) in sizes.iter().zip(&hashes).zip(held) {
+            if !held && seen.insert(hash) {
+                let file = std::fs::File::open(path)
+                    .map_err(CliError::io(format!("read {}", path.display())))?;
+                self.send(*size, file, hash)?;
+                sent = sent.saturating_add(*size);
+            }
+        }
+        let listed =
+            serde_json::to_vec(&manifest).map_err(|e| CliError::InvalidInput(e.to_string()))?;
+        Ok((self.put(&listed)?, sent))
+    }
+
+    /// Lay `root`'s tracked and untracked files out on the device as worktree `name`: the files
+    /// and their manifest ([`Self::put_tree`]), then `tree-sync`, which also deletes what the
+    /// manifest no longer names.
+    pub fn sync_tree(
+        &mut self,
+        name: &str,
+        root: &Path,
+        files: &[PathBuf],
+    ) -> Result<tilo_device_protocol::TreeSyncResult, CliError> {
+        let (manifest, _) = self.put_tree(root, files)?;
+        self.call(tilo_device_protocol::TreeSync {
+            worktree: name.into(),
+            manifest,
+        })
+    }
+
+    /// Run `work` while the device is held awake: the `awake` step renews its sleep lease every
+    /// minute, so a long build on this machine does not find the device asleep after.
+    pub(crate) fn keep_awake_while<T>(
+        &self,
+        work: impl FnOnce() -> T,
+    ) -> Result<(T, Result<(), CliError>), CliError> {
+        self.keep_awake_every(Duration::from_secs(60), work)
+    }
+
+    fn keep_awake_every<T>(
+        &self,
+        interval: Duration,
+        work: impl FnOnce() -> T,
+    ) -> Result<(T, Result<(), CliError>), CliError> {
+        let renewing = Self {
+            vm: self.vm.clone(),
+            device: Arc::clone(&self.device),
+            caller: self.caller.clone(),
+            endpoint: self.endpoint.clone(),
+            resource: self.resource.clone(),
+            status: self.status.clone(),
+        };
+        let renewing = std::sync::Mutex::new(renewing);
+        keepawake::during(
+            interval,
+            || {
+                let lease = renewing
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .call(tilo_device_protocol::Awake::default())?;
+                if lease.held {
+                    Ok(())
+                } else {
+                    Err(CliError::io("renew the device sleep lease")(
+                        std::io::Error::other(
+                            lease
+                                .problem
+                                .unwrap_or_else(|| "the sleep lock is not held".into()),
+                        ),
+                    ))
+                }
+            },
+            work,
+        )
+    }
+}
+
+/// The invocation's terminal update. Steps run as long as they need (a build takes many
+/// minutes), so the invocation is followed until it ends, printing each progress line the device
+/// reports.
+fn settle(
+    device: &RemoteDevice,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<InvocationUpdate, ActionCallError> {
+    let id = request.invocation;
+    let receipt = answered(device.invoke(caller, request))?;
+    match receipt.status {
+        ReceiptStatus::Accepted => {}
+        ReceiptStatus::Completed { output } => {
+            return Ok(InvocationUpdate::Succeeded {
+                invocation: id,
+                output,
+            });
+        }
+        ReceiptStatus::Failed { error } => {
+            return Ok(InvocationUpdate::Failed {
+                invocation: id,
+                error,
+            });
+        }
+        ReceiptStatus::Cancelled { message } => {
+            return Ok(InvocationUpdate::Cancelled {
+                invocation: id,
+                message,
+            });
+        }
+        ReceiptStatus::Rejected { error } => return Err(error),
+    }
+    let mut printed = 0;
+    loop {
+        match device.next_change(caller, &id) {
+            Some(change) => drop(change.wait_timeout(REPLY_DEADLINE)),
+            None => std::thread::sleep(Duration::from_millis(500)),
+        }
+        let state = device
+            .observe(caller, &id)
+            .ok_or(ActionCallError::UnknownInvocation)?;
+        match state.update {
+            InvocationUpdate::Progress {
+                completed: Some(completed),
+                message: Some(message),
+                ..
+            } if completed > printed => {
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr.write_all(unprinted(&message, completed, printed));
+                let _ = stderr.flush();
+                printed = completed;
+            }
+            update if state.is_terminal() => return Ok(update),
+            _ => {}
+        }
+    }
+}
+
+/// The bytes of a progress `message` (the last of the `completed` bytes the step wrote) past the
+/// `printed` ones already shown; all of it once the output ran further ahead than the message
+/// reaches back.
+fn unprinted(message: &str, completed: u64, printed: u64) -> &[u8] {
+    let start = completed.saturating_sub(len(message.len()));
+    let skip = usize::try_from(printed.saturating_sub(start)).unwrap_or(usize::MAX);
+    message.as_bytes().get(skip..).unwrap_or_default()
+}
+
+/// A frame's answer, or [`ActionCallError::Unanswered`] once the reply deadline passes.
+fn answered<T>(pending: Pending<Result<T, ActionCallError>>) -> Result<T, ActionCallError> {
+    match pending.wait_timeout(REPLY_DEADLINE) {
+        Ok(Some(answer)) => answer,
+        Ok(None) | Err(_) => Err(ActionCallError::Unanswered),
+    }
+}
+
+#[cfg(unix)]
+fn mode(meta: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt as _;
+    meta.permissions().mode() & 0o7777
+}
+
+/// Files from a filesystem without unix modes land as plain readable files.
+#[cfg(not(unix))]
+fn mode(_: &std::fs::Metadata) -> u32 {
+    0o644
+}
+
+fn len(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+/// A file's blake3 hex, read in pieces.
+fn hash_file(path: &Path) -> Result<String, CliError> {
+    let mut hasher = blake3::Hasher::new();
+    let file =
+        std::fs::File::open(path).map_err(CliError::io(format!("read {}", path.display())))?;
+    hasher
+        .update_reader(file)
+        .map_err(CliError::io(format!("read {}", path.display())))?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// The `status` of a device not asked yet.
+fn unanswered() -> StatusResult {
+    StatusResult {
+        daemon_version: String::new(),
+        arch: String::new(),
+        base: tilo_device_protocol::BaseInfo::default(),
+        tools: tilo_device_protocol::VmTools::default(),
+        boot: tilo_device_protocol::image::BootFacts::default(),
+        accounts: Vec::new(),
+        seat0: None,
+        storage: tilo_device_protocol::Storage::default(),
+        issues: Vec::new(),
+        image_change: None,
+        accounts_image: None,
+    }
+}
+
+fn unexpected(step: &str) -> CliError {
+    CliError::CommandFailed {
+        command: format!("content {step}"),
+        status: "unexpected answer".into(),
+        stderr: String::new(),
+    }
+}
+
+/// A step's failure, with the code and hint the device gave it.
+fn failure(error: ActionFailure) -> RpcError {
+    let ActionFailure {
+        details, message, ..
+    } = error;
+    details
+        .and_then(|details| serde_json::from_value(details).ok())
+        .unwrap_or_else(|| RpcError {
+            code: tilo_device_protocol::code::JOB,
+            message,
+            hint: "the device's message above names the cause".into(),
+            see: None,
+        })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod fixture;
 
-    tilo_test_env::scenario! {
-        fn remote_commands_keep_their_policy;
-
-        phase imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths;
-        {
-            let hash = "ab".repeat(32);
-            let command = imported_daemon_command(
-                Some("sudo -n /usr/libexec/tilo/tilo-vmd rpc --root /old --expect-domain greetd_t"),
-                "/var/lib/tilo-vm",
-                &hash,
-            )
-            .unwrap();
-            assert_eq!(
-                command,
-                [
-                    "sudo".to_owned(),
-                    "-n".into(),
-                    format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo/tilo-vmd"),
-                    "rpc".into(),
-                    "--expect-domain".into(),
-                    "greetd_t".into(),
-                    "--root".into(),
-                    "/var/lib/tilo-vm".into(),
-                ]
-            );
-            for root in ["relative", "/var/lib/../etc", "/var/lib/a\nBAD"] {
-                assert!(imported_daemon_command(None, root, &hash).is_err());
-            }
-            for layer in ["../outside", &"a".repeat(63), &"z".repeat(64)] {
-                assert!(imported_daemon_command(None, "/var/lib/tilo-vm", layer).is_err());
-            }
-            assert!(
-                imported_daemon_command(Some("other-daemon rpc"), "/var/lib/tilo-vm", &hash).is_err()
-            );
-            assert!(imported_daemon_command(Some("tilo-vmd exec"), "/var/lib/tilo-vm", &hash).is_err());
-        }
-
-        phase a_daemon_of_another_protocol_is_replaced_from_a_tree_unpacked_over_ssh;
-        {
-            assert_eq!(configured_root(None), "/var/lib/tilo-vm");
-            assert_eq!(configured_root(Some("sudo -n tilo-vmd rpc --root /srv/vm")), "/srv/vm");
-            assert_eq!(configured_root(Some("tilo-vmd rpc --root=/srv/vm")), "/srv/vm");
-            // A command already pointed at an unpacked daemon keeps its flags and root.
-            let configured = "/var/lib/tilo-vm/layers/x/usr/libexec/tilo/tilo-vmd rpc --expect-domain greetd_t --root /srv/vm";
-            let root = configured_root(Some(configured));
-            assert_eq!(
-                bridge_daemon_command(Some(configured), &root).unwrap(),
-                [
-                    "/srv/vm/vmd-bridge/usr/libexec/tilo/tilo-vmd",
-                    "rpc",
-                    "--expect-domain",
-                    "greetd_t",
-                    "--root",
-                    "/srv/vm",
-                ]
-            );
-            assert!(bridge_daemon_command(Some("tilo-vmd exec"), &root).is_err());
-            assert_eq!(
-                bridge_unpack_line("/var/lib/tilo-vm"),
-                "rm -rf /var/lib/tilo-vm/vmd-bridge && mkdir -p /var/lib/tilo-vm/vmd-bridge && tar -x --no-same-owner -C /var/lib/tilo-vm/vmd-bridge"
-            );
-        }
-
-        phase remote_ssh_is_key_only_bounded_and_takes_the_daemons_lock;
-        {
-            {
-                let endpoint = SshEndpoint {
-                    user: "root".into(),
-                    host: "127.0.0.1".into(),
-                    port: 2223,
-                };
-                let line = ssh_command(
-                    &endpoint,
-                    Some("/k/id"),
-                    &["tilo-vmd".into(), "rpc".into()],
-                    false,
-                );
-                assert_eq!(
-                    line.display(),
-                    "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 \
-                 -o UserKnownHostsFile=/k/id.known_hosts -i /k/id -p 2223 root@127.0.0.1 tilo-vmd rpc"
-                );
-                let interactive = ssh_command(&endpoint, None, &[], true);
-                assert!(interactive.args.contains(&"-t".to_string()));
-            }
-
-            {
-                let owner = SshEndpoint {
-                    user: "me".into(),
-                    host: "10.0.0.223".into(),
-                    port: 22,
-                };
-                let line = ssh_command(&owner, Some("/k/yoga"), &vm_lock_command(), false);
-                let remote =
-                    &line.args[line.args.iter().position(|a| a == "me@10.0.0.223").unwrap() + 1..];
-                assert_eq!(&remote[..5], ["sudo", "-n", "--", "sh", "-c"]);
-                assert!(
-                    remote[5].starts_with("'mkdir -p /var/lib/tilo-vm/locks && flock"),
-                    "{}",
-                    remote[5]
-                );
-                let rpc = ssh_command(&owner, None, &["tilo-vmd".into(), "rpc".into()], false);
-                assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
-                let shell = ssh_command(&owner, None, &[], true);
-                assert_eq!(&shell.args[shell.args.len() - 2..], ["sudo", "-i"]);
-                assert_eq!(
-                    rsync_path_as_root(&owner, "mkdir -p /x && flock --nonblock /l rsync"),
-                    "sudo -n -- sh -c 'mkdir -p /x && flock --nonblock /l rsync \"$@\"' rsync"
-                );
-                let root = SshEndpoint {
-                    user: "root".into(),
-                    ..owner
-                };
-                assert_eq!(rsync_path_as_root(&root, "rsync"), "rsync");
-                assert_eq!(as_root(&root, &["true".into()]), ["true"]);
-                assert_eq!(
-                    sudo_refusal("motd\nsudo: a password is required\n").as_deref(),
-                    Some("a password is required")
-                );
-                assert_eq!(sudo_refusal("bash: tilo-vmd: command not found"), None);
-            }
-
-            {
-                let command = vm_lock_command().join(" ");
-                assert!(
-                    command.contains("flock --nonblock /var/lib/tilo-vm/locks/vm.lock"),
-                    "{command}"
-                );
-                assert!(command.contains("echo locked"));
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn imported_daemon_handoff_applies_through_new_rpc_and_leaves_old_process_intact() {
-        use std::os::unix::fs::PermissionsExt as _;
-        use tilo_vm_protocol::{Scope, Swap, VM_ACCOUNT, manifest::ComponentInfo};
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("state");
-        let hash = "ab".repeat(32);
-        let binary = root
-            .join("layers")
-            .join(&hash)
-            .join("usr/libexec/tilo/tilo-vmd");
-        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-        let script = r"#!/usr/bin/env python3
-import json,os,sys
-root=sys.argv[sys.argv.index('--root')+1]
-source='imported' if '/layers/' in sys.argv[0] else 'old'
-for line in sys.stdin:
- request=json.loads(line)
- method=request['method']
- with open(os.path.join(root,'calls'),'a') as log: log.write(source+' '+method+'\n')
- if method=='hello':
-  result={'protocol':request['params']['protocol'],'daemon_version':source,'root':root,'arch':'aarch64' if '--wrong-arch' in sys.argv else 'x86_64'}
- elif method=='swap' and source=='old':
-  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32000,'message':'legacy ExtensionDirectories third overlay: /usr Invalid argument','hint':'upgrade applying daemon'}}),flush=True)
-  continue
- elif method=='swap':
-  result={'account':'vm','generation':1,'changed':True,'policy':'vm_refresh','actions':[],'warnings':[]}
- else: raise AssertionError(method)
- print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
-";
-        std::fs::write(&binary, script).unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let old = tmp.path().join("tilo-vmd");
-        std::fs::write(&old, script).unwrap();
-        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let old_line = CommandLine::new(
-            old.to_str().unwrap(),
-            &["rpc", "--root", root.to_str().unwrap()],
-        );
-        let endpoint = SshEndpoint {
-            user: "root".into(),
-            host: "fixture".into(),
-            port: 22,
-        };
-        let mut old_remote = Remote::connect_line("fixture", &old_line, &endpoint, vec![]).unwrap();
-        let swap = || Swap {
-            account: VM_ACCOUNT.into(),
-            component: "vmd".into(),
-            layer: hash.clone(),
-            info: Some(ComponentInfo::new(Scope::Vm, vec![])),
-            partner: None,
-        };
-        let error = old_remote.call(swap()).unwrap_err();
-        assert!(error.to_string().contains("Invalid argument"));
-        let command = imported_daemon_command(None, &old_remote.hello.root, &hash).unwrap();
-        let line = CommandLine {
-            program: command[0].clone(),
-            args: command[1..].to_vec(),
-            env: vec![],
-        };
-        let mut imported = old_remote
-            .handoff("fixture", &line, &endpoint, vec![])
-            .unwrap();
-        assert_eq!(imported.call(swap()).unwrap().generation, 1);
-        old_remote.client.as_mut().unwrap().hello("test").unwrap();
-        assert_eq!(old_remote.hello.daemon_version, "old");
-        assert_eq!(
-            std::fs::read_to_string(root.join("calls")).unwrap(),
-            "old hello\nold swap\nimported hello\nimported swap\nold hello\n"
-        );
-        let wrong_arch = CommandLine::new(
-            binary.to_str().unwrap(),
-            &["rpc", "--root", root.to_str().unwrap(), "--wrong-arch"],
-        );
-        assert!(
-            old_remote
-                .handoff("fixture", &wrong_arch, &endpoint, vec![])
-                .is_err()
-        );
-        assert!(
-            std::fs::read_to_string(root.join("calls"))
-                .unwrap()
-                .ends_with("old hello\nimported hello\n")
-        );
-        // A replacement for a different state root must never reach apply.
-        let wrong_root = tmp.path().join("wrong");
-        std::fs::create_dir(&wrong_root).unwrap();
-        let wrong = CommandLine::new(
-            binary.to_str().unwrap(),
-            &["rpc", "--root", wrong_root.to_str().unwrap()],
-        );
-        assert!(
-            old_remote
-                .handoff("fixture", &wrong, &endpoint, vec![])
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::read_to_string(wrong_root.join("calls")).unwrap(),
-            "imported hello\n"
-        );
-    }
-}
+#[cfg(test)]
+mod tests;

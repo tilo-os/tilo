@@ -6,6 +6,12 @@
 //! Every member's live session reads it: a call that was ended carries
 //! nobody, and a person denied a call is neither heard in it nor listed in it.
 //! A channel nobody changed allows everyone everything.
+//!
+//! A call's media is sealed under keys of its own, which only the devices of
+//! the people its rule admits are given ([`media_document`]: one key group per
+//! generation of the rule). Every change to the rule starts a new generation,
+//! so what is said after someone was denied, or after the call ended, is
+//! sealed under keys they never held.
 
 use std::collections::BTreeMap;
 
@@ -16,6 +22,15 @@ pub const MAX_CHANNEL_BYTES: usize = 128;
 
 /// The most people one call denies anything.
 pub const MAX_DENIED: usize = 128;
+
+/// The tag a channel's call media is named by on the wire: the first 16 hex digits of the
+/// channel id's BLAKE3 digest, so any channel id names a track and a relay finds the call's rule
+/// from the name alone.
+#[must_use]
+pub fn tag(channel: &str) -> String {
+    let digest = blake3::hash(channel.as_bytes()).to_hex();
+    digest.as_str().get(..16).unwrap_or_default().to_owned()
+}
 
 /// What someone in a call does: speak (and show pictures) in it, and hear it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +66,27 @@ impl Default for Directions {
     }
 }
 
+/// The document whose key group seals the media of `channel`'s call in its rule's `generation`
+/// ([`CallRule::generation`]), under the workspace's media app: only the devices of the people
+/// that generation admits hold its keys.
+#[must_use]
+pub fn media_document(channel: &str, generation: u64) -> String {
+    format!("{MEDIA_DOCUMENT}{}-{generation}", tag(channel))
+}
+
+/// The call tag ([`tag`]) and generation a call's media document names
+/// ([`media_document`]), or `None` for any other document.
+#[must_use]
+pub fn parse_media_document(document: &str) -> Option<(&str, u64)> {
+    let (tag, generation) = document.strip_prefix(MEDIA_DOCUMENT)?.split_once('-')?;
+    let tag = Some(tag)
+        .filter(|tag| tag.len() == 16 && tag.bytes().all(|byte| byte.is_ascii_hexdigit()))?;
+    Some((tag, generation.parse().ok()?))
+}
+
+/// What every call's media document starts with.
+const MEDIA_DOCUMENT: &str = "call-media-";
+
 /// What a call allows, as the workspace keeps it for one channel.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallRule {
@@ -60,6 +96,10 @@ pub struct CallRule {
     pub allowed: Directions,
     /// What each person (their root as hex) may no longer do in it.
     pub denied: BTreeMap<String, Directions>,
+    /// How many times the rule changed: the call's media is sealed under the keys of this
+    /// generation ([`media_document`]), which nobody the rule leaves out is given.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 impl CallRule {
@@ -87,6 +127,8 @@ impl CallRule {
     /// A change that would deny more people than one call keeps.
     pub fn changed(&self, change: &CallChange) -> Result<Self, String> {
         let mut rule = self.clone();
+        // Whoever the change leaves out holds none of the keys sealed from now on.
+        rule.generation = rule.generation.saturating_add(1);
         match change {
             CallChange::Start { allowed } => {
                 rule.ended = false;
@@ -186,5 +228,12 @@ mod tests {
             .changed(&CallChange::Allow { person: bob })
             .unwrap();
         assert!(allowed.may(Some(&hex::encode(bob))).subscribe);
+        assert_eq!(allowed.generation, 5, "each change seals under new keys");
+        let document = media_document("standup", allowed.generation);
+        assert_eq!(
+            parse_media_document(&document),
+            Some((tag("standup").as_str(), 5))
+        );
+        assert_eq!(parse_media_document("call-media-standup-5"), None);
     }
 }

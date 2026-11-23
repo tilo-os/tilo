@@ -169,7 +169,7 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
             let (records, id) = (records.clone(), grant.id.clone());
             Button::new("console-agent-revoke", "console-grant-revoke")
                 .role(ButtonRole::Destructive)
-                .on_view(move || {
+                .on_open(move || {
                     records.server(
                         mcp_server::REVOKE,
                         &mcp_server::GrantRef { grant: id.clone() },

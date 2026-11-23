@@ -51,6 +51,7 @@ import contextlib
 import functools
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -66,7 +67,8 @@ sys.path.insert(0, str(HERE))
 # The session this walks and the tools that act in it: the one harness every
 # check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
 import real_apps  # noqa: E402
-from real_apps import BUILD, Failed, Session, address, prepare, run, until  # noqa: E402
+from real_apps import (  # noqa: E402
+    BUILD, Failed, Session, address, as_account, prepare, run, until)
 
 WALKS = HERE / "app-walks"
 # What a control's identity joins: the record kind it acts on, and the operation,
@@ -74,6 +76,11 @@ WALKS = HERE / "app-walks"
 # action and a field that edits a record publish it.
 ID_SEP = "\x1f"
 VARIANTS = ("rust", "tl")
+# How long a person waits for an app that is on their device, from asking for it to the frame
+# that shows its window: the product's bar for every app. Each walk records the opens that started
+# its app (`Walk.opens`), read from the session's own launch timings; the `app-walk/open` check
+# holds them to the bar (`--opens`), apart from the walks, which are red for their flows alone.
+OPEN_BAR_MS = 100
 # The shell's own verbs: a window is focused and closed by the tab it holds.
 SHELL = "so.tilo.session"
 SHELL_RESOURCE = "desktop:shell"
@@ -104,7 +111,7 @@ class PageServer(SimpleHTTPRequestHandler):
 # The stand-in mail server a walk adds a mail account against: the address's own
 # domain, the server names a mail program works out from it, the ports it asks
 # them on, and the address it takes. The tree's stand-in serves them
-# (crates/platform/account-probe/examples/mail_stand_in.rs), staged the way the
+# (crates/integrations/account-probe/examples/mail_stand_in.rs), staged the way the
 # lounge's mail stories stage one
 # (os/containers/tilo-lounge/stories/shell/mail_provider.py).
 MAIL_DOMAIN = "story.tilo.test"
@@ -245,6 +252,164 @@ def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
     """`until`, with the deadline named per call: every step here is bounded by
     what a person would wait, and a control that never comes is a finding."""
     return until(what, check, deadline, step)
+
+
+class MachineFiles:
+    """The machine's files daemon, started the way a device's service starts it.
+
+    The walk's session runs as the person, as a seat's does, and a FUSE mount by an ordinary
+    account is refused where the machine gives the person no fusermount3 privilege. So the
+    daemon is the machine's, as it is on a device: root, mounting the person's workspace at
+    ``/var/workspace`` with them as its owner and the shipped capability list in force, its
+    document-media socket group-connectable by the launcher. The session is told
+    ``TILO_SESSION_MACHINE_FILES`` and uses what this serves instead of starting one of its
+    own (``dist/dev/nested-session.sh``).
+
+    The machine's start waits for the person's identity, which the session mints as it comes
+    up: the daemon presents that identity, so it starts beside the session and the session
+    waits for it (the blob socket and pid below) before it starts the desktop. Only a caller
+    that is root and named a session account starts one; a walk on a developer's own desktop
+    keeps the session's own daemon."""
+
+    #: Where the daemon announces its main pid, as a service manager announces a unit's: the
+    #: session reads it to record the login's files endpoint.
+    PIDFILE = Path("/run/tilo/fs.pid")
+    #: Why the daemon did not start, when it did not: the session reads it and serves its own
+    #: workspace instead of waiting out the socket.
+    FAILED = Path("/run/tilo/fs.failed")
+    #: Where the daemon serves document media, and the workspace it mounts.
+    BLOB_SOCKET = Path("/run/tilo/fs-blobs.sock")
+    WORKSPACE = Path("/var/workspace")
+    #: How long the machine may take to start its daemon: the session mints an identity first.
+    START_WITHIN = 300.0
+
+    def __init__(self, state: Path, out: Path):
+        self.state = state
+        self.out = out
+        self.account = real_apps.session_account()
+        self.proc: subprocess.Popen | None = None
+        self.log = None
+        self.thread: threading.Thread | None = None
+        self.stopping = threading.Event()
+        #: Why the machine's daemon did not start, for the walk's report; None when it did.
+        self.trouble: str | None = None
+
+    def env(self) -> dict:
+        """What the session is told so it uses the machine's workspace, and serves none."""
+        return {"TILO_SESSION_MACHINE_FILES": "1",
+                "TILO_WORKSPACE_ROOTS": str(self.WORKSPACE),
+                "TILO_FS_BLOB_SOCKET": str(self.BLOB_SOCKET)}
+
+    def start(self) -> dict:
+        """Begin starting the machine's daemon, and what the session is told of it."""
+        if self.account is None:
+            return {}
+        with contextlib.suppress(OSError):
+            self.FAILED.unlink(missing_ok=True)
+        self.thread = threading.Thread(target=self._serve, name="walk-machine-files",
+                                       daemon=True)
+        self.thread.start()
+        return self.env()
+
+    def _serve(self) -> None:
+        try:
+            self._await_identity()
+            if self.stopping.is_set():
+                return
+            self._launch()
+        except BaseException as error:  # the walk reports it, and serves its own workspace
+            self.trouble = str(error)
+            with contextlib.suppress(OSError):
+                self.FAILED.write_text(f"{error}\n")
+            print(f"==> the machine's files workspace did not start: {error}", file=sys.stderr)
+
+    def _await_identity(self) -> None:
+        """Wait for the person's identity, which the session mints: the daemon presents it and
+        starts nowhere without it."""
+        cert = self.state / "identity/device/cert.bin"
+        deadline = time.monotonic() + self.START_WITHIN
+        while not cert.is_file():
+            if self.stopping.is_set():
+                return
+            if time.monotonic() >= deadline:
+                raise Failed(f"the session minted no identity at {cert}")
+            time.sleep(0.1)
+
+    def _launch(self) -> None:
+        logs = self.out / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        argv = [
+            str(BUILD / "bin/fs"), "serve",
+            "--mount-point", str(self.WORKSPACE),
+            "--cache-dir", "/var/cache/quick-fs",
+            "--storage-sock", "/run/tilo/fs-storage/storage.sock",
+            "--blob-sock", str(self.BLOB_SOCKET),
+            "--acl", str(REPO / "os/usr/share/tilo/fs-capabilities.json"),
+            "--member", "person:local",
+            "--backend", "fuse",
+            "--native-owner", f"{self.account.pw_uid}:{self.account.pw_gid}",
+        ]
+        env = {**os.environ,
+               "TILO_IDENTITY_ROOT": str(self.state / "identity"),
+               # The login's sockets, so the mount dials the session's workspace service as
+               # the login's daemon would; the seat's directory is the one the session gets.
+               "XDG_RUNTIME_DIR": (os.environ.get("TILO_SESSION_RUNTIME")
+                                   or f"/run/user/{self.account.pw_uid}"),
+               "TILO_MACHINE": "hosted",
+               "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_fs=info")}
+        # What a daemon the walk before this one left behind: a mount that answers nothing
+        # cannot be mounted over, and a socket with no server would pass for one.
+        if os.path.ismount(self.WORKSPACE):
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(["umount", "--lazy", str(self.WORKSPACE)],
+                               capture_output=True, timeout=30, check=False)
+        self.BLOB_SOCKET.unlink(missing_ok=True)
+        self.log = (logs / "machine-files.log").open("w")
+        self.proc = subprocess.Popen(argv, stdout=self.log, stderr=subprocess.STDOUT,
+                                     env=env, start_new_session=True)
+        self.PIDFILE.write_text(f"{self.proc.pid}\n")
+        until("the machine's document media socket",
+              lambda: self.BLOB_SOCKET.is_socket()
+              or (self.proc.poll() is not None and self._died()), 120.0, 0.1)
+        until("the machine's workspace mount", lambda: os.path.ismount(self.WORKSPACE),
+              120.0, 0.1)
+
+    def _died(self):
+        """The daemon ended, so the wait for its socket cannot be met: raise what it said."""
+        said = self.log_path().read_text(errors="replace") if self.log_path().is_file() else ""
+        raise Failed(f"the machine's files daemon ended ({self.proc.returncode}): {said[-1200:]}")
+
+    def log_path(self) -> Path:
+        return self.out / "logs" / "machine-files.log"
+
+    def stop(self) -> None:
+        """End the machine's daemon and unmount its workspace, as a walk that ends leaves neither."""
+        if self.account is None:
+            # No machine was started: the session served its own, and this machine's own
+            # workspace (a developer's desktop) is not the walk's to unmount.
+            return
+        self.stopping.set()
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(30)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(10)
+        self.proc = None
+        for marker in (self.PIDFILE, self.FAILED):
+            with contextlib.suppress(OSError):
+                marker.unlink(missing_ok=True)
+        if os.path.ismount(self.WORKSPACE):
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(["umount", "--lazy", str(self.WORKSPACE)],
+                               capture_output=True, timeout=30, check=False)
+        if self.log is not None:
+            self.log.close()
+            self.log = None
 
 
 # --- what the app holds, read back ------------------------------------------------------------
@@ -448,11 +613,39 @@ def provider_addresses(said: str) -> dict:
     return found
 
 
+def machine_sample() -> dict:
+    """How busy the machine the walk runs on is now: its one-minute load and its cores, and the
+    CPU time counters an open's share of stolen time is read from (on a virtual machine, the time
+    its host ran something else while this machine had work: the node's own contention, which
+    the machine's load does not show)."""
+    with open("/proc/stat") as stat:
+        times = [int(t) for t in stat.readline().split()[1:9]]
+    return {"at": time.time(), "load": os.getloadavg()[0], "cpus": os.cpu_count(),
+            "steal": times[7], "total": sum(times)}
+
+
+def machine_during(samples: list[dict], at: float) -> dict:
+    """The machine beside an open at `at`: its load and cores at the ask before it, and the share
+    of its CPU time its host took from that ask to the next sample."""
+    before = [s for s in samples if s["at"] <= at + 0.05]
+    if not before:
+        return {}
+    start = before[-1]
+    after = next((s for s in samples if s["at"] > start["at"]), None)
+    found = {"load": round(start["load"], 1), "cpus": start["cpus"]}
+    if after is not None and after["total"] > start["total"]:
+        found["steal_pct"] = round(100 * (after["steal"] - start["steal"])
+                                   / (after["total"] - start["total"]), 1)
+    return found
+
+
 def session_env(state: Path) -> dict:
     """What a walk's session is told about the stand-ins beside it: where the
     wireless display broker listens, so the display sheet finds the walk's
     stand-in rather than a service this machine does not run."""
-    return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector")}
+    return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector"),
+            # Each open's timings, which the walk holds to the open bar (`Walk.opens`).
+            "RUST_LOG": f"{os.environ.get('RUST_LOG') or 'warn'},tilo::launch_latency=info"}
 
 
 def resolved(served: dict, value):
@@ -568,6 +761,12 @@ def devices_env(spec: dict) -> dict | None:
     return {LAN_NETWORKS_ENV: "127.0.0.1", "RUST_LOG": os.environ.get("RUST_LOG", DEVICES_LOG)}
 
 
+def first_device_env(state: Path, spec: dict) -> dict:
+    """The environment the walk's own session starts with: where its local services listen, and for a walk of
+    several devices what lets them meet; a walk of one adds nothing for devices."""
+    return {**session_env(state), **(devices_env(spec) or {})}
+
+
 def split_on(op: dict, default: str | None) -> tuple[str | None, dict]:
     """The device an op runs on and the op without that word: `{"on": "phone", "must": [...]}`
     runs `must` on the phone, an op saying nothing runs on the step's device (`default`, the
@@ -606,14 +805,17 @@ def at_path(value, path: str):
 
 
 def choices_of(row: dict) -> dict:
-    """The first answer a catalogue row's action offers for each parameter that offers some: its
-    schema's `enum`, or the `const` of its first `oneOf`. What a person picks from a list, the
-    walk picks the first of."""
+    """The first answer a catalogue row's action offers for each parameter that offers some: the
+    values its `choices` name (a device's handle, a folder to save to), else its schema's `enum`,
+    or the `const` of its first `oneOf`. What a person picks from a list, the walk picks the first
+    of."""
     found = {}
     for param in (row.get("action") or {}).get("params") or []:
         schema = param.get("schema") or {}
-        offered = schema.get("enum") or [o.get("const") for o in schema.get("oneOf") or []
-                                         if isinstance(o, dict) and "const" in o]
+        offered = (param.get("choices")
+                   or schema.get("enum")
+                   or [o.get("const") for o in schema.get("oneOf") or []
+                       if isinstance(o, dict) and "const" in o])
         if offered:
             found[param["name"]] = offered[0]
     return found
@@ -844,6 +1046,9 @@ class Walk:
         # The stand-in services this walk started beside the session (op `serve`),
         # stopped when its session goes.
         self.services: list = []
+        # The machine's files daemon, when this walk started its own session on a machine it
+        # root (a check's VM): a family's is the family's, stopped with its session.
+        self.machine: MachineFiles | None = None
         # What the run answered and a later step may name: a stand-in's address,
         # a provider's id (`{"served": "provider.id"}`), a page server's address.
         self.served: dict = {}
@@ -859,6 +1064,56 @@ class Walk:
         self.appearances: dict[str, dict | None] = {}
         # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
         self.kept: dict = {}
+        # When the walk's first step began, by the session log's clock: its opens are the
+        # launches of its app the log records after it.
+        self.began_epoch = time.time()
+        # Whether a step asked for this walk's app: a walk that did and finds no open of it in the
+        # session's launch timings records that, rather than nothing measured.
+        self.asked_open = False
+        # How busy the machine was at each ask for this walk's app, and when the walk read its
+        # opens: what each open's time is read beside.
+        self.samples: list[dict] = []
+
+    def asking(self) -> None:
+        """A step asks for this walk's app now."""
+        self.asked_open = True
+        self.samples.append(machine_sample())
+
+    def opens(self) -> list[dict]:
+        """Every open in this walk that started its app, as the session's launch timings
+        record it: the first is the app's cold open, each later one follows the app's quit (its
+        last window closed, or it was ended). Each says how long from the ask to the frame that
+        showed the window (`ms`), and where that went: the launcher's start (`spawn_ms`) and the
+        window's mapping (`map_ms`). An open with no presented frame says so (`never_shown`)."""
+        ident = self.v.get("id")
+        if ident is None:
+            return []
+        # A launch is named by its id within the session that ran it: a walk that restarts the
+        # session counts launches from one again.
+        by_launch: dict[tuple[str, str], dict] = {}
+        for line in real_apps.launch_lines(self.session.log()):
+            if line.get("package_id") != ident or line["epoch"] < self.began_epoch - 0.05:
+                continue
+            key = (line.get("launch_generation", ""), line.get("launch_id", ""))
+            by_launch.setdefault(key, {})[line["stage"]] = line
+        samples = [*self.samples, machine_sample()]
+        found = []
+        for (_generation, launch_id), stages in by_launch.items():
+            if "spawned" not in stages:
+                continue
+            record = {"open": "cold" if not found else "after a quit", "launch_id": launch_id,
+                      "spawn_ms": round(int(stages["spawned"]["request_to_spawn_us"]) / 1000)}
+            if "mapped" in stages:
+                record["map_ms"] = round(int(stages["mapped"]["spawn_to_map_us"]) / 1000)
+            if "presented" in stages:
+                record["ms"] = round(int(stages["presented"]["request_to_first_present_us"]) / 1000)
+            else:
+                record["never_shown"] = True
+            record.update(machine_during(samples, stages["spawned"]["epoch"]))
+            found.append(record)
+        if self.asked_open and not found:
+            found.append({"open": "cold", "never_shown": True, "unlogged": True})
+        return found
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -897,6 +1152,7 @@ class Walk:
         """Open the app through the desktop's own launcher. Without `wait`, the
         walk goes on the moment the launcher takes it: what a person presses
         before the app is ready."""
+        self.asking()
         self.session.open(self.v["id"])
         if wait:
             until_value(f"the window of {self.v['id']}", self.window_of, deadline)
@@ -1017,6 +1273,7 @@ class Walk:
             # launch is a cold one, and the window left behind is theirs.
             self.close_window()
         began = time.monotonic()
+        self.asking()
         self.session.open(self.v["id"])
 
         def shown():
@@ -1466,12 +1723,18 @@ class Walk:
     def op_open(self, value) -> dict:
         """Open another app of the session build by its directory name (`files`,
         `chat`) as the workspace offers it, and wait for its window: a shell walk
-        needs windows to switch between."""
-        deadline = 120.0
+        needs windows to switch between. `{"app": .., "answer": "Allow"}` answers
+        the question the system asks before the app's window, as a person does
+        (Mail asks to reach the network before its process starts)."""
+        deadline, answer = 120.0, None
         if isinstance(value, dict):
-            value, deadline = value["app"], float(value.get("deadline", deadline))
+            value, deadline, answer = value["app"], float(value.get("deadline", deadline)), value.get("answer")
         ident = value if "." in value else real_apps.app_id(value)
         began = time.monotonic()
+        if answer:
+            self.session.open(ident, deadline)
+            self.op_wait_for({"shown": {"prefix": answer}})
+            self.op_press_any([{"prefix": answer}])
         self.session.launch(ident, deadline)
         return {"opened": ident, "waited_ms": round((time.monotonic() - began) * 1000)}
 
@@ -1570,13 +1833,19 @@ class Walk:
         self.out.mkdir(parents=True, exist_ok=True)
         log_path = self.out / f"{binary}-{self.variant}.log"
         log = log_path.open("wb")
+        # The stand-in is the person's own program beside the session, as a
+        # service of their login: it runs as the account, and the session
+        # reaches its socket and its ports as the person.
+        argv = [str(path), *args]
+        if self.session.account is not None:
+            argv = [*as_account(self.session.account), *argv]
         if not lines:
-            proc = subprocess.Popen([str(path), *args], stdout=log, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
             self.services.append((proc, log))
             until_value(f"{binary} to be up (see {log_path})", wait or (lambda: True), 30)
             return ""
-        proc = subprocess.Popen([str(path), *args], stdout=subprocess.PIPE, stderr=log,
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=log,
                                 start_new_session=True)
         self.services.append((proc, log))
         # Read the pipe itself, never a buffered reader around it: the reader would take
@@ -1664,9 +1933,18 @@ class Walk:
         row = until_value(f"{value.get('kind') or ''}#{value['action']} to be published",
                           lambda: self.published_row(value), float(value.get("within", 30)))
         resource = address(row)[0]
+        offered = choices_of(row)
+        args = pick(value.get("args"), self.variant) if "args" in value else None
+        for name in re.findall(r"\{choice:([^}]+)\}", json.dumps(args)):
+            if f"choice:{name}" not in offered:
+                takes = [(p.get("name"), p.get("choices"))
+                         for p in (row.get("action") or {}).get("params") or []]
+                raise Failed(
+                    f"{resource}#{value['action']} offers no choice for {name!r}: it takes "
+                    f"{takes}")
         kept = {**self.kept, "resource": resource, "id": resource.split(":", 1)[-1],
-                **{f"choice:{name}": choice for name, choice in choices_of(row).items()}}
-        args = filled(pick(value.get("args"), self.variant), kept) if "args" in value else None
+                **{f"choice:{name}": choice for name, choice in offered.items()}}
+        args = filled(args, kept) if args is not None else None
         answer = self.session.invoke_row(row, args)
         if isinstance(answer, dict) and ("Failed" in answer or "Refused" in answer):
             raise Failed(f"{resource}#{value['action']} answered {json.dumps(answer)[:500]}")
@@ -1959,6 +2237,8 @@ class Walk:
                 self.session.invoke(SHELL, SHELL_RESOURCE, "force-quit-app",
                                     {"tab": str(window["tab"])})
                 until_value(f"{ident} to end", lambda: not self.session.processes(ident), 30)
+        if ident == self.v.get("id"):
+            self.asking()
         self.session.launch(ident, 120)
         until_value(f"the window of {ident}",
                     lambda: next((w for w in self.session.windows()
@@ -2155,7 +2435,7 @@ class Walk:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_text(text)
-        return {"file": str(path)}
+        return {"file": str(self.session.own(path))}
 
     def op_image(self, value) -> dict:
         """Write a picture where a person's file chooser reaches it, and record
@@ -2168,7 +2448,7 @@ class Walk:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_bytes(FIXTURE_PICTURE_PNG)
-        return {"image": str(path)}
+        return {"image": str(self.session.own(path))}
 
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""
@@ -2326,19 +2606,24 @@ class Walk:
         if not self.shared:
             tapps = self.tapps()
             began = time.monotonic()
-            self.session.start(apps=apps_of(spec, self.variant),
-                               fresh=True, out=self.out / "logs", tag=self.variant,
-                               tapps=tapps, session_args=session_args_of(spec, self.variant),
-                               env={**session_env(self.state), **devices_env(spec)})
+            machine = MachineFiles(self.state, self.out)
+            env = {**first_device_env(self.state, spec), **machine.start()}
             try:
+                self.session.start(apps=apps_of(spec, self.variant),
+                                   fresh=True, out=self.out / "logs", tag=self.variant,
+                                   tapps=tapps, session_args=session_args_of(spec, self.variant),
+                                   env=env)
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
             except BaseException:
                 self.session.stop()
+                machine.stop()
                 raise
+            self.machine = machine
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
         began = time.monotonic()
+        self.began_epoch = time.time()
         try:
             for index, step in enumerate(spec["steps"], start=1):
                 self.step(index, step)
@@ -2347,6 +2632,10 @@ class Walk:
                      "session_start_ms": started,
                      "walk_ms": round((time.monotonic() - began) * 1000),
                      "steps": self.steps}
+            try:
+                found["opens"] = self.opens()
+            except OSError as error:
+                found["opens_unread"] = str(error)
             if self.devices is not None:
                 found["devices_ms"] = self.devices.took
                 if self.devices.trouble:
@@ -2375,6 +2664,7 @@ class Walk:
                 if self.devices is not None:
                     self.devices.stop()
                 self.session.stop()
+                self.machine.stop()
             self.stop_services()
         return found
 
@@ -2534,9 +2824,74 @@ def write_report(report: dict, out: Path) -> Path:
         found = " / ".join(f"{v}: {step_found(steps[v].get(step['id'], {}))}" for v in variants)
         lines.append(f"| **{step['id']}** — {step['said']} | " + " | ".join(cells)
                      + f" | {found} |")
+    lines += ["", f"Opens that started the app, held to {OPEN_BAR_MS} ms from the ask to the frame "
+              "that showed its window:", ""]
+    for variant in variants:
+        for opened in report["variants"][variant].get("opens") or []:
+            lines.append(f"- **{variant}** {opened['open']}: {open_words(opened)}")
     lines.append("")
     (out / "walk.md").write_text("\n".join(lines))
     return out / "walk.md"
+
+
+def open_words(opened: dict) -> str:
+    """An open in the words of the walk's page and its verdict: its time against the bar and
+    where the time went."""
+    if opened.get("unlogged"):
+        return "asked for, and the session's launch timings record no open of it"
+    where = f"launcher started after {opened['spawn_ms']} ms"
+    if "map_ms" in opened:
+        where += f", window mapped {opened['map_ms']} ms after that"
+    if "ms" not in opened:
+        return f"never shown ({where})"
+    if "load" in opened:
+        where += f"; load {opened['load']} on {opened['cpus']} cores"
+        if "steal_pct" in opened:
+            where += f", {opened['steal_pct']}% of the CPU taken by the host"
+    over = " over the bar" if opened["ms"] > OPEN_BAR_MS else ""
+    return f"{opened['ms']} ms{over} ({where})"
+
+
+def hold_opens(root: Path, out: Path) -> int:
+    """The `app-walk/open` check: every open the walks under `root` recorded (each `walk.json`
+    their checks kept), one row per app and open, held to the open bar. Writes the rows as a page
+    (`opens.md`) and as data (`opens.json`) into `out`; 1 when an open is over the bar, was never
+    shown, or a walk could not read its session's launch timings."""
+    rows = []
+    unread = []
+    for path in sorted(root.glob("**/walk.json")):
+        if out in path.parents:
+            continue
+        report = json.loads(path.read_text())
+        for variant, walked in (report.get("variants") or {}).items():
+            if "opens_unread" in walked:
+                unread.append(f"{report['walk']} {variant}: the session's launch timings could not "
+                              f"be read: {walked['opens_unread']}")
+            for opened in walked.get("opens") or []:
+                rows.append({"walk": report["walk"], "variant": variant, "app": walked["app"],
+                             **opened})
+    slow = [row for row in rows if row.get("ms", OPEN_BAR_MS + 1) > OPEN_BAR_MS]
+    lines = [f"# Opens against the {OPEN_BAR_MS} ms bar", "",
+             "From asking for an app to the frame that shows its window, in each walk that opened "
+             "it: the cold open, and each open after the app was quit.", "",
+             "| App | Version | Open | Time | Where it went |", "|---|---|---|---|---|"]
+    for row in sorted(rows, key=lambda r: (r["app"], r["variant"], r["open"] != "cold")):
+        time_cell = f"{row['ms']} ms" if "ms" in row else "never shown"
+        lines.append(f"| {row['app']} | {row['variant']} | {row['open']} | {time_cell} | "
+                     f"{open_words(row)} |")
+    lines += ["", *[f"- {line}" for line in unread], ""]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "opens.md").write_text("\n".join(lines))
+    (out / "opens.json").write_text(json.dumps(rows, indent=1) + "\n")
+    for row in rows:
+        print(f"{'SLOW-OPEN' if row in slow else 'open'} {row['app']} {row['variant']} "
+              f"{row['open']}: {open_words(row)}", file=sys.stderr)
+    for line in unread:
+        print(f"SLOW-OPEN {line}", file=sys.stderr)
+    if not rows and not unread:
+        print("FAIL: no walk under it recorded an open", file=sys.stderr)
+        return 1
+    return 1 if slow or unread else 0
 
 
 def load_walk(name: str | None, path: str | None = None) -> tuple[Path, dict]:
@@ -2560,6 +2915,36 @@ BASELINES = WALKS / "baseline"
 # second more: below that, a shared build node's load moves it as much.
 SLOWER_FACTOR = 2.0
 SLOWER_MARGIN_MS = 1000
+
+
+def unwalked(found: dict) -> list[dict]:
+    """The steps of a walk that did not walk: each one fails the check. Nothing
+    excuses one, a baseline from main included: a failure main shares stays red
+    and claimed, where its fix and its getting worse are both seen. The baseline
+    only says which failures are new (`compare`), what main published and how
+    long each step took there."""
+    return [{"version": variant, "step": step_id, "why": step.get("failed") or "not walked"}
+            for variant, report in found.get("versions", {}).items()
+            for step_id, step in report.get("steps", {}).items()
+            if not step.get("walked")]
+
+
+def rebaseline(found: dict, before: dict | None) -> dict:
+    """The baseline main's newest run makes, beside the one it replaces: what it
+    found, except that a step's time is the slowest main has shown for it. One
+    run on a shared node can open an app in a second and the next in five, so a
+    single quick run would make the next ordinary one read as slower; the
+    slowest of main's runs is what a change is held to."""
+    if not before:
+        return found
+    merged = json.loads(json.dumps(found))
+    for variant, now in merged.get("versions", {}).items():
+        was = (before.get("versions") or {}).get(variant) or {}
+        for step_id, step in (now.get("steps") or {}).items():
+            old = (was.get("steps") or {}).get(step_id) or {}
+            if step.get("walked") and old.get("walked"):
+                step["took_ms"] = max(step.get("took_ms") or 0, old.get("took_ms") or 0)
+    return merged
 
 
 def summary(report: dict) -> dict:
@@ -2784,7 +3169,12 @@ def main() -> int:
                         help="write OUT/index.md from a run's outputs (scripts/headless-examples/walk.sh)")
     parser.add_argument("--baseline-dir", type=Path,
                         help="with --side-by-side: the baseline run's outputs")
+    parser.add_argument("--opens", type=Path, metavar="WALKS",
+                        help="hold every open the walks under WALKS recorded to the open bar, "
+                             f"{OPEN_BAR_MS} ms, writing opens.md to --out (the app-walk/open check)")
     options = parser.parse_args()
+    if options.opens:
+        return hold_opens(options.opens.resolve(), (options.out or Path.cwd()).resolve())
     if options.side_by_side:
         out = (options.out or Path.cwd()).resolve()
         print(write_side_by_side(options.side_by_side.resolve(),
@@ -2839,6 +3229,7 @@ def main() -> int:
             first = mine[0][1]
             session = None
             devices = None
+            machine = None
             started = 0
             if family:
                 packages = []
@@ -2850,14 +3241,16 @@ def main() -> int:
                             packages.append(package)
                 tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
                 session = Session(state)
+                machine = MachineFiles(state, out)
+                env = {**first_device_env(state, first), **machine.start()}
                 began = time.monotonic()
-                session.start(apps=apps, fresh=True, out=out / "logs", tag=variant, tapps=tapps,
-                              session_args=session_args_of(first, variant),
-                              env={**session_env(state), **devices_env(first)})
                 try:
+                    session.start(apps=apps, fresh=True, out=out / "logs", tag=variant,
+                                  tapps=tapps, session_args=session_args_of(first, variant), env=env)
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
                 except BaseException:
                     session.stop()
+                    machine.stop()
                     raise
                 started = round((time.monotonic() - began) * 1000)
                 print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
@@ -2881,6 +3274,8 @@ def main() -> int:
                     devices.stop()
                 if session is not None:
                     session.stop()
+                if machine is not None:
+                    machine.stop()
         verdict = 0
         printed = []
         for walk_name, report in reports.items():
@@ -2892,7 +3287,9 @@ def main() -> int:
             report_path = write_report(report, where)
             if options.write_baseline:
                 BASELINES.mkdir(exist_ok=True)
-                (BASELINES / f"{walk_name}.json").write_text(json.dumps(found, indent=1) + "\n")
+                kept = BASELINES / f"{walk_name}.json"
+                before = json.loads(kept.read_text()) if kept.is_file() else None
+                kept.write_text(json.dumps(rebaseline(found, before), indent=1) + "\n")
             comparison_path = None
             if options.compare is not None:
                 at = Path(options.compare) if options.compare else BASELINES / f"{walk_name}.json"
@@ -2906,6 +3303,13 @@ def main() -> int:
                         print(f"REGRESSION {walk_name} {regression['version']} {regression['step']}: "
                               f"{regression['why']}", file=sys.stderr)
                     verdict = verdict or (1 if comparison["regressions"] else 0)
+                new = {(r["version"], r["step"]) for r in comparison["regressions"]} \
+                    if at.is_file() else set()
+                failed = [s for s in unwalked(found) if (s["version"], s["step"]) not in new]
+                for step in failed:
+                    print(f"FAILED {walk_name} {step['version']} {step['step']}: {step['why']}",
+                          file=sys.stderr)
+                verdict = verdict or (1 if failed else 0)
             times = {v: f.get("walk_ms") for v, f in report["variants"].items()}
             print(f"==> {walk_name}: walked in {times} ms", file=sys.stderr)
             printed.append({"walk": str(where / "walk.json"), "report": str(report_path),

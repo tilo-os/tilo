@@ -83,8 +83,11 @@ impl ShellSurface for ShellPart {
             return false;
         }
         // While a menu of the part's is up, a press anywhere over it is the part's: outside
-        // the menu it closes it, as a press outside any menu does.
+        // the menu it closes it, as a press outside any menu does. The held Super's keys are a
+        // picture over the windows, not one: a press there is the window's, so the shell takes
+        // none of its display.
         if self.cover
+            && self.origin.borrow().link.surface() != tilo_session_core::shell::PEEK_SURFACE
             && let Some((_, (ox, oy, width, height))) = self.output
         {
             let (x, y) = (x - f64::from(ox), y - f64::from(oy));
@@ -160,6 +163,12 @@ impl ShellSurface for ShellPart {
     }
 
     fn wants_keyboard(&self) -> bool {
+        // The held Super's keys are a picture the shell draws over the windows: they take no key,
+        // so the window in front keeps the keyboard while they show and every chord it is holding
+        // Super for still runs.
+        if self.origin.borrow().link.surface() == tilo_session_core::shell::PEEK_SURFACE {
+            return false;
+        }
         // The shell under the windows takes the keys when one of its own controls put the caret
         // somewhere it answers: a field of the bar's, or a canvas's place, which pans with the
         // arrow keys (`ui.Map`). A shell with none leaves the keys to the window in front.

@@ -177,7 +177,7 @@ impl Workspaces {
         import: impl FnOnce(&mut Moderation),
     ) -> Result<(), String> {
         self.author_workspace_document_from(
-            (workspace, self.governor()),
+            (workspace, self.device_cert()),
             (CHAT, DOCUMENT),
             genesis,
             |doc| {

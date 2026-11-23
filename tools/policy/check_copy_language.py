@@ -671,6 +671,17 @@ TEXT_CONSTRUCTORS = (
 # Where a surface's own words are painted: the roots whose crates draw a
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
+# Crates of the same kind that live in other groups.
+SURFACE_ROOTS += (
+    "crates/os/console-control/",
+    "crates/os/greetd-client/",
+    "crates/os/greeter/",
+    "crates/os/install-plan/",
+    "crates/os/install-profile-model/",
+    "crates/integrations/messaging-service/",
+    "crates/os/tilo-ntfs-helper/",
+    "crates/os/tilo-ntfs-protocol/",
+)
 
 # Crates a window's words can be written in without painting a window of their
 # own: the imager paints a filesystem's name from the backend that writes the
@@ -678,6 +689,41 @@ SURFACE_ROOTS = ("apps/", "crates/session/")
 # source language to a German window as a literal would. The toolkit's own
 # crates are outside that sweep (a widget's demo paints sample content).
 LIBRARY_SKIP = ("crates/sdk/", "crates/session/")
+# Crates of the same kind that live in other groups.
+LIBRARY_SKIP += (
+    "crates/ui/font-catalog/",
+    "crates/ui/theme-painter-wasm/",
+    "crates/ui/theme-sdk/",
+    "crates/ui/themes/",
+    "crates/ui/tilo-component-scan/",
+    "crates/ui/tilo-cpu-raster/",
+    "crates/ui/tilo-formats/",
+    "crates/ui/tilo-rich-edit/",
+    "crates/ui/ui-core/",
+    "crates/ui/ui-kms/",
+    "crates/ui/ui-macros/",
+    "crates/ui/ui-paint/",
+    "crates/ui/winit-x11/",
+)
+# Crates of the same kind that live in other groups.
+LIBRARY_SKIP += (
+    "crates/engines/search/",
+    "crates/engines/tilo-page-raster/",
+    "crates/engines/tilo-recurrence/",
+    "crates/engines/tilo-webview/",
+)
+# Crates of the same kind that live in other groups.
+LIBRARY_SKIP += (
+    "crates/integrations/provider-settings-ui/",
+    "crates/os/console-control/",
+    "crates/os/greetd-client/",
+    "crates/os/greeter/",
+    "crates/os/install-plan/",
+    "crates/os/install-profile-model/",
+    "crates/integrations/messaging-service/",
+    "crates/os/tilo-ntfs-helper/",
+    "crates/os/tilo-ntfs-protocol/",
+)
 
 
 def library_source(unit: str) -> bool:
@@ -1143,11 +1189,6 @@ def named_position(code: str, begin: int, end: int, name: str) -> int:
             return at
         at = code.find(name, at + len(name), end)
     return -1
-
-
-def named_in(code: str, begin: int, end: int, name: str) -> bool:
-    """Whether `name` is used as a whole identifier inside `[begin, end)`."""
-    return named_position(code, begin, end, name) >= 0
 
 
 def constant_used(code: str, begin: int, end: int, name: str) -> bool:
@@ -2215,7 +2256,7 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     # words are outside the sweep, and a call by that name resolves there.
     toolkit_names: set[str] = set()
     for path in sources:
-        if path.relative_to(root).as_posix().startswith("crates/sdk/"):
+        if path.relative_to(root).as_posix().startswith(("crates/sdk/", "crates/ui/")):
             toolkit_names.update(FUNCTION.findall(path.read_text(errors="replace")))
     for name in toolkit_names:
         libraries.pop(name, None)

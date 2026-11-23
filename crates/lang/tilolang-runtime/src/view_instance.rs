@@ -14,7 +14,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    CALL_ACTION, CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
+    CALL_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
     SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
@@ -761,8 +761,33 @@ impl ViewInstance {
                     other => Ok(other),
                 }
             }
-            SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
-            CHOOSE_ACTION => self.platform_choose(aref),
+            SHORTCUT_ACTION => {
+                let [Value::List(keys), Value::Text(pressed)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs("a malformed shortcut".into()));
+                };
+                let run = keys.iter().find_map(|key| match key {
+                    Value::Tuple(fields) => match fields.as_slice() {
+                        [Value::Text(key), Value::Action(run)] if key == pressed => Some(run),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                match run {
+                    // A key of an action that does not apply to the item does what its menu
+                    // does, which leaves the action out: nothing.
+                    Some(run)
+                        if !matches!(
+                            self.core.inapplicable(run, &self.live.viewer),
+                            Ok(Some(_))
+                        ) =>
+                    {
+                        self.run_in(run, gesture)
+                    }
+                    _ => Ok(InvokeOutcome::Done(Value::Unit)),
+                }
+            }
+            CHOOSE_ACTION => self.platform_choose(aref, false),
+            CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
             SAVE_ACTION => self.platform_save(aref),
             CALL_ACTION => {
                 let [Value::Ref(r), Value::Text(step), Value::Bool(on)] = aref.args.as_slice()
@@ -796,10 +821,16 @@ impl ViewInstance {
         )
     }
 
-    /// `file.choose(a, accept)`: ask the person for a file and run `a` with it, as the argument
-    /// it still needs. What the person picks is a [`crate::blob::FileValue`], so the invocation
-    /// records its address and never its bytes.
-    fn platform_choose(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+    /// `file.choose(a, accept)`: ask the person for files and run `a` with what they chose, as
+    /// the argument it still needs; `folder` asks for a folder and runs `a` with the files it
+    /// holds. A parameter of `File` takes the one file chosen; `List<File>` takes every file.
+    /// What the person picks is a [`crate::blob::FileValue`], so the invocation records its
+    /// address and never its bytes.
+    fn platform_choose(
+        &self,
+        aref: &ActionRef,
+        folder: bool,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         let [Value::Action(next), Value::List(accept)] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `file.choose`".into()));
         };
@@ -807,20 +838,39 @@ impl ViewInstance {
             .iter()
             .filter_map(|media| media.as_text().map(str::to_owned))
             .collect();
+        let Some(package) = self.core.registry.borrow().action_package(&next.action) else {
+            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        };
+        let Some(action) = package.action(&next.action) else {
+            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        };
+        let next_param = action.params.get(next.args.len());
+        let fills =
+            next_param.and_then(|param| crate::meta::parse_ty(&param.ty, &package.meta.app).ok());
+        let many = match fills {
+            Some(Ty::File) if !folder => false,
+            Some(Ty::List(inner)) if inner.as_ref() == &Ty::File => true,
+            _ => {
+                return Err(RuntimeError::BadArgs(format!(
+                    "`{}` has no {} parameter next: a file fills the parameter it stands for",
+                    crate::platform::label_of(action),
+                    if folder { "`List<File>`" } else { "file" }
+                )));
+            }
+        };
         let request = crate::blob::FileRequest {
             title: {
-                let label = self
-                    .core
-                    .registry
-                    .borrow()
-                    .action_package(&next.action)
-                    .and_then(|package| {
-                        package.action(&next.action).map(crate::platform::label_of)
-                    });
-                label.unwrap_or_else(|| "Choose a file".to_owned())
+                let label = crate::platform::label_of(action);
+                if folder {
+                    format!("Choose a folder for {label}")
+                } else {
+                    label
+                }
             },
             name: String::new(),
             accept: accept.clone(),
+            multiple: many && !folder,
+            folder,
         };
         let chosen = {
             let blobs = self.core.blobs.borrow();
@@ -831,52 +881,47 @@ impl ViewInstance {
             };
             blobs.choose(&request).map_err(RuntimeError::Package)?
         };
-        let Some(file) = chosen else {
-            // The person dismissed the chooser: nothing runs.
+        if chosen.is_empty() {
+            // The person dismissed the chooser, or the folder held nothing to take: nothing runs.
             return Ok(InvokeOutcome::Done(Value::Unit));
-        };
-        if file.size > crate::blob::MAX_CHOSEN_BYTES {
-            return Err(RuntimeError::Package(format!(
-                "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
-                file.name,
-                file.size,
-                MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
-            )));
         }
-        if !crate::blob::accepts(&accept, &file.media) {
-            return Err(RuntimeError::Package(format!(
-                "`{}` is a {}, and what is chosen here is {}",
-                file.name,
-                file.media,
-                if accept.is_empty() {
-                    "any file".to_owned()
-                } else {
-                    accept.join(", ")
-                }
-            )));
+        for file in &chosen {
+            if file.size > crate::blob::MAX_CHOSEN_BYTES {
+                return Err(RuntimeError::Package(format!(
+                    "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+                    file.name,
+                    file.size,
+                    MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
+                )));
+            }
+            if !crate::blob::accepts(&accept, &file.media) {
+                return Err(RuntimeError::Package(format!(
+                    "`{}` is a {}, and what is chosen here is {}",
+                    file.name,
+                    file.media,
+                    if accept.is_empty() {
+                        "any file".to_owned()
+                    } else {
+                        accept.join(", ")
+                    }
+                )));
+            }
         }
-        let Some(package) = self.core.registry.borrow().action_package(&next.action) else {
-            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
+        let filled_value = if many {
+            Value::List(chosen.into_iter().map(Value::file).collect())
+        } else if let [file] = chosen.as_slice() {
+            Value::file(file.clone())
+        } else {
+            return Err(RuntimeError::Package(
+                "the chooser answered more than the one file this asks for".to_owned(),
+            ));
         };
-        let Some(action) = package.action(&next.action) else {
-            return Err(RuntimeError::NotFound(format!("action {}", next.action)));
-        };
-        let next_param = action.params.get(next.args.len());
-        let fills_a_file = next_param.is_some_and(|param| {
-            crate::meta::parse_ty(&param.ty, &package.meta.app).is_ok_and(|ty| ty == Ty::File)
-        });
-        if !fills_a_file {
-            return Err(RuntimeError::BadArgs(format!(
-                "`{}` has no file parameter next: a file fills the parameter it stands for",
-                crate::platform::label_of(action)
-            )));
-        }
         let filled = ActionRef {
             args: next
                 .args
                 .iter()
                 .cloned()
-                .chain(std::iter::once(Value::file(file)))
+                .chain(std::iter::once(filled_value))
                 .collect(),
             ..next.clone()
         };

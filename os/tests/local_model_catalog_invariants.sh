@@ -3,11 +3,11 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source_json="$repo/crates/agent/local-model-service/tests/fixtures/catalog-source.example.json"
-runtime="$repo/crates/agent/local-model-service/tests/fixtures/example-runtime.bin"
-model="$repo/crates/agent/local-model-service/tests/fixtures/example-model.bin"
-tool="$repo/crates/agent/local-model-service/src/bin/tilo-model-catalog.rs"
-catalog="$repo/crates/agent/local-model-service/src/catalog.rs"
+source_json="$repo/crates/engines/local-model-service/tests/fixtures/catalog-source.example.json"
+runtime="$repo/crates/engines/local-model-service/tests/fixtures/example-runtime.bin"
+model="$repo/crates/engines/local-model-service/tests/fixtures/example-model.bin"
+tool="$repo/crates/engines/local-model-service/src/bin/tilo-model-catalog.rs"
+catalog="$repo/crates/engines/local-model-service/src/catalog.rs"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -68,7 +68,7 @@ grep -Fq 'if signed.signature_domain != domain {' "$catalog" \
 grep -Fq 'signing_key.verifying_key()' "$tool" \
     || bad 'release tooling does not derive public image trust from the signer'
 if grep -R -Eiq 'private[_ -]?key|signing[_ -]?key|secret[_ -]?key' \
-    "$repo/crates/agent/local-model-service/tests/fixtures"; then
+    "$repo/crates/engines/local-model-service/tests/fixtures"; then
     bad 'checked-in catalog fixtures contain private-key material'
 else
     ok 'catalog fixtures contain no release private key'

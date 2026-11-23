@@ -36,7 +36,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
 # TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
-apps=${TILO_NESTED_APPS-"code-editor word-processor settings sheets tasks file-explorer browser terminal pdf-viewer activity photos calendar shortcuts imager"}
+apps=${TILO_NESTED_APPS-"code-editor word-processor settings sheets tasks file-explorer browser terminal pdf-viewer activity calendar shortcuts"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0
@@ -101,9 +101,12 @@ host_profile=nested
 # tilo-runtime is the agent's end of the session's MCP server
 # (`tilo-runtime --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
+# tilo-unlock-helper is what checks the person's password at the lock screen,
+# the one a device installs: a check that runs the session as a machine's
+# account installs it where the session looks for it, and the session locks.
 host_bins=(tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
-           tilo-quick-settings fs projector-stand-in fake-model-providers)
+           tilo-quick-settings fs projector-stand-in fake-model-providers tilo-unlock-helper)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -121,18 +124,34 @@ build_host() {
     cargo build --locked --timings "${args[@]}" \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
-        -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilo-fs --bin fs \
         -p projector-stand-in --bin projector-stand-in \
         -p fake-model-providers --bin fake-model-providers \
-        -p nested-session-bus --bin nested-session-bus || return 1
+        -p nested-session-bus --bin nested-session-bus \
+        -p tilo-unlock-helper --bin tilo-unlock-helper || return 1
+    # The supervisor reads the session's own system store, the one nested-session.sh
+    # installs the env-runtime into: a device's supervisor reads /usr/share/tilo-apps,
+    # and without `dev-overrides` this one would read that path on the developer's
+    # machine and open no shell. Its own build, as the trio above, so the plain
+    # feature name reaches the packages it shares.
+    cargo build --locked --timings "${args[@]}" \
+        -p ush --bin tilo-ush --features dev-overrides || return 1
     # The stand-in mail server a user story rehearses connecting a mail account against: the
     # example a tilo.sh stack starts as mail-stand-in, so a story in a shell can start it beside
     # the session without a stack (stories/shell/mail-password.py).
     cargo build --locked --timings "${args[@]}" \
         -p tilo-account-probe --example mail_stand_in || return 1
+    # The iCloud-shaped double: the same mail servers beside a linked CalDAV server under one
+    # app password, so a story rehearses one connect feeding Mail and Calendar.
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-account-probe --example icloud_double || return 1
+    # The power authorities a session serves on its own system bus, for a machine with no battery,
+    # no platform profile and no polkit behind them (a check's VM,
+    # crates/os/power/examples/fake_power.rs).
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-power-mgmt --example fake_power || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
     # longer comes from building beside the session, and the session's gateway
     # runs with the features the workspace builds it with.
@@ -237,7 +256,7 @@ chromium_engine=$target/nested-session-chromium
 build_chromium_engine() {
     local key began=$SECONDS
     key=$( { cat scripts/browser/cef-lock.json scripts/browser/build-host.py
-             find apps/browser/chromium crates/browser/chromium-blocker -type f -print \
+             find apps/browser/chromium crates/engines/chromium-blocker -type f -print \
                  | LC_ALL=C sort | xargs sha256sum; } \
            | sha256sum | cut -c1-64)
     if [[ -f $chromium_engine/.key && $(<"$chromium_engine/.key") == "$key" \
@@ -288,6 +307,8 @@ cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"
 # The stand-in mail server a user story starts beside its shells, under the name that says what
 # it is (the stack stages the same example as `mail-stand-in`).
 cp -p "$target/$host_profile/examples/mail_stand_in" "$out/bin/mail-stand-in"
+cp -p "$target/$host_profile/examples/icloud_double" "$out/bin/icloud-double"
+cp -p "$target/$host_profile/examples/fake_power" "$out/bin/fake-power"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
 cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime-engines" "$out/thin-app/"

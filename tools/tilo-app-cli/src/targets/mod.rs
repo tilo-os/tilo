@@ -167,7 +167,7 @@ fn sdk_root_from_dependencies(cargo_manifest: &Path) -> Result<PathBuf> {
             .and_then(serde_json::Value::as_str)
             .map(PathBuf::from)
             .context("tilo-app has no manifest path")?;
-        if let Some(root) = manifest.ancestors().nth(4)
+        if let Some(root) = manifest.ancestors().nth(3)
             && is_sdk_checkout(root)
         {
             return Ok(root.to_path_buf());

@@ -1597,7 +1597,7 @@ impl BrowserWidget {
     ) -> ui::widget::Button {
         match (action, self.dispatch.clone()) {
             (Some(action), Some(dispatch)) => {
-                button.on_effect(move || dispatch.submit(action.clone()))
+                button.on_click(move || dispatch.submit(action.clone()))
             }
             _ => button,
         }
@@ -3574,7 +3574,7 @@ impl BrowserWidget {
                     let pending = self.pip_choice.clone();
                     Button::new(id, label)
                         .with_icon(icon)
-                        .on_effect(move || pending.set(Some(choice)))
+                        .on_click(move || pending.set(Some(choice)))
                 };
                 Box::new(
                     Column::new()

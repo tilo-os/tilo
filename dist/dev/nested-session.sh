@@ -46,6 +46,9 @@
 #                      socket, the runtime directory and the state directory to
 #                      FILE as JSON (also kept as session.json in the runtime
 #                      directory)
+#   --until-stdin-closes  end when stdin reaches its end: a tool that starts the
+#                      session on a pipe whose write end only it holds ends it
+#                      however the tool ends, a kill included
 #   --print-runtime    print the private runtime directory a session on
 #                      --state uses, and exit: a tool that has to reach into a
 #                      session (its mounts, its sockets) asks here instead of
@@ -76,6 +79,7 @@ fresh_desktop=0
 headless=0
 software=0
 print_runtime=0
+until_stdin_closes=0
 community=
 install_tapps=()
 ready_out=
@@ -97,6 +101,7 @@ while (($#)); do
         --headless) headless=1; shift ;;
         --software) software=1; shift ;;
         --print-runtime) print_runtime=1; shift ;;
+        --until-stdin-closes) until_stdin_closes=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; session_args=("$@"); break ;;
@@ -153,7 +158,27 @@ if [[ -z $runtime_base ]]; then
     fi
     say "no XDG_RUNTIME_DIR: the session's runtime directory is under $runtime_base"
 fi
-runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+# A session that is its machine's own login uses the seat's runtime directory
+# itself (`TILO_SESSION_RUNTIME`), as a login does: the launcher's system grant
+# and the compositor both name `/run/user/<uid>`, and Settings reads what they
+# publish there. Any other session gets a private directory under the base, so
+# two sessions beside one desktop never meet.
+exact_runtime=0
+if [[ -n ${TILO_SESSION_RUNTIME:-} ]]; then
+    runtime=$(realpath -m "$TILO_SESSION_RUNTIME")
+    runtime_base=$(dirname "$runtime")
+    exact_runtime=1
+else
+    runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+fi
+# A session's own runtime directory is made afresh; a seat's is emptied, never
+# removed: its parent (/run/user) is not this user's to write, and a login's
+# directory outlives each session in it.
+empty_runtime() {
+    if ((exact_runtime)); then
+        find "$runtime" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+    fi
+}
 # Where the session's sockets go is a pure answer, so asking it takes no
 # tools, no build, no display and no state: a tool that reaches into a session
 # asks here and gets the same path the session itself will use.
@@ -175,7 +200,16 @@ for name in DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE AT_SPI_BUS_ADDRESS \
     unset "$name"
 done
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/no-host-session-bus
-export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/no-system-bus
+# A session that serves its own machine (`TILO_SESSION_SYSTEM_BUS=1`, which a
+# check's machine has and a desktop's guest does not) runs a system bus of its
+# own, started below: never the desktop's the session may be running beside.
+serve_system_bus=0
+if [[ ${TILO_SESSION_SYSTEM_BUS:-} == 1 || ${TILO_MACHINE:-} == owned ]]; then
+    serve_system_bus=1
+    export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/dbus/system_bus_socket
+else
+    export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/no-system-bus
+fi
 
 for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
@@ -270,7 +304,7 @@ fi
 fonts=$state/fonts
 rm -rf "$fonts"
 python3 "$repo_root/tools/font-catalog.py" prepare \
-    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+    "$repo_root/crates/ui/ui-core/assets/fonts" "$fonts" --scope product
 ln -sfn "$fonts" "$bin/fonts"
 
 # --- 2. Plans -------------------------------------------------------------------
@@ -333,7 +367,7 @@ runtime_id=tilo-runtime/$runtime_version
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-app
-# Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
+# Beside it, the tilolang host (crates/lang/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances: built without the toolkit, it runs on the app runtime's
 # loader and libraries alone.
 tilolang_process_bin=$bin/tilolang-process
@@ -390,6 +424,20 @@ mkdir -p -m 700 "$state/secrets"
 export HOME=$state/home
 export XDG_CONFIG_HOME=$state/config XDG_DATA_HOME=$state/data
 export XDG_STATE_HOME=$state/state XDG_CACHE_HOME=$state/cache
+# A Tilo login names its own desktop (`/usr/libexec/tilo-session` exports
+# `XDG_CURRENT_DESKTOP=tilo`), and the image installs the portal's own
+# implementation description and preference beside the frontend's. A session
+# started from a build provides both the way the image does, so
+# xdg-desktop-portal asks this session for the file chooser, the account sheet
+# and the rest, instead of falling back to a host desktop's gtk one (which an
+# image without a display cannot run).
+export XDG_CURRENT_DESKTOP=tilo
+portal=$state/data/xdg-desktop-portal
+mkdir -p "$portal/portals" "$state/config/xdg-desktop-portal"
+cp "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" "$portal/"
+cp "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" "$state/config/xdg-desktop-portal/"
+cp "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" "$portal/portals/"
+export XDG_DATA_DIRS=$state/data:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
 export TILO_IDENTITY_ROOT=$state/identity
 export TILO_APPS_DATA_DIR=$state/apps
 # The session's system store (below), as /usr/share/tilo-apps is a device's.
@@ -423,8 +471,11 @@ export TILO_SYSTEM_INTERFACES=$repo_root/os/usr/share/tilo/system-interfaces.tom
 # BlueZ, holds its logind or UPower, registers an agent on its system bus or
 # joins its systemd user manager's session target; and the programs the session
 # starts (its apps above all, through the launcher) inherit the same answer
-# rather than reaching for the desktop's daemons themselves.
-export TILO_MACHINE=hosted
+# rather than reaching for the desktop's daemons themselves. A caller that runs
+# this session as its machine's own login says so (`TILO_MACHINE=owned`): then
+# the machine's daemons are this session's, and the system bus it starts below
+# is the one they are on.
+[[ ${TILO_MACHINE:-} == owned ]] || export TILO_MACHINE=hosted
 # The private D-Bus answers no Secret Service, so secrets (the collaboration
 # channels' keys among them) go to the sealed file store a headless machine
 # uses, in the state directory.
@@ -475,6 +526,8 @@ mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 # os/scripts/pack-apps.sh installs a device's, so the launcher treats them as
 # the image's own. The person's store keeps what they install themselves.
 in_system_store() { env -u TILO_APPS_SYSTEM_DIR TILO_APPS_DATA_DIR="$system_store" "$@"; }
+# The session is not running yet, so no package service is either: like an
+# image build, every change below names the store it writes (`--offline-store`).
 installed=$(in_system_store "$bin/tilo-install" list 2>/dev/null || true)
 user_installed=$(env -u TILO_APPS_SYSTEM_DIR "$bin/tilo-install" list 2>/dev/null || true)
 # The selected apps' catalog entries, read before the loop: a failing filter
@@ -488,7 +541,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
     # A copy an earlier session installed into the person's store would start instead of the
     # image's. Removed with the system store in view, so the runtime the image's apps name stays.
     if grep -q "^$id " <<<"$user_installed"; then
-        "$bin/tilo-install" uninstall "$id" --keep-state >/dev/null
+        "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" uninstall "$id" --keep-state >/dev/null
     fi
     built=$thin/$binary
     [[ -x $built ]] || die "missing app binary $built"
@@ -519,7 +572,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
     # --force replaces the package of the same version; app data stays. The
     # main runtime is installed above; an optional one (Browser's Chromium
     # engine) is offered for download by the app itself.
-    in_system_store "$bin/tilo-install" install "$tapp" --allow-self-signed --force \
+    in_system_store "$bin/tilo-install" --offline-store "$system_store" install "$tapp" --allow-self-signed --force \
         --ignore-missing-runtime >/dev/null
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
@@ -527,7 +580,7 @@ done <<<"$catalog"
 for tapp in "${install_tapps[@]}"; do
     [[ -f $tapp ]] || die "no package $tapp"
     say "installing $(basename "$tapp")"
-    "$bin/tilo-install" install "$tapp" --allow-self-signed --force >/dev/null
+    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" install "$tapp" --allow-self-signed --force >/dev/null
 done
 
 # The Browser's Chromium engine, signed with the session's key as the engine
@@ -538,7 +591,7 @@ done
 engine_tree=$build_out/chromium-engine
 if [[ -x $engine_tree/tilo-chromium-host ]]; then
     engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
-        "$repo_root/crates/sdk/tilo-webview/src/chromium/runtime.rs")
+        "$repo_root/crates/engines/tilo-webview/src/chromium/runtime.rs")
     [[ -n $engine_version ]] || die "the Chromium runtime names no RUNTIME_VERSION"
     engine_key=$( { printf '%s\n' "$engine_version" "$pubkey"; find "$engine_tree" -type f -print0 \
         | sort -z | xargs -0 sha256sum; } | sha256sum | cut -c1-64)
@@ -560,6 +613,15 @@ fi
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
 # --- 8. Run ---------------------------------------------------------------------
+if ((exact_runtime)); then
+    # The seat's own directory, and never one planted at its name: everything
+    # the session serves lives under it.
+    [[ -L $runtime ]] && die "refusing runtime directory $runtime: it is a symlink"
+    if [[ -e $runtime && ! -O $runtime ]]; then
+        die "refusing runtime directory $runtime: it is not this user's"
+    fi
+    mkdir -p -m 700 "$runtime"
+fi
 if ((own_runtime_base)); then
     # This user's own directory, and never one planted at its name: everything
     # the session serves lives under it.
@@ -569,8 +631,13 @@ if ((own_runtime_base)); then
     fi
     mkdir -p -m 700 "$runtime_base"
 fi
-rm -rf "$runtime"
-mkdir -m 700 "$runtime"
+if ((exact_runtime)); then
+    empty_runtime
+    mkdir -p -m 700 "$runtime"
+else
+    rm -rf "$runtime"
+    mkdir -m 700 "$runtime"
+fi
 export XDG_RUNTIME_DIR=$runtime
 control=$runtime/control.sock
 children=()
@@ -596,6 +663,7 @@ cleanup() {
     # script again) must not cut the cleanup short and leave the session up.
     trap '' INT TERM HUP
     stop_groups "${children[@]}"
+    [[ -z ${lifeline:-} ]] || kill "$lifeline" 2>/dev/null || true
     rm -f "$pidfile"
     # A session ends by unmounting the files it served for apps, and one that
     # was killed outright leaves a process of its own that does it for it.
@@ -605,6 +673,13 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
+if ((until_stdin_closes)); then
+    # A job in the background reads /dev/null unless told otherwise: stdin goes to it as fd 3.
+    exec 3<&0
+    { cat <&3 >/dev/null; kill -TERM $$; } &
+    lifeline=$!
+    exec 3<&-
+fi
 printf '%s\n' "$$" > "$pidfile"
 logs=$state/logs
 mkdir -p "$logs"
@@ -670,13 +745,38 @@ if ((!keep_identity)) && [[ ! -f $marker ]]; then
     # while it lives.
     stop_groups "$pid"
     children=()
-    rm -rf "$runtime"
-    mkdir -m 700 "$runtime"
+    if ((exact_runtime)); then
+        empty_runtime
+        mkdir -p -m 700 "$runtime"
+    else
+        rm -rf "$runtime"
+        mkdir -m 700 "$runtime"
+    fi
 fi
 
 # --- The session's own desktop ------------------------------------------------
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
+if ((serve_system_bus)); then
+    # The session's own system bus. A device's systemd starts the machine's
+    # authorities on it; a machine with no systemd (a check's VM) starts them
+    # here.
+    mkdir -p "$runtime/dbus"
+    setsid "$dbus_daemon" --session --address="unix:path=$runtime/dbus/system_bus_socket" \
+        --nofork --nopidfile > "$logs/system-bus.log" 2>&1 &
+    children+=("$!")
+    wait_for_socket "$runtime/dbus/system_bus_socket" "$!" \
+        || die "the session's system bus did not start (see $logs/system-bus.log)"
+    # The power authorities Settings reads on the system bus: UPower's manager
+    # and display device, and power-profiles-daemon's profiles. This machine has
+    # no battery or platform profile behind them and no polkit to answer a real
+    # upowerd's first call, so the tree's fake serves both interfaces, as a
+    # machine with no battery reports to them.
+    [[ -x $bin/fake-power ]] \
+        || die "missing $bin/fake-power (this session serves its machine's system bus; run without --no-build)"
+    setsid "$bin/fake-power" --bus "$DBUS_SYSTEM_BUS_ADDRESS" > "$logs/power.log" 2>&1 &
+    children+=("$!")
+fi
 setsid "$bin/tilo-model-gateway" serve --socket "$runtime/tilo/services/model-gateway.sock" \
     > "$logs/model-gateway.log" 2>&1 &
 children+=("$!")
@@ -807,61 +907,103 @@ else
 fi
 # The person's own workspace, served as a Tilo device serves it (`fs.service` at
 # /var/workspace): the Files app's windowless endpoint on the record route, and the mounted
-# folder a file uploaded in Files lands in. A session started from a build under test serves
-# its own, because the mount underneath belongs to the image and its wire is an older one; and
-# a session with none shows the computer's own Home in Files instead of the workspace.
-files_state=$XDG_STATE_HOME/tilo/files
-files_runtime=$runtime/tilo/files-workspace
-mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
-chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
-# The workspace mounts where the system says a workspace mounts (/var/workspace,
-# tilo_paths::WORKSPACE_MOUNT) whenever this session may mount there: the session's own
-# grants and the sandbox each app is given are written in that path's terms, so only a mount
-# at that path is the workspace to the apps. A session that may not mount there keeps its
-# own folder and says so: its apps then see no workspace.
-files_mount=$files_state/mount
-if [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; then
-    mkdir -p /var/workspace 2>/dev/null || true
+# folder a file uploaded in Files lands in. A machine that already serves the person's
+# workspace — a device's service, or a walk that starts one as a device does — hands this
+# session the mount and the document-media socket it serves, and this starts no daemon of its
+# own: two mounts of one workspace at one path cannot both stand. A session started from a
+# build under test that no machine serves for serves its own, because the mount underneath
+# belongs to the image and its wire is an older one; and a session with none shows the
+# computer's own Home in Files instead of the workspace.
+machine_files=0
+if [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} ]]; then
+    # The daemon is the machine's and starts beside this session, after the person's identity
+    # is minted: wait for the socket it serves and the mount it publishes, as a login waits for
+    # its unit. A machine that never serves them leaves this session its own to start.
+    deadline=$((SECONDS + 180))
+    while [[ ! -S $TILO_FS_BLOB_SOCKET ]]; do
+        if [[ -s /run/tilo/fs.failed ]]; then
+            say "the machine's files workspace did not start ($(< /run/tilo/fs.failed)); this session serves its own"
+            break
+        fi
+        if ((SECONDS >= deadline)); then
+            say "the machine did not serve $TILO_FS_BLOB_SOCKET; this session serves its own workspace"
+            break
+        fi
+        sleep 0.2
+    done
+    if [[ -S $TILO_FS_BLOB_SOCKET ]]; then
+        machine_files=1
+        deadline=$((SECONDS + 60))
+        while ! mountpoint -q "$TILO_WORKSPACE_ROOTS" 2>/dev/null; do
+            ((SECONDS < deadline)) || break
+            sleep 0.1
+        done
+    fi
 fi
-if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; } \
-    && ! mountpoint -q /var/workspace 2>/dev/null; then
-    files_mount=/var/workspace
-    chmod 700 "$files_mount" 2>/dev/null || true
-fi
-say "the session's workspace mounts at $files_mount"
-# This build's daemon, mounting this session's workspace with the capability list a device's
-# `fs.service` starts with: the shipped one, which grants the local person the whole workspace,
-# until the session tells the daemon its own and the daemon keeps that one here instead. The
-# workspace's file keys are given only as that list allows. Its authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
-# make; a desktop that is not Tilo has none, so they go in a private directory of this user's
-# whose path any socket fits (a socket path over 107 bytes is refused).
-if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
-    export TILO_AUTHORITY_SOCKET_DIR=/tmp/tilo-files-$(id -u)
-    mkdir -p -m 700 "$TILO_AUTHORITY_SOCKET_DIR"
-fi
-# One person's session: the mount is theirs alone, as the process harness takes it, so no
-# desktop's /etc/fuse.conf has to allow other users in.
-files_acl=$files_state/fs-capabilities.json
-[[ -f $files_acl ]] || cp "$repo_root/os/usr/share/tilo/fs-capabilities.json" "$files_acl"
-TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
-    --storage-sock "$runtime/tilo/files-storage/storage.sock" \
-    --blob-sock "$files_runtime/fs-blobs.sock" \
-    --acl "$files_acl" --member person:local \
-    --backend fuse > "$logs/files-workspace.log" 2>&1 &
-files_pid=$!
-children+=("$files_pid")
-# Files reads the workspace where the mount is (`TILO_WORKSPACE_ROOTS`, as a device's login
-# gives it), keeps document media at this session's socket, and records the daemon as its
-# endpoint, as it records the login's unit.
-if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
-    export TILO_WORKSPACE_ROOTS=$files_mount
-    export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
-    export TILO_FILES_ENDPOINT_PID=$files_pid
+if ((machine_files)); then
+    # What Files reads, as a device's login gives it: the mount, the document media the daemon
+    # serves, and the daemon's main pid, which the session records as it records the login's
+    # unit so the daemon's connections are admitted to the workspace it mounts.
+    export TILO_WORKSPACE_ROOTS=${TILO_WORKSPACE_ROOTS:-/var/workspace}
+    export TILO_FS_BLOB_SOCKET
+    if [[ -r /run/tilo/fs.pid ]]; then
+        export TILO_FILES_ENDPOINT_PID=$(< /run/tilo/fs.pid)
+    fi
+    say "the machine serves the session's workspace at $TILO_WORKSPACE_ROOTS"
 else
-    # Why, in the session's own output: a failure nobody can read is a failure
-    # nobody can fix, and this one runs inside a machine that keeps its logs.
-    say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
-    sed 's/^/    fs: /' "$logs/files-workspace.log" >&2 2>/dev/null || true
+    files_state=$XDG_STATE_HOME/tilo/files
+    files_runtime=$runtime/tilo/files-workspace
+    mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
+    chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
+    # The workspace mounts where the system says a workspace mounts (/var/workspace,
+    # tilo_paths::WORKSPACE_MOUNT) whenever this session may mount there: the session's own
+    # grants and the sandbox each app is given are written in that path's terms, so only a mount
+    # at that path is the workspace to the apps. A session that may not mount there keeps its
+    # own folder and says so: its apps then see no workspace.
+    files_mount=$files_state/mount
+    if [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; then
+        mkdir -p /var/workspace 2>/dev/null || true
+    fi
+    if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; } \
+        && ! mountpoint -q /var/workspace 2>/dev/null; then
+        files_mount=/var/workspace
+        chmod 700 "$files_mount" 2>/dev/null || true
+    fi
+    say "the session's workspace mounts at $files_mount"
+    # This build's daemon, mounting this session's workspace with the capability list a device's
+    # `fs.service` starts with: the shipped one, which grants the local person the whole workspace,
+    # until the session tells the daemon its own and the daemon keeps that one here instead. The
+    # workspace's file keys are given only as that list allows. Its authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
+    # make; a desktop that is not Tilo has none, so they go in a private directory of this user's
+    # whose path any socket fits (a socket path over 107 bytes is refused).
+    if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
+        export TILO_AUTHORITY_SOCKET_DIR=/tmp/tilo-files-$(id -u)
+        mkdir -p -m 700 "$TILO_AUTHORITY_SOCKET_DIR"
+    fi
+    # One person's session: the mount is theirs alone, as the process harness takes it, so no
+    # desktop's /etc/fuse.conf has to allow other users in.
+    files_acl=$files_state/fs-capabilities.json
+    [[ -f $files_acl ]] || cp "$repo_root/os/usr/share/tilo/fs-capabilities.json" "$files_acl"
+    TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
+        --storage-sock "$runtime/tilo/files-storage/storage.sock" \
+        --blob-sock "$files_runtime/fs-blobs.sock" \
+        --acl "$files_acl" --member person:local \
+        --backend fuse > "$logs/files-workspace.log" 2>&1 &
+    files_pid=$!
+    children+=("$files_pid")
+    # Files reads the workspace where the mount is (`TILO_WORKSPACE_ROOTS`, as a device's login
+    # gives it), keeps document media at this session's socket, and records the daemon as its
+    # endpoint, as it records the login's unit.
+    if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
+        export TILO_WORKSPACE_ROOTS=$files_mount
+        export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
+        export TILO_FILES_ENDPOINT_PID=$files_pid
+    else
+        # Why, in the session's own output: a failure nobody can read is a failure
+        # nobody can fix, and this one runs inside a machine that keeps its logs.
+        say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
+        sed 's/^/    fs: /' "$logs/files-workspace.log" >&2 2>/dev/null || true
+    fi
 fi
 
 # The person's cloud account folders, served as a Tilo device serves them

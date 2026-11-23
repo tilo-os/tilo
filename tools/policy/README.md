@@ -44,7 +44,13 @@ crate manifests it stages; and `check_session_copy_contract.py` judges the copy
 files the commit touches. The whole-tree half of the latter two — a crate no
 manifest stages, a copy file left alone — is an inventory the suite keeps.
 
-The rest compare files with each other (catalogue coverage, app copy
-resolution, the session loop's blocking rules, wire attributes, interface
-versions), so they judge the whole tree and the hook leaves them to the suite.
+The rest compare files with each other (app copy resolution, the session loop's
+blocking rules, wire attributes, interface versions), so they judge the whole
+tree and the hook leaves them to the suite.
+
+`check_catalogue_coverage.py` takes `--staged` through `judged.py` and still
+reads more than the files it reports: a key a commit adds to a source catalogue
+drifts against the translation of its unit the commit leaves alone, so it reads
+each unit the commit stages as the commit leaves it, and HEAD's text of that
+unit's other catalogues. No unit the commit does not stage is read.
 

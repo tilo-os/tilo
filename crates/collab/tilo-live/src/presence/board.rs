@@ -10,7 +10,7 @@
 //! somebody else.
 
 use collab_types::presence::{
-    Availability, CallPresence, DESKTOP_APP, Payload, PointerSpace, Presence, PresenceKey,
+    Availability, Bridged, CallPresence, DESKTOP_APP, Payload, PointerSpace, Presence, PresenceKey,
     ShellPresence, ShownWave as Wave,
 };
 
@@ -136,6 +136,41 @@ pub struct Status {
     pub automatic: bool,
 }
 
+/// One person a bridge carries into a call: a member of the call of its own,
+/// said on this device's presence on behalf of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgedMember {
+    /// The stand-in's session, stable for as long as the person is on that
+    /// service: the key every device derives their publisher by
+    /// ([`collab_types::presence::stand_in`]).
+    pub session: String,
+    /// The name they are shown by.
+    pub name: String,
+    /// Who they are on the service, and the member they are linked to.
+    pub bridged: Bridged,
+    /// The call they are in, as the bridge carries them into it.
+    pub call: Call,
+}
+
+impl BridgedMember {
+    /// The publisher every device knows this bridged member by: the stand-in
+    /// of the device speaking for it, under their session.
+    #[must_use]
+    pub fn publisher(&self, speaker: Device) -> Device {
+        collab_types::presence::stand_in(speaker, &self.session)
+    }
+
+    /// The workspace member this participant is: the member they are linked
+    /// to, else their own publisher.
+    #[must_use]
+    pub fn person(&self, speaker: Device) -> String {
+        self.bridged
+            .linked
+            .clone()
+            .unwrap_or_else(|| hex::encode(self.publisher(speaker)))
+    }
+}
+
 /// What one device says of itself here.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Own {
@@ -164,6 +199,10 @@ pub struct Own {
     /// This device's own view of its desktop, as a shell: its face, its
     /// screen, the caret in it and what it says beside its pointer.
     pub shell: Option<Box<ShellPresence>>,
+    /// The people this device carries into a call from another service, each
+    /// a member of it of their own, said on this device's presence on their
+    /// behalf.
+    pub bridged: Vec<BridgedMember>,
 }
 
 /// A call in progress in a workspace, as the people in it say.
@@ -216,6 +255,10 @@ pub struct LiveCaller {
     /// bridge rather than a person: the call is shown as bridged there, and
     /// this caller as nobody's face.
     pub bridge: Option<String>,
+    /// Who this caller is on another service, when a bridge carries them here:
+    /// a person of the call of their own, shown by their name there and marked
+    /// as reached through it, never as the bridge's person.
+    pub bridged: Option<Bridged>,
     /// The device's microphone is off in the call.
     pub muted: bool,
     /// The device hears nothing of the call.
@@ -273,6 +316,9 @@ pub struct Present {
     /// The workspace member the session is, which every surface names and colours the session by:
     /// the agent it is a session of, never the session's own id.
     pub member: Option<String>,
+    /// Who this member is on another service, when a bridge carries them into
+    /// the call: shown by their name there, marked as reached through it.
+    pub bridged: Option<Bridged>,
     pointer: Smoother,
     /// When this device last heard them say anything, on the clock the
     /// caller hands [`Board::hear`]: `None` while only the roster named them.
@@ -300,6 +346,7 @@ impl Present {
             spoken_by: None,
             session: None,
             member: None,
+            bridged: None,
             pointer: Smoother::default(),
             heard_ms: None,
         }
@@ -728,6 +775,76 @@ impl Board {
                 }
             }
         }
+        self.say_bridged_changes(&said, own);
+    }
+
+    /// Say the people this device carries into calls from another service as
+    /// they changed: each new or moved one says itself, and one no longer
+    /// carried leaves.
+    fn say_bridged_changes(&mut self, said: &Own, own: &Own) {
+        for member in &said.bridged {
+            if !own
+                .bridged
+                .iter()
+                .any(|held| held.session == member.session)
+            {
+                self.schedule.push(
+                    Presence::desktop(self.workspace.clone(), Payload::Left)
+                        .spoken_for(member.session.clone(), member.person(self.publisher)),
+                );
+            }
+        }
+        for member in &own.bridged {
+            if said
+                .bridged
+                .iter()
+                .any(|held| held.session == member.session && held == member)
+            {
+                continue;
+            }
+            self.say_bridged(member);
+        }
+    }
+
+    /// Say `member`, a person this device carries into a call, as a member of
+    /// that call of their own: here, under the name and picture they have there,
+    /// and in the call with what the bridge lets them show.
+    fn say_bridged(&mut self, member: &BridgedMember) {
+        let session = member.session.clone();
+        let named = member.person(self.publisher);
+        let workspace = self.workspace.clone();
+        self.schedule.push(
+            Presence::desktop(workspace.clone(), Payload::Arrived)
+                .spoken_for(session.clone(), named.clone()),
+        );
+        self.schedule.push(
+            Presence::desktop(
+                workspace.clone(),
+                Payload::Person {
+                    name: member.name.clone(),
+                },
+            )
+            .spoken_for(session.clone(), named.clone()),
+        );
+        self.schedule.push(
+            Presence::desktop(
+                workspace.clone(),
+                Payload::Bridged(member.bridged.clone().cleaned()),
+            )
+            .spoken_for(session.clone(), named.clone()),
+        );
+        self.schedule.push(
+            Presence::desktop(
+                workspace,
+                Payload::Availability {
+                    state: "available".to_owned(),
+                    call: Some(Call::encode(&member.call)),
+                    camera: member.call.camera,
+                    screen: member.call.screen,
+                },
+            )
+            .spoken_for(session, named),
+        );
     }
 
     /// Say the whole of what this device is again: the frame set a member who
@@ -947,6 +1064,12 @@ impl Board {
                     let label: String = name.trim().chars().take(NAME_EDGE).collect();
                     std::mem::replace(&mut member.label, label) != member.label
                 }),
+                // Who a bridge carries here from another service: shown by the
+                // name and picture they have there, never as the bridge's person.
+                Payload::Bridged(bridged) => self.touch(from, |member| {
+                    let bridged = Some(bridged.clone().cleaned()).filter(Bridged::valid);
+                    std::mem::replace(&mut member.bridged, bridged) != member.bridged
+                }),
                 // A shell — a page's desktop, or an agent's face — says where
                 // its person is and, for an agent, that it works here at all.
                 Payload::Shell(shell) => self.touch(from, |member| member.take_shell(shell)),
@@ -1116,10 +1239,18 @@ impl Board {
             let caller = LiveCaller {
                 id: hex::encode(member.publisher),
                 label: member.label().to_owned(),
-                user: member.user.clone(),
+                // A bridged person is the member they are linked to, else their
+                // own stand-in: never the bridge's person.
+                user: member.user.clone().or_else(|| {
+                    member
+                        .bridged
+                        .as_ref()
+                        .and_then(|bridged| bridged.linked.clone())
+                }),
                 camera: presence.camera,
                 screen: presence.screen,
                 bridge: presence.call.bridge.clone(),
+                bridged: member.bridged.clone(),
                 muted: presence.muted,
                 deafened: presence.deafened,
             };

@@ -325,6 +325,8 @@ pub struct Vocabulary {
     pub action_type: &'static str,
     /// [`Resource::EDITS`].
     pub edits: bool,
+    /// [`Resource::READERS`].
+    pub readers: &'static str,
     /// [`Resource::RESOURCE_TABLE`].
     pub(crate) resource_table: Option<&'static crate::table::ModelTable>,
     pub(crate) type_id: fn() -> TypeId,
@@ -452,6 +454,7 @@ impl<R: Resource> VocabularyOf<R> {
         catalogue: R::CATALOGUE,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
+        readers: R::READERS,
         resource_table: R::RESOURCE_TABLE,
         type_id: TypeId::of::<R>,
         shape: R::shape,

@@ -26,16 +26,15 @@ view quick_settings() {
             body: {
                 scroll {
                     stack(gap: .related) {
+                        // The tiles the person keeps on the panel, in their order: the same
+                        // setting the editor below changes.
                         grid(min: 10rem, gap: .related) {
-                            wifi_tile()
-                            bluetooth_tile()
-                            vpn_tile()
+                            for c in device.quick_settings.controls {
+                                control_tile(c)
+                            }
+                            // The appearance the whole desktop takes is not one of the
+                            // person's panel controls: it stays on the grid whatever they keep.
                             dark_tile()
-                            quiet_tile()
-                            night_light_tile()
-                            airplane_tile()
-                            mobile_tile()
-                            power_mode_tile()
                         }
                         levels()
                         // What runs now — the song playing, the call, the timer — stands here: its
@@ -43,11 +42,45 @@ view quick_settings() {
                         sound_section()
                         network_section()
                         bluetooth_section()
+                        devices_section()
                         power_row()
+                        controls_editor()
                     }
                 }
             }
         }
+    }
+}
+
+/// One of the panel's tiles, by the name the person's setting keeps it under: the panel draws the
+/// controls it lists and nothing else, so a tile taken off is really gone.
+view control_tile(control: Text) {
+    if control == "wifi" {
+        wifi_tile()
+    } else if control == "bluetooth" {
+        bluetooth_tile()
+    } else if control == "vpn" {
+        vpn_tile()
+    } else if control == "night_light" {
+        night_light_tile()
+    } else if control == "airplane_mode" {
+        airplane_tile()
+    } else if control == "mobile_data" {
+        mobile_tile()
+    } else if control == "do_not_disturb" {
+        quiet_tile()
+    } else if control == "rotation_lock" {
+        rotation_tile()
+    } else if control == "power_mode" {
+        power_mode_tile()
+    }
+}
+
+/// Rotation lock: on while the screen stays put when the device turns.
+view rotation_tile() {
+    let d = settings.display
+    ui.Button("Rotation lock", icon: .rotate_cw, toggled: d.rotation_lock) {
+        on press: settings.set_rotation_lock(settings.display, locked: not d.rotation_lock)
     }
 }
 
@@ -247,6 +280,63 @@ view sound_section() {
                     on activate: device.route_output(device.sound, node: output.node)
                 }
             }
+            // Each app playing now: its own level and mute, and where it plays, so one app can
+            // go to a speaker across the room while the rest stay here.
+            for stream in sound.streams {
+                ui.ListRow(
+                    stream.application,
+                    secondary: if let media = stream.media {
+                        media
+                    } else if stream.playback { "Playing" } else { "Paused" },
+                    icon: if stream.muted { .volume_x } else { .volume_2 },
+                ) {
+                    trailing: {
+                        row(gap: .related, align: .center) {
+                            ui.Button(
+                                if stream.muted {
+                                    "Unmute {stream.application}"
+                                } else { "Mute {stream.application}" },
+                                icon: if stream.muted { .volume_x } else { .volume_2 },
+                                icon_only: true,
+                                size: .small,
+                                toggled: stream.muted,
+                                role: .plain,
+                            ) {
+                                on press: device.set_stream_muted(
+                                    device.sound,
+                                    stream: stream.node,
+                                    muted: not stream.muted,
+                                )
+                            }
+                            ui.MenuButton("Play {stream.application} through", icon: .speaker) {
+                                for output in sound.outputs {
+                                    ui.MenuItem(
+                                        output.label,
+                                        checked: if let target = stream.target {
+                                            target == output.node
+                                        } else { false },
+                                    ) {
+                                        on choose: device.route_stream(
+                                            device.sound,
+                                            stream: stream.node,
+                                            device: output.node,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let level = stream.volume {
+                    ui.Slider(value: level, label: stream.application, fill) {
+                        on change(v): device.set_stream_volume(
+                            device.sound,
+                            stream: stream.node,
+                            level: v,
+                        )
+                    }
+                }
+            }
             for input in sound.inputs {
                 ui.ListRow(
                     input.label,
@@ -404,14 +494,22 @@ view bluetooth_section() {
                         device.connect(device.bluetooth, address: accessory.address)
                     }
                     trailing: {
-                        ui.Button(
-                            "Forget this device",
-                            icon: .trash,
-                            icon_only: true,
-                            size: .small,
-                            role: .plain,
-                        ) {
-                            on press: device.forget(device.bluetooth, address: accessory.address)
+                        row(gap: .related, align: .center) {
+                            if accessory.connected {
+                                bluetooth_hand_off(accessory.address)
+                            }
+                            ui.Button(
+                                "Forget this device",
+                                icon: .trash,
+                                icon_only: true,
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: device.forget(
+                                    device.bluetooth,
+                                    address: accessory.address,
+                                )
+                            }
                         }
                     }
                 }
@@ -460,6 +558,9 @@ view power_row() {
         ui.Button("Lock", icon: .lock) {
             on press: device.lock(p)
         }
+        ui.Button("Settings", icon: .settings) {
+            on press: session.open_settings(link: "settings://")
+        }
         spacer
         ui.MenuButton("Power", icon: .power) {
             ui.MenuItem("Sleep") {
@@ -476,4 +577,263 @@ view power_row() {
             }
         }
     }
+}
+
+/// The Devices section: the person's other devices, what this one can hand them through Nearby
+/// Send, the offers that wait for an answer, and what became of each transfer. Every row is the
+/// session's published resource, read here and changed by its own actions, so a press here, a
+/// press in Files and an agent's call change the same thing.
+view devices_section() {
+    let mine = device.devices
+    let send = device.nearby_send
+    if not mine.devices.is_empty() or not send.devices.is_empty() or not send.transfers.is_empty() {
+        ui.Section("Devices") {
+            // The person's own devices, this machine left out: pressing one wakes it, sends it
+            // what plays here, or opens where it is arranged.
+            for d in mine.devices {
+                if not d.local {
+                    ui.ListRow(
+                        d.label,
+                        secondary: if d.online { "Here now" } else { "Away" },
+                        selected: d.online,
+                        icon: .laptop,
+                    ) {
+                        on activate: device.press(device.devices, row: d.id, part: .row)
+                    }
+                }
+            }
+            if not send.devices.is_empty() {
+                ui.Text("Nearby Send", role: .caption, secondary: true)
+                for d in send.devices {
+                    ui.ListRow(
+                        d.name,
+                        secondary: nearby_place(d.kind == .lab_receiver, d.reachable),
+                        selected: d.reachable,
+                        icon: .laptop,
+                    )
+                }
+            }
+            for t in send.transfers {
+                if t.incoming and t.state == .offered {
+                    ui.ListRow(
+                        t.name,
+                        secondary: if let d = send.destinations.first() {
+                            "{t.peer} offers this; keep it in {d.name}"
+                        } else { "{t.peer} offers this" },
+                        icon: .download,
+                    ) {
+                        trailing: {
+                            row(gap: .related, align: .center) {
+                                ui.Button(
+                                    "Keep it",
+                                    size: .small,
+                                    role: .primary,
+                                    enabled: not send.destinations.is_empty(),
+                                    description: "No folder here takes the file",
+                                ) {
+                                    on press: device.accept(device.nearby_send, transfer: t.handle)
+                                }
+                                ui.Button(
+                                    "Turn down",
+                                    icon: .x,
+                                    icon_only: true,
+                                    size: .small,
+                                    role: .plain,
+                                ) {
+                                    on press: device.decline(device.nearby_send, transfer: t.handle)
+                                }
+                            }
+                        }
+                    }
+                } else if t.state == .sending {
+                    ui.ListRow(
+                        t.name,
+                        secondary: transfer_moving(t.peer, t.progress, t.incoming),
+                        icon: if t.incoming { .download } else { .upload },
+                    ) {
+                        trailing: {
+                            ui.Button("Stop", size: .small, role: .plain) {
+                                on press: device.cancel(device.nearby_send, transfer: t.handle)
+                            }
+                        }
+                    }
+                } else if t.state == .failed {
+                    ui.ListRow(t.name, secondary: "It did not finish", icon: .triangle_alert) {
+                        trailing: {
+                            ui.Button("Try again", size: .small, role: .plain) {
+                                on press: device.retry_transfer(
+                                    device.nearby_send,
+                                    transfer: t.handle,
+                                )
+                            }
+                        }
+                    }
+                } else if t.state == .done {
+                    ui.ListRow(
+                        t.name,
+                        secondary: if t.incoming { "Kept here" } else { "Sent" },
+                        icon: .circle_check,
+                    )
+                } else {
+                    ui.ListRow(t.name, secondary: "Turned down", icon: .x)
+                }
+            }
+            if send.devices.is_empty() and send.transfers.is_empty() {
+                ui.EmptyState("No devices in reach", icon: .laptop, inline: true)
+            }
+        }
+    }
+}
+
+/// Where a device of the person's stands in the Nearby Send list.
+fn nearby_place(lab: Bool, reachable: Bool) -> Text {
+    if not reachable { "Away" } else if lab { "Receiver" } else { "In reach" }
+}
+
+/// What a transfer that is moving says: to whom, or from whom, and how far it got.
+fn transfer_moving(peer: Text, progress: Int, incoming: Bool) -> Text {
+    if incoming { "From {peer}, {progress}%" } else { "To {peer}, {progress}%" }
+}
+
+/// The way to move a paired Bluetooth accessory to another of the person's devices: the accessory
+/// stays paired here and plays there.
+view bluetooth_hand_off(address: Text) {
+    let mine = device.devices
+    let others = mine.devices.filter(d -> not d.local and d.online)
+    if not others.is_empty() {
+        ui.MenuButton("Move it to…", icon: .laptop) {
+            for d in others {
+                ui.MenuItem(d.label) {
+                    on choose: device.hand_off(device.devices, address: address, device: d.id)
+                }
+            }
+        }
+    }
+}
+
+/// The controls the panel shows, and the way every person changes them: each tile is one row here,
+/// with the press that hides it or moves it to the front of the panel, and the ones the panel does
+/// not show are offered back. The order and the choice are the person's own setting, published as
+/// `device.quick_settings`, so the panel, an agent and a script change them the same way.
+view controls_editor() {
+    state open: Bool = false
+    let qs = device.quick_settings
+    row(fill, distribute: .end) {
+        ui.Button(
+            "Customise the panel",
+            icon: .sliders_horizontal,
+            size: .small,
+            role: .plain,
+            toggled: open,
+        ) {
+            on press: set(open, not open)
+        }
+    }
+    if open {
+        ui.Section("Panel controls") {
+            for c in qs.controls {
+                ui.ListRow(
+                    control_label(c),
+                    icon: if c == "bluetooth" {
+                        .bluetooth
+                    } else if c == "vpn" {
+                        .shield
+                    } else if c == "night_light" {
+                        .moon
+                    } else if c == "airplane_mode" {
+                        .plane
+                    } else if c == "mobile_data" {
+                        .globe
+                    } else if c == "do_not_disturb" {
+                        .bell_off
+                    } else if c == "rotation_lock" {
+                        .rotate_cw
+                    } else if c == "power_mode" { .gauge } else { .wifi },
+                ) {
+                    trailing: {
+                        row(gap: .related, align: .center) {
+                            ui.Button(
+                                "Move {control_label(c)} to the front",
+                                icon: .arrow_up,
+                                icon_only: true,
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: device.move_control(
+                                    device.quick_settings,
+                                    control: c,
+                                    before: qs.controls.first(),
+                                )
+                            }
+                            ui.Button(
+                                "Hide {control_label(c)}",
+                                icon: .x,
+                                icon_only: true,
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: device.hide_control(device.quick_settings, control: c)
+                            }
+                        }
+                    }
+                }
+            }
+            for c in hidden_controls(qs.controls) {
+                ui.ListRow(control_label(c), secondary: "Not on the panel", icon: .plus) {
+                    trailing: {
+                        ui.Button(
+                            "Show {control_label(c)}",
+                            icon: .plus,
+                            size: .small,
+                            role: .plain,
+                        ) {
+                            on press: device.show_control(device.quick_settings, control: c)
+                        }
+                    }
+                }
+            }
+            row(fill, distribute: .end) {
+                ui.Button("Reset the panel", size: .small, role: .plain) {
+                    on press: device.reset_controls(device.quick_settings)
+                }
+            }
+        }
+    }
+}
+
+/// The controls the panel does not show, in the one order they are offered back in.
+fn hidden_controls(shown: List<Text>) -> List<Text> {
+    let every = [
+        "wifi",
+        "bluetooth",
+        "vpn",
+        "night_light",
+        "airplane_mode",
+        "mobile_data",
+        "do_not_disturb",
+        "rotation_lock",
+        "power_mode",
+    ]
+    return every.filter(c -> not shown.contains(c))
+}
+
+/// What a control is called on the panel and here.
+fn control_label(control: Text) -> Text {
+    if control == "wifi" {
+        "Wi-Fi"
+    } else if control == "bluetooth" {
+        "Bluetooth"
+    } else if control == "vpn" {
+        "VPN"
+    } else if control == "night_light" {
+        "Night light"
+    } else if control == "airplane_mode" {
+        "Airplane mode"
+    } else if control == "mobile_data" {
+        "Mobile data"
+    } else if control == "do_not_disturb" {
+        "Do not disturb"
+    } else if control == "rotation_lock" {
+        "Rotation lock"
+    } else if control == "power_mode" { "Power mode" } else { control }
 }

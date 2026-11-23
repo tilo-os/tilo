@@ -76,8 +76,8 @@ mod cases {
             self.held.borrow().get(hash).cloned()
         }
 
-        fn choose(&self, _request: &FileRequest) -> Result<Option<FileValue>, String> {
-            Ok(None)
+        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+            Ok(Vec::new())
         }
 
         fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
@@ -146,7 +146,15 @@ mod cases {
                     ("message_id", Value::text("notes@analytical.example")),
                     ("conversation", Value::text("notes@analytical.example")),
                     ("date", Value::text("2024-03-01T09:00:00Z")),
-                    ("attachments", Value::List(vec![Value::text("notes.pdf")])),
+                    (
+                        "attachments",
+                        Value::List(vec![Value::file(FileValue::new(
+                            "notes.pdf",
+                            "application/pdf",
+                            3,
+                            "def",
+                        ))]),
+                    ),
                 ],
             );
             returned_ref(out)

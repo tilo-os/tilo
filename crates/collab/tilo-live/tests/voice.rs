@@ -6,7 +6,10 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-use tilo_live::voice::{FRAME_SAMPLES, HEADER_BYTES, MAX_OBJECT_BYTES, VoiceObject};
+use tilo_live::voice::{
+    BRIDGED_HEADER_BYTES, FRAME_SAMPLES, HEADER_BYTES, MAX_OBJECT_BYTES, VoiceObject,
+    bundle_objects,
+};
 
 const GOLDEN: &[u8] = &[
     1, 0, 0, 0, 8, 7, 6, 5, 4, 3, 2, 1, 24, 23, 22, 21, 20, 19, 18, 17, 192, 3, 128, 187, 0, 0, 1,
@@ -18,6 +21,7 @@ fn fixture() -> VoiceObject {
         sequence: 0x0102_0304_0506_0708,
         timestamp: 0x1112_1314_1516_1718,
         duration: FRAME_SAMPLES,
+        speaker: None,
         payload: vec![0xf8, 0xff, 0xfe],
     }
 }
@@ -29,6 +33,25 @@ tilo_test_env::scenario! {
     {
         assert_eq!(fixture().encode().unwrap(), GOLDEN);
         assert_eq!(VoiceObject::decode(GOLDEN).unwrap(), fixture());
+    }
+
+    phase a_bridged_voice_names_the_person_it_is;
+    {
+        let bridged = VoiceObject {
+            speaker: Some([0xab; 32]),
+            ..fixture()
+        };
+        let bytes = bridged.encode().unwrap();
+        assert_eq!(bytes.len(), BRIDGED_HEADER_BYTES + 3);
+        assert_eq!(VoiceObject::decode(&bytes).unwrap(), bridged);
+        // A bundle may mix the two headers: each object names its own length.
+        let mut bundle = bytes.clone();
+        bundle.extend_from_slice(&fixture().encode().unwrap());
+        assert_eq!(bundle_objects(&bundle).unwrap().len(), 2);
+        // A bridged object without its speaker's key is not one.
+        let mut cut = bytes;
+        cut.truncate(BRIDGED_HEADER_BYTES - 1 + 3);
+        assert!(VoiceObject::decode(&cut).is_err());
     }
 
     phase unsigned_64_bit_edges_and_maximum_payload_round_trip;
@@ -121,6 +144,7 @@ fn frame(sequence: u64, payload: usize) -> Vec<u8> {
         sequence,
         timestamp: sequence.saturating_mul(u64::from(FRAME_SAMPLES)),
         duration: FRAME_SAMPLES,
+        speaker: None,
         payload: vec![7; payload],
     }
     .encode()
@@ -192,6 +216,7 @@ tilo_test_env::scenario! {
             sequence: 1,
             timestamp: 20 * u64::from(FRAME_SAMPLES),
             duration: FRAME_SAMPLES,
+            speaker: None,
             payload: vec![7; 30],
         }
         .encode()

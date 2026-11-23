@@ -694,6 +694,43 @@ fn a_write_names_its_file_actions_and_the_invoker_that_made_it() {
     );
 }
 
+/// A person's mount names them on every change it makes as them, and an agent on what it makes
+/// as the agent: a workspace refuses a change that names nobody.
+#[test]
+fn a_persons_mount_names_them_on_each_change_it_makes() {
+    let person = tilo_actions::MemberId::person(tilo_actions::PersonId::from_root([2; 32]));
+    let invokers = |document: &[u8]| -> Vec<Option<tilo_actions::Acting>> {
+        let mut doc = automerge::AutoCommit::load(document).unwrap();
+        doc.get_changes(&[])
+            .into_iter()
+            .filter_map(|change| {
+                tilo_actions::ActionContext::from_change_message(change.message()?)
+            })
+            .map(|context| context.invoker.map(|invoker| invoker.acting))
+            .collect()
+    };
+    let mut ns = Namespace::new(MountAuthor::person("ada-laptop", person.clone())).unwrap();
+    let ino = ns.create_file(ROOT_INO, "plan.md", None, 0, 1).unwrap();
+    {
+        let _acting = acting_as(Some(
+            tilo_actions::ActionContext::default()
+                .with_invoker(tilo_actions::ActionInvoker::agent("claude")),
+        ));
+        assert!(ns.set_content(ino, Some(&h(2)), 5, 2));
+    }
+    let chunk = ns.document_id_for(ino).unwrap().chunk();
+    let ada = Some(tilo_actions::Acting::member(person));
+    assert_eq!(
+        invokers(&ns.doc.doc_mut(chunk).unwrap().save()),
+        vec![ada.clone(), Some(tilo_actions::Acting::agent("claude"))],
+    );
+    assert_eq!(
+        invokers(&ns.doc.doc_mut(0).unwrap().save()),
+        vec![ada.clone(), ada],
+        "the tree's founding and the listing of the file's chunk name the person too"
+    );
+}
+
 #[test]
 fn a_lease_has_one_device_whose_fence_and_copies_agree() {
     const ME: [u8; 32] = [1; 32];

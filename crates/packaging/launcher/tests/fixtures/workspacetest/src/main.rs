@@ -60,6 +60,10 @@ fn main() {
             }
             Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
         },
+        Some("connect") => match std::os::unix::net::UnixStream::connect(&args[1]) {
+            Ok(_) => writeln!(out, "CONNECTED {}", &args[1]).unwrap(),
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
         Some("rename") => match std::fs::rename(&args[1], &args[2]) {
             Ok(()) => writeln!(out, "RENAMED {} {}", &args[1], &args[2]).unwrap(),
             Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),

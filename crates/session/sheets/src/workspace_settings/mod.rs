@@ -970,7 +970,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     let strip = ViewTabs::new(segments, selected)
         .with_id("ws-settings-tabs")
         .with_accessible_name(settings.title.clone())
-        .on_view("ws-settings-tabs", move |index| {
+        .on_choose("ws-settings-tabs", move |index| {
             if let Some(tab) = tabs.get(index) {
                 switch.show_tab(*tab);
             }

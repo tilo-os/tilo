@@ -12,16 +12,18 @@
 //! readers open.
 //!
 //! What a call allows is the workspace's ([`collab_types::calls`]): someone the
-//! owner or a moderator ended the call for, or denied, is not in it. Every
-//! member's live session holds the call to it ([`Gate`]): it neither opens nor
-//! sends the media of someone the call does not let speak, nor opens anything
-//! of it for someone it does not let listen, and the channel lists here leave out
-//! whoever it does not let in.
+//! owner or a moderator ended the call for, or denied, is not in it. A call's
+//! media names its call ([`crate::live::call_track`]), and every member's live
+//! session holds it to the call ([`call`]): it opens the media only of the devices
+//! the call lets speak, and sends none where it may not speak. The relay holds
+//! every call track to the same rule ([`crate::relay::SessionAuthorization::call`]),
+//! and the channel lists here leave out whoever the call does not let in.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use collab_types::calls::{CallRule, Directions};
-use collab_types::presence::{Payload, Presence};
+
+use collab_types::presence::{Bridged, Payload, Presence};
 
 use crate::presence::{Call, Device, LiveCall};
 
@@ -48,6 +50,26 @@ pub struct Caller {
     /// The service this device bridges the call to (`discord`), when it is a bridge rather than a
     /// person: where the call is heard besides, never someone in it.
     pub bridge: Option<String>,
+    /// Who this caller is on another service, when a bridge carries them here: a person in the
+    /// call of their own, reached through `service`, never as the bridge's person.
+    pub bridged: Option<Bridged>,
+}
+
+/// One person a bridge carries into a call: a member of it of their own, shown
+/// by the name they have there and marked as reached through its service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgedPerson {
+    /// The workspace member the participant is: the member the account is
+    /// linked to, else the participant's own stand-in publisher.
+    pub person: String,
+    /// The service it is reached through (`discord`).
+    pub service: String,
+    /// The account there whose voice this carries.
+    pub account: String,
+    /// The name they are shown by.
+    pub name: String,
+    /// BLAKE3 hex of their picture in the workspace's content store, when it is held.
+    pub avatar: Option<String>,
 }
 
 /// One voice channel's call: who is in it, and what each of them shows.
@@ -101,17 +123,53 @@ impl Channel {
     pub fn bridges(&self) -> Vec<String> {
         self.callers
             .iter()
-            .filter_map(|caller| caller.bridge.clone())
+            .filter_map(|caller| {
+                caller.bridge.clone().or_else(|| {
+                    caller
+                        .bridged
+                        .as_ref()
+                        .map(|bridged| bridged.service.clone())
+                })
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
     }
 
+    /// The people a bridge carries into the call from another service, each
+    /// once and sorted by their member id: who a call view shows by their name
+    /// there, marked as reached through its service.
+    #[must_use]
+    pub fn bridged(&self) -> Vec<BridgedPerson> {
+        let mut people: Vec<BridgedPerson> = self
+            .callers
+            .iter()
+            .filter_map(|caller| {
+                let bridged = caller.bridged.as_ref()?;
+                Some(BridgedPerson {
+                    person: caller
+                        .person
+                        .clone()
+                        .unwrap_or_else(|| hex::encode(caller.device)),
+                    service: bridged.service.clone(),
+                    account: bridged.account.clone(),
+                    name: bridged.name.clone(),
+                    avatar: bridged.avatar.clone(),
+                })
+            })
+            .collect();
+        people.sort_by(|left, right| left.person.cmp(&right.person));
+        people.dedup_by(|left, right| left.person == right.person);
+        people
+    }
+
     /// The person each device in the call is, for the devices whose person is known: whose
-    /// pictures a device's frames are. A bridge sends no pictures and is nobody's.
+    /// pictures a device's frames are. A bridge, and a person it carries with no device of
+    /// their own here, sends no pictures and is nobody's.
     #[must_use]
     pub fn persons(&self) -> BTreeMap<Device, String> {
         self.people_in()
+            .filter(|caller| caller.bridged.is_none())
             .filter_map(|caller| Some((caller.device, caller.person.clone()?)))
             .collect()
     }
@@ -187,15 +245,21 @@ pub fn channels(
             };
             channel.callers.push(Caller {
                 device,
-                person: caller
-                    .user
-                    .clone()
-                    .or_else(|| persons.get(&device).cloned()),
+                // A bridged person with no member to be is their own stand-in
+                // publisher: in the call by that id, never as the bridge's person.
+                person: caller.user.clone().or_else(|| {
+                    caller
+                        .bridged
+                        .as_ref()
+                        .map(|_| hex::encode(device))
+                        .or_else(|| persons.get(&device).cloned())
+                }),
                 camera: caller.camera,
                 screen: caller.screen,
                 muted: caller.muted,
                 deafened: caller.deafened,
                 bridge: caller.bridge.clone(),
+                bridged: caller.bridged.clone(),
             });
         }
     }
@@ -221,6 +285,7 @@ pub fn channels(
             muted: own.call.muted || own.call.deafened,
             deafened: own.call.deafened,
             bridge: own.call.call.bridge.clone(),
+            bridged: None,
         });
     }
     for channel in channels.values_mut() {
@@ -238,71 +303,56 @@ pub fn channels(
     channels.into_values().collect()
 }
 
-/// What a workspace's calls allow, set against where each of its devices says it is: what a
-/// live session opens and sends a call's media by ([`crate::live_session::LiveSession`]).
-///
-/// A device's call is what its presence last said ([`Self::said`]); a device that said none is in
-/// no call, and nothing here judges its media. Each device is the person the workspace's
-/// members list names it ([`Self::set`]).
-#[derive(Clone, Debug, Default)]
-pub struct Gate {
-    rules: BTreeMap<String, CallRule>,
-    persons: BTreeMap<Device, String>,
-    channels: BTreeMap<Device, String>,
+/// The devices of `devices` the call in `channel` lets speak, each the person `persons` names:
+/// the only ones whose media of it a live session opens. A channel the workspace keeps no rule
+/// for lets everyone speak.
+#[must_use]
+pub fn speakers(
+    channel: &str,
+    rules: &BTreeMap<String, CallRule>,
+    persons: &BTreeMap<Device, String>,
+    devices: impl IntoIterator<Item = Device>,
+) -> crate::roster::Roster {
+    crate::roster::Roster::new(
+        devices
+            .into_iter()
+            .filter(|device| may(channel, rules, persons, *device).publish),
+    )
 }
 
-impl Gate {
-    /// Hold the calls to `rules` (by channel) from now on, each device being the person `persons`
-    /// names.
-    pub fn set(&mut self, rules: BTreeMap<String, CallRule>, persons: BTreeMap<Device, String>) {
-        self.rules = rules;
-        self.persons = persons;
-    }
+/// What the call in `channel` lets `device` do, as the person `persons` names it.
+#[must_use]
+pub fn may(
+    channel: &str,
+    rules: &BTreeMap<String, CallRule>,
+    persons: &BTreeMap<Device, String>,
+    device: Device,
+) -> Directions {
+    rules.get(channel).map_or(Directions::BOTH, |rule| {
+        rule.may(persons.get(&device).map(String::as_str))
+    })
+}
 
-    /// Take one presence object `device` said (`body` as its presence track carries it; empty
-    /// when it left): the call it says it is in, if it says one.
-    pub fn said(&mut self, device: Device, body: &[u8]) {
-        if body.is_empty() {
-            self.channels.remove(&device);
-            return;
-        }
-        let Some(Presence {
-            payload: Payload::Availability { call, .. },
-            ..
-        }) = Presence::decode(body)
-        else {
-            return;
-        };
-        match call
-            .as_deref()
+/// The channel whose call one presence object says its device is in (`body`, as its presence
+/// track carries it; empty when the device left): `Some(None)` for no call, and `None` for a body
+/// that says nothing of one.
+#[must_use]
+pub fn said_call(body: &[u8]) -> Option<Option<String>> {
+    if body.is_empty() {
+        return Some(None);
+    }
+    let Some(Presence {
+        payload: Payload::Availability { call, .. },
+        ..
+    }) = Presence::decode(body)
+    else {
+        return None;
+    };
+    Some(
+        call.as_deref()
             .and_then(|call| Call::decode(call, false, false))
-        {
-            Some(call) => {
-                self.channels.insert(device, call.call.channel);
-            }
-            None => {
-                self.channels.remove(&device);
-            }
-        }
-    }
-
-    /// What `device` may do in the call it says it is in: everything outside a call.
-    #[must_use]
-    pub fn may(&self, device: Device) -> Directions {
-        let Some(channel) = self.channels.get(&device) else {
-            return Directions::BOTH;
-        };
-        self.rules.get(channel).map_or(Directions::BOTH, |rule| {
-            rule.may(self.persons.get(&device).map(String::as_str))
-        })
-    }
-
-    /// Whether `own` opens the call media `sender` sent: the sender may speak in its call, and
-    /// `own` may listen in its own.
-    #[must_use]
-    pub fn opens(&self, sender: Device, own: Device) -> bool {
-        self.may(sender).publish && self.may(own).subscribe
-    }
+            .map(|call| call.call.channel),
+    )
 }
 
 /// The device a caller's publisher names, as presence writes it (hex).
@@ -328,6 +378,7 @@ mod tests {
             muted: false,
             deafened: false,
             bridge: None,
+            bridged: None,
         }
     }
 
@@ -380,6 +431,79 @@ mod tests {
         assert_eq!(voice.deafened(), ["bo"]);
         assert_eq!(voice.persons().len(), 3, "a bridge is nobody's tile");
         assert_eq!(voice.bridges(), ["discord"]);
+    }
+
+    /// A person a bridge carries is a participant of the call of their own,
+    /// under their name there; the bridge is no person of it, so the person
+    /// whose device it is is not in the call because of it; and a call that
+    /// denies the bridged person carries them no more.
+    #[test]
+    fn a_bridged_person_is_a_participant_of_their_own() {
+        use collab_types::presence::Bridged;
+        let guest = LiveCaller {
+            bridged: Some(Bridged {
+                service: "discord".into(),
+                account: "7001".into(),
+                name: "Dana".into(),
+                avatar: Some("ab".repeat(32)),
+                linked: None,
+            }),
+            label: "Dana".into(),
+            ..caller(5, None)
+        };
+        let owner = LiveCaller {
+            bridge: Some("discord".into()),
+            user: Some("cc".repeat(32)),
+            label: "Discord".into(),
+            ..caller(6, None)
+        };
+        let heard = [call("voice", vec![guest, owner])];
+        let listed = channels(&heard, None, &BTreeMap::new(), &BTreeMap::new());
+        let [voice] = listed.as_slice() else {
+            panic!("one channel: {listed:?}");
+        };
+        let id = hex::encode([5; 32]);
+        assert_eq!(
+            voice.people(),
+            vec![id.clone()],
+            "the bridged person is in it"
+        );
+        assert_eq!(voice.bridges(), ["discord"]);
+        assert!(!voice.people().contains(&"cc".repeat(32)));
+        let carried = voice.bridged();
+        let [person] = carried.as_slice() else {
+            panic!("one bridged person: {carried:?}");
+        };
+        assert_eq!(person.person, id);
+        assert_eq!(person.name, "Dana");
+        assert_eq!(person.service, "discord");
+        assert_eq!(person.account, "7001");
+        assert!(
+            !voice.persons().contains_key(&[6; 32]),
+            "a bridge is nobody's tile"
+        );
+        assert!(
+            !voice.persons().contains_key(&[5; 32]),
+            "a carried person has no device here to send pictures"
+        );
+        let owner_person = "cc".repeat(32);
+        assert!(
+            !heard[0].joined_by(Some(owner_person.as_str())),
+            "the bridge's person is not in the call because of it"
+        );
+
+        let rules = BTreeMap::from([(
+            "voice".to_owned(),
+            CallRule {
+                denied: BTreeMap::from([(id, Directions::BOTH)]),
+                ..CallRule::default()
+            },
+        )]);
+        let listed = channels(&heard, None, &BTreeMap::new(), &rules);
+        assert!(
+            listed[0].people().is_empty(),
+            "a denied bridged person is carried no more"
+        );
     }
 
     /// This device's own call is in the list as it said it, once, though its board never hears
@@ -452,8 +576,28 @@ mod tests {
         let listed = channels(&heard, None, &BTreeMap::new(), &rules);
         assert!(listed[0].callers.is_empty(), "an ended call carries nobody");
 
+        let persons = BTreeMap::from([([1; 32], "ada".to_owned()), ([2; 32], "bo".to_owned())]);
+        let rules = BTreeMap::from([(
+            "standup".to_owned(),
+            CallRule {
+                denied: BTreeMap::from([("bo".to_owned(), Directions::BOTH)]),
+                ..CallRule::default()
+            },
+        )]);
+        let devices = [[1; 32], [2; 32], [3; 32]];
+        let standup = speakers("standup", &rules, &persons, devices);
+        assert!(standup.admits([1; 32]), "Ada speaks in it");
+        assert!(!standup.admits([2; 32]), "Bo does not");
+        assert!(!may("standup", &rules, &persons, [2; 32]).publish);
+        assert!(
+            standup.admits([3; 32]),
+            "a device the members list does not name speaks as anyone does"
+        );
+        let lounge = speakers("lounge", &rules, &persons, devices);
+        assert!(lounge.admits([2; 32]), "in another call Bo speaks");
+
         let in_call = |channel: &str| {
-            collab_types::presence::Presence::desktop(
+            Presence::desktop(
                 "w",
                 Payload::Availability {
                     state: "available".into(),
@@ -465,26 +609,15 @@ mod tests {
             .encode()
             .unwrap()
         };
-        let mut gate = Gate::default();
-        gate.set(
-            BTreeMap::from([(
-                "standup".to_owned(),
-                CallRule {
-                    denied: BTreeMap::from([("bo".to_owned(), Directions::BOTH)]),
-                    ..CallRule::default()
-                },
-            )]),
-            BTreeMap::from([([1; 32], "ada".to_owned()), ([2; 32], "bo".to_owned())]),
+        assert_eq!(
+            said_call(&in_call("standup")),
+            Some(Some("standup".to_owned()))
         );
-        gate.said([1; 32], &in_call("standup"));
-        gate.said([2; 32], &in_call("standup"));
-        assert!(gate.opens([1; 32], [3; 32]), "Ada is heard");
-        assert!(!gate.opens([2; 32], [3; 32]), "Bo is not");
-        assert!(!gate.opens([1; 32], [2; 32]), "and hears nothing of it");
-        gate.said([2; 32], &in_call("lounge"));
-        assert!(gate.opens([2; 32], [1; 32]), "in another call Bo is heard");
-        gate.said([2; 32], &[]);
-        assert!(gate.opens([2; 32], [1; 32]));
+        assert_eq!(
+            said_call(&[]),
+            Some(None),
+            "a device that left is in no call"
+        );
     }
 
     /// The flags a call carries ride in its one text and read back; a text without them is a

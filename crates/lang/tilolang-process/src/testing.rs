@@ -1,0 +1,477 @@
+//! The broker's end of an instance's connections, for the host's tests and examples: a fake in
+//! place of the session's broker that admits the routes a connection joins, keeps what it sends
+//! where the test reads it, answers its resource commands from the workspace's store, relays a
+//! presence frame to the connections joined on its route, and hands each connection the
+//! workspace's member list, as the broker does.
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+use collab_types::document::ResourceType;
+use collaboration::{
+    ActionDirectoryRequest, CollabEvent, CollabRequest, DocumentMutation, PeerTransport, RouteSpec,
+};
+use tilo_resource_store::Store;
+use tilo_resource_store::wire::{self, Command, Reply};
+
+/// What a connection sent on its own route, in the order it sent it.
+pub type Sent = Rc<RefCell<Vec<CollabRequest>>>;
+
+/// What the test delivers to a connection.
+pub type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
+
+/// What a connection sent on a route other than its own, and on which route.
+pub type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
+
+/// A workspace's store, as the broker answers the resource commands of every connection joined
+/// there: one of it per workspace, held in memory.
+#[derive(Default)]
+pub struct Workspace {
+    store: RefCell<Store>,
+    /// The once-only actions a connection ran and kept done, by address and inputs.
+    done: RefCell<Vec<((String, serde_json::Value), serde_json::Value)>>,
+    /// The stamps of the writes the store took, oldest first.
+    written: RefCell<Vec<tilo_resource_store::Stamp>>,
+}
+
+impl Workspace {
+    /// Carries `command` out, as the workspace's store does for a connection of it.
+    ///
+    /// # Errors
+    /// Why the store refused the write.
+    pub fn command(&self, command: Command) -> Result<Reply, String> {
+        if let Command::Turn {
+            address,
+            inputs,
+            answer,
+        } = command
+        {
+            let key = (address, inputs);
+            let ran = self
+                .done
+                .borrow()
+                .iter()
+                .find(|(done, _)| *done == key)
+                .map(|(_, answer)| answer.clone());
+            return Ok(Reply::Turn(match (ran, answer) {
+                (Some(ran), _) => wire::Turn::Done(ran),
+                (None, Some(answer)) => {
+                    self.done.borrow_mut().push((key, answer.clone()));
+                    wire::Turn::Done(answer)
+                }
+                (None, None) => wire::Turn::Take,
+            }));
+        }
+        if command.writes() {
+            let stamps = stamps_of(&command);
+            return match wire::write(&mut self.store.borrow_mut(), command) {
+                Ok(_) => {
+                    self.written.borrow_mut().extend(stamps);
+                    Ok(Reply::Written)
+                }
+                Err(refused) => Err(refused.to_string()),
+            };
+        }
+        wire::read(&self.store.borrow(), &command, &|_| true)
+            .ok_or_else(|| "the store answered no read".to_owned())
+    }
+
+    /// The stamps of the writes the store took, oldest first: who wrote each and the
+    /// invocation it served.
+    #[must_use]
+    pub fn written(&self) -> Vec<tilo_resource_store::Stamp> {
+        self.written.borrow().clone()
+    }
+
+    /// The documents the workspace's store holds.
+    #[must_use]
+    pub fn documents(&self) -> Vec<String> {
+        self.store
+            .borrow()
+            .index()
+            .documents()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The records `command` moves: each resource it writes, by the document it lives in. A
+    /// write that names no resource (an undo) may move every record the store holds.
+    #[must_use]
+    pub fn records_written(&self, command: &Command) -> Vec<String> {
+        fn collect(command: &Command, records: &mut Vec<String>) -> bool {
+            match command {
+                Command::Put { id, .. } | Command::Remove { id, .. } | Command::Edit { id, .. } => {
+                    let doc = id.split_once('/').map_or(id.as_str(), |(doc, _)| doc);
+                    if !records.iter().any(|known| known == doc) {
+                        records.push(doc.to_owned());
+                    }
+                    true
+                }
+                Command::Batch(commands) => {
+                    commands.iter().all(|command| collect(command, records))
+                }
+                Command::Undo { .. } => false,
+                _ => true,
+            }
+        }
+        let mut records = Vec::new();
+        if collect(command, &mut records) {
+            records
+        } else {
+            self.documents()
+        }
+    }
+}
+
+/// The stamps `command` writes under, each write of a batch its own.
+fn stamps_of(command: &Command) -> Vec<tilo_resource_store::Stamp> {
+    match command {
+        Command::Put { stamp, .. }
+        | Command::Remove { stamp, .. }
+        | Command::Undo { stamp, .. }
+        | Command::Edit { stamp, .. } => vec![stamp.clone()],
+        Command::Batch(commands) => commands.iter().flat_map(stamps_of).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The instance's action directory as the broker holds it: the apps it was offered under, and
+/// what the test asks of it.
+#[derive(Default)]
+pub struct Directory {
+    pub offered: Vec<String>,
+    pub asked: Vec<ActionDirectoryRequest>,
+}
+
+/// The connections of one workspace, as the broker holds them: the workspace's store every
+/// connection reads and writes, and the workspace's members, people and software, with their
+/// names, which every connection is handed when it joins and whenever the list changes.
+#[derive(Default)]
+pub struct Bus {
+    joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
+    /// The workspace's members, people and software, with their names.
+    members: RefCell<Vec<(collaboration::MemberId, String)>>,
+    /// The workspace's one store.
+    workspace: Rc<Workspace>,
+}
+
+impl Bus {
+    /// The workspace's store.
+    #[must_use]
+    pub fn workspace(&self) -> Rc<Workspace> {
+        Rc::clone(&self.workspace)
+    }
+
+    /// The workspace has the member `who`, named `name`: every connection is told.
+    pub fn member(&self, who: collaboration::MemberId, name: &str) {
+        {
+            let mut members = self.members.borrow_mut();
+            members.retain(|(held, _)| *held != who);
+            members.push((who, name.to_owned()));
+        }
+        let joined: Vec<(String, Inbox)> = self
+            .joined
+            .borrow()
+            .iter()
+            .map(|(_, person, inbox)| (person.clone(), Rc::clone(inbox)))
+            .collect();
+        let mut told: Vec<Inbox> = Vec::new();
+        for (person, inbox) in joined {
+            if !told.iter().any(|done| Rc::ptr_eq(done, &inbox)) {
+                self.tell_members(&person, &inbox);
+                told.push(inbox);
+            }
+        }
+    }
+
+    /// Hands the connection of `person` at `inbox` the member list, its own row marked: nothing
+    /// while the workspace has no members.
+    fn tell_members(&self, person: &str, inbox: &Inbox) {
+        let members = self.members.borrow();
+        if members.is_empty() {
+            return;
+        }
+        let members = members
+            .iter()
+            .map(|(id, name)| {
+                let mut member = collaboration::Member::named(id.clone(), name.clone());
+                member.is_self = id.person_id() == Some(person);
+                member
+            })
+            .collect();
+        inbox.borrow_mut().push_back(CollabEvent::Context {
+            members,
+            permissions: Vec::new(),
+            apps: Vec::new(),
+        });
+    }
+
+    fn join(&self, route: RouteSpec, person: String, inbox: Inbox) {
+        let mut joined = self.joined.borrow_mut();
+        if joined
+            .iter()
+            .any(|(held, _, there)| *held == route && Rc::ptr_eq(there, &inbox))
+        {
+            return;
+        }
+        joined.push((route, person, inbox));
+    }
+
+    /// Delivers `mutation`, which `from` sent on `route`, to the other connections joined on that
+    /// route.
+    fn relay(
+        &self,
+        route: &RouteSpec,
+        from: &Inbox,
+        mutation: &DocumentMutation,
+    ) -> Result<(), String> {
+        let delivery = delivered(route, mutation)?;
+        for (joined, _, inbox) in self.joined.borrow().iter() {
+            if joined == route && !Rc::ptr_eq(inbox, from) {
+                inbox.borrow_mut().push_back(delivery.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// The workspace's store moved, here or in another window of it: every other connection reads
+    /// again what it read of the records that moved, as the session tells each window when
+    /// another host wrote.
+    fn resources_moved(&self, from: &Inbox, records: &[String]) {
+        let joined = self.joined.borrow();
+        let mut told: Vec<&Inbox> = Vec::new();
+        for (_, _, inbox) in joined.iter() {
+            if Rc::ptr_eq(inbox, from) || told.iter().any(|told| Rc::ptr_eq(told, inbox)) {
+                continue;
+            }
+            inbox.borrow_mut().push_back(CollabEvent::RecordsMoved {
+                records: records.to_vec(),
+            });
+            told.push(inbox);
+        }
+    }
+
+    /// Delivers the presence frame `key` and `payload`, which `from` said on `route` as
+    /// `person`, to the other connections joined on that route.
+    fn present(
+        &self,
+        route: &RouteSpec,
+        from: &Inbox,
+        person: &str,
+        key: &ui::presence::PresenceKey,
+        payload: &collaboration::PresencePayload,
+    ) {
+        for (joined, _, inbox) in self.joined.borrow().iter() {
+            if joined == route && !Rc::ptr_eq(inbox, from) {
+                inbox
+                    .borrow_mut()
+                    .push_back(CollabEvent::RemotePresenceUpdate {
+                        member: ui::permissions::MemberId::person(person),
+                        key: key.clone(),
+                        payload: payload.clone(),
+                    });
+            }
+        }
+    }
+}
+
+/// `mutation` sent on `route`, as the document envelope the broker delivers to the route's other
+/// replicas.
+///
+/// # Errors
+///
+/// Returns the error a mutation too large to carry encodes to, as the connection reports it.
+pub fn delivered(route: &RouteSpec, mutation: &DocumentMutation) -> Result<CollabEvent, String> {
+    let record = route.document.as_deref().unwrap_or("");
+    let workspace = route.cluster_id.to_string();
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().map_err(|error| error.to_string())?,
+        collab_types::document_artifact_id(&route.app_id, &workspace, record),
+        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+        collab_types::document_attestation_id(&route.app_id, &workspace, record),
+        collab_types::OpKind::Change,
+        std::time::SystemTime::UNIX_EPOCH,
+        0,
+    );
+    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+    Ok(CollabEvent::Document {
+        envelope: Box::new(envelope),
+        decrypted_payload: None,
+    })
+}
+
+/// The broker's end of one connection: the route it joins, what it sends, what the test delivers
+/// to it, the workspace's store its resource commands are answered from, and the bus its members
+/// and presence travel on.
+pub struct Broker {
+    route: RouteSpec,
+    person: String,
+    bus: Rc<Bus>,
+    sent: Sent,
+    inbox: Inbox,
+    routed: Routed,
+    directory: Rc<RefCell<Directory>>,
+    routes: Rc<RefCell<Vec<RouteSpec>>>,
+    joined: Option<RouteSpec>,
+}
+
+impl Broker {
+    /// A connection to `route`, on a bus of its own: nothing it sends is relayed, and the
+    /// workspace's store is that bus's alone.
+    #[must_use]
+    pub fn new(route: RouteSpec) -> Self {
+        Self::on(&Rc::default(), route, "")
+    }
+
+    /// A connection to `route` on `bus`, whose changes travel as `person`'s: what it sends on a
+    /// route reaches the bus's other connections joined on that route, and its resource
+    /// commands are answered from the bus's workspace's store.
+    #[must_use]
+    pub fn on(bus: &Rc<Bus>, route: RouteSpec, person: &str) -> Self {
+        Self {
+            route,
+            person: person.to_owned(),
+            bus: Rc::clone(bus),
+            sent: Sent::default(),
+            inbox: Inbox::default(),
+            routed: Routed::default(),
+            directory: Rc::default(),
+            routes: Rc::default(),
+            joined: None,
+        }
+    }
+
+    /// Offers and takes the action directory's requests through `directory`, as the test holds
+    /// it.
+    #[must_use]
+    pub fn with_directory(mut self, directory: Rc<RefCell<Directory>>) -> Self {
+        self.directory = directory;
+        self
+    }
+
+    /// The workspace's store, as the connection's resource commands are answered from.
+    #[must_use]
+    pub fn workspace(&self) -> Rc<Workspace> {
+        self.bus.workspace()
+    }
+
+    /// What the connection sends, as the test reads it.
+    #[must_use]
+    pub fn sent(&self) -> Sent {
+        Rc::clone(&self.sent)
+    }
+
+    /// Where the test delivers what the broker sends the connection.
+    #[must_use]
+    pub fn inbox(&self) -> Inbox {
+        Rc::clone(&self.inbox)
+    }
+
+    /// What the connection sends on routes other than its own.
+    #[must_use]
+    pub fn routed(&self) -> Routed {
+        Rc::clone(&self.routed)
+    }
+
+    /// The documents every app of the workspace opens beside its own, as the connection joined
+    /// them.
+    #[must_use]
+    pub fn routes(&self) -> Rc<RefCell<Vec<RouteSpec>>> {
+        Rc::clone(&self.routes)
+    }
+}
+
+impl PeerTransport for Broker {
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        match &request {
+            CollabRequest::Hello { .. } => {
+                self.joined = Some(self.route.clone());
+                self.bus.join(
+                    self.route.clone(),
+                    self.person.clone(),
+                    Rc::clone(&self.inbox),
+                );
+                self.bus.tell_members(&self.person, &self.inbox);
+            }
+            CollabRequest::Document { mutation, .. } => {
+                self.bus.relay(&self.route, &self.inbox, mutation)?;
+            }
+            CollabRequest::ResourceCommand {
+                request_id,
+                command,
+            } => {
+                let parsed = serde_json::from_slice(command).map_err(|error| error.to_string());
+                let writes = parsed.as_ref().is_ok_and(Command::writes);
+                let records = parsed
+                    .as_ref()
+                    .ok()
+                    .map(|command| self.bus.workspace.records_written(command))
+                    .unwrap_or_default();
+                let reply = parsed.and_then(|command| self.bus.workspace.command(command));
+                let result = reply.and_then(|reply| {
+                    serde_json::to_vec(&reply).map_err(|error| error.to_string())
+                });
+                // The workspace's store is one, every connection of it: what one wrote, the
+                // others read again.
+                if writes {
+                    self.bus.resources_moved(&self.inbox, &records);
+                }
+                self.inbox
+                    .borrow_mut()
+                    .push_back(CollabEvent::ResourceCommandResult {
+                        request_id: *request_id,
+                        result,
+                    });
+            }
+            CollabRequest::Presence { key, payload } => {
+                self.bus
+                    .present(&self.route, &self.inbox, &self.person, key, payload);
+            }
+            _ => {}
+        }
+        self.sent.borrow_mut().push(request);
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        self.inbox.borrow_mut().drain(..).collect()
+    }
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        self.joined.take().map(Ok)
+    }
+
+    /// Admits every route the connection joins: the documents every app of the workspace opens
+    /// beside its own (its chunks, each person's own state) travel on routes of their own, and a
+    /// broker that refused the join would close the instance's whole connection.
+    fn join_route(&mut self, route: RouteSpec, _: ResourceType) -> Result<(), String> {
+        self.bus
+            .join(route.clone(), self.person.clone(), Rc::clone(&self.inbox));
+        self.routes.borrow_mut().push(route);
+        Ok(())
+    }
+
+    /// Sends on a route of the connection's own, as the broker carries it to the other
+    /// connections joined there.
+    fn send_to_route(&mut self, route: RouteSpec, request: CollabRequest) -> Result<(), String> {
+        if let CollabRequest::Document { mutation, .. } = &request {
+            self.bus.relay(&route, &self.inbox, mutation)?;
+        }
+        self.routed.borrow_mut().push((route, request));
+        Ok(())
+    }
+
+    fn publish_action_directory(&mut self, app_id: String) -> Result<(), String> {
+        self.directory.borrow_mut().offered.push(app_id);
+        Ok(())
+    }
+
+    fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
+        std::mem::take(&mut self.directory.borrow_mut().asked)
+    }
+}

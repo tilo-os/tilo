@@ -12,8 +12,8 @@
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service as _, Started};
 use tilolang_tilo::resource_service::ResourceService;
-use tilolang_tilo::runtime::Actor;
 use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
 
 use super::tests_support::{part_with, reading_with_windows};
 use super::*;
@@ -392,8 +392,6 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     );
 }
 
-const AGENT: &str = include_str!("../../../../../apps/tl/agent/app.tl");
-const AGENT_IDS: &str = include_str!("../../../../../apps/tl/agent/app.ids");
 const CHAT: &str = include_str!("../../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../../apps/tl/chat/app.ids");
 const DISCUSSION: &str = include_str!("../../../../../apps/tl/discussion/app.tl");
@@ -448,7 +446,6 @@ struct Room {
 
 fn room() -> Room {
     let host = Host::new(Actor::Member(MemberId::person("ada")), || None).unwrap();
-    host.load_builtin(AGENT, AGENT_IDS).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();

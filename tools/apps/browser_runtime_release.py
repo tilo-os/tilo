@@ -40,7 +40,7 @@ def head():
 
 
 def runtime_version(root=ROOT):
-    source = (root / 'crates/sdk/tilo-webview/src/chromium/runtime.rs').read_text()
+    source = (root / 'crates/engines/tilo-webview/src/chromium/runtime.rs').read_text()
     version = re.search(r'pub const RUNTIME_VERSION: &str = "([^"]+)";', source)
     reference = re.search(r'pub const RUNTIME_REF: &str = "([^"]+)";', source)
     require(version and reference, 'missing engine runtime declaration')

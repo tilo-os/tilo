@@ -3,7 +3,7 @@
 set -euo pipefail
 
 : "${GITHUB_REF_NAME:?missing release tag}"
-: "${GITHUB_RELEASE_TOKEN:?missing brokered GitHub App installation token}"
+: "${GITHUB_RELEASE_TOKEN:?missing the GitHub token of the release repository}"
 release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
 api="${TILO_RELEASE_API_URL:-https://api.github.com}"
 uploads="${TILO_RELEASE_UPLOADS_URL:-https://uploads.github.com}"
@@ -11,15 +11,8 @@ uploads="${TILO_RELEASE_UPLOADS_URL:-https://uploads.github.com}"
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 release_tag="$GITHUB_REF_NAME"
 prerelease=false
-if [[ ${TILO_CONTINUOUS_PUBLICATION:-0} == 1 ]]; then
-  identity="$(python3 "$(dirname "$0")/continuous-release.py" identity "$(dirname "$0")/../Cargo.toml")"
-  release_tag="$(printf '%s\n' "$identity" | awk -F= '$1 == "release-tag" { print $2 }')"
-  prerelease=true
-  python3 "$(dirname "$0")/continuous-release.py" assets "${1:-release-assets}"
-else
-  [[ "$release_tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-    || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
-fi
+[[ "$release_tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
 
 asset_root="${1:-release-assets}"
 if find "$asset_root" -type f -name 'tilo-imager-linux-*' -print -quit | grep -q .; then

@@ -247,6 +247,40 @@ pub struct GroupPeer {
     /// The `issued_at` of the last request minted here, so one minted again
     /// in the same second is still newer.
     issued: u64,
+    /// The frame this device staged and waits on its signer for ([`Self::stage_found`],
+    /// [`Self::stage_reconcile`]); kept in memory only, and dropped by anything that moves the
+    /// group before the signature arrives.
+    unsigned: Option<Unsigned>,
+}
+
+/// A frame staged for this device's signer: the group's genesis, or the commit that moves it to
+/// the policy with what it is to be merged with.
+enum Unsigned {
+    Genesis(MlsGovernanceFrame),
+    Commit {
+        frame: MlsGovernanceFrame,
+        parent: Vec<u8>,
+        history: Option<ContentKeyring>,
+        outcome: Reconciled,
+    },
+}
+
+/// What a staged frame did once signed ([`GroupPeer::signed`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Signed {
+    /// The genesis founded the group (`false`: a group became known meanwhile).
+    Founded(bool),
+    /// The commit moved the group.
+    Reconciled(Reconciled),
+}
+
+/// What [`GroupPeer::stage_reconcile`] left to do.
+#[derive(Debug)]
+pub enum Staged {
+    /// Nothing to sign: the group is as the policy says, or only malformed requests were refused.
+    Done(Reconciled),
+    /// The commit's bytes to sign; [`GroupPeer::signed`] merges it.
+    Sign(Vec<u8>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -405,6 +439,7 @@ impl GroupPeer {
             orphaned: ContentKeyring::new(),
             states,
             issued: 0,
+            unsigned: None,
         };
         peer.save(vault)?;
         Ok(peer)
@@ -455,18 +490,49 @@ impl GroupPeer {
     /// Returns an error when the group cannot be created, signed or written;
     /// the device is then still waiting.
     pub async fn found(&mut self, vault: &VaultKey) -> Result<bool> {
+        let Some(message) = self.stage_found()? else {
+            return Ok(false);
+        };
+        let signature = match self.signer.sign(message).await {
+            Ok(signature) => signature,
+            Err(error) => return self.abandon(Error::Signer(error.0)),
+        };
+        Ok(matches!(
+            self.signed(signature, vault)?,
+            Some(Signed::Founded(true))
+        ))
+    }
+
+    /// Stage [`Self::found`]'s genesis for this device's signer, and answer the bytes it signs:
+    /// `None` when a group of the workspace is known here. [`Self::signed`] founds the group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the genesis cannot be encoded.
+    pub fn stage_found(&mut self) -> Result<Option<Vec<u8>>> {
+        self.drop_unfinished();
+        if self.knows_group() {
+            return Ok(None);
+        }
+        let genesis = MlsGovernanceFrame::unsigned(
+            self.workspace,
+            [0; 32],
+            0,
+            MlsGovernanceAction::Genesis,
+            self.device,
+        );
+        let message = genesis
+            .signing_bytes()
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        self.unsigned = Some(Unsigned::Genesis(genesis));
+        Ok(Some(message))
+    }
+
+    /// Found the group with `genesis`, signed, unless one became known meanwhile.
+    fn found_signed(&mut self, genesis: MlsGovernanceFrame, vault: &VaultKey) -> Result<bool> {
         if self.knows_group() {
             return Ok(false);
         }
-        let genesis = self
-            .sign(MlsGovernanceFrame::unsigned(
-                self.workspace,
-                [0; 32],
-                0,
-                MlsGovernanceAction::Genesis,
-                self.device,
-            ))
-            .await?;
         // The group is founded with the member key this device asked with
         // while it waited: key holders that hold its request then see it in
         // the group with the key it asked with. With any other key they take
@@ -596,6 +662,7 @@ impl GroupPeer {
             orphaned: ContentKeyring::from_wire(file.orphaned)?,
             states: None,
             issued: file.issued,
+            unsigned: None,
         })
     }
 
@@ -1094,11 +1161,36 @@ impl GroupPeer {
         allowed: &BTreeSet<Ed25519PublicKey>,
         vault: &VaultKey,
     ) -> Result<Reconciled> {
+        let message = match self.stage_reconcile(allowed, vault)? {
+            Staged::Done(outcome) => return Ok(outcome),
+            Staged::Sign(message) => message,
+        };
+        let signature = match self.signer.sign(message).await {
+            Ok(signature) => signature,
+            Err(error) => return self.abandon(Error::Signer(error.0)),
+        };
+        match self.signed(signature, vault)? {
+            Some(Signed::Reconciled(outcome)) => Ok(outcome),
+            _ => Ok(Reconciled::default()),
+        }
+    }
+
+    /// Stage [`Self::reconcile`]'s commit for this device's signer: what is left to do.
+    /// [`Self::signed`] merges and queues the commit.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::reconcile`], but for the signature.
+    pub fn stage_reconcile(
+        &mut self,
+        allowed: &BTreeSet<Ed25519PublicKey>,
+        vault: &VaultKey,
+    ) -> Result<Staged> {
         self.drop_unfinished();
         self.forget_answered_requests();
         let mut outcome = Reconciled::default();
         if !self.differs(allowed) {
-            return Ok(outcome);
+            return Ok(Staged::Done(outcome));
         }
         let members = self.members();
         let leaving: Vec<Ed25519PublicKey> = members
@@ -1109,7 +1201,7 @@ impl GroupPeer {
         let mut joining = self.joining(allowed, &mut outcome);
         let history = self.unshared();
         let MemberRecord::Joined(group) = &mut self.record else {
-            return Ok(outcome);
+            return Ok(Staged::Done(outcome));
         };
         let parent = MemberRecord::seal_joined(group, vault)?;
         let stage = |group: &mut KeyGroup, joining: &[(Ed25519PublicKey, KeyPackage)]| {
@@ -1141,7 +1233,7 @@ impl GroupPeer {
                 }
                 if leaving.is_empty() && history.is_empty() {
                     self.save(vault)?;
-                    return Ok(outcome);
+                    return Ok(Staged::Done(outcome));
                 }
                 stage(group, &[])?
             }
@@ -1172,15 +1264,53 @@ impl GroupPeer {
             },
             self.device,
         );
-        let frame = match self.sign(frame).await {
-            Ok(frame) => frame,
-            Err(error) => return self.abandon(error),
+        let message = match frame.signing_bytes() {
+            Ok(message) => message,
+            Err(error) => return self.abandon(Error::Serialization(error.to_string())),
         };
-        self.merge_own(frame, parent, handed_over.then_some(&history), vault)?;
         outcome.admitted = added;
         outcome.removed = removed;
         outcome.history = handed_over;
-        Ok(outcome)
+        self.unsigned = Some(Unsigned::Commit {
+            frame,
+            parent,
+            history: handed_over.then_some(history),
+            outcome,
+        });
+        Ok(Staged::Sign(message))
+    }
+
+    /// Finish the frame [`Self::stage_found`] or [`Self::stage_reconcile`] staged with
+    /// `signature`, this device's over its bytes: found the group, or merge and queue the commit.
+    /// `None` when nothing waits for it: the group moved since, and the stage was dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the signature is not this device's over the frame, or the group
+    /// cannot be founded, merged or written; the stage is then dropped.
+    pub fn signed(&mut self, signature: [u8; 64], vault: &VaultKey) -> Result<Option<Signed>> {
+        let Some(unsigned) = self.unsigned.take() else {
+            return Ok(None);
+        };
+        let mut frame = match &unsigned {
+            Unsigned::Genesis(frame) | Unsigned::Commit { frame, .. } => frame.clone(),
+        };
+        frame.signature = collab_types::Signature::from_bytes(signature);
+        if let Err(error) = frame.verify_signature() {
+            return self.abandon(Error::Signer(error.to_string()));
+        }
+        match unsigned {
+            Unsigned::Genesis(_) => Ok(Some(Signed::Founded(self.found_signed(frame, vault)?))),
+            Unsigned::Commit {
+                parent,
+                history,
+                outcome,
+                ..
+            } => {
+                self.merge_own(frame, parent, history.as_ref(), vault)?;
+                Ok(Some(Signed::Reconciled(outcome)))
+            }
+        }
     }
 
     /// Merge the commit this device staged and signed as `frame`, which
@@ -1271,12 +1401,14 @@ impl GroupPeer {
     /// Drop a commit a reconcile staged and never finished: its future was
     /// dropped while it awaited the signer.
     fn drop_unfinished(&mut self) {
+        self.unsigned = None;
         if let MemberRecord::Joined(group) = &mut self.record {
             group.discard_pending_transaction().ok();
         }
     }
 
     fn abandon<T>(&mut self, error: Error) -> Result<T> {
+        self.unsigned = None;
         if let MemberRecord::Joined(group) = &mut self.record {
             group.discard_pending_transaction().ok();
         }
@@ -1763,22 +1895,6 @@ impl GroupPeer {
         self.parent = None;
         self.save(vault)?;
         Ok(PeerEvent::Desynchronised)
-    }
-
-    async fn sign(&self, mut frame: MlsGovernanceFrame) -> Result<MlsGovernanceFrame> {
-        let message = frame
-            .signing_bytes()
-            .map_err(|error| Error::Serialization(error.to_string()))?;
-        frame.signature = collab_types::Signature::from_bytes(
-            self.signer
-                .sign(message)
-                .await
-                .map_err(|error| Error::Signer(error.0))?,
-        );
-        frame
-            .verify_signature()
-            .map_err(|error| Error::Signer(error.to_string()))?;
-        Ok(frame)
     }
 
     fn save(&self, vault: &VaultKey) -> Result<()> {

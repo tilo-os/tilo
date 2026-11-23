@@ -134,27 +134,22 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
     );
 }
 
-/// The Book chip's × is the chip's published control: invoking it, as an
-/// agent, a script or a screen reader reaches it, clears the filter and
+/// The Book chip's ×, pressed through its accessibility action as a screen
+/// reader or an agent shown the window presses it, clears the filter and
 /// widens the search to the library.
 #[test]
 fn the_book_chips_clear_control_widens_the_search() {
     let mut app = TestApp::<EbookShell>::drive("search-in-book").unwrap();
-    let resources = app.harness().resources();
-    let address =
-        ui::tilo_actions::api::published(&resources, "tilo.control:view-chip:book", "remove")
-            .expect("the chip publishes its remove");
     let inside = found(&mut app, PASSAGE);
     assert!(!inside.is_empty(), "the book's words are found");
 
     app.harness()
-        .invoke_action(
-            &address,
-            &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
-            true,
-            None,
+        .perform_semantic_named(
+            "view-chip:book",
+            Some("view-chip:book/remove"),
+            &ui::a11y::Action::Activate,
         )
-        .unwrap_or_else(|error| panic!("{address:?}: {error}"));
+        .expect("the chip's × is pressed");
     app.settle();
     books(&mut app).settle_query();
     assert!(

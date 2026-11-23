@@ -698,6 +698,10 @@ impl crate::app_serving::AppPages for ActionPages {
 }
 
 impl crate::AppActionServer for WorkspaceActionsServer {
+    fn shutdown(&self) {
+        self.actions.shutdown();
+    }
+
     fn serve(
         &self,
         workspace_id: WorkspaceId,
@@ -1812,7 +1816,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         self.runtime
             .block_on(workspaces.apply_packaged_action(
                 &workspace.to_string(),
-                workspaces.governor(),
+                workspaces.device_cert(),
                 tilo_workspace_service::workspaces::PackagedAction {
                     app,
                     kind,
@@ -2114,6 +2118,13 @@ async fn start_app_server(
 ) -> Result<(Server, Arc<WorkspaceActionsServer>), ServerError> {
     let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
+    // The apps this host serves are known at start: build the catalogue once here, so every
+    // app's surface is registered in this process before any record the host founds names one.
+    // A founder that does not know an app's surface stamps a genesis without it, and the next
+    // founder that does writes a different genesis under the same actor: the two changes then
+    // collide as a duplicate sequence number. A host that serves a workspace's apps names their
+    // surfaces from the moment it serves them.
+    let _ = catalogue();
     let sessions = agents.as_ref().map(|agents| agents.agent_sessions());
     cfg.services.app_serving = true;
     let actions = WorkspaceActions::new(catalogue);

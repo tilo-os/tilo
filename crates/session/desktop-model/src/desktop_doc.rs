@@ -58,6 +58,7 @@ const KIND_KEY: &str = "kind_v1";
 const CANVAS_KEY: &str = "canvas_v1";
 const FLOATS_KEY: &str = "floats_v1";
 const RECORDS_KEY: &str = "window_records_v1";
+const ITEMS_KEY: &str = "window_items_v1";
 const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
 const OPENED_BY_KEY: &str = "window_opened_by_v1";
 /// Each window's own state, sealed to its readers, by tab ([`crate::window_state`]).
@@ -953,6 +954,40 @@ pub fn set_records(doc: &mut AutoCommit, records: &[(TabId, String)]) {
     }
 }
 
+/// The item each window was opened on, by tab, for the windows a launch named one:
+/// the conversation a send landed in, the record a search hit opened. It is not the
+/// view the tab shows: a window's item is what its window opens on, where a place's
+/// view is what the canvas draws. Each entry is its own.
+#[must_use]
+pub fn items(doc: &AutoCommit) -> Vec<(TabId, String)> {
+    let Some(map) = obj(doc, &ROOT, ITEMS_KEY) else {
+        return Vec::new();
+    };
+    let mut held: Vec<(TabId, String)> = doc
+        .keys(&map)
+        .filter_map(|key| Some((key.parse().ok()?, doc.str_at(&map, &key)?)))
+        .collect();
+    held.sort_by_key(|(tab, _)| *tab);
+    held
+}
+
+/// Make [`items`] hold exactly `items`.
+pub fn set_items(doc: &mut AutoCommit, items: &[(TabId, String)]) {
+    let Some(map) = child_object(doc, &ROOT, ITEMS_KEY, ObjType::Map) else {
+        return;
+    };
+    let mut wanted = HashSet::new();
+    for (tab, item) in items {
+        let key = tab.to_string();
+        let _ = doc.put_str_if_changed(&map, &key, item);
+        wanted.insert(key);
+    }
+    let stale: Vec<String> = doc.keys(&map).filter(|key| !wanted.contains(key)).collect();
+    for key in stale {
+        let _ = doc.delete(&map, key.as_str());
+    }
+}
+
 /// Who made each strip and opened each window, by strip or tab id, as person
 /// ids: who may close, move or rename what is on a layout a workspace shares
 /// ([`crate::ownership`]). Each entry is its own, so the people writing
@@ -1141,6 +1176,7 @@ pub fn write_shared(
     doc: &mut AutoCommit,
     tree: &Layout,
     records: &[(TabId, String)],
+    items: &[(TabId, String)],
     authors: &crate::ownership::Authors,
 ) -> bool {
     let before = doc.pending_ops();
@@ -1151,6 +1187,7 @@ pub fn write_shared(
     };
     write_workspaces(doc, tree);
     set_records(doc, records);
+    set_items(doc, items);
     set_window_authors(doc, authors);
     keep_window_states(doc, tree, carried);
     for key in ENTRY_KEYS.into_iter().chain([ACTIVE_KEY, VIEW_KEY]) {

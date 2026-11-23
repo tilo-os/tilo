@@ -9,7 +9,7 @@ license.workspace = true
 thin = ["dep:runtime-dylib"]
 # Reach the contact directory through its engine library in the runtime
 # bundle (libtilo_contact_directory_engine.so,
-# crates/runtime/engines/contact-directory) instead of the runtime. The
+# crates/engines/loadable/contact-directory) instead of the runtime. The
 # release collection enables it (dist/apps/app-collections.toml); a `thin`
 # build without it (`tilo-app dev`) links tilo-contact-directory statically,
 # because an engine library links only through
@@ -18,15 +18,15 @@ runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
+tilo-contact-directory = { path = "../../crates/integrations/tilo-contact-directory" }
 # The person's accounts, in the messaging service the launcher connects
 # this app to.
-tilo-messaging = { path = "../../crates/platform/tilo-messaging", features = ["service-client"] }
+tilo-messaging = { path = "../../crates/integrations/tilo-messaging", features = ["service-client"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/engines/loadable/contact-directory", optional = true }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

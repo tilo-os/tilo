@@ -75,7 +75,6 @@ pub(super) fn is_local_host_caller(
                 !certificate.capabilities.foreign
                     && if caller.device_public_key().is_none() {
                         original.native_projection_verified
-                            && original.delegated.is_none()
                             && caller.user_public_key().is_none()
                             && caller.acting().person_id()
                                 == Some(
@@ -147,7 +146,7 @@ impl AppBrokerState {
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.
-        let session = self.agent_session_of(Some(caller), origin, workspace_id);
+        let session = self.agent_session_of(Some(caller), workspace_id);
         if let Some(Err(reason)) = &session {
             return Err(abandon(ActionCallError::Refused {
                 reason: reason.clone(),
@@ -1582,12 +1581,9 @@ mod settings_documents_tests {
             },
         );
         let person = Caller::local_person(owner.clone()).in_workspace(workspace_id.clone());
-        let agent = Caller::agent_turn(
-            "scribe",
-            owner,
-            tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
-        )
-        .in_workspace(workspace_id);
+        let agent = Caller::local_person(owner)
+            .delegated_to("scribe")
+            .in_workspace(workspace_id);
         let minutes = || *host.minutes.lock().unwrap();
 
         invoked(&state, &person, &lock_after(1, None)).expect("locking sooner asks nothing");

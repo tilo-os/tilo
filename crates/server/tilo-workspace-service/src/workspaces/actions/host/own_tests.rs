@@ -1989,7 +1989,6 @@ async fn subscribe(
         crate::workspace_access::WorkspaceOperation::Subscribe,
     )
     .await
-    .unwrap()
 }
 
 /// A person's key makes a workspace of their own, and a device of theirs joins it before any

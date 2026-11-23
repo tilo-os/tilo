@@ -6,7 +6,7 @@
 # installs, /usr/bin/tilo-session.
 #
 # `Exec` starts the packaged native session; `X-Tilo-Session-Default=true` is
-# what the Tilo greeter offers first (crates/session/greeter/src/sessions.rs).
+# what the Tilo greeter offers first (crates/os/greeter/src/sessions.rs).
 #
 # DesktopNames=tilo is what the xdg-desktop-portal `tilo.portal` file
 # matches via UseIn=tilo to activate the Tilo portal backend.

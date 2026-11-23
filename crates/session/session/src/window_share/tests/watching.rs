@@ -16,7 +16,7 @@ use super::*;
 
 /// The engine's page: a snapshot with a header, a sidebar and a button.
 const TOP: &str =
-    include_str!("../../../../../browser/paint-stream/tests/fixtures/layers.top.json");
+    include_str!("../../../../../engines/paint-stream/tests/fixtures/layers.top.json");
 
 /// How long the bar may take to say what the shares say, and a page to go out once its app handed
 /// it over, on a machine busy with the rest of the suite.

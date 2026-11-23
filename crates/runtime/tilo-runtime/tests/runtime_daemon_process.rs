@@ -17,8 +17,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 fn runtime_binary() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-runtime")
 }
-/// The launcher's absolute bound on a daemon start (`STARTUP.cap` in
-/// `tilo_runtime::daemon`). A launcher that fails sooner exits with the reason.
+/// How long a daemon this test started has to serve its person.
 const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
 
 fn host(profile: &Path) -> Command {
@@ -30,11 +29,48 @@ fn host(profile: &Path) -> Command {
         .env_remove("TILO_RUNTIME_STANDALONE");
     command
 }
+/// A profile named apart, and the daemon serving it: started by the test that owns the profile,
+/// as only the service starts this computer's own. A launcher never starts one.
 struct DaemonProfile {
     root: tempfile::TempDir,
+    daemon: Option<Child>,
 }
 impl DaemonProfile {
     fn new() -> Result<Self> {
+        let mut profile = Self::unstarted()?;
+        profile.start()?;
+        Ok(profile)
+    }
+    /// Start the profile's daemon, and wait until it serves its person.
+    fn start(&mut self) -> Result<()> {
+        let log = std::fs::File::create(self.path().join("daemon.log"))?;
+        self.daemon = Some(
+            host(self.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(log)
+                .spawn_locked()?,
+        );
+        let deadline = Instant::now()
+            .checked_add(LAUNCHER_START_CAP)
+            .context("the start's deadline")?;
+        loop {
+            if status(self.path()).is_ok_and(|status| {
+                status
+                    .get("workspace")
+                    .and_then(Value::as_str)
+                    .is_some_and(|workspace| !workspace.is_empty())
+            }) {
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "the profile's daemon did not start"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    fn unstarted() -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::Builder::new()
             .prefix("tilo-d-")
@@ -43,7 +79,7 @@ impl DaemonProfile {
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .context("making the daemon profile private")?;
         set_up(root.path())?;
-        Ok(Self { root })
+        Ok(Self { root, daemon: None })
     }
     fn path(&self) -> &Path {
         self.root.path()
@@ -71,6 +107,9 @@ impl Drop for DaemonProfile {
                     libc::kill(pid, libc::SIGTERM);
                 }
             }
+        }
+        if let Some(mut daemon) = self.daemon.take() {
+            let _ = daemon.wait();
         }
     }
 }
@@ -223,10 +262,11 @@ fn app_ids(apps: &[Value]) -> Vec<&str> {
 }
 
 #[test]
-fn first_launch_reuse_and_stale_socket_recovery() -> Result<()> {
-    let profile = DaemonProfile::new()?;
+fn launches_reuse_the_one_daemon_which_recovers_a_stale_socket() -> Result<()> {
+    let mut profile = DaemonProfile::unstarted()?;
     let stale = std::os::unix::net::UnixListener::bind(profile.path().join("native.sock"))?;
     drop(stale);
+    profile.start()?;
     app_starts(profile.path(), "dev.tilo.first")?;
     let before = daemon(profile.path())?;
     app_starts(profile.path(), "dev.tilo.second")?;
@@ -245,7 +285,7 @@ fn first_launch_reuse_and_stale_socket_recovery() -> Result<()> {
     Ok(())
 }
 #[test]
-fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() -> Result<()> {
+fn simultaneous_launches_share_one_daemon_and_mcp_eof_keeps_it_alive() -> Result<()> {
     let profile = DaemonProfile::new()?;
     let mut children = (0..5)
         .map(|_| {
@@ -454,30 +494,39 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() -> Result<()> {
 }
 
 #[test]
-fn public_profile_and_symlinked_session_lock_are_rejected() -> Result<()> {
+fn public_profile_and_symlinked_device_lock_are_refused() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let profile = DaemonProfile::new()?;
+    // A launcher and a daemon both refuse a profile anyone can write to, and change nothing.
+    let profile = DaemonProfile::unstarted()?;
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o777))?;
     let output = run_true(profile.path(), "dev.tilo.test")?;
-    ensure!(!output.status.success(), "a public profile was accepted");
+    ensure!(
+        !output.status.success(),
+        "a launcher accepted a public profile"
+    );
+    ensure!(
+        !host(profile.path()).output_locked()?.status.success(),
+        "a daemon accepted a public profile"
+    );
     ensure!(
         std::fs::metadata(profile.path())?.permissions().mode() & 0o777 == 0o777,
-        "the rejected launcher changed the profile"
+        "the rejected start changed the profile"
     );
+    // Only the daemon takes the device's lock, so it is the one that must not follow a
+    // symlink planted where the lock goes.
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))?;
     let target = profile.path().join("other-file");
     std::fs::write(&target, "untouched")?;
-    // The device's lock, in the profile's own state.
     let device = profile.path().join("state/tilo/device");
     std::fs::create_dir_all(&device)?;
     std::os::unix::fs::symlink(&target, device.join("holder.lock"))?;
     ensure!(
-        !run_true(profile.path(), "dev.tilo.test")?.status.success(),
-        "a symlinked session lock was accepted"
+        !host(profile.path()).output_locked()?.status.success(),
+        "a daemon took a symlinked device lock"
     );
     ensure!(
         std::fs::read_to_string(target)? == "untouched",
-        "the rejected launcher wrote through the symlinked lock"
+        "the rejected daemon wrote through the symlinked lock"
     );
     Ok(())
 }

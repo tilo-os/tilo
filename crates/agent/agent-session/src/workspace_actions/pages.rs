@@ -8,8 +8,7 @@
 
 use std::fmt::Write as _;
 
-mod desktop;
-use desktop::{DESKTOP_PAGE, DesktopPage};
+use super::canvas::{CanvasPage, DESKTOP_PAGE};
 
 use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
@@ -86,9 +85,10 @@ pub(super) enum HeldPage {
         who: Box<bounded::Bounded>,
         route: DocumentRoute,
     },
-    /// The workspace's front page: the apps a member opens here. Nothing is
-    /// acted on it and it never changes.
-    Home { workspace_id: WorkspaceId },
+    /// The workspace's front page: its canvas, the layout every member shares
+    /// with each window where it stands, beside the people and the apps a
+    /// member opens here. The canvas follows the layout as others change it.
+    Home(CanvasPage),
     /// The workspace's search: what its apps, their actions and their records
     /// hold for what the person typed. The caller is kept: each keystroke is
     /// a question asked as them, answered with what they may read.
@@ -114,7 +114,7 @@ pub(super) enum HeldPage {
         card: Option<Card>,
     },
     /// The workspace's desktop: the windows open on its shared layout.
-    Desktop(DesktopPage),
+    Desktop(CanvasPage),
 }
 
 /// What one of the host's own actions opened on the search page, under the
@@ -278,20 +278,28 @@ impl Pages {
                 Some(HeldPage::App { who, .. }) => Some(&who.caller),
                 Some(HeldPage::Search { caller, .. }) => Some(caller),
                 Some(HeldPage::Desktop(desktop)) => Some(&desktop.caller),
-                Some(HeldPage::Home { .. }) | None => None,
+                Some(HeldPage::Home(_)) | None => None,
             },
         }
     }
 
+    /// The canvas the page `page` shows, the front page's or the desktop's.
+    pub(super) fn canvas_mut(&mut self, page: u64) -> Option<&mut CanvasPage> {
+        match self.held.get_mut(&page)? {
+            HeldPage::Home(held) | HeldPage::Desktop(held) => Some(held),
+            _ => None,
+        }
+    }
+
     /// Hold `page` under a number of its own: what the person's acts name it by.
-    fn add(&mut self, page: HeldPage) -> u64 {
+    pub(super) fn add(&mut self, page: HeldPage) -> u64 {
         self.next = self.next.wrapping_add(1);
         self.held.insert(self.next, page);
         self.next
     }
 }
 
-fn unavailable(error: impl std::fmt::Display) -> PageRefusal {
+pub(super) fn unavailable(error: impl std::fmt::Display) -> PageRefusal {
     PageRefusal::Unavailable(error.to_string())
 }
 
@@ -304,7 +312,7 @@ fn not_shown(error: crate::apps::AppError) -> PageRefusal {
     }
 }
 
-fn refused(error: ActionCallError) -> PageRefusal {
+pub(super) fn refused(error: ActionCallError) -> PageRefusal {
     match error {
         ActionCallError::NotPermitted => PageRefusal::NotMember,
         error => unavailable(format!("{error:?}")),
@@ -430,7 +438,7 @@ impl Worker {
             PageJob::Act { page, .. } => match self.pages.held.get(page) {
                 Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
                 Some(HeldPage::Desktop(_)) => layout(),
-                Some(HeldPage::Home { .. } | HeldPage::Search { .. }) | None => {
+                Some(HeldPage::Home(_) | HeldPage::Search { .. }) | None => {
                     super::keys::Keys::Joined
                 }
             },
@@ -460,7 +468,7 @@ impl Worker {
             return Err(PageRefusal::NotMember);
         }
         if address.is_home() {
-            return self.open_home(workspace_id);
+            return self.open_home(workspace_id, caller);
         }
         if address.app == DESKTOP_PAGE {
             return self.open_desktop(workspace_id, caller);
@@ -494,7 +502,7 @@ impl Worker {
         });
         // The app's document of the workspace, founded by the person as a window
         // of it would be when the workspace holds none yet.
-        self.open_new(workspace_id, &cluster_id, app.app_id(), Some(&who))
+        self.open_new(workspace_id, app.app_id(), Some(&who))
             .map_err(|outcome| match outcome {
                 crate::record_actions::Outcome::Rejected(error) => refused(error),
                 crate::record_actions::Outcome::Failed(failure) => unavailable(failure.message),
@@ -545,7 +553,11 @@ impl Worker {
         clippy::too_many_lines,
         reason = "one page read top to bottom: the people, then the apps"
     )]
-    fn open_home(&mut self, workspace_id: WorkspaceId) -> Result<OpenedPage, PageRefusal> {
+    fn open_home(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<OpenedPage, PageRefusal> {
         // The workspace has to be readable here, as an app's page does.
         let state = self
             .refresh(workspace_id, Needs::Workspace)
@@ -569,8 +581,11 @@ impl Worker {
             .filter(|app| app.keeps_workspace_resource())
             .collect();
         apps.sort_by_key(|app| app.title().to_owned());
+        // The side the canvas stands beside never changes, so it carries no
+        // element number: the canvas's own elements are numbered from its
+        // root, and a pass patches them alone.
         let mut body = String::from(
-            "<div class=\"tilo-view tilo-home\" data-p=\"0\">\
+            "<div class=\"tilo-home-canvas\"><aside class=\"tilo-view tilo-home\">\
              <h1 class=\"tilo-home-title\">Tilo</h1>",
         );
         // Search is the system's, over what the workspace holds: the front
@@ -647,18 +662,15 @@ impl Worker {
                 escape(app.title())
             );
         }
-        body.push_str("</ul></div>");
-        self.pages.next = self.pages.next.wrapping_add(1);
-        let page = self.pages.next;
-        self.pages
-            .held
-            .insert(page, HeldPage::Home { workspace_id });
+        body.push_str("</ul></aside><main class=\"tilo-home-canvas-view\">");
+        let (held, css, shown) = self.open_canvas(workspace_id, caller, "frames")?;
+        body.push_str(&shown);
+        body.push_str("</main></div>");
+        let page = self.pages.add(HeldPage::Home(held));
         Ok(OpenedPage {
             page,
             title: "Tilo".to_owned(),
-            css: ui::composition::page::theme_css(&ui::Theme::default())
-                + ui::composition::page::PAGE_CSS
-                + HOME_CSS,
+            css: css + HOME_CSS,
             body,
         })
     }
@@ -1408,28 +1420,26 @@ impl Worker {
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Option<Result<Vec<PagePatch>, PageRefusal>> {
         // What the page holds, taken by value so the workspace is read next.
-        let (home, app, search) = match self.pages.held.get(&page) {
+        let (app, search) = match self.pages.held.get(&page) {
             Some(HeldPage::App {
                 workspace_id,
                 who,
                 route,
             }) => (
-                None,
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
                 None,
             ),
-            Some(HeldPage::Home { workspace_id }) => (Some(*workspace_id), None, None),
+            // A canvas reads the layout again and answers what moved on it, and what the person
+            // does on it is acted on the shell's view.
+            Some(HeldPage::Home(_) | HeldPage::Desktop(_)) => {
+                return Some(self.act_on_canvas(page, act));
+            }
             Some(HeldPage::Search {
                 workspace_id,
                 caller,
                 needle,
                 ..
-            }) => (
-                None,
-                None,
-                Some((*workspace_id, caller.clone(), needle.clone())),
-            ),
-            Some(HeldPage::Desktop(_)) => return Some(self.act_on_desktop(page, act.as_ref())),
+            }) => (None, Some((*workspace_id, caller.clone(), needle.clone()))),
             None => {
                 tracing::warn!(page, "a page's act found no page held here");
                 return Some(Err(unavailable("the page was closed")));
@@ -1439,16 +1449,6 @@ impl Worker {
         // answer is what the page shows next.
         if let Some(search) = search {
             return Some(self.act_on_search(page, search, act));
-        }
-        // The workspace's front page holds no document and nothing acts on
-        // it: a pass over it answers that nothing changed. It is read again
-        // first, so a workspace no longer readable here is refused.
-        if let Some(workspace_id) = home {
-            return Some(
-                self.refresh(workspace_id, Needs::Workspace)
-                    .map_err(refused)
-                    .map(|_| Vec::new()),
-            );
         }
         let Some((workspace_id, who, route)) = app else {
             return Some(Err(unavailable("the page was closed")));
@@ -1853,10 +1853,28 @@ fn search_body(needle: &str, results: &str) -> String {
     )
 }
 
-/// The workspace's front page: its apps as tiles, on the theme's own ground.
-/// It is the page's own stylesheet, after the app pages' (`PAGE_CSS`).
+/// The workspace's front page: its canvas filling the page beside a side of
+/// its people and its apps as tiles, on the theme's own ground; on a phone the
+/// side stands over the canvas. It is the page's own stylesheet, after the app
+/// pages' (`PAGE_CSS`).
 const HOME_CSS: &str = "\
-.tilo-home{height:100%;overflow-y:auto;display:flex;flex-direction:column;gap:20px;\
+.tilo-home-canvas{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);height:100dvh;\
+background:var(--tilo-ground);}\
+.tilo-home-canvas>.tilo-home{padding:24px 20px;border-right:1px solid var(--tilo-border);}\
+.tilo-home-canvas .tilo-home-apps{grid-template-columns:repeat(auto-fill,minmax(84px,1fr));}\
+.tilo-home-canvas .tilo-home-app{padding:12px 6px;}\
+.tilo-home-canvas .tilo-home-app svg,.tilo-home-canvas .tilo-home-initial{width:40px;height:40px;}\
+.tilo-home-canvas-view{display:flex;min-width:0;min-height:0;}\
+.tilo-home-canvas-view>.tilo-view{flex:1;min-width:0;}\
+.tilo-home-canvas-view [data-well]{display:grid;place-items:center;}\
+.tilo-canvas-open{padding:8px 16px;border-radius:10px;background:var(--tilo-accent);\
+color:var(--tilo-on-accent);text-decoration:none;font-weight:500;}\
+.tilo-canvas-open:hover{filter:brightness(1.08);}\
+.tilo-canvas-open:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:2px;}\
+@media (max-width:720px){.tilo-home-canvas{grid-template-columns:minmax(0,1fr);\
+grid-template-rows:auto minmax(0,1fr);}.tilo-home-canvas>.tilo-home{max-height:40dvh;border-right:0;\
+border-bottom:1px solid var(--tilo-border);}}\
+.tilo-home{height:100%;box-sizing:border-box;overflow-y:auto;display:flex;flex-direction:column;gap:20px;\
 padding:clamp(24px,6vh,56px) clamp(20px,6vw,64px);background:var(--tilo-ground);}\
 .tilo-home-title{margin:0;font-size:18px;font-weight:600;}\
 .tilo-home-search{display:block;box-sizing:border-box;max-width:880px;padding:12px 16px;\
@@ -1990,7 +2008,7 @@ color:var(--tilo-on-accent);cursor:pointer;}\
 .tilo-devices-connect:hover{filter:brightness(1.08);}\
 .tilo-devices-connect:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:2px;}";
 /// `text` as HTML shows it.
-fn escape(text: &str) -> String {
+pub(super) fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
         match character {

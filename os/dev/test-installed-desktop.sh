@@ -12,7 +12,7 @@
 #                                         [--base-digest sha256:...]
 #
 # DISK_QCOW2 is never booted or modified. --base-digest is the OS image the dev
-# image was built on, which tilo-vmd must report. The live system update is
+# image was built on, which the device's status step must report. The live system update is
 # os-dev-check's (tools/ci/publish/os-dev-check.sh).
 set -euo pipefail
 
@@ -399,7 +399,7 @@ cat "$touch_log"
 "$vm" type "$TILO_PASS"
 "$vm" keys ret
 
-# What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root, on this
+# What makes the disk a dev VM: its status step answers, on this
 # architecture, built on the image it names.
 "$dev_dir/check-dev-vm.sh" --arch "$arch" ${base_digest:+--base-digest "$base_digest"}
 # The image's apps are installed packages: Settings updates from a registry,

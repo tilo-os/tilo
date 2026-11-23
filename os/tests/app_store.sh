@@ -128,7 +128,7 @@ done
 # hashes differ and the loader later reports undefined symbols. Keep the
 # runtime UI feature set at the collection-wide superset and require a loader
 # smoke test before a bundle can be signed.
-runtime_manifest="$REPO/crates/runtime/runtime-dylib/Cargo.toml"
+runtime_manifest="$REPO/crates/sdk/runtime-dylib/Cargo.toml"
 thin_builder="$REPO/os/scripts/build-thin-apps.sh"
 if grep -Fq 'features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"]' \
       "$runtime_manifest" \
@@ -168,14 +168,14 @@ budget_probe=$(
   die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
   BUDGET_DIR="$REPO/tools/perf/tapp-size-budget" TAPP_ARCH=aarch64 TAPP_BUDGET=enforce
   eval "$(sed -n '/^app_budget() {/,/^for t in "\$PKG_BIN"/p' "$PACK" | sed '$d')"
-  budget=$(app_budget so.tilo.imager aarch64)
+  budget=$(app_budget so.tilo.settings aarch64)
   [ -n "$budget" ] || exit 1
-  check_budget "imager (so.tilo.imager)" so.tilo.imager "$budget" || exit 1
-  if refusal=$(check_budget "imager (so.tilo.imager)" so.tilo.imager "$((budget + 1))"); then exit 1; fi
+  check_budget "settings (so.tilo.settings)" so.tilo.settings "$budget" || exit 1
+  if refusal=$(check_budget "settings (so.tilo.settings)" so.tilo.settings "$((budget + 1))"); then exit 1; fi
   printf '%s\n' "$refusal"
 )
 if [ -n "$budget_probe" ] \
-   && grep -q "so.tilo.imager" <<<"$budget_probe" \
+   && grep -q "so.tilo.settings" <<<"$budget_probe" \
    && grep -q "over its aarch64 budget of" <<<"$budget_probe" \
    && grep -q 'check_budget "\$app (\$id)"' "$PACK" \
    && grep -q 'COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget' "$CONTAINERFILE"; then
@@ -229,22 +229,30 @@ fi
 # stage too late and left all 46 packages refused at install time.
 #
 # Checked against the constant rather than against a repeated literal, so moving
-# system_bundle_path fails here instead of at the next image build.
+# system_bundle_path fails here instead of at the next image build. The check
+# itself lives in the package store's installer, which tilo-install runs:
+# satisfy_runtime asks runtime_bundle_present, and that has to look on the
+# system path.
 BUNDLE_LIB="$REPO/crates/packaging/runtime-bundle/src/lib.rs"
-INSTALL_MAIN="$REPO/crates/packaging/install/src/main.rs"
+INSTALLER="$REPO/crates/packaging/package-store/src/installer/mod.rs"
 sysroot="$(sed -n 's|^ *PathBuf::from("\(/usr/lib/tilo-runtime\)").join(version)$|\1|p' \
              "$BUNDLE_LIB" | head -1)"
-if [ ! -r "$BUNDLE_LIB" ] || [ ! -r "$INSTALL_MAIN" ]; then
-  bad "missing $BUNDLE_LIB or $INSTALL_MAIN — cannot check where the bundle is looked up"
+if [ ! -r "$BUNDLE_LIB" ] || [ ! -r "$INSTALLER" ]; then
+  bad "missing $BUNDLE_LIB or $INSTALLER — cannot check where the bundle is looked up"
 elif [ -z "$sysroot" ]; then
   bad "could not read the system bundle root out of runtime_bundle::system_bundle_path
       ($BUNDLE_LIB) — the declaration it is parsed out of moved, so this check
       cannot see its subject and must not pass."
 else
-  if grep -q 'system_bundle_path' "$INSTALL_MAIN"; then
+  status="$(sed -n '/^fn bundle_status(/,/^}/p' "$INSTALLER")"
+  present="$(sed -n '/^pub fn runtime_bundle_present(/,/^}/p' "$INSTALLER")"
+  satisfy="$(sed -n '/^fn satisfy_runtime(/,/^}/p' "$INSTALLER")"
+  if printf '%s' "$present" | grep -q 'system_bundle_path' \
+     && printf '%s' "$status" | grep -q 'runtime_bundle_present' \
+     && printf '%s' "$satisfy" | grep -q 'runtime_status'; then
     ok "tilo-install resolves a declared runtime against $sysroot"
   else
-    bad "$INSTALL_MAIN no longer consults system_bundle_path, so baking into
+    bad "$INSTALLER's install-time runtime check (satisfy_runtime) no longer consults system_bundle_path, so baking into
         $sysroot would no longer satisfy the install-time runtime check."
   fi
   if grep -q -- "--out-root $sysroot " "$CONTAINERFILE" \

@@ -44,7 +44,13 @@ type Video (origin: youtube.video) {
     duration: Int
     description: Text
     likes: Int
+    /// How many people disliked it, as Return YouTube Dislike estimates: zero until it says.
+    dislikes: Int = 0
     thumbnail: Text
+    /// The community's title for it, when DeArrow names it better than its maker did.
+    dearrow_title: Text = ""
+    /// The picture the community frames it with, as this device's content address.
+    dearrow_thumbnail: Text = ""
     /// The address its bytes play from, as the service answered: empty until it is asked.
     stream: Text
     /// Whether it is a live stream rather than a recording.
@@ -63,6 +69,9 @@ type Video (origin: youtube.video) {
         hide thumbnail
         hide stream
         hide channel_avatar
+        hide dearrow_title
+        hide dearrow_thumbnail
+        hide dislikes
         hide found_for
     }
 }
@@ -88,6 +97,67 @@ type Playlist (origin: youtube.playlist) {
         hide video_keys
         hide found_for
     }
+}
+
+/// A comment someone left on a video, as the service says it is. The origin writes what YouTube
+/// answered, keyed by the comment's own id, so asking again refreshes the same rows.
+type Comment (origin: youtube.comment) {
+    key: Text merge register
+    /// The video it was left on, as the service names it.
+    video_key: Text merge register
+    author: Text
+    avatar: Text
+    text: Text
+    likes: Int
+    /// When it was written.
+    published: Time
+    /// The video's maker pinned it to the top.
+    pinned: Bool
+    /// The video's maker marked it with a heart.
+    hearted: Bool
+    /// How many replies it has on YouTube.
+    replies: Int
+
+    search {
+        sort likes newest
+        hide key
+    }
+}
+
+/// One `SponsorBlock` segment of a video: where it starts and ends, so the player can skip it.
+/// The origin writes what the community placed, keyed by where it stands.
+type Segment (origin: youtube.segment) {
+    key: Text merge register
+    /// The video it belongs to, as the service names it.
+    video_key: Text merge register
+    /// Its kind, as SponsorBlock names it: `sponsor`, `selfpromo`, `interaction`, `intro`,
+    /// `outro`, `preview`, `music_offtopic` or `filler`.
+    category: Text
+    /// Where it starts, in whole seconds.
+    start: Int
+    /// Where it ends, in whole seconds.
+    end: Int
+    /// The community votes that place it.
+    votes: Int
+
+    search {
+        sort start oldest
+        hide key
+    }
+}
+
+/// A reply a member wrote to a comment: the workspace's own, kept beside the comment it answers,
+/// since YouTube does not let an app post as the person. Each names who wrote it, so only they
+/// take it back.
+type Reply {
+    /// The comment it answers, as the service names it.
+    comment: Text merge register
+    /// The video the comment is on.
+    video: Text
+    text: Text
+    /// Who wrote it. Empty for a reply the native app kept, which stays the workspace's.
+    member: Option<Actor> = .none
+    said: Time
 }
 
 /// A channel the person subscribed to, by its key: membership, so two people subscribing at once
@@ -122,6 +192,12 @@ type PlaybackPrefs {
     quality: Text = "auto"
     /// Show the video's captions when it has them.
     captions: Bool = false
+    /// Skip the segments SponsorBlock marks, as they play.
+    sponsorblock: Bool = true
+    /// Show the community's titles and pictures where DeArrow has them.
+    dearrow: Bool = true
+    /// Show how many people disliked a video, as Return YouTube Dislike estimates it.
+    dislikes: Bool = true
 }
 
 /// One video the person watched: when, and where they left off. Watched again, it moves to the
@@ -161,10 +237,27 @@ type YouTube {
     /// The workspace's queue of videos to watch, oldest first.
     queue: Collection<QueuedVideo>
     history: Collection<WatchEntry>
+    /// Whether a person deleted their history: an earlier history is not imported over it, since
+    /// the delete is theirs to keep.
+    history_cleared: Bool = false
+    /// The comments the service answered with, by the comment's own id.
+    comments: Collection<Comment>
+    /// The SponsorBlock segments the service answered with, by where each stands.
+    segments: Collection<Segment>
+    /// The replies members wrote to comments: the workspace's own, since YouTube lets no app post
+    /// as the person.
+    replies: Collection<Reply>
     /// Each member's own playback preferences.
     playback: Collection<PlaybackPrefs>
     /// What the last search asks for, as it was typed.
     search_text: Text = ""
+    /// Which kinds the last search shows: `all`, `video`, `channel` or `playlist`.
+    search_kind: Text = "all"
+    /// How long the videos it finds run: `any`, `short` (under four minutes), `medium` (four to
+    /// twenty) or `long` (over twenty).
+    search_length: Text = "any"
+    /// How recent they are: `any`, `hour`, `today`, `week`, `month` or `year`.
+    search_published: Text = "any"
     /// How the search of `search_text` stands: `searching`, `done`, `failed` or empty.
     search_state: Text = ""
     /// Why the last search failed; empty while it went through.
@@ -269,6 +362,59 @@ fn prefs_for(yt: YouTube, who: Actor) -> Option<PlaybackPrefs> {
 /// The playlist's videos, in its maker's order: the ones the client holds, by the keys it lists.
 fn playlist_videos(yt: YouTube, p: Playlist) -> List<Video> {
     p.video_keys.flat_map(key -> yt.videos.filter(v -> v.key == key))
+}
+
+/// The tallest picture `who` wants a video played at, as YouTube names it: `auto` when they
+/// chose nothing.
+fn quality_of(yt: YouTube, who: Actor) -> Text {
+    prefs_for(yt, who)?.quality ?? "auto"
+}
+
+/// The video's title as the person reads it: the community's (DeArrow), when they show it and it
+/// has one, else its maker's.
+fn shown_title(yt: YouTube, v: Video, who: Actor) -> Text {
+    let pref = prefs_for(yt, who)
+    if (pref?.dearrow ?? true) and v.dearrow_title != "" { v.dearrow_title } else { v.title }
+}
+
+/// The picture the video is drawn with: the community's when the person shows one and it has
+/// one, else its maker's still.
+fn shown_picture(yt: YouTube, v: Video, who: Actor) -> Text {
+    let pref = prefs_for(yt, who)
+    if (pref?.dearrow ?? true) and v.dearrow_thumbnail != "" {
+        v.dearrow_thumbnail
+    } else { v.thumbnail }
+}
+
+/// The video's comments, most liked first.
+fn comments_of(yt: YouTube, key: Text) -> List<Comment> {
+    yt.comments.filter(c -> c.video_key == key).sort_by(.likes, desc)
+}
+
+/// The replies members wrote to `comment`, oldest first.
+fn replies_to(yt: YouTube, comment: Text) -> List<Reply> {
+    yt.replies.filter(r -> r.comment == comment).sort_by(.said)
+}
+
+/// The SponsorBlock segment of the video that `at` (a share of its length) falls in, when the
+/// person skips the segments the community marks: the one that plays there, if any.
+fn segment_at(yt: YouTube, v: Video, at: Float, who: Actor) -> Option<Segment> {
+    let pref = prefs_for(yt, who)
+    if not (pref?.sponsorblock ?? true) {
+        return .none
+    }
+    let seconds = at * v.duration.to_float()
+    yt.segments.find(
+        s -> s.video_key == v.key
+            and s.category != "filler"
+            and seconds >= s.start.to_float()
+            and seconds < s.end.to_float(),
+    )
+}
+
+/// Which kinds a search shows, as the person narrowed it: `all` shows every kind.
+fn shows_kind(yt: YouTube, kind: Text) -> Bool {
+    yt.search_kind == "all" or yt.search_kind == kind
 }
 
 /// The channels the person follows, as the client holds them, by name: a subscription whose
@@ -400,7 +546,25 @@ action progress(v: Video, at: Float) uses time {
             ),
         )
     }
-    if v.stream == "" { outside("youtube.stream", v.key) }
+    if v.stream == "" {
+        outside("youtube.stream", (v.key, quality_of(yt, mine)))
+    }
+}
+
+/// Skips the SponsorBlock segment the video plays into, at `at` (a share of its length), when the
+/// person skips segments: the playhead moves to the segment's end, so a sponsor read or an outro
+/// is never watched. The player reports where it got to as it plays, so this is what makes a
+/// marked segment skip on its own.
+action skip_segment(v: Video, at: Float) uses time (
+    icon: .skip_forward,
+    label: "Skip the segment",
+) {
+    let yt = root YouTube
+    if let segment = segment_at(yt, v, at, invoker) {
+        if v.duration > 0 {
+            progress(v, segment.end.to_float() / v.duration.to_float())
+        }
+    }
 }
 
 /// Takes one video out of the person's own history.
@@ -415,13 +579,15 @@ destructive action forget(v: Video) (icon: .trash, label: "Delete from history")
 destructive action delete_history(yt: YouTube) (icon: .trash, label: "Delete history") {
     let mine = invoker
     yt.history.remove_where(h -> h.member == .some(mine) or h.member == .none)
+    // An earlier history is not imported over the delete: it is theirs to keep.
+    yt.history_cleared = true
 }
 
 /// Asks the service for where the video's bytes play from again, after the player could not show
 /// them: the address the client holds is the service's alone to write, and the answer it gives
 /// now is what the player opens.
 action retry_playback(v: Video) (icon: .refresh, label: "Try again") {
-    outside("youtube.stream", v.key)
+    outside("youtube.stream", (v.key, quality_of(root YouTube, invoker)))
 }
 
 /// Asks the service for what the playlist holds, in its maker's order.
@@ -433,6 +599,55 @@ action refresh_playlist(p: Playlist) (icon: .refresh, label: "Refresh") {
 action play_playlist(p: Playlist) uses time (icon: .play, label: "Play all") {
     let yt = root YouTube
     if let first = playlist_videos(yt, p).first() { progress(first, 0.0) }
+}
+
+/// Opening a playlist asks the service what it holds, when the client does not know yet: a
+/// playlist a search found is known by its name and cover alone, and its videos appear once
+/// YouTube says them, so a page is never empty until someone presses Refresh.
+opened action fetch_on_open(p: Playlist) {
+    if p.video_keys.is_empty() and p.video_count > 0 { outside("youtube.playlist", p.key) }
+}
+
+/// Opening a video asks the service for what its page shows and the client does not hold yet:
+/// where its bytes play from at the person's preferred quality, its comments, the segments
+/// SponsorBlock marks, the community's title and picture (DeArrow) and how many people disliked
+/// it. Each answer is written by the origin, so one that comes late fills the page it is shown on.
+opened action read_on_open(v: Video) {
+    let yt = root YouTube
+    let mine = invoker
+    if v.stream == "" {
+        outside("youtube.stream", (v.key, quality_of(yt, mine)))
+    }
+    outside("youtube.comments", v.key)
+    if not yt.segments.any(s -> s.video_key == v.key) { outside("youtube.segments", v.key) }
+    if v.dearrow_title == "" { outside("youtube.branding", v.key) }
+    if v.dislikes == 0 { outside("youtube.votes", v.key) }
+}
+
+/// Asks the service for the video's comments again, for what people said since the page opened.
+action refresh_comments(v: Video) (icon: .refresh, label: "Refresh comments") {
+    outside("youtube.comments", v.key)
+}
+
+/// Replies to a comment: the workspace keeps the reply itself, beside the comment it answers,
+/// since YouTube lets no app post as the person. Everyone who reads the comment reads the reply.
+action reply_to_comment(c: Comment, text: Text) -> Reply uses time (
+    icon: .message_square,
+    label: "Reply",
+) {
+    require text != "" "Type something to reply with"
+    let yt = root YouTube
+    yt.replies.insert(
+        Reply(comment: c.key, video: c.video_key, text: text, member: .some(invoker), said: now),
+    )
+}
+
+/// Takes back a reply the person wrote. A reply the native app kept is the workspace's, and any
+/// member may take it back.
+destructive action retract_reply(r: Reply) (icon: .trash, label: "Delete reply") {
+    require r.member == .some(invoker) or r.member == .none "Only the person who wrote a reply takes it back"
+    let yt = root YouTube
+    yt.replies.remove_where(x -> x.id() == r.id())
 }
 
 /// Each of these keeps one of the person's own playback preferences: the record is theirs, made
@@ -480,6 +695,45 @@ action set_captions(yt: YouTube, on: Bool) (icon: .message_square, label: "Capti
     }
 }
 
+/// Whether the player skips the segments SponsorBlock marks, as they play.
+action set_sponsorblock(yt: YouTube, on: Bool) (
+    icon: .skip_forward,
+    label: "Skip sponsor segments",
+) {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.sponsorblock = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.sponsorblock = on
+    }
+}
+
+/// Whether a video shows the community's title and picture where DeArrow has them.
+action set_dearrow(yt: YouTube, on: Bool) (
+    icon: .pen_tool,
+    label: "Community titles and pictures",
+) {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.dearrow = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.dearrow = on
+    }
+}
+
+/// Whether a video shows how many people disliked it, as Return YouTube Dislike estimates it.
+action set_dislikes(yt: YouTube, on: Bool) (icon: .thumbs_down, label: "Dislike counts") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.dislikes = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.dislikes = on
+    }
+}
+
 /// Searches YouTube: the service answers with channels, playlists and videos, written where the
 /// search view lists them. The answer arrives through the platform's network, never the app's.
 action search(yt: YouTube, query: Text = yt.search_text) (icon: .search) {
@@ -490,7 +744,37 @@ action search(yt: YouTube, query: Text = yt.search_text) (icon: .search) {
     yt.search_text = query
     yt.search_state = "searching"
     yt.search_trouble = ""
-    outside("youtube.search", query)
+    // The filters the person set travel with the search: YouTube answers narrowed, so a search for
+    // a kind, a length or a period comes back as that, never as everything the words find.
+    outside("youtube.search", (query, yt.search_kind, yt.search_length, yt.search_published))
+}
+
+/// Narrows the search to the kinds the person chose: `all`, `video`, `channel` or `playlist`.
+/// What the service found is kept, and the page shows the kind chosen alone, as the old chips
+/// did; asking again is the search field's, which carries the kind with it.
+action filter_search(yt: YouTube, kind: Text) (icon: .list_filter, label: "Filter the search") {
+    require kind == "all" or kind == "video" or kind == "channel" or kind == "playlist" "{kind} is not a kind of result"
+    yt.search_kind = kind
+}
+
+/// Narrows the search to how long its videos run: `any`, `short`, `medium` or `long`.
+action filter_length(yt: YouTube, length: Text) (icon: .clock, label: "Filter by length") {
+    require length == "any" or length == "short" or length == "medium" or length == "long" "{length} is not a length"
+    yt.search_length = length
+    if yt.search_text != "" { search(yt, yt.search_text) }
+}
+
+/// Narrows the search to how recent its results are: `any`, `hour`, `today`, `week`, `month` or
+/// `year`.
+action filter_published(yt: YouTube, published: Text) (icon: .calendar, label: "Filter by date") {
+    require published == "any"
+        or published == "hour"
+        or published == "today"
+        or published == "week"
+        or published == "month"
+        or published == "year" "{published} is not a period"
+    yt.search_published = published
+    if yt.search_text != "" { search(yt, yt.search_text) }
 }
 
 /// Leaves the search the feed is showing for the place the person chose: the results stay where
@@ -524,14 +808,172 @@ action load_trending(yt: YouTube) (icon: .flame, label: "Refresh trending") {
     outside("youtube.trending", "")
 }
 
+/// What a `tube:` link names after `prefix` (`tube:watch?v=`), or empty when it names something
+/// else.
+fn link_after(link: Text, prefix: Text) -> Text {
+    if link.starts_with(prefix) { link.slice(prefix.len(), link.len()) } else { "" }
+}
+
+/// Opens a link of the scheme this client claims: the video (`tube:watch?v=<key>`), channel
+/// (`tube:channel?key=<key>`) or playlist (`tube:playlist?key=<key>`) it names, or the search it
+/// asks for (`tube:search?q=<query>`). A shell hands a link here whether or not a window of the
+/// client is open, and what this returns opens in the window. The host publishes it as the
+/// system's `open-link` on the client's root, which is what a shell hands a link to.
+action open_link(yt: YouTube, link: Text) -> host.Resource {
+    let video = link_after(link, "tube:watch?v=")
+    if video != "" {
+        if let v = yt.videos.find(x -> x.key == video) {
+            return v
+        }
+    }
+    let channel = link_after(link, "tube:channel?key=")
+    if channel != "" {
+        if let c = yt.channels.find(x -> x.key == channel) {
+            return c
+        }
+    }
+    let playlist = link_after(link, "tube:playlist?key=")
+    if playlist != "" {
+        if let p = yt.playlists.find(x -> x.key == playlist) {
+            return p
+        }
+    }
+    let query = link_after(link, "tube:search?q=")
+    if query != "" { search(yt, query) }
+    // A link that names nothing the client holds shows the client itself rather than a window
+    // that took nothing.
+    yt
+}
+
+/// The text a row's value holds, when it is a string: read off the JSON it is written as, since
+/// a value an action is handed is not one of `json.Value`'s cases until it is parsed.
+fn row_text(value: json.Value) -> Option<Text> {
+    let written = json.encode(value)
+    if written.starts_with("\"") {
+        .some(written.slice(1, written.len() - 1))
+    } else { .none }
+}
+
+/// The milliseconds a row's value names, when it is a number. The value is written as JSON
+/// first, so a whole number reads the same whether it came in as one or as a float with a
+/// trailing `.0`.
+fn row_ms(value: json.Value) -> Option<Int> {
+    json.encode(value).split(".").at(0)?.to_int()
+}
+
+/// One imported video as a history entry of `mine`: its name and channel when the client holds
+/// them, when it was watched, and where it was left as a share of its length.
+fn imported_entry(
+    yt: YouTube,
+    key: Text,
+    ms: Int,
+    position: Option<Int>,
+    mine: Actor,
+) -> WatchEntry {
+    let held = yt.videos.find(v -> v.key == key)
+    let duration = held?.duration ?? 0
+    let progress = match position {
+        .some(at) => if duration > 0 {
+            at.to_float() / (duration.to_float() * 1000.0)
+        } else { 0.0 },
+        .none => 0.0,
+    }
+    WatchEntry(
+        key: key,
+        title: held?.title ?? "",
+        channel_name: held?.channel_name ?? "",
+        member: .some(mine),
+        watched: 1970-01-01T00:00Z + Duration(ms / 1000),
+        progress: progress,
+    )
+}
+
+/// The entries of the workspace's history beyond its newest thousand, which the native app never
+/// kept: an imported history leaves them out, so it never grows without end.
+fn beyond_newest(yt: YouTube) -> List<WatchEntry> {
+    let all = yt.history.sort_by(.watched, desc)
+    let newest = all.take(1000)
+    all.filter(old -> not newest.any(k -> k.id() == old.id()))
+}
+
+/// Imports a watch history another device kept, in the format the native app's own history and
+/// its `import` call used: rows of `[a video's key, when it was watched in milliseconds since
+/// 1970]`. A video the person already watched keeps its place; each one imported becomes part of
+/// their own history, which keeps its newest thousand videos.
+action import_history(yt: YouTube, watched: List<List<json.Value>>) (
+    icon: .arrow_down,
+    label: "Import watch history",
+) {
+    let mine = invoker
+    for row in watched {
+        let named = match row.at(0) {
+            .some(value) => row_text(value),
+            .none => .none,
+        }
+        if let key = named {
+            let watched_at = match row.at(1) {
+                .some(value) => row_ms(value) ?? 0,
+                .none => 0,
+            }
+            if not yt.history.any(
+                h -> h.key == key and (h.member == .some(mine) or h.member == .none),
+            ) {
+                yt.history.insert(imported_entry(yt, key, watched_at, .none, mine))
+            }
+        }
+    }
+    for old in beyond_newest(yt) {
+        yt.history.remove_where(h -> h.id() == old.id())
+    }
+}
+
+/// Imports the watch history an earlier version of this app kept for the person, in that
+/// version's own format: rows of `[a video's key, when it was watched in milliseconds since 1970,
+/// where it was left in milliseconds or nothing]`. Nothing is imported once the person deleted
+/// their history, since the delete is theirs to keep; a video already in it keeps its place.
+action import_previous(yt: YouTube, previous: List<List<json.Value>>) (
+    icon: .arrow_down,
+    label: "Import earlier history",
+) {
+    let mine = invoker
+    if yt.history_cleared {
+        return
+    }
+    for row in previous {
+        let named = match row.at(0) {
+            .some(value) => row_text(value),
+            .none => .none,
+        }
+        if let key = named {
+            if not yt.history.any(
+                h -> h.key == key and (h.member == .some(mine) or h.member == .none),
+            ) {
+                let watched_at = match row.at(1) {
+                    .some(value) => row_ms(value) ?? 0,
+                    .none => 0,
+                }
+                let position = match row.at(2) {
+                    .some(value) => row_ms(value),
+                    .none => .none,
+                }
+                yt.history.insert(imported_entry(yt, key, watched_at, position, mine))
+            }
+        }
+    }
+    for old in beyond_newest(yt) {
+        yt.history.remove_where(h -> h.id() == old.id())
+    }
+}
+
 /// What the native Tube kept before this app took its id over, carried into this one once: the
-/// channels subscribed to, the videos liked, the watch queue, and the watch history with when
-/// each video was watched. The native app kept a video by its key alone, so each one carried is
-/// that key until the service answers with the rest. The history carried came before this app
-/// recorded who watched what, so its entries name no member and stay the workspace's until
-/// someone watches one of the videos again. Its comment likes and replies stay where
-/// they are: this app shows no comments. The native app's own documents are left as they are.
-migration action carry_native_tube(yt: YouTube) {
+/// channels subscribed to, the videos liked, the watch queue, the watch history with when each
+/// video was watched, and the replies it wrote to comments. The native app kept a video by its key
+/// alone, so each one carried is that key until the service answers with the rest. The history
+/// carried came before this app recorded who watched what, so its entries name no member and stay
+/// the workspace's until someone watches one of the videos again. Its replies are carried with no
+/// member named, so any member may take one back. The native app's own documents are left as they
+/// are.
+migration action carry_native_tube(yt: YouTube) uses time {
     for kept in earlier(yt).filter(e -> e.of == "") {
         for key in kept.lists.get("subscriptions") ?? [] {
             if not yt.subscriptions.any(s -> s.key == key) {
@@ -567,6 +1009,18 @@ migration action carry_native_tube(yt: YouTube) {
                     ),
                 )
             }
+        }
+    }
+    // The replies the native app kept, which it wrote to comments: the workspace's, with no
+    // member named, so any member may take one back. What a reply said and the comment it answered
+    // are kept; YouTube's comments themselves are read from the service.
+    for kept in earlier(yt).filter(e -> e.of == "replies") {
+        let comment = kept.texts.get("comment") ?? ""
+        let text = kept.texts.get("text") ?? ""
+        if comment != ""
+            and text != ""
+            and not yt.replies.any(r -> r.comment == comment and r.text == text) {
+            yt.replies.insert(Reply(comment: comment, video: "", text: text, said: now))
         }
     }
 }
@@ -701,8 +1155,11 @@ view feed(yt: YouTube) {
     }
 }
 
-/// The videos as cards in a grid, or what the place says while it holds none.
+/// The videos as cards in a grid, or what the place says while it holds none. A card shows the
+/// community's title and picture where the person shows them and DeArrow has them.
 view video_grid(videos: List<Video>, empty: Text) {
+    let yt = root YouTube
+    let mine = workspace.me
     if videos.is_empty() {
         ui.EmptyState(empty)
     } else {
@@ -710,8 +1167,8 @@ view video_grid(videos: List<Video>, empty: Text) {
             for v in videos {
                 ui.MediaCard(
                     v,
-                    title: v.title,
-                    picture: v.thumbnail,
+                    title: shown_title(yt, v, mine),
+                    picture: shown_picture(yt, v, mine),
                     meta: [v.channel_name, "{views_text(v.views)} · {item_clock(v)}"],
                     aspect: .wide,
                 )
@@ -738,6 +1195,58 @@ view search_results(yt: YouTube) {
         ui.TextInput(bind: typed, placeholder: "Search YouTube", autofocus: true, fill) {
             on submit: search(yt, typed)
         }
+        // The filters the search narrows to: the kinds it shows, how long its videos run and how
+        // recent they are. Each is an action, so an agent narrows the search as a person does.
+        row(gap: .tight, wrap: true) {
+            ui.Button("All", toggled: yt.search_kind == "all") {
+                on press: filter_search(yt, "all")
+            }
+            ui.Button("Videos", icon: .film, toggled: yt.search_kind == "video") {
+                on press: filter_search(yt, "video")
+            }
+            ui.Button("Channels", icon: .users, toggled: yt.search_kind == "channel") {
+                on press: filter_search(yt, "channel")
+            }
+            ui.Button("Playlists", icon: .list_video, toggled: yt.search_kind == "playlist") {
+                on press: filter_search(yt, "playlist")
+            }
+        }
+        row(gap: .tight, wrap: true, align: .center) {
+            text("Length", role: .caption)
+            ui.Button("Any", toggled: yt.search_length == "any") {
+                on press: filter_length(yt, "any")
+            }
+            ui.Button("Under 4 min", toggled: yt.search_length == "short") {
+                on press: filter_length(yt, "short")
+            }
+            ui.Button("4 to 20 min", toggled: yt.search_length == "medium") {
+                on press: filter_length(yt, "medium")
+            }
+            ui.Button("Over 20 min", toggled: yt.search_length == "long") {
+                on press: filter_length(yt, "long")
+            }
+        }
+        row(gap: .tight, wrap: true, align: .center) {
+            text("Posted", role: .caption)
+            ui.Button("Any time", toggled: yt.search_published == "any") {
+                on press: filter_published(yt, "any")
+            }
+            ui.Button("Past hour", toggled: yt.search_published == "hour") {
+                on press: filter_published(yt, "hour")
+            }
+            ui.Button("Today", toggled: yt.search_published == "today") {
+                on press: filter_published(yt, "today")
+            }
+            ui.Button("This week", toggled: yt.search_published == "week") {
+                on press: filter_published(yt, "week")
+            }
+            ui.Button("This month", toggled: yt.search_published == "month") {
+                on press: filter_published(yt, "month")
+            }
+            ui.Button("This year", toggled: yt.search_published == "year") {
+                on press: filter_published(yt, "year")
+            }
+        }
         search_found(yt)
     }
 }
@@ -756,9 +1265,15 @@ view search_found(yt: YouTube) {
             icon: .search,
         )
     } else {
-        let channels = found_channels(yt)
-        let playlists = found_playlists(yt)
-        let videos = found(yt)
+        // What the kind filter shows: choosing videos shows the videos alone, and `all` shows
+        // every kind the answer brought.
+        let channels: List<Channel> = if shows_kind(yt, "channel") {
+            found_channels(yt)
+        } else { [] }
+        let playlists: List<Playlist> = if shows_kind(yt, "playlist") {
+            found_playlists(yt)
+        } else { [] }
+        let videos: List<Video> = if shows_kind(yt, "video") { found(yt) } else { [] }
         if channels.is_empty() and playlists.is_empty() and videos.is_empty() {
             ui.EmptyState(
                 "Nothing found",
@@ -902,6 +1417,10 @@ view video_page(v: Video) {
     state playing: Bool = false
     // Why the player could not show the video, in its own words; empty while it plays or waits.
     state failed: Text = ""
+    // The comment the person is answering, when they are, and what they typed: the reply goes to
+    // the workspace, so the composer stays beside the comment until it is sent.
+    state reply_to: Option<Text> = .none
+    state reply_text: Text = ""
     let yt = root YouTube
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = watched_before(yt, workspace.me, v)?.progress ?? 0.0
@@ -918,8 +1437,9 @@ view video_page(v: Video) {
         // Play stand in the same box.
         layers(fill, aspect: 16.0 / 9.0) {
             if v.stream == "" {
-                if v.thumbnail != "" {
-                    ui.Image(v.thumbnail, alt: v.title, fit: .cover, fill)
+                let poster = shown_picture(yt, v, workspace.me)
+                if poster != "" {
+                    ui.Image(poster, alt: shown_title(yt, v, workspace.me), fit: .cover, fill)
                 }
                 // Play stands centred over the poster, not stretched across the box: the layer
                 // that fills the cell is the picture, and a control keeps its own size.
@@ -930,8 +1450,8 @@ view video_page(v: Video) {
                 }
             } else {
                 ui.VideoPlayer(
-                    title: v.title,
-                    poster: v.thumbnail,
+                    title: shown_title(yt, v, workspace.me),
+                    poster: shown_picture(yt, v, workspace.me),
                     source: v.stream,
                     playing: playing,
                     position: left * v.duration.to_float(),
@@ -939,11 +1459,14 @@ view video_page(v: Video) {
                     fill,
                 ) {
                     on set_playing(now_playing: Bool): set(playing, now_playing)
-                    on seek(place: Float): progress(v, place)
+                    // The playhead moved where a segment SponsorBlock marks is: the same skip as
+                    // when playback reaches one on its own.
+                    on seek(place: Float): progress(v, place).then(skip_segment(v, place))
                     // The player reports where it got to every five seconds and once when it
                     // stops, so a video watched without touching the playhead is remembered
-                    // where it was left.
-                    on progress(at: Float): progress(v, at)
+                    // where it was left. A report that lands in a segment SponsorBlock marks
+                    // moves the playhead past it, so a sponsor read is not watched.
+                    on progress(at: Float): progress(v, at).then(skip_segment(v, at))
                     on fail(reason: Text): set(failed, reason)
                 }
             }
@@ -965,7 +1488,7 @@ view video_page(v: Video) {
         // column: a `scroll` of its own would have no height to fill in a page that grows with
         // what it holds.
         stack(gap: .related) {
-            text(v.title, role: .title)
+            text(shown_title(yt, v, workspace.me), role: .title)
             row(gap: .related, align: .center, wrap: true) {
                 if let c = channel {
                     ui.Avatar(name: c.name)
@@ -1008,13 +1531,86 @@ view video_page(v: Video) {
                 if v.live {
                     ui.Fact("Live", icon: .rss)
                 }
+                if v.dislikes > 0 and (prefs_for(yt, workspace.me)?.dislikes ?? true) {
+                    ui.Fact("{count_text(v.dislikes)}", icon: .thumbs_down)
+                }
                 ui.Fact(clock(v.duration), icon: .clock)
             }
             ui.Section("Description") {
                 text(v.description, role: .reading)
             }
+            comments_section(yt, v, reply_to, reply_text)
             if v.found_for != "" {
                 ui.Chip("Found for {v.found_for}", icon: .search)
+            }
+        }
+    }
+}
+
+/// A video's comments, most liked first, with the replies members wrote and the one the person is
+/// answering: read them, reply to one, take back a reply of their own.
+view comments_section(
+    yt: YouTube,
+    v: Video,
+    reply_to: State<Option<Text>>,
+    reply_text: State<Text>,
+) {
+    let comments = comments_of(yt, v.key)
+    if comments.is_empty() {
+        ui.EmptyState("No comments yet", icon: .message_square, action: "Refresh comments") {
+            on act: refresh_comments(v)
+        }
+    } else {
+        ui.Section("Comments") {
+            stack(gap: .related) {
+                for c in comments {
+                    stack(gap: .tight) {
+                        row(gap: .tight, align: .center) {
+                            ui.Avatar(name: c.author)
+                            text(c.author, role: .label)
+                            if c.pinned {
+                                ui.Chip("Pinned", icon: .pin)
+                            }
+                            spacer()
+                            if c.likes > 0 {
+                                text(count_text(c.likes), role: .caption)
+                            }
+                            ui.Button("Reply", icon: .reply, icon_only: true) {
+                                on press: set(reply_to, c.key).then(set(reply_text, ""))
+                            }
+                        }
+                        text(c.text, role: .reading)
+                        // The workspace's replies under the comment: the person's own, and the
+                        // ones carried from before the app recorded members.
+                        for r in replies_to(yt, c.key) {
+                            row(gap: .tight, align: .center) {
+                                text(r.text, role: .caption)
+                                spacer()
+                                if r.member == .some(workspace.me) or r.member == .none {
+                                    ui.Button("Delete", icon: .trash, icon_only: true) {
+                                        on press: retract_reply(r)
+                                    }
+                                }
+                            }
+                        }
+                        if let answering = reply_to {
+                            if answering == c.key {
+                                row(gap: .tight, align: .end) {
+                                    ui.TextInput(bind: reply_text, placeholder: "Reply", fill)
+                                    ui.Button("Send", icon: .send, role: .primary) {
+                                        on press: reply_to_comment(c, reply_text)
+                                            .then(
+                                                set(reply_to, .none),
+                                            )
+                                    }
+                                    ui.Button("Cancel") {
+                                        on press: set(reply_to, .none)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1049,11 +1645,17 @@ view playlist_page(p: Playlist) {
             }
         }
         if videos.is_empty() {
-            ui.EmptyState(
-                "Nothing shown from this playlist yet",
-                message: "Its videos appear once YouTube says what it holds",
-                icon: .list_video,
-            )
+            // Opening the page asks the service what the playlist holds; until it answers, the
+            // page says it is coming rather than that it shows nothing.
+            if p.video_count > 0 {
+                ui.ProgressBar(label: "Loading the playlist")
+            } else {
+                ui.EmptyState(
+                    "Nothing shown from this playlist yet",
+                    message: "Its videos appear once YouTube says what it holds",
+                    icon: .list_video,
+                )
+            }
         } else {
             video_grid(videos, "")
         }

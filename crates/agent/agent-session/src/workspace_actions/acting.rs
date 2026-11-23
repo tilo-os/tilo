@@ -113,6 +113,11 @@ impl Worker {
                 .show_on_layout(workspace_id, caller, (named, app), request)
                 .map(|output| (output, None));
         }
+        if let Some(named) = provider_workspace(&request.target.provider)
+            && WorkspaceId::parse(named) != Some(workspace_id)
+        {
+            return Err(unknown_action());
+        }
         // Acting on a record waits for that record's keys and no other's;
         // opening an app on a new record needs only the workspace, and on the
         // record it keeps per workspace, the host's answer for that record
@@ -129,27 +134,22 @@ impl Worker {
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
-        if let Some(named) = provider_workspace(&target.provider) {
+        if provider_workspace(&target.provider).is_some() {
             if state.stale(request.revision.as_deref()) {
                 return Err(Outcome::Rejected(ActionCallError::StaleRevision));
             }
-            return self.open_in_workspace(workspace_id, caller, request, (named, &state));
+            return self.open_in_workspace(workspace_id, caller, request, &state);
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
         let route = resource_of(&target.provider, &workspace).ok_or_else(unknown_action)?;
         // A document an app keeps for its whole workspace is reached through the record the app
         // keeps, which publishes it beside itself: mounted over that, its verbs are the app's own
         // to run, and what they write lands on the document's route.
-        let (route, state) = match self.holder_of_workspace_document(
-            workspace_id,
-            caller,
-            &workspace,
-            &route,
-            state.clone(),
-        ) {
-            Some((holder, state)) => (holder, state),
-            None => (route, state),
-        };
+        let (route, state) =
+            match self.holder_of_workspace_document(workspace_id, caller, &route, state.clone()) {
+                Some((holder, state)) => (holder, state),
+                None => (route, state),
+            };
         // The package of the version `workspace` installs, when this device
         // keeps it: an installed app's action is applied from the model its
         // package carries, whichever device built the app, because that is the
@@ -375,6 +375,10 @@ impl Worker {
     /// session is in: for the host's own person as its owner, and for anyone
     /// else, a member or an agent of anyone's, within their member access there
     /// now.
+    ///
+    /// Called only from [`Self::open_in_workspace`] (reached only through
+    /// [`Self::perform`], which has already checked that the target's named
+    /// workspace parses to `workspace_id`).
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt answered"
@@ -383,19 +387,15 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        named: &str,
         target: &tilo_actions::remote::RemoteActionTarget,
     ) -> Result<ActionOutput, Outcome> {
-        if WorkspaceId::parse(named) != Some(workspace_id) {
-            return Err(unknown_action());
-        }
         let who = if self.serves_as_owner(caller) {
             None
         } else {
             Some(self.bounded(caller).ok_or_else(unknown_action)?)
         };
         let app = self.asked_app(target).ok_or_else(unknown_action)?;
-        self.open_new(workspace_id, named, &app, who.as_ref())
+        self.open_new(workspace_id, &app, who.as_ref())
     }
 
     /// The app a workspace's `app.<app>#open` (or `#start`) names, when this
@@ -464,7 +464,6 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        workspace: &str,
         route: &DocumentRoute,
         state: super::WorkspaceState,
     ) -> Option<(DocumentRoute, super::WorkspaceState)> {
@@ -477,7 +476,7 @@ impl Worker {
         } else {
             self.bounded(caller)
         };
-        self.open_new(workspace_id, workspace, &route.app_id, who.as_ref())
+        self.open_new(workspace_id, &route.app_id, who.as_ref())
             .ok()?;
         let state = self.refresh(workspace_id, Needs::Workspace).ok()?;
         Some((self.holding_record(route, &state)?, state))
@@ -667,7 +666,7 @@ impl Worker {
         asked
     }
 
-    /// A new record of `app` in `workspace`, created by the host's own person
+    /// A new record of `app` in `workspace_id`, created by the host's own person
     /// as its owner, or by `who` on their member access there now: a genesis they
     /// may not write is never saved, as no change of theirs is.
     #[allow(
@@ -677,13 +676,13 @@ impl Worker {
     pub(super) fn open_new(
         &mut self,
         workspace_id: WorkspaceId,
-        workspace: &str,
         app: &str,
         who: Option<&bounded::Bounded>,
     ) -> Result<ActionOutput, Outcome> {
-        let founder = self.founder(workspace_id, workspace, app, who)?;
+        let workspace = workspace_id.to_string();
+        let founder = self.founder(workspace_id, &workspace, app, who)?;
         let route = if self.catalogue.placed(app).is_some() {
-            let (route, genesis) = self.placed_route(workspace_id, workspace, app)?;
+            let (route, genesis) = self.placed_route(workspace_id, &workspace, app)?;
             self.save_genesis(workspace_id, &route, genesis, founder.permissions.as_ref())?;
             route
         } else {
@@ -697,7 +696,7 @@ impl Worker {
             {
                 let route = DocumentRoute {
                     app_id: app.to_owned(),
-                    cluster_id: workspace.to_owned(),
+                    cluster_id: workspace.clone(),
                     document: String::new(),
                 };
                 if self.held_or_owed(workspace_id, &route)? {
@@ -710,7 +709,7 @@ impl Worker {
                     });
                 }
             }
-            self.found(workspace_id, workspace, app, Seed::New, founder)?
+            self.found(workspace_id, &workspace, app, Seed::New, founder)?
         };
         Ok(ActionOutput {
             value: Some(serde_json::json!({

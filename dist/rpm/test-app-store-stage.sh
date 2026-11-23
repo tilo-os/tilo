@@ -42,6 +42,9 @@ EOF
 cat > "$release/bin/tilo-install" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+# A package build names the store it writes: there is no package service.
+[[ ${1:-} == --offline-store && $2 == "${TILO_APPS_DATA_DIR:-}" ]]
+shift 2
 if [[ ${1:-} == image ]]; then
     [[ $2 == add && $4 == --publisher && -n ${TILO_APPS_DATA_DIR:-} ]]
     image=$TILO_APPS_DATA_DIR/pkgs/$(printf 'cd%.0s' {1..32})

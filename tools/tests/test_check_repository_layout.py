@@ -84,20 +84,16 @@ class RepositoryLayoutTests(unittest.TestCase):
                         "tools/ci_select.py",
                         "tools/clippy-diff.sh",
                         "tools/resolve_ci_builder.py",
-                        "tools/Run-ImagerEphemeralRunner.ps1",
-                        "tools/run-imager-ephemeral-runner.sh",
                         "tools/rustc-thin-app-wrapper.sh",
                     ]
                 ),
                 [
-                    "tracked file uses retired source root `tools/Run-ImagerEphemeralRunner.ps1`; move it under `tools/ci/runners/imager-ephemeral-windows.ps1`: tools/Run-ImagerEphemeralRunner.ps1",
                     "tracked file uses retired source root `tools/cargo-shim`; move it under `tools/ci/cargo-shim`: tools/cargo-shim",
                     "tracked file uses retired source root `tools/check-build-env.sh`; move it under `tools/ci/check-build-env.sh`: tools/check-build-env.sh",
                     "tracked file uses retired source root `tools/ci-`; move it under `tools/ci/`: tools/ci-sccache.sh",
                     "tracked file uses retired source root `tools/ci_`; move it under `tools/ci/`: tools/ci_select.py",
                     "tracked file uses retired source root `tools/clippy-`; move it under `tools/ci/clippy-`: tools/clippy-diff.sh",
                     "tracked file uses retired source root `tools/resolve_ci_builder.py`; move it under `tools/ci/resolve_builder.py`: tools/resolve_ci_builder.py",
-                    "tracked file uses retired source root `tools/run-imager-ephemeral-runner.sh`; move it under `tools/ci/runners/imager-ephemeral-linux.sh`: tools/run-imager-ephemeral-runner.sh",
                     "tracked file uses retired source root `tools/rustc-thin-app-wrapper.sh`; move it under `tools/ci/rustc-thin-app-wrapper.sh`: tools/rustc-thin-app-wrapper.sh",
                 ],
             )
@@ -150,10 +146,10 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "tracked file uses retired source root `crates/identity/`; move it under `crates/collab/`: crates/identity/tilo-user-identity/src/lib.rs",
                     "tracked file uses retired source root `crates/packaging/hello/`; move it under `examples/packaging/hello/`: crates/packaging/hello/src/main.rs",
                     "tracked file uses retired source root `crates/packaging/notes-cli/`; move it under `examples/packaging/notes-cli/`: crates/packaging/notes-cli/src/main.rs",
-                    "tracked file uses retired source root `crates/session/tilo-power/`; move it under `crates/system/power/`: crates/session/tilo-power/src/main.rs",
-                    "tracked file uses retired source root `crates/system/windows-vm/`; move it under `crates/windows/windows-vm/`: crates/system/windows-vm/src/lib.rs",
+                    "tracked file uses retired source root `crates/session/tilo-power/`; move it under `crates/os/power/`: crates/session/tilo-power/src/main.rs",
+                    "tracked file uses retired source root `crates/system/windows-vm/`; move it under `crates/compat/windows-vm/`: crates/system/windows-vm/src/lib.rs",
                     "tracked file uses retired source root `fs/`; move it under `crates/system/fs/`: fs/src/lib.rs",
-                    "tracked file uses retired source root `os/usr/lib/systemd/system/tilo-power.service`; move it under `crates/system/power/`: os/usr/lib/systemd/system/tilo-power.service",
+                    "tracked file uses retired source root `os/usr/lib/systemd/system/tilo-power.service`; move it under `crates/os/power/`: os/usr/lib/systemd/system/tilo-power.service",
                     "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
                     "tracked file uses retired source root `release/`; move it under `dist/`: release/local-models/recipe.sh",
                     "tracked file uses retired source root `shell/`; move it under `crates/session/session/`: shell/src/main.rs",
@@ -162,7 +158,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "tracked file uses retired source root `tools/install-windows-`; move it under `tools/windows/install-`: tools/install-windows-apps.ps1",
                     "tracked file uses retired source root `tools/test-windows-`; move it under `tools/windows/test-`: tools/test-windows-gstreamer.ps1",
                     "tracked file uses retired source root `tools/windows-`; move it under `tools/windows/`: tools/windows-install-path.ps1",
-                    "tracked file uses retired source root `ui/`; move it under `crates/sdk/ui-core/`: ui/src/lib.rs",
+                    "tracked file uses retired source root `ui/`; move it under `crates/ui/ui-core/`: ui/src/lib.rs",
                 ],
             )
         with self.subTest(phase='identical tracked fixtures must share one canonical file'):

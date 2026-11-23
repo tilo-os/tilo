@@ -33,16 +33,7 @@ impl ResourceKind {
     /// type whose sides hold valid token characters.
     pub fn mime(mime: &str) -> Result<Self, DefaultAppError> {
         let mime = mime.trim().to_ascii_lowercase();
-        let Some((top, subtype)) = mime.split_once('/') else {
-            return Err(DefaultAppError::InvalidResource);
-        };
-        if mime.len() > 255
-            || subtype.contains('/')
-            || !valid_mime_token(top)
-            || !valid_mime_token(subtype)
-            || top == "*"
-            || subtype == "*"
-        {
+        if !tilo_mime::valid_mime(&mime) {
             return Err(DefaultAppError::InvalidResource);
         }
         Ok(Self(format!("mime:{mime}")))
@@ -124,18 +115,6 @@ impl ResourceKind {
             self.0.clone()
         }
     }
-}
-
-fn valid_mime_token(token: &str) -> bool {
-    !token.is_empty()
-        && token.len() <= 127
-        && token.bytes().all(|b| {
-            b.is_ascii_alphanumeric()
-                || matches!(
-                    b,
-                    b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
-                )
-        })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -943,5 +922,95 @@ mod tests {
             Some(https)
         );
         assert_eq!(r("pdf").mimeapps_type(), None);
+    }
+
+    #[test]
+    fn mime_validation_preserves_caller_differences_between_resource_kind_and_manifest() {
+        let base_manifest = tilo_app_package::Manifest::from_toml_str(
+            r#"
+[package]
+id = "so.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[entrypoint]
+bin = "bin/example"
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#,
+        )
+        .expect("base manifest parses");
+
+        let max_valid = format!("{}/{}", "a".repeat(127), "b".repeat(127));
+        let max_valid_padded = format!(" {max_valid} ");
+        let max_valid_kind = format!("mime:{max_valid}");
+        let over_top = format!("{}/b", "a".repeat(128));
+        let over_subtype = format!("a/{}", "b".repeat(128));
+
+        // (input, ResourceKind::mime result, validate_manifest accepts)
+        let cases: &[(&str, Option<&str>, bool)] = &[
+            ("text/plain", Some("mime:text/plain"), true),
+            (" text/plain ", Some("mime:text/plain"), false),
+            ("\ttext/plain\n", Some("mime:text/plain"), false),
+            ("Text/HTML", Some("mime:text/html"), true),
+            (" Text/HTML ", Some("mime:text/html"), false),
+            (
+                "application/vnd.api+json",
+                Some("mime:application/vnd.api+json"),
+                true,
+            ),
+            (
+                "a!#$&^_.+-/b!#$&^_.+-",
+                Some("mime:a!#$&^_.+-/b!#$&^_.+-"),
+                true,
+            ),
+            ("", None, false),
+            ("   ", None, false),
+            ("text", None, false),
+            ("/plain", None, false),
+            ("text/", None, false),
+            ("text/*", None, false),
+            ("*/plain", None, false),
+            ("*/*", None, false),
+            ("text/plain/extra", None, false),
+            ("text/plain; charset=utf-8", None, false),
+            ("text/pl ain", None, false),
+            ("text/pl@in", None, false),
+            ("text/café", None, false),
+            (max_valid.as_str(), Some(max_valid_kind.as_str()), true),
+            (
+                max_valid_padded.as_str(),
+                Some(max_valid_kind.as_str()),
+                false,
+            ),
+            (over_top.as_str(), None, false),
+            (over_subtype.as_str(), None, false),
+        ];
+
+        for &(input, expected_kind, expected_manifest) in cases {
+            let mut manifest = base_manifest.clone();
+            manifest.providers.mime = vec![input.to_owned()];
+            let manifest_ok = tilo_app_package::validate::validate_manifest(&manifest).is_ok();
+            assert_eq!(
+                manifest_ok, expected_manifest,
+                "validate_manifest({input:?})"
+            );
+            let kind = ResourceKind::mime(input);
+            assert_eq!(
+                kind.as_ref().map(ResourceKind::as_str).ok(),
+                expected_kind,
+                "ResourceKind::mime({input:?})"
+            );
+        }
     }
 }

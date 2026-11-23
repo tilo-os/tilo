@@ -430,7 +430,7 @@ impl Services {
         let sink = Rc::clone(&self.commands);
         Button::new(id, label)
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || sink.borrow_mut().push(command))
+            .on_click(move || sink.borrow_mut().push(command))
     }
 
     /// The page's section: connect a source, review it, choose and bring it over.

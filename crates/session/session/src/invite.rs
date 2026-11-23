@@ -231,6 +231,18 @@ impl Shared {
         state.presentation().open(false);
     }
 
+    /// Open the invitation sheet for a resource a Nearby Send action asked to share: sharing a
+    /// resource is inviting people into the workspace that holds it.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn follow_nearby_shares(&self) {
+        if self.nearby_shares.borrow().is_empty() {
+            return;
+        }
+        self.nearby_shares.borrow_mut().clear();
+        crate::quick_settings::close(self);
+        self.open_invite();
+    }
+
     /// Answer for the surfaces that offer inviting whether the person may, every pass: the bar
     /// keeps its invite button, and the roster its footer.
     pub(crate) fn follow_invitable(&self) {

@@ -122,7 +122,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
         .await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "v1").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
     let first = bob_peer
         .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &phone.sk, SystemTime::now())
@@ -173,7 +173,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     .await;
     let before = doc.get_heads();
     doc.put(ROOT, "topic", "while behind").unwrap();
-    doc.commit_edit("fixture", "topic");
+    doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
     let held = bob_peer
         .publication_mut()
         .publish_incremental(

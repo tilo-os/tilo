@@ -141,15 +141,12 @@ fn owner(workspace: &str) -> Caller {
         .in_new_execution()
 }
 
-/// An agent inside a turn caused by `person`'s message in `workspace`.
+/// An agent `id` acting for `person` on this device, in `workspace`.
 fn agent(id: &str, person: &str, workspace: &str) -> Caller {
-    Caller::agent_turn(
-        id,
-        person,
-        tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
-    )
-    .in_workspace(workspace)
-    .in_new_execution()
+    Caller::local_person(person.to_owned())
+        .delegated_to(id)
+        .in_workspace(workspace)
+        .in_new_execution()
 }
 
 fn reason(error: &ActionCallError) -> &str {
@@ -281,9 +278,9 @@ tilo_test_env::scenario! {
         assert_eq!(fixture.shelf.lock().unwrap().stored.len(), 1);
     }
 
-    phase an_agent_in_a_turn_by_a_member_who_may_not_upload_is_refused_with_the_rule;
-    // An agent inside a turn acts with its person's grants: a member who may not
-    // change what is there hands on no upload either.
+    phase an_agent_acting_for_a_member_who_may_not_upload_is_refused_with_the_rule;
+    // An agent acts with its person's grants: a member who may not change what is there
+    // hands on no upload either.
     // It is told the one rule that would let it, and nothing is opened or stored.
     {
         let fixture = fixture();
@@ -302,9 +299,8 @@ tilo_test_env::scenario! {
         assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
     }
 
-    phase an_agent_caused_by_someone_outside_the_workspace_stores_nothing;
-    // An agent whose turn was caused by someone who is not in the workspace at
-    // all stores nothing there.
+    phase an_agent_acting_for_someone_outside_the_workspace_stores_nothing;
+    // An agent acting for someone who is not in the workspace at all stores nothing there.
     {
         let fixture = fixture();
         let refused = fixture

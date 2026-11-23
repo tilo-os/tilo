@@ -41,7 +41,7 @@ Every link, lazy libraries or not, also sheds code no app can reach:
   helpers) were exported and kept. Only proc macros use them, never an app;
   they leave the list, and with it the file.
 
-The runtime's engine libraries (crates/runtime/engines/*) link through this
+The runtime's engine libraries (crates/engines/loadable/*) link through this
 script too (`TILO_LAZY_LINK_ROLE`), without the lazy libraries:
 
 - `engine`: an engine that apps or other engines compile against as a crate.

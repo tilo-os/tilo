@@ -14,15 +14,6 @@ from ci import package_features, package_sets  # noqa: E402
 
 
 class PackageSetsTests(unittest.TestCase):
-    def test_android_apps_declare_an_android_example(self):
-        packages = {
-            "notes": {"targets": [{"name": "notes", "kind": ["lib"]},
-                                  {"name": "notes-android", "kind": ["example"]}]},
-            "clock": {"targets": [{"name": "clock-android", "kind": ["bin"]}]},
-            "files": {"targets": [{"name": "notes-android", "kind": ["example"]}]},
-        }
-        self.assertEqual(package_sets.android_apps(packages), {"notes"})
-
     def test_browser_crates_depend_on_wasm_bindgen_for_their_library(self):
         packages = {
             "web": {"dependencies": [{"name": "wasm-bindgen", "kind": None}]},
@@ -30,16 +21,6 @@ class PackageSetsTests(unittest.TestCase):
             "native": {"dependencies": [{"name": "serde", "kind": None}]},
         }
         self.assertEqual(package_sets.browser_crates(packages), {"web"})
-
-    def test_example_apps_live_under_examples_apps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            packages = {
-                "counter": {"manifest_path": str(root / "examples/apps/counter/Cargo.toml")},
-                "gallery": {"manifest_path": str(root / "examples/gallery/Cargo.toml")},
-                "notes": {"manifest_path": str(root / "apps/settings/Cargo.toml")},
-            }
-            self.assertEqual(package_sets.example_apps(packages, root), {"counter"})
 
     def test_a_unit_differs_between_architectures_by_its_cpu_cfgs_branches_and_intrinsics(self):
         differs = [
@@ -106,7 +87,6 @@ class PackageSetsTests(unittest.TestCase):
         # Each has an x86_64 and an aarch64 code path of its own; the derivation must keep
         # finding them, whatever else it finds.
         known = {
-            "tilo-sandbox": "clone3 assembly, microvm or virt machine",
             "tilo-agent-session": "seccomp confinement",
             "app-cli": "ISA detection",
             "tilo-environment": "the host architecture",
@@ -186,7 +166,7 @@ class PackageSetsTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/package_sets.py"), "desktop"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("usage: package_sets.py android|browser", result.stderr)
+        self.assertIn("usage: package_sets.py browser", result.stderr)
 
     def test_the_families_t_lints_name_the_sets_derived_here(self):
         # A crate that starts building for the page, or a package that starts shipping without

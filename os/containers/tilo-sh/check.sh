@@ -455,8 +455,10 @@ if [[ $hosted == 1 ]]; then
       sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
       echo '--- the key the host joined with:' >&2
       sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
-        --init-groups --inh-caps=-all tilo-device-admin key \
-        --identity-root /var/lib/tilo-hosted/member/identity >&2 2>/dev/null || true
+        --init-groups --inh-caps=-all -- env HOME=/var/lib/tilo-hosted/member/home \
+        XDG_STATE_HOME=/var/lib/tilo-hosted/member/profile/state \
+        TILO_IDENTITY_ROOT=/var/lib/tilo-hosted/member/identity \
+        tilo device key >&2 2>/dev/null || true
       sudo -n podman exec tilo-sh-vm-host-0 sh -c \
         'ls -la --time-style=full-iso /var/lib/tilo-hosted/member/identity/device-private /var/lib/tilo-hosted/member/identity/device' >&2 2>/dev/null || true
       echo '--- the member, from its start:' >&2

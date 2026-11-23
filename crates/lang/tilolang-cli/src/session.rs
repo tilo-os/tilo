@@ -292,10 +292,14 @@ impl Peer {
         ))
     }
 
-    /// Install the signed package `tapp`, replacing the installed one of the same id.
+    /// Install the signed package `tapp`, replacing the installed one of the same id. A development
+    /// session runs no package service, so the install names the session's store and is made in
+    /// `tilo-install`'s own process.
     pub(crate) fn install(&self, bin: &Path, tapp: &Path) -> Result<(), String> {
         status(
             self.command(&bin.join("tilo-install"))
+                .arg("--offline-store")
+                .arg(self.state.join("apps"))
                 .arg("install")
                 .arg(tapp)
                 .args(["--allow-self-signed", "--force"])

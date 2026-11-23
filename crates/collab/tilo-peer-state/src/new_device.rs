@@ -65,17 +65,11 @@ impl std::fmt::Debug for ServedTicket {
     }
 }
 
-/// A call refused before anything ran, said as the computer is told it.
-fn refused(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: reason.into(),
-    }
-}
-
 impl ServedTicket {
-    /// Serve `ticket`, issued now and live for `lifetime_ns`, for a computer to become a member
-    /// device of `user_public_key`, entering at `enter`, once `approver` approves it. A
-    /// certificate whose approver `revocations` refuses is never handed on.
+    /// Serve `ticket`, live until `expires_at_ns`, for a computer to become a member device of
+    /// `user_public_key`, entering at `enter`, once `approver` approves it. A certificate whose
+    /// approver `revocations` refuses is never handed on. A ticket served again after its issuer
+    /// restarted keeps the expiry it was issued with.
     ///
     /// # Panics
     ///
@@ -88,9 +82,9 @@ impl ServedTicket {
         capability: tilo_user_identity::DeviceCapabilities,
         approver: Arc<dyn Approver>,
         revocations: RevocationList,
-        lifetime_ns: u64,
+        expires_at_ns: u64,
     ) -> Self {
-        let secret = Secret::of(&ticket, tilo_clock::unix_now_ns(), lifetime_ns);
+        let secret = Secret::of(&ticket, 0, expires_at_ns);
         Self(Arc::new(Inner {
             ticket,
             secret,
@@ -104,6 +98,12 @@ impl ServedTicket {
             told: watch::Sender::new(false),
             runtime: tokio::runtime::Handle::current(),
         }))
+    }
+
+    /// The ticket served.
+    #[must_use]
+    pub fn ticket(&self) -> &Ticket {
+        &self.0.ticket
     }
 
     /// The certificate this ticket gave, once it gave one.
@@ -174,30 +174,34 @@ impl ServedTicket {
             };
         }
         let InvokeArgument::Json(argument) = &request.argument else {
-            return Err(refused(
+            return Err(ActionCallError::refused(
                 "a computer asks with its key, its agent and the ticket's secret",
             ));
         };
         let input: CertifyInput =
             serde_json::from_value(serde_json::Value::Object(argument.clone())).map_err(|_| {
-                refused("a computer asks with its key, its agent and the ticket's secret")
+                ActionCallError::refused(
+                    "a computer asks with its key, its agent and the ticket's secret",
+                )
             })?;
         let mut key = [0; 32];
         if hex::decode_to_slice(&input.device_public_key, &mut key).is_err() || key != device {
-            return Err(refused(
+            return Err(ActionCallError::refused(
                 "a computer asks to be certified for the key it connects with",
             ));
         }
         let agent = input.agent.trim();
         if agent.is_empty() {
-            return Err(refused("a computer names the agent that runs on it"));
+            return Err(ActionCallError::refused(
+                "a computer names the agent that runs on it",
+            ));
         }
         let label = fitted(input.label.as_deref().map_or(agent, str::trim));
         let now = tilo_clock::unix_now_ns();
         self.0
             .secret
             .spend(&input.secret, now)
-            .map_err(|why| refused(why.to_string()))?;
+            .map_err(|why| ActionCallError::refused(why.to_string()))?;
         let asked = asked(
             self.0.user_public_key,
             device,
@@ -207,7 +211,7 @@ impl ServedTicket {
             &self.0.ticket.secret,
             now,
         )
-        .map_err(|error| refused(error.to_string()))?;
+        .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let invocation = request.invocation;
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
         let receipt = accepted.receipt();
@@ -279,6 +283,17 @@ impl ServedTickets {
             .retain(|kept| !Arc::ptr_eq(&kept.0, &ticket.0));
     }
 
+    /// Whether a ticket served here takes `request`: one took it already, or its secret is the
+    /// one the call brings.
+    #[must_use]
+    pub fn knows(&self, request: &InvokeRequest) -> bool {
+        let secret = secret_of(request);
+        self.0
+            .lock_recover()
+            .iter()
+            .any(|kept| kept.has_call(&request.invocation) || kept.0.secret.is(secret))
+    }
+
     /// The ticket the call `request` is for: the one that took it already, else the one whose
     /// secret it brings, else the newest, which refuses it.
     fn for_request(&self, request: &InvokeRequest) -> Option<ServedTicket> {
@@ -289,13 +304,7 @@ impl ServedTickets {
         {
             return Some(taken.clone());
         }
-        let secret = match &request.argument {
-            InvokeArgument::Json(argument) => argument
-                .get("secret")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default(),
-            _ => "",
-        };
+        let secret = secret_of(request);
         served
             .iter()
             .find(|kept| kept.0.secret.is(secret))
@@ -332,7 +341,9 @@ impl ActionProvider for ServedTickets {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         match self.for_request(&request) {
             Some(served) => served.invoke(caller, request),
-            None => Pending::ready(Err(refused("no ticket is served here any more"))),
+            None => Pending::ready(Err(ActionCallError::refused(
+                "no ticket is served here any more",
+            ))),
         }
     }
 
@@ -349,6 +360,17 @@ impl ActionProvider for ServedTickets {
             Some(served) => served.cancel(caller, id),
             None => Pending::ready(Err(ActionCallError::UnknownAction)),
         }
+    }
+}
+
+/// The secret a certify call brings, hex: empty when it brings none.
+fn secret_of(request: &InvokeRequest) -> &str {
+    match &request.argument {
+        InvokeArgument::Json(argument) => argument
+            .get("secret")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+        _ => "",
     }
 }
 

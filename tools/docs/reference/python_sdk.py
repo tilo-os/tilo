@@ -51,6 +51,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Errors", (
         "Refused", "AskPending", "ProtocolError",
         "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "UnsupportedVersion",
+        "Unreachable",
     )),
 )
 

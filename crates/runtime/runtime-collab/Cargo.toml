@@ -32,6 +32,7 @@ native-retained-qualification = ["client"]
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # Only the session vocabulary and the engine launch boundary: this crate is
 # in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
@@ -60,7 +61,7 @@ serde_json.workspace = true
 base64.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 # The collaboration wire's framing (`wire`).
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

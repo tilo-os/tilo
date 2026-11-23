@@ -23,7 +23,7 @@ path = "src/lib.rs"
 [features]
 default = ["filesystem", "tree-sync"]
 # External licensed simulator; never enabled by ordinary filesystem tests.
-rystic-tests = ["filesystem"]
+rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
 # The document-media capability over the content store, without the mount.
 document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
 # Keeping a workspace's tree records converged with a peer's, over that peer's own document
@@ -57,6 +57,7 @@ filesystem = [
     "dep:fuser",
     "dep:fs-native",
     "dep:accounts",
+    "dep:account-credentials",
     "dep:cloud-source",
     "dep:cloud-source-dav",
     "dep:cloud-source-gdrive",
@@ -94,6 +95,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Where this login's services bind their sockets: the daemon dials the
 # session's collaboration broker, the same path the launcher hands apps.
 tilo-paths.workspace = true
+# The opt-in simulator test exercises the same independent-import engine as Files.
+tilo-cloud-files = { version = "0.1.0", path = "../../integrations/tilo-cloud-files", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
@@ -126,16 +129,16 @@ ed25519-dalek = { workspace = true, optional = true }
 # filesystem daemon host-generates the light preview types and never pulls
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
-tilo-thumbnail = { version = "0.1.0", path = "../../media/thumbnail", optional = true }
+tilo-thumbnail = { version = "0.1.0", path = "../../engines/thumbnail", optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
-tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = false, optional = true }
+tilo-power-mgmt = { version = "0.1.0", path = "../../os/power", default-features = false, optional = true }
 # NetworkManager's connectivity and primary-connection metering, followed by
 # signal, for the same policy.
-tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
+tilo-nm = { version = "0.1.0", path = "../../os/tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 libc = { workspace = true, optional = true }
@@ -156,18 +159,21 @@ futures-util.workspace = true
 redb.workspace = true
 # Cloud accounts as mounted folders: the account store and credential
 # handoff, the provider interface and the providers.
-accounts = { version = "0.1.0", path = "../accounts", optional = true }
-cloud-source = { version = "0.1.0", path = "../cloud-source", optional = true }
-cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", optional = true }
-cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", optional = true }
-cloud-source-onedrive = { version = "0.1.0", path = "../cloud-source-onedrive", optional = true }
-cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", optional = true }
-cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", optional = true }
+accounts = { version = "0.1.0", path = "../../integrations/accounts", optional = true }
+# What a sign-in-by-provider-page account's drive reads with: the grant this device keeps,
+# renewed by the same store `tilo migrate` reads it through.
+account-credentials = { version = "0.1.0", path = "../../integrations/account-credentials", optional = true }
+cloud-source = { version = "0.1.0", path = "../../integrations/cloud-source", optional = true }
+cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", optional = true }
+cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { version = "0.1.0", path = "../../integrations/cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", optional = true }
+cloud-source-icloud = { version = "0.1.0", path = "../../integrations/cloud-source-icloud", optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
 # The daemon's log, on its standard error.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", optional = true, features = ["tokio", "postcard"] }
 # The daemon's tree writer joins the session's record route as the Files app does.
 # The bytes a device signs to join a workspace, as every app's identity does.
 tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
@@ -183,10 +189,10 @@ image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
 tilo-test-env = { path = "../../../tools/test-env", features = ["iroh-relay"] }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
-cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
-cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
-accounts = { version = "0.1.0", path = "../accounts", features = ["sign-ins-fixture"] }
+cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", features = ["fake-server"] }
+accounts = { version = "0.1.0", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
 
 [lints]
 workspace = true

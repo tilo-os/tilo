@@ -189,7 +189,7 @@ impl State {
     /// it covered is drawn again on the next frame.
     fn lift_lock(&mut self, lifted: bool) {
         self.lock.holder = None;
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         self.lock.locked = false;
         self.lock.by_session = false;
         if lifted {

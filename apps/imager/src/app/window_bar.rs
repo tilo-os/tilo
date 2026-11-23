@@ -56,7 +56,7 @@ mod tests {
 
     impl ui::framework::ResourceApp for SampleImager {
         type Resource = Imager;
-        const ID: &'static str = tilo_app_id::apps::IMAGER;
+        const ID: &'static str = crate::resource::APP_ID;
         const TITLE: &'static str = "Tilo Installer";
 
         fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {

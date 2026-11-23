@@ -14,7 +14,7 @@ fn packages() -> (String, Rc<stage::Packages>) {
     let search = vec![shell.parent().expect("apps/tl").to_path_buf()];
     let (built, platform) = super::build(&shell, &search).expect("the shell compiles");
     let app = built.last().expect("the shell").compiled.meta.app.clone();
-    let packages = Rc::new(stage::Packages(
+    let packages = Rc::new(stage::Packages::new(
         Rc::new(built.into_iter().map(|b| b.compiled).collect()),
         platform,
     ));
@@ -28,7 +28,7 @@ fn app_packages(name: &str) -> Rc<stage::Packages> {
         .join(name);
     let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
     let (built, platform) = super::build(&dir, &search).expect("the app compiles");
-    Rc::new(stage::Packages(
+    Rc::new(stage::Packages::new(
         Rc::new(built.into_iter().map(|b| b.compiled).collect()),
         platform,
     ))
@@ -838,7 +838,7 @@ fn a_place_the_shell_has_shows_its_app(staged: &stage::Staged, packages: &Rc<sta
     assert!(!places.is_empty(), "the staged layout holds its places");
     // The apps the shell's own build has: a place that shows one of them is drawn by it.
     let known: Vec<&str> = packages
-        .0
+        .compiled
         .iter()
         .map(|held| held.meta.app.as_str())
         .collect();
@@ -1289,7 +1289,7 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
     // app's icon-less Untag is there, at a desktop's width and in a hand's.
     tilo_app_window::i18n::ensure();
     let packages = app_packages("notes");
-    let app = packages.0.last().expect("the app").meta.app.clone();
+    let app = packages.compiled.last().expect("the app").meta.app.clone();
     for size in [(1280, 800), (390, 844)] {
         let mut staged = stage::Staged::over(
             &app,
@@ -1347,7 +1347,7 @@ fn rows_with_depth(
 fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     tilo_app_window::i18n::ensure();
     let packages = app_packages("notes");
-    let app = packages.0.last().expect("the app").meta.app.clone();
+    let app = packages.compiled.last().expect("the app").meta.app.clone();
     let size = (1280, 800);
     let mut staged = stage::Staged::over(
         &app,
@@ -1454,7 +1454,7 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
 fn a_notebooks_tree_keeps_its_room_under_the_notes_outline() {
     tilo_app_window::i18n::ensure();
     let packages = app_packages("notes");
-    let app = packages.0.last().expect("the app").meta.app.clone();
+    let app = packages.compiled.last().expect("the app").meta.app.clone();
     for size in [(1280, 800), (390, 844)] {
         let mut staged = stage::Staged::over(
             &app,
@@ -2168,7 +2168,7 @@ fn the_window_bar_at(
 fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() {
     tilo_app_window::i18n::ensure();
     let packages = tasks_packages();
-    let app = packages.0.last().expect("the app").meta.app.clone();
+    let app = packages.compiled.last().expect("the app").meta.app.clone();
     let all = super::layouts();
     let mut problems: Vec<String> = Vec::new();
     let mut measured = 0_usize;
@@ -2242,7 +2242,7 @@ fn a_list_opens_the_page_of_its_first_row_in_every_run() {
     tilo_app_window::i18n::ensure();
     let packages = tasks_packages();
     let task = packages
-        .0
+        .compiled
         .iter()
         .find(|package| package.meta.app == "so.tilo.lang.tasks")
         .and_then(|package| package.meta.types.iter().find(|ty| ty.name == "Task"))
@@ -2512,7 +2512,7 @@ fn the_gallerys_controls_show_what_their_fields_hold() {
         ui::clock::freeze_for_capture();
         let packages = app_packages("gallery");
         let ty = packages
-            .0
+            .compiled
             .iter()
             .find(|c| c.meta.app == "so.tilo.lang.gallery")
             .and_then(|c| c.meta.types.iter().find(|t| t.name == "Gallery"))
@@ -2539,7 +2539,7 @@ fn the_gallerys_controls_show_what_their_fields_hold() {
             .expect("the gallery lays out");
         // The window opens on its basics: the controls' page is a view of the same resource.
         let page = packages
-            .0
+            .compiled
             .iter()
             .find(|c| c.meta.app == "so.tilo.lang.gallery")
             .and_then(|c| c.meta.views.iter().find(|v| v.name == "controls"))

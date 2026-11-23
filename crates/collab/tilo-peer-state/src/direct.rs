@@ -748,7 +748,17 @@ impl DirectSync {
         &self,
         write: impl FnOnce(&mut StatePeer) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let message = write(&mut self.0.replica.lock())?;
+        // A write that also commits the workspace's own document — a
+        // checkpoint's coverage, say — sends that change on the same links as
+        // the write did: the workspace's changes are eager, and a device
+        // holding the write until its coverage comes would still wait for it
+        // if the coverage waited for an ask.
+        let (message, workspace) = {
+            let mut peer = self.0.replica.lock();
+            let heads = peer.workspace_heads().unwrap_or_default();
+            let message = write(&mut peer)?;
+            (message, peer.workspace_changes_since(&heads))
+        };
         self.keep(&message, false)
             .map_err(|error| error.to_string())?;
         self.0.changed.send_modify(bump);
@@ -757,6 +767,16 @@ impl DirectSync {
             message: message.clone(),
             published: true,
         });
+        if !workspace.is_empty() {
+            self.outgoing(Authored {
+                from: self.device(),
+                message: NeighbourMsg::SyncResp {
+                    changes: workspace,
+                    workspace: self.0.replica.workspace(),
+                },
+                published: true,
+            });
+        }
         Ok(message)
     }
 
@@ -3054,7 +3074,7 @@ mod tests {
         let roster = [device(&root, 2), device(&root, 3)];
         let mut record = AutoCommit::new();
         record.put(ROOT, "start", "here").unwrap();
-        record.commit_edit("fixture", "start");
+        record.commit_edit("fixture", "start", &root.verifying_key().to_bytes());
         let host = link(
             &roster,
             RevocationList::new(),
@@ -3085,7 +3105,7 @@ mod tests {
                 .with_actor(automerge::ActorId::from(vec![actor; 16]));
             let heads = edit.get_heads();
             edit.put(ROOT, field, "written").unwrap();
-            edit.commit_edit("fixture", field);
+            edit.commit_edit("fixture", field, &root.verifying_key().to_bytes());
             edit.save_after(&heads)
         };
         let (first, second) = (edit("first", 4), edit("second", 5));

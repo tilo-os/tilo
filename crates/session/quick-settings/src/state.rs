@@ -91,13 +91,22 @@ pub struct QuickSettingsState {
     /// The passphrase prompt for a protected network; `None` except
     /// while the user is typing into it.
     pub wifi_password: Option<crate::WifiPasswordPrompt>,
-    /// The power profile in force, folded from the `power:sleep` reading.
+    /// The power profile in force, folded from the `power` reading.
     /// Defaults to `Balanced` so a host without `power-profiles-daemon`
     /// still renders a sensible label.
     pub power_profile: PowerProfile,
     /// The profiles the power daemon offers on this machine; empty until
     /// read. The power row cycles only through these.
     pub power_profiles: Vec<PowerProfile>,
+    /// The failure text this panel last raised from `power#set-power-mode`,
+    /// tracked so a dismissed refusal banner does not return until another mode
+    /// change fails, and a subsequent mode success clears only its own banner.
+    pub power_problem: Option<String>,
+    /// Whether the panel has already folded its baseline `power` reading, so a
+    /// panel that starts following later does not open with a stale banner.
+    pub(crate) power_seen: bool,
+    /// Whether `power#set-power-mode` was pending on the previous `power` reading.
+    pub(crate) power_mode_pending: bool,
     /// Apps currently keeping the screen awake (an idle inhibitor held
     /// through Wayland, the portal or `org.freedesktop.ScreenSaver`), named
     /// as they asked. Shown on the power row so a screen that never locks
@@ -176,6 +185,9 @@ impl Default for QuickSettingsState {
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             power_profiles: Vec::new(),
+            power_problem: None,
+            power_seen: false,
+            power_mode_pending: false,
             awake_holders: Vec::new(),
             personal_devices: None,
             do_not_disturb: false,

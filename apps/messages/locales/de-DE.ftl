@@ -174,11 +174,11 @@ messages-endpoint-recipient = Die Adresse, unter der { $item } erreichbar ist
 messages-endpoint-scope = Das Konto, über das { $item } erreichbar ist
 messages-endpoint-revision = Die verknüpfte Identität von { $item }
 messages-endpoint-removed = Ob { $item } noch verknüpft ist
-messages-person-account-type-id = Die Art des Kontos { $item }
-messages-person-account-display-name = Der Name des Kontos { $item }
-messages-person-account-config = Die Verbindungseinstellungen von { $item }
-messages-person-account-enabled = Ob { $item } in Gebrauch ist
-messages-person-account-tint = Die Farbe von { $item }
+messages-listed-account-type-id = Die Art des Kontos { $item }
+messages-listed-account-display-name = Der Name des Kontos { $item }
+messages-listed-account-config = Die Verbindungseinstellungen von { $item }
+messages-listed-account-enabled = Ob { $item } in Gebrauch ist
+messages-listed-account-tint = Die Farbe von { $item }
 messages-person-accounts-active = Das für einen Dienst verwendete Konto
 messages-message-drafts-drafts = Die ungesendeten Worte, die je Unterhaltung aufbewahrt werden
 

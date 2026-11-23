@@ -206,6 +206,19 @@ def display_modes(ctx, res):
     res.metrics["restored"] = core.display_rects(st)
 
 
+def _sizes_by_monitor(state: dict) -> dict:
+    """Each output's size, by the monitor it shows."""
+    return {d["monitor"]: (d["width"], d["height"])
+            for d in state["workspace_tree"]["outputs"]["displays"]}
+
+
+def _monitor_of_group(state: dict, gid):
+    """The monitor showing window group `gid`, when an output shows that monitor now."""
+    shown = {d["monitor"] for d in state["workspace_tree"]["outputs"]["displays"]}
+    monitor = (state["workspace_tree"]["outputs"].get("home") or {}).get(str(gid))
+    return monitor if monitor in shown else None
+
+
 @check("B06", AREA, "Monitor hotplug: unplugging and replugging an output moves windows and restores the layout")
 def hotplug(ctx, res):
     # The guest kernel's DRM connector status is the hotplug: forcing it off and back to
@@ -236,7 +249,10 @@ def hotplug(ctx, res):
     res.metrics["unplugged"] = victim
 
     card = victim.rsplit("/", 1)[1].split("-", 1)[0]
-    widths = {d: r[2:4] for d, r in rects.items() if d != d1}
+    # Outputs are told apart by their monitor: a display's `id` is the backend's output
+    # number, renumbered whenever the outputs are enumerated again, as a hotplug does.
+    sizes = _sizes_by_monitor(st)
+    widths = {m: wh for m, wh in sizes.items() if m != monitor}
 
     def force(state):
         # Forcing a connector's status sends no uevent; the card's synthetic change
@@ -249,17 +265,17 @@ def hotplug(ctx, res):
         st = ctx.wait_state(lambda s: len(core.display_rects(s)) == len(rects) - 1, 10,
                             "the unplugged output is gone from the layout")
         ctx.shot("B06-unplugged")
-        kept = {d: r[2:4] for d, r in core.display_rects(st).items()}
+        kept = _sizes_by_monitor(st)
         res.metrics["remaining_sizes"] = kept
-        expect(all(kept.get(d) == wh for d, wh in widths.items()),
+        expect(all(kept.get(m) == wh for m, wh in widths.items()),
                f"remaining outputs keep their modes: had {widths}, now {kept}")
-        ctx.wait_state(lambda s: core.display_of_group(s, g) not in (None, d1), 5,
+        ctx.wait_state(lambda s: _monitor_of_group(s, g) in widths, 5,
                        "the window moved to a remaining output")
     finally:
         force("detect")
     ctx.wait_state(lambda s: len(core.display_rects(s)) == len(rects), 10,
                    "the replugged output is back in the layout")
-    st = ctx.wait_state(lambda s: core.display_of_group(s, g) == d1, 5,
-                        f"the window returned to the replugged output {d1}")
+    st = ctx.wait_state(lambda s: _monitor_of_group(s, g) == monitor, 5,
+                        f"the window returned to the replugged output ({monitor})")
     res.metrics["restored_rects"] = core.display_rects(st)
     ctx.shot("B06-replugged")

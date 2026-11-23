@@ -27,6 +27,7 @@ use crate::{
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod shell;
 
 /// Both directions' framing.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
@@ -146,6 +147,9 @@ pub enum Operation {
         action: String,
         arguments: Vec<u8>,
     },
+    /// What the person's shell asks of the device, on a connection the host admitted as that
+    /// shell by its account ([`shell`]), answered as [`Reply::Shell`].
+    Shell(shell::ShellCall),
 }
 
 /// Who joins which channel.
@@ -154,9 +158,7 @@ pub struct Join {
     /// The channel key: the app, workspace and, for a record, the record.
     pub channel: String,
     /// The join presentation as the endpoint encoded it: a device's
-    /// certified presentation ([`CertifiedJoinIdentity`]), or an agent's
-    /// ([`crate::AgentJoinIdentity`]), which the host admits as it reads
-    /// them.
+    /// certified presentation ([`CertifiedJoinIdentity`]).
     pub identity: Vec<u8>,
     /// The workspace agent the person delegated to this device; `None` for the
     /// person's own device.
@@ -471,6 +473,8 @@ pub enum Reply {
     },
     /// What a [`Operation::Invoke`] did.
     Receipt(Receipt),
+    /// The answer to a [`Operation::Shell`].
+    Shell(shell::ShellReply),
 }
 
 /// What invoking an action of one of the session's published resources did.
@@ -554,6 +558,9 @@ pub enum ContextUpdate {
     Handoff(Vec<u8>),
     /// Records of the application's trees a peer wrote and no window holds.
     ResourcesArrived(Vec<String>),
+    /// Records another device wrote into this workspace's store: what a window that reads the
+    /// store read of them is read again.
+    RecordsMoved(Vec<String>),
 }
 
 /// What the host sends an endpoint.

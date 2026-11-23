@@ -44,6 +44,8 @@ tilo_agent_session::app_worker!();
 
 #[path = "action_cost.rs"]
 mod action_cost;
+#[path = "ai_transforms.rs"]
+mod ai_transforms;
 #[path = "app_coverage.rs"]
 mod app_coverage;
 #[path = "chain_listing.rs"]

@@ -40,7 +40,7 @@ SCOPES = {
     "fixtures": ({"product", "os", "fixture"}, 37, "fixture_bytes"),
 }
 
-AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/sdk/ui-core/assets/fonts/manifest.toml"
+AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/ui/ui-core/assets/fonts/manifest.toml"
 
 def manifest(root):
     path = root / "manifest.toml"

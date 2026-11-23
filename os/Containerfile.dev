@@ -16,7 +16,7 @@
 #   * The components that declare `dev_features` in os/components.toml (the
 #     compositor, the runtime host and the secret store today) are rebuilt as release builds with
 #     those features. The dev-only components (`dev-*` layers), such as
-#     tilo-vmd, are built alongside them. The cargo arguments and the install both come from
+#     tilo-vm, are built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * A build toolchain, installed into the image. The binaries above are
 #     compiled with it, and so are in-VM builds. The Rust compiler is the
@@ -28,12 +28,9 @@
 #     context), checked against it by the dev image contract, and installed from
 #     the same frozen RPM snapshot, so the C toolchain and -devel libraries
 #     cannot drift from the production builder's.
-#   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
+#   * sshd (enabled), rsync, systemd-sysext, and the device steps' session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
-#     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
-#   * tilo-device-admin.service (enabled): tilo-vmd's requests over the peer
-#     network for the owner's administrators, so `tilo-vm` reaches the machine
-#     beyond the LAN, at the greeter too.
+#     crates/os/tilo-device-steps/data. vkms and uinput load at boot.
 #   * The image is UNSEALED. A layer on the sealed image breaks the composefs
 #     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
 #     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
@@ -180,8 +177,8 @@ RUN test -s /usr/lib/tilo/generation \
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
 
-# tilo-vm hands a dev VM its root SSH key as an SMBIOS credential
-# (ssh.authorized_keys.root), which the sealed image refuses to import.
+# tilo-vm hands a dev VM its `tilo device add` ticket as an SMBIOS credential
+# (tilo.ticket), which the sealed image refuses to import.
 RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
 
 # Fail now, not at the first slot, when this kernel cannot give a slot a seat.
@@ -207,7 +204,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
 #     podman build -f os/Containerfile.dev --target dev-tools-sysext \
 #         --build-arg ... -o type=tar,dest=tilo-dev-tools.tar .
 #
-# The tar is a layer tilo-vm imports (crates/dev/tilo-vmd/src/layers.rs accepts
+# The tar is a layer tilo-vm imports (crates/os/tilo-device-steps/src/layers.rs accepts
 # only usr/ and opt/, and writes the extension-release itself). It is computed
 # on dev-builder-packages, so it holds exactly the packages the clients add to
 # what the base already has. The `dev` stage below still installs both into the
@@ -264,13 +261,13 @@ FROM dev-toolchain AS dev
 
 COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
-COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
-COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
-COPY crates/dev/tilo-vmd/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
-COPY crates/dev/tilo-vmd/data/tilo-vm-incoming.service /usr/lib/systemd/system/tilo-vm-incoming.service
-COPY crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service /usr/lib/systemd/system/tilo-vm-reconcile-image.service
-COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
-COPY crates/dev/tilo-vmd/data/tilo-vm-community.toml /usr/share/tilo/tilo-vm-community.toml
+COPY crates/os/tilo-device-steps/data/72-vkms-seat.rules crates/os/tilo-device-steps/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
+COPY crates/os/tilo-device-steps/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
+COPY crates/os/tilo-device-steps/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
+COPY crates/os/tilo-device-steps/data/tilo-vm-incoming.service /usr/lib/systemd/system/tilo-vm-incoming.service
+COPY crates/os/tilo-device-steps/data/tilo-vm-reconcile-image.service /usr/lib/systemd/system/tilo-vm-reconcile-image.service
+COPY crates/os/tilo-device-steps/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
+COPY crates/os/tilo-device-steps/data/tilo-vm-community.toml /usr/share/tilo/tilo-vm-community.toml
 COPY os/dev-image/ /
 # The development key: the dev channel's images (registry.tilo.so/tilo/tilo-vm) are signed with
 # it, from main only, and the update policy below takes them only with that signature.
@@ -295,7 +292,7 @@ RUN --network=none \
         /usr/share/tilo/system-extensions/local-model-keys.json; \
     fi
 
-# base.json for tilo-vmd's layer checks, the dev-only update policy and the
+# base.json for the device's layer checks, the dev-only update policy and the
 # flavour marker; then proof that every piece above is really in place.
 #
 # The session this image ships is the one it built: a release dev-overrides
@@ -313,9 +310,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
        tilo-vm-incoming.service tilo-vm-reconcile-image.service \
-       tilo-device-admin.service \
-    && test -x /usr/libexec/tilo/tilo-control && test -x /usr/libexec/tilo/tilo-vmd \
-    && /usr/libexec/tilo/tilo-vmd --version && /usr/libexec/tilo/tilo-device-admin --version \
+    && test -x /usr/libexec/tilo/tilo-control \
     && grep -aq 'tilo-dev-image-session-v1' /usr/bin/tilo-session \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \

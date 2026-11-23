@@ -1,39 +1,25 @@
 //! Reaching a device where it is now, waking it, and holding it awake. A
-//! recorded address is only a hint: every command takes it from the registry,
-//! and when it stops answering looks the device up by name and keeps the new
-//! address. While someone drives a machine its tilo-vmd holds it awake.
+//! recorded address is only a hint: every command also looks the device up by
+//! name, and its daemon's endpoint is dialed at every address found. While
+//! someone drives a machine it is held awake.
 
 use std::fmt::Write as _;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tilo_vm_protocol::{AWAKE_IDLE_SECONDS, Awake, AwakeLease};
+use tilo_device_protocol::{AWAKE_IDLE_SECONDS, Awake, AwakeLease, DEVICE_ACCOUNT, Exec};
 
 use super::{App, Outcome, Resolved};
-use crate::config::VmEntry;
+use crate::config::{DAEMON_PORT, VmEntry};
 use crate::error::CliError;
-use crate::hypervisor::{self, DEVICE, Runner as _, SshEndpoint, run_all};
-use crate::reach::{self, NetFacts, Probe, WakeInfo};
-use crate::remote;
+use crate::hypervisor::{DEVICE, SshEndpoint, run_all};
+use crate::reach::{self, NetFacts, WakeInfo};
+use crate::remote::Remote;
 
-/// How long a command keeps trying a device that stopped answering: long
-/// enough for a Wi-Fi roam or a DHCP renewal, short enough that a device
-/// that is asleep is reported as such.
-pub const REACH_BUDGET: Duration = Duration::from_secs(60);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-const RETRY_PAUSE: Duration = Duration::from_secs(3);
 const WAKE_WAIT: Duration = Duration::from_secs(150);
 /// `vm wake` sends the packet again this often while it waits: one can be lost.
 const RESEND_EVERY: Duration = Duration::from_secs(15);
-
-fn device_action_outcome(response: serde_json::Value) -> Outcome {
-    let failed = response.get("err").is_some()
-        || (response.pointer("/message/Receipt").is_some()
-            && crate::scenario::console::receipt_value(&response).is_err());
-    let mut outcome = Outcome::new(response.to_string(), response);
-    outcome.failed = failed;
-    outcome
-}
 
 fn unix_now() -> u64 {
     tilo_clock::unix_now()
@@ -87,27 +73,6 @@ pub fn describe_lease(lease: &AwakeLease) -> String {
     }
 }
 
-pub fn describe_peer(entry: &VmEntry, enrolled: bool) -> String {
-    match &entry.peer {
-        Some(route) => format!(
-            "over the peer network as device {} ({}){}",
-            route.device.get(..12).unwrap_or(&route.device),
-            route.relay.as_deref().map_or_else(
-                || "public relays".to_owned(),
-                |relay| format!("relay {relay}")
-            ),
-            if enrolled {
-                ""
-            } else {
-                "; enrol this machine for it once: tilo-vm vm enrol-admin"
-            }
-        ),
-        None => {
-            "not recorded: its image serves no device-admin route (a current dev image does)".into()
-        }
-    }
-}
-
 fn wake_line(entry: &VmEntry) -> String {
     match (&entry.mac, &entry.wake, &entry.hostname) {
         (Some(mac), Some(wake), hostname) => format!(
@@ -124,104 +89,35 @@ fn wake_line(entry: &VmEntry) -> String {
 }
 
 impl App {
-    pub(super) fn vm_device_actions(
-        &mut self,
-        name: Option<&str>,
-        command: crate::cli::DeviceActionCommand,
-    ) -> Result<Outcome, CliError> {
-        let payload = crate::device_actions::request(command, std::io::stdin().lock())?;
-        let vm = self.resolve_vm(name)?;
-        let mut remote = self.connect(&vm)?;
-        Ok(device_action_outcome(remote.call(payload)?))
-    }
-    fn probe_device(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Probe {
-        reach::probe(
-            &mut self.runner,
-            endpoint,
-            vm.entry.key.as_deref(),
-            PROBE_TIMEOUT,
-        )
-    }
-
+    /// The address tilo-vm reaches the VM's SSH server at, for `vm ssh`.
     pub(super) fn endpoint(&mut self, vm: &Resolved) -> Result<SshEndpoint, CliError> {
-        if vm.entry.hypervisor != DEVICE {
-            return Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner);
-        }
-        self.reach_device(&vm.name, REACH_BUDGET, true)
+        Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)
     }
 
-    pub(super) fn reach_device(
-        &mut self,
-        name: &str,
-        budget: Duration,
-        say: bool,
-    ) -> Result<SshEndpoint, CliError> {
-        let started = Instant::now();
-        let mut said = !say || self.json;
-        loop {
-            let vm = self.resolve_vm(Some(name))?;
-            let endpoint = hypervisor::adapter(DEVICE)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-            if std::env::var_os("TILO_VM_SSH").is_some() {
-                return Ok(endpoint);
-            }
-            let detail = match self.probe_device(&vm, &endpoint) {
-                Probe::There | Probe::Unknown => return Ok(endpoint),
-                Probe::Lost(detail) => detail,
-            };
-            if let Some(moved) = self.find_by_name(&vm, &endpoint)? {
-                return Ok(moved);
-            }
-            if started.elapsed().saturating_add(RETRY_PAUSE) >= budget {
-                return Err(asleep(&vm, &endpoint, &detail));
-            }
-            if !said {
-                eprintln!(
-                    "tilo-vm: {name} does not answer at {} ({detail}); trying it and its name for up to {}s",
-                    endpoint.host,
-                    budget.as_secs()
-                );
-                said = true;
-            }
-            std::thread::sleep(RETRY_PAUSE);
+    /// Where the device's daemon may answer: a VM's forwarded port, and a device's recorded
+    /// address and wherever its name resolves now, beside the addresses its route records.
+    pub(super) fn daemon_addresses(&mut self, vm: &Resolved) -> Vec<String> {
+        let device = vm.entry.hypervisor == DEVICE;
+        let mut found = Vec::new();
+        if let Ok(endpoint) = self.endpoint(vm) {
+            let ip = endpoint
+                .host
+                .parse::<IpAddr>()
+                .ok()
+                .or_else(|| reach::resolve(&mut self.runner, &endpoint.host));
+            let port = if device { DAEMON_PORT } else { endpoint.port };
+            found.extend(ip.map(|ip| SocketAddr::new(ip, port)));
         }
-    }
-
-    fn find_by_name(
-        &mut self,
-        vm: &Resolved,
-        endpoint: &SshEndpoint,
-    ) -> Result<Option<SshEndpoint>, CliError> {
-        let Some(hostname) = vm.entry.hostname.as_deref() else {
-            return Ok(None);
-        };
-        let name = local_name(hostname);
-        let Some(address) = reach::resolve(&mut self.runner, &name) else {
-            return Ok(None);
-        };
-        let host = address.to_string();
-        if host == endpoint.host {
-            return Ok(None);
+        if device && let Some(hostname) = vm.entry.hostname.as_deref() {
+            found.extend(
+                reach::resolve(&mut self.runner, &local_name(hostname))
+                    .map(|ip| SocketAddr::new(ip, DAEMON_PORT)),
+            );
         }
-        let moved = SshEndpoint {
-            host,
-            ..endpoint.clone()
-        };
-        if self.probe_device(vm, &moved) != Probe::There {
-            return Ok(None);
-        }
-        self.update_entry(&vm.name, |entry| entry.ssh = Some(moved.ssh_spec()))?;
-        let note = format!(
-            "{} moved from {} to {}: found it as {name}, and recorded the new address in {}",
-            vm.name,
-            endpoint.host,
-            moved.host,
-            self.registry_path.display()
-        );
-        if !self.json {
-            eprintln!("tilo-vm: {note}");
-        }
-        self.warnings.push(note);
-        Ok(Some(moved))
+        found
+            .into_iter()
+            .map(|address| address.to_string())
+            .collect()
     }
 
     pub(super) fn update_entry(
@@ -242,14 +138,11 @@ impl App {
         Ok(true)
     }
 
-    pub(super) fn net_facts(
-        &mut self,
-        endpoint: &SshEndpoint,
-        key: Option<&str>,
-    ) -> Option<NetFacts> {
-        let line = remote::ssh_command(endpoint, key, &[reach::net_probe(&endpoint.host)], false);
-        let output = self.runner.output(&line).ok().filter(|o| o.success)?;
-        let facts = reach::parse_net_probe(&output.stdout);
+    /// What waking the device needs (its hostname, MAC and wake setting), read on it.
+    pub(super) fn net_facts(remote: &mut Remote, vm: &Resolved) -> Option<NetFacts> {
+        let host = vm.entry.ssh.as_deref().and_then(SshEndpoint::parse)?.host;
+        let stdout = device_sh(remote, &reach::net_probe(&host)).ok()?;
+        let facts = reach::parse_net_probe(&stdout);
         facts.hostname.is_some().then_some(facts)
     }
 
@@ -257,12 +150,11 @@ impl App {
         self.update_entry(name, |entry| apply_net(entry, facts))
     }
 
-    pub(super) fn refresh_net(&mut self, vm: &Resolved) -> Option<String> {
+    pub(super) fn refresh_net(&mut self, remote: &mut Remote, vm: &Resolved) -> Option<String> {
         if vm.entry.hypervisor != DEVICE {
             return None;
         }
-        let endpoint = self.endpoint(vm).ok()?;
-        if let Some(facts) = self.net_facts(&endpoint, vm.entry.key.as_deref())
+        if let Some(facts) = Self::net_facts(remote, vm)
             && let Err(error) = self.record_net(&vm.name, &facts)
         {
             self.warnings.push(format!(
@@ -281,7 +173,7 @@ impl App {
         enabled: Option<bool>,
     ) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
-        let status = self.connect(&vm)?.call(tilo_vm_protocol::NetworkWake {
+        let status = self.connect(&vm)?.call(tilo_device_protocol::NetworkWake {
             profile: profile.into(),
             enabled,
         })?;
@@ -357,10 +249,7 @@ impl App {
             }
             return self.await_daemon(&vm, started, "woke it through the hypervisor");
         }
-        let recorded = hypervisor::adapter(DEVICE)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-        if std::env::var_os("TILO_VM_SSH").is_none()
-            && self.probe_device(&vm, &recorded) == Probe::There
-        {
+        if self.connect(&vm).is_ok() {
             return self.await_daemon(&vm, started, "it was awake already");
         }
         let mac_text = vm.entry.mac.clone().ok_or_else(|| CliError::Unsupported {
@@ -410,7 +299,7 @@ impl App {
         }
         let mut last_sent = Instant::now();
         loop {
-            match self.reach_device(&vm.name, Duration::from_secs(10), false) {
+            match self.connect(&vm) {
                 Ok(_) => break,
                 Err(CliError::DeviceAsleep { .. }) if started.elapsed() < WAKE_WAIT => {
                     if last_sent.elapsed() >= RESEND_EVERY {
@@ -441,14 +330,18 @@ impl App {
         let remote = loop {
             match self.connect(vm) {
                 Ok(remote) => break remote,
-                Err(CliError::Unreachable { .. }) if started.elapsed() < WAKE_WAIT => {
+                Err(CliError::Unreachable { .. } | CliError::DeviceAsleep { .. })
+                    if started.elapsed() < WAKE_WAIT =>
+                {
                     std::thread::sleep(Duration::from_secs(2));
                 }
-                Err(CliError::Unreachable { detail, .. }) => {
+                Err(
+                    CliError::Unreachable { detail, .. } | CliError::DeviceAsleep { detail, .. },
+                ) => {
                     return Err(CliError::Unreachable {
                         vm: vm.name.clone(),
                         detail: format!(
-                            "{how}, but tilo-vmd did not answer within {}s: {detail}",
+                            "{how}, but its daemon did not answer within {}s: {detail}",
                             WAKE_WAIT.as_secs()
                         ),
                         debug: Vec::new(),
@@ -458,23 +351,41 @@ impl App {
             }
         };
         let seconds = started.elapsed().as_secs_f64();
-        let mut text = format!(
-            "{} is awake ({how}); tilo-vmd {} answered after {seconds:.0}s",
-            vm.name, remote.hello.daemon_version
+        let text = format!(
+            "{} is awake ({how}); its daemon {} answered after {seconds:.0}s",
+            vm.name, remote.status.daemon_version
         );
-        if let Some(lease) = &remote.hello.awake {
-            let _ = write!(text, "\n  {}", describe_lease(lease));
-        }
         Ok(Outcome::new(
             text,
-            json!({
-                "vm": vm.name,
-                "seconds": seconds,
-                "how": how,
-                "awake": remote.hello.awake,
-            }),
+            json!({ "vm": vm.name, "seconds": seconds, "how": how }),
         )
         .next(&["tilo-vm status"]))
+    }
+}
+
+/// Run `script` with `sh` in the device's own account and return what it printed, when it exits 0.
+pub(super) fn device_sh(remote: &mut Remote, script: &str) -> Result<String, CliError> {
+    let ran = remote.call(Exec {
+        account: DEVICE_ACCOUNT.into(),
+        command: vec!["sh".into(), "-c".into(), script.into()],
+        timeout: tilo_device_protocol::EXEC_TIMEOUT_SECONDS,
+        max_bytes: tilo_device_protocol::EXEC_MAX_BYTES,
+    })?;
+    let stdout = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &ran.stdout)
+        .map_err(|error| CliError::CommandFailed {
+            command: "exec".into(),
+            status: "unreadable output".into(),
+            stderr: error.to_string(),
+        })?;
+    let stdout = String::from_utf8_lossy(&stdout).into_owned();
+    if ran.code == 0 {
+        Ok(stdout)
+    } else {
+        Err(CliError::CommandFailed {
+            command: "sh -c".into(),
+            status: format!("exit status: {}", ran.code),
+            stderr: stdout,
+        })
     }
 }
 
@@ -485,23 +396,6 @@ pub fn apply_net(entry: &mut VmEntry, facts: &NetFacts) {
     if facts.mac.is_some() {
         entry.mac.clone_from(&facts.mac);
         entry.wake.clone_from(&facts.wake);
-    }
-    if facts.peer.is_some() {
-        entry.peer.clone_from(&facts.peer);
-    }
-}
-
-fn asleep(vm: &Resolved, endpoint: &SshEndpoint, detail: &str) -> CliError {
-    let lookup = match &vm.entry.hostname {
-        Some(hostname) => format!(", and {} does not find it elsewhere", local_name(hostname)),
-        None => ", and no hostname is recorded to look it up by".into(),
-    };
-    CliError::DeviceAsleep {
-        vm: vm.name.clone(),
-        address: endpoint.host.clone(),
-        detail: detail.to_owned(),
-        lookup,
-        wakeable: vm.entry.mac.is_some(),
     }
 }
 
@@ -574,21 +468,6 @@ mod tests {
                 },
             );
             assert_eq!(entry.mac.as_deref(), Some("02:11:22:33:44:55"));
-            let asleep = asleep(
-                &Resolved {
-                    name: "yoga".into(),
-                    entry,
-                    source: crate::config::Source::Argument,
-                },
-                &SshEndpoint::parse("me@10.0.0.223").unwrap(),
-                "No route to host",
-            );
-            assert!(asleep.to_string().contains("asleep or gone"), "{asleep}");
-            assert!(
-                asleep.hint().contains("tilo-vm vm wake yoga"),
-                "{}",
-                asleep.hint()
-            );
         }
     }
 }

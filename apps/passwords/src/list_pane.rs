@@ -91,7 +91,7 @@ impl ListPane {
         .with_id("passwords.items")
         .with_accessible_name(filter.label())
         .with_semantic_key(ToString::to_string)
-        .on_view("passwords.items", move |id| {
+        .on_choose("passwords.items", move |id| {
             open.borrow_mut().push(Request::Open(secret(&id)));
         })
     }
@@ -219,5 +219,5 @@ pub(crate) fn vault_empty_state(requests: &Requests) -> EmptyState {
         .with_message(CATALOG.t("passwords-empty-vault-message"))
         .with_action("New item")
         .with_action_id("passwords.empty.new")
-        .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
+        .on_click(move || requests.borrow_mut().push(Request::NewItem))
 }

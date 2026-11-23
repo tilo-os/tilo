@@ -1,0 +1,112 @@
+{
+  "app": "restore",
+  "said": "Windows come back after signing in again",
+  "family": "settings",
+  "live": "rust",
+  "apps": "calendar",
+  "packages": [
+    "mail"
+  ],
+  "rust": {
+    "id": "so.tilo.calendar",
+    "native": "calendar"
+  },
+  "steps": [
+    {
+      "id": "mail",
+      "said": "Open Mail and let it use the internet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.mail",
+            "operation": "open"
+          }
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.mail",
+            "within": 120
+          }
+        },
+        {
+          "wait_for": "actions"
+        }
+      ],
+      "budget_ms": 180000
+    },
+    {
+      "id": "calendar",
+      "said": "Open Calendar and make an event",
+      "ops": [
+        {
+          "open": "calendar"
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "press": "New event"
+        },
+        {
+          "type": "Walks walk"
+        },
+        {
+          "key": "Escape"
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "prefix": "Open event Walks walk"
+              }
+            ],
+            "within": 20
+          }
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "again",
+      "said": "Sign in again: Mail is alive with its actions and Calendar still shows the event",
+      "ops": [
+        {
+          "restart": "session"
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.mail",
+            "within": 180
+          }
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "do_app": {
+            "app": "so.tilo.mail",
+            "operation": "open"
+          }
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.calendar",
+            "within": 60
+          }
+        },
+        {
+          "read": {
+            "app": "so.tilo.calendar",
+            "operation": "read",
+            "contains": "Walks walk",
+            "within": 20
+          }
+        }
+      ],
+      "budget_ms": 420000
+    }
+  ]
+}

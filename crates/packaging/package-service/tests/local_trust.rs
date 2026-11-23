@@ -18,10 +18,6 @@ fn host() -> PathBuf {
     tilo_test_env::package_binary!("tilo-package-service")
 }
 
-fn installer() -> PathBuf {
-    tilo_test_env::sibling_binary("install", "tilo-install")
-}
-
 fn isolated_command(binary: &Path, root: &Path) -> Command {
     let mut command = Command::new(binary);
     command
@@ -47,7 +43,6 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
         .arg(&socket)
         .arg("--max-store-bytes")
         .arg("0")
-        .env("TILO_INSTALL_BIN", installer())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _host = Host(command.spawn_locked().unwrap());
@@ -67,14 +62,17 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
     assert_eq!(id.to_hex(), checked.root);
     let thin_review = client.review_local(&thin).unwrap();
     assert_eq!(thin_review.installed_version.as_deref(), Some("1.0.0"));
-    let mut pin = isolated_command(&installer(), root.path());
-    assert!(
-        pin.args(["pin", "so.tilo.unlisted-local"])
-            .output_locked()
-            .unwrap()
-            .status
-            .success()
-    );
+    // The person pins it from a terminal (`tilo-install pin`), which is this action.
+    common::person_client(&socket)
+        .change(
+            &root.path().join("data/tilo-apps"),
+            package_service::wire::Change::SetPinned {
+                app: "so.tilo.unlisted-local".into(),
+                pinned: true,
+            },
+            None,
+        )
+        .unwrap();
     assert!(client.install_local(&thin, &thin_review).is_ok());
     assert!(client.review_local(&thin).unwrap().pinned);
     let (replacement, _, replacement_trust, _) = fixture::fixture();

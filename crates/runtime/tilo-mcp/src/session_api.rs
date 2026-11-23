@@ -497,9 +497,10 @@ pub fn is_control_request(line: &[u8]) -> bool {
     })
 }
 
-/// Serve one accepted session-server connection.
-#[cfg(unix)]
-pub fn serve<H>(
+/// Serve one accepted session-server connection, as a test's host does: the agent the person
+/// admits acts through `provider` with no key of its own.
+#[cfg(all(unix, test))]
+fn serve<H>(
     stream: std::os::unix::net::UnixStream,
     provider: H,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
@@ -507,45 +508,52 @@ pub fn serve<H>(
 where
     H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
-    serve_after(stream, None, || Ok(provider), None, ask)
-}
-
-/// [`serve`] a connection whose first line, `first`, was already read
-/// ([`read_first_line`]), through the provider `provider` makes once the person
-/// admitted it.
-#[cfg(unix)]
-pub fn serve_after<H>(
-    stream: std::os::unix::net::UnixStream,
-    first: Option<Vec<u8>>,
-    provider: impl FnOnce() -> Result<H, String>,
-    tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
-    ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
-) -> io::Result<()>
-where
-    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
-{
+    let admitted = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let asked = std::sync::Arc::clone(&admitted);
     serve_with(
         stream,
-        first,
-        provider,
-        Beside {
-            tasks,
-            devices: None,
+        None,
+        move || {
+            let Some((workspace, agent, person)) =
+                tilo_lock::MutexRecover::lock_recover(&*admitted).take()
+            else {
+                return Err("nobody was admitted".to_owned());
+            };
+            let caller = tilo_actions::remote::Caller::local_agent(agent)
+                .acting_for(person)
+                .in_workspace(workspace);
+            Ok((provider, caller))
         },
-        ask,
+        Beside::default(),
+        move |hello, connected| {
+            let consent = ask(hello, connected);
+            if let Consent::Admit {
+                workspace,
+                agent,
+                person,
+                ..
+            } = &consent
+            {
+                *tilo_lock::MutexRecover::lock_recover(&*asked) =
+                    Some((workspace.clone(), agent.clone(), person.clone()));
+            }
+            consent
+        },
     )
 }
 
 /// What a server's connection is served with beside its host: where its task's
-/// programs run, and the person's devices as the host reaches them.
+/// programs run.
 #[derive(Default)]
 pub struct Beside {
     #[cfg(unix)]
     pub tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
-    pub devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
 }
 
-/// [`serve_after`], with what `beside` holds.
+/// Serve one accepted connection whose first line, `first`, was already read
+/// ([`read_first_line`]), once the person admitted it, as the agent `server` makes for it: the
+/// provider its calls go through and the caller they go as, the agent's own. What `beside` holds
+/// is served beside it.
 ///
 /// # Errors
 /// Returns transport errors; a refusal is `Ok`.
@@ -553,14 +561,14 @@ pub struct Beside {
 pub fn serve_with<H>(
     mut stream: std::os::unix::net::UnixStream,
     first: Option<Vec<u8>>,
-    provider: impl FnOnce() -> Result<H, String>,
+    server: impl FnOnce() -> Result<(H, tilo_actions::remote::Caller), String>,
     beside: Beside,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
     H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
-    let Beside { tasks, devices } = beside;
+    let Beside { tasks } = beside;
     let Some(hello) = opening_hello(&mut stream, first)? else {
         return Ok(());
     };
@@ -569,24 +577,21 @@ where
         let stream = stream.try_clone()?;
         move || client_connected(&stream)
     };
-    // The agent of the person's the connection acts as.
-    let (workspace, agent, person, name) = match ask(&hello, &probe) {
-        Consent::Admit {
-            workspace,
-            agent,
-            person,
-            name,
-        } => (workspace, agent, person, name),
+    let name = match ask(&hello, &probe) {
+        Consent::Admit { name, .. } => name,
         Consent::Refuse(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
             return Ok(());
         }
     };
-    // What the admitted client acts through, made once it is admitted: the
-    // run the person's admission started, on a desktop.
-    let provider = match provider() {
-        Ok(provider) => provider,
+    // What the admitted client acts through and as, made once it is admitted: the agent the
+    // person admitted, with its own key.
+    let server = server().and_then(|(provider, caller)| {
+        crate::McpServer::for_delegated(provider, caller).map_err(|error| error.to_string())
+    });
+    let server = match server {
+        Ok(server) => server,
         Err(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
@@ -598,11 +603,9 @@ where
     // session the client named, when it did: that is the name history shows and undo groups by;
     // else by the name the person's shell gave the connection.
     let group = format!("server-{}", uuid::Uuid::new_v4().simple());
-    let shown = hello.session_name.clone().unwrap_or_else(|| name.clone());
-    let server = crate::McpServer::for_agent(provider, workspace, &agent, &person)
-        .agent_named(&shown)
-        .with_agent_session(group);
-    let server = server.with_task_hosts(tasks).with_devices(devices);
+    let shown = hello.session_name.clone().unwrap_or(name);
+    let server = server.agent_named(&shown).with_agent_session(group);
+    let server = server.with_task_hosts(tasks);
     serve_server(stream, hello.request, server)
 }
 

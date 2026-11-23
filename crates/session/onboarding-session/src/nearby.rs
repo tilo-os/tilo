@@ -5,9 +5,9 @@
 //! minutes. This computer's daemon answers that code with its `devices#logIn`
 //! action, the same action and the same call `tilo login` makes: the daemon
 //! dials the device that printed the code, that device's root certifies this
-//! computer's one device key, and the answer is kept as this computer's login.
-//! Setup then takes the login up as this account's identity, exactly as a
-//! daemon starting with one does, and hands off to the desktop.
+//! computer's one device key, and the certificate is filed as this computer's.
+//! Setup then takes it up as this account's identity, exactly as a daemon
+//! starting with one does, and hands off to the desktop.
 //!
 //! The call waits on the network and on the person approving this computer on
 //! their other device, so it runs on a thread of its own; its outcome wakes
@@ -19,17 +19,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
-use tilo_api::client::{Client, Reach};
-use tilo_api::daemon::DaemonPlace;
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::login::{LOG_IN, Place, Ticket};
+use tilo_device_identity::login::{Place, Ticket};
 use tilo_onboarding::{t, t_args};
 
 use crate::identity::MintedIdentity;
 
-/// The resource the daemon's device actions act on.
-const RESOURCE: &str = "devices";
 /// The agent this computer logs in as. The desktop is the device itself, not
 /// an agent of the person's, so it does not borrow one of their agents' names.
 const AGENT: &str = "Tilo";
@@ -246,8 +241,8 @@ impl Drop for NearbyJoin {
     }
 }
 
-/// Redeem `ticket` on this computer's daemon and take the login it answers up
-/// as the identity under `identity_dir`.
+/// Redeem `ticket` on this computer's daemon and take the certificate it files
+/// up as the identity under `identity_dir`.
 fn join(
     ticket: &str,
     identity_dir: &Path,
@@ -256,74 +251,39 @@ fn join(
     cancelled: &AtomicBool,
 ) -> Result<MintedIdentity, NearbyFailure> {
     let ticket = Ticket::parse(ticket).map_err(|_| NearbyFailure::new(NearbyCause::Wrong))?;
-    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(paths)
+    tilo_device_identity::persist::load_or_create_device_key(paths)
         .map_err(NearbyFailure::storage)?;
     let place = Place::here(paths.clone()).map_err(NearbyFailure::unavailable)?;
     make_login_dir(place.dir())?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(NearbyFailure::not_started)?;
-    // A computer no person's certificate names yet logs in itself, as `tilo login` does: its
-    // daemon serves the device key alone until then, and has no API to ask.
-    if !tilo_device_identity::login::claimed(&place, &key.verifying_key().to_bytes()) {
-        runtime
-            .block_on(tilo_api::daemon::enter::log_in_here(
-                &key,
-                &place,
-                &ticket.encode(),
-                AGENT,
-                Some(label),
-            ))
-            .map_err(|error| refused(&error))?;
-        return taken_up(&place, identity_dir, paths, cancelled);
-    }
-    let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
-        .map_err(NearbyFailure::unavailable)?;
-    ensure_daemon(&daemon)?;
-    runtime
-        .block_on(async {
-            let client = Client::open(Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            })?;
-            let workspace = client.founded_workspace().await?;
-            client
-                .act(
-                    &workspace,
-                    RESOURCE,
-                    LOG_IN,
-                    &json!({"ticket": ticket.encode(), "agent": AGENT, "label": label}),
-                    "Log in",
-                )
-                .await?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .map_err(|error| refused(&error))?;
-    taken_up(&place, identity_dir, paths, cancelled)
+    // The daemon logs this computer in whether a person's certificate names it already or not,
+    // as `tilo login` has it do.
+    ensure_daemon()?;
+    let who = tilo_api::daemon::who::log_in(&ticket.encode(), AGENT, label)
+        .map_err(|error| refused(&anyhow::anyhow!(error)))?;
+    let cert = who
+        .home
+        .map(|home| home.cert)
+        .ok_or_else(|| NearbyFailure::storage("the daemon answered no certificate"))?;
+    taken_up(&cert, identity_dir, paths, cancelled)
 }
 
-/// This account's identity, from the login kept in `place`, unless setup gave the attempt up.
+/// This account's identity, from `cert`, the certificate the login filed, unless setup gave the
+/// attempt up.
 fn taken_up(
-    place: &Place,
+    cert: &tilo_user_identity::DeviceCert,
     identity_dir: &Path,
     paths: &IdentityPaths,
     cancelled: &AtomicBool,
 ) -> Result<MintedIdentity, NearbyFailure> {
-    // Setup gave the attempt up: the login stays kept for a later daemon to
+    // Setup gave the attempt up: the certificate stays filed for a later daemon to
     // take up, and nothing is written into this account's identity here.
     if cancelled.load(Ordering::Acquire) {
         return Err(NearbyFailure::new(NearbyCause::Unknown));
     }
-    let device = tilo_device_identity::login::load(place)
-        .map_err(NearbyFailure::storage)?
-        .ok_or_else(|| NearbyFailure::storage("the login was not kept"))?
-        .1;
-    // What a daemon starting with this login does for itself, done here so the
+    // What a daemon starting with this certificate does for itself, done here so the
     // identity is this account's before the desktop opens.
     let now = tilo_clock::unix_now_ns();
-    tilo_device_identity::persist::install_device_cert(paths, &device.cert, now)
+    tilo_device_identity::persist::install_device_cert(paths, cert, now)
         .map_err(NearbyFailure::storage)?;
     tilo_identity::provisioning::complete_enrolled_device(identity_dir, paths, now)
         .map_err(NearbyFailure::storage)?;
@@ -336,8 +296,7 @@ fn taken_up(
 }
 
 /// The login directory the device's daemon and login live in, made private
-/// here when this computer has none yet: `holder_dir` reads it before
-/// anything else would make it.
+/// here when this computer has none yet.
 fn make_login_dir(dir: &Path) -> Result<(), NearbyFailure> {
     use std::os::unix::fs::DirBuilderExt as _;
     std::fs::DirBuilder::new()
@@ -347,35 +306,34 @@ fn make_login_dir(dir: &Path) -> Result<(), NearbyFailure> {
         .map_err(NearbyFailure::storage)
 }
 
-/// Wait for this computer's daemon to serve its API, starting one when none
-/// does. The daemon ends by itself once the login changes, so nothing here
-/// leaves one behind that would cut the desktop's own session off.
-fn ensure_daemon(place: &DaemonPlace) -> Result<(), NearbyFailure> {
-    place
-        .wait_for_api(DAEMON_START_WITHIN, || place.start().map(drop))
+/// Wait for this computer's daemon to answer at its native endpoint, its service
+/// started when none does ([`tilo_api::daemon::service::start`]).
+fn ensure_daemon() -> Result<(), NearbyFailure> {
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.wait_for_native(DAEMON_START_WITHIN))
         .map_err(NearbyFailure::not_started)
 }
 
 #[cfg(test)]
 pub(crate) mod testing {
     //! A stand-in for this computer's daemon at the one place setup reaches
-    //! it: the socket the real daemon serves Tilo's API on. It answers the two
-    //! calls `tilo login` makes, `account/workspaces#list` and the `devices#logIn`
-    //! action, and keeps a login the real daemon would keep.
+    //! it: its native endpoint. It answers who this account is to it
+    //! (`account#who`) and the `devices#logIn` call `tilo login` makes, and
+    //! files the certificate a real daemon would.
 
-    use std::io::{Read as _, Write as _};
+    use std::io::{BufRead as _, Write as _};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use ed25519_dalek::SigningKey;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tilo_device_identity::IdentityPaths;
     use tilo_device_identity::login::{Device, Place};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-    use super::{DaemonPlace, make_login_dir};
+    use super::make_login_dir;
 
     pub(crate) const WORKSPACE: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
 
@@ -388,12 +346,12 @@ pub(crate) mod testing {
         Refuse(&'static str),
         /// Wait a while before certifying it, as a device a person has to
         /// approve by hand does.
-        Hold,
+        Wait,
     }
 
     /// The stand-in daemon, listening where this computer's own would.
     pub(crate) struct FakeDaemon {
-        api: PathBuf,
+        native: PathBuf,
         stop: Arc<AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
@@ -402,29 +360,21 @@ pub(crate) mod testing {
         pub(crate) fn start(paths: &IdentityPaths, answer: Answer) -> Self {
             let place = Place::here(paths.clone()).expect("this account's login place");
             make_login_dir(place.dir()).expect("the login directory");
-            let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
-            let daemon = DaemonPlace::of(place.dir(), &key.verifying_key().to_bytes())
-                .expect("the daemon's place");
-            // A daemon serving a computer with no login is this computer's
-            // own device already, certified as such: that certificate is
-            // what names the socket `tilo` commands reach it on.
-            let root = SigningKey::from_bytes(&[0x42; 32]);
-            let cert = cert_for(&root, &key, "this computer");
-            tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
-                .expect("the daemon's certificate");
-            let listener = UnixListener::bind(daemon.api()).expect("the daemon's socket");
+            let daemon = tilo_api::daemon::this_computer().expect("the daemon's place");
+            let listener = UnixListener::bind(daemon.native()).expect("the daemon's socket");
             listener
                 .set_nonblocking(true)
                 .expect("a socket that is looked at");
             let stop = Arc::new(AtomicBool::new(false));
             let running = Arc::clone(&stop);
             let paths = paths.clone();
+            let home: Arc<std::sync::Mutex<Option<Device>>> = Arc::default();
             let thread = std::thread::Builder::new()
                 .name("fake-tilo-daemon".into())
                 .spawn(move || {
                     while !running.load(Ordering::Acquire) {
                         match listener.accept() {
-                            Ok((stream, _)) => serve(stream, &paths, answer),
+                            Ok((stream, _)) => serve(&stream, &paths, answer, &home),
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                                 std::thread::sleep(std::time::Duration::from_millis(5));
                             }
@@ -434,7 +384,7 @@ pub(crate) mod testing {
                 })
                 .expect("the stand-in's thread");
             Self {
-                api: daemon.api().to_path_buf(),
+                native: daemon.native(),
                 stop,
                 thread: Some(thread),
             }
@@ -447,110 +397,90 @@ pub(crate) mod testing {
             if let Some(thread) = self.thread.take() {
                 let _ = thread.join();
             }
-            let _ = std::fs::remove_file(&self.api);
+            let _ = std::fs::remove_file(&self.native);
         }
     }
 
-    /// One request of the client, answered.
-    fn serve(mut stream: UnixStream, paths: &IdentityPaths, answer: Answer) {
-        let Ok((head, body)) = request(&mut stream) else {
-            return;
-        };
-        let (status, answer) = if head.starts_with("POST /v1/resources/account")
-            && head.contains("workspaces/actions/list")
-        {
-            (
-                200,
-                json!({"result": {"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}}),
-            )
-        } else if head.contains("/resources/devices/actions/logIn") {
-            if matches!(answer, Answer::Hold) {
-                std::thread::sleep(std::time::Duration::from_millis(750));
-            }
-            let asked: serde_json::Value =
-                serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-            match answer {
-                Answer::Certify | Answer::Hold => {
-                    let ticket = asked.get("ticket").and_then(|value| value.as_str());
-                    assert!(
-                        ticket.is_some_and(|ticket| ticket.starts_with("tilo1")),
-                        "the login carries the code: {asked}"
-                    );
-                    assert!(
-                        asked
-                            .get("agent")
-                            .and_then(|value| value.as_str())
-                            .is_some_and(|agent| !agent.is_empty()),
-                        "the login names the agent here: {asked}"
-                    );
-                    keep_login(paths);
-                    (200, json!({"result": {}}))
+    /// The requests of one connection, each answered on a line of its own.
+    fn serve(
+        stream: &UnixStream,
+        paths: &IdentityPaths,
+        answer: Answer,
+        home: &std::sync::Mutex<Option<Device>>,
+    ) {
+        let _ = stream.set_nonblocking(false);
+        let mut lines = std::io::BufReader::new(stream);
+        let mut line = String::new();
+        while lines.read_line(&mut line).is_ok_and(|read| read > 0) {
+            let asked: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+            line.clear();
+            let answered = if asked.get("native").and_then(Value::as_str) == Some("account#who") {
+                let key = tilo_device_identity::persist::load_device_key(paths).expect("a key");
+                let mut who = json!({
+                    "device": hex::encode(key.verifying_key().to_bytes()),
+                    "claimed": false,
+                });
+                if let Some(device) = home.lock().expect("the home").as_ref() {
+                    who["person"] = json!(hex::encode(device.cert.user_public_key));
+                    who["claimed"] = json!(true);
+                    who["home"] = tilo_api::daemon::who::home_answer(device);
                 }
-                Answer::Refuse(message) => (
-                    409,
-                    json!({"error": {"code": "device-action", "message": message}}),
-                ),
-            }
-        } else {
-            (
-                404,
-                json!({"error": {"code": "not-found", "message": "no such route"}}),
-            )
-        };
-        let body = answer.to_string();
-        let _ = write!(
-            stream,
-            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-            body.len()
-        );
-    }
-
-    /// The request line and headers, then its body.
-    fn request(stream: &mut UnixStream) -> std::io::Result<(String, Vec<u8>)> {
-        let mut data = Vec::new();
-        let mut chunk = [0_u8; 4096];
-        loop {
-            let read = stream.read(&mut chunk)?;
-            if read == 0 {
-                return Err(std::io::Error::other("the client ended first"));
-            }
-            data.extend_from_slice(chunk.get(..read).unwrap_or_default());
-            let Some(end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
-                continue;
+                who
+            } else {
+                let id = asked.get("id").cloned().unwrap_or(Value::Null);
+                let args = asked
+                    .pointer("/params/arguments/args")
+                    .cloned()
+                    .unwrap_or_default();
+                assert_eq!(
+                    asked
+                        .pointer("/params/arguments/path")
+                        .and_then(Value::as_str),
+                    Some("devices#logIn"),
+                    "the login is the daemon's action: {asked}"
+                );
+                let (text, failed) = match answer {
+                    Answer::Certify | Answer::Wait => {
+                        if matches!(answer, Answer::Wait) {
+                            std::thread::sleep(std::time::Duration::from_millis(750));
+                        }
+                        assert!(
+                            args.get("ticket")
+                                .and_then(Value::as_str)
+                                .is_some_and(|ticket| ticket.starts_with("tilo1")),
+                            "the login carries the code: {args}"
+                        );
+                        assert!(
+                            args.get("agent")
+                                .and_then(Value::as_str)
+                                .is_some_and(|agent| !agent.is_empty()),
+                            "the login names the agent here: {args}"
+                        );
+                        *home.lock().expect("the home") = Some(log_in(paths));
+                        ("ok".to_owned(), false)
+                    }
+                    Answer::Refuse(message) => (format!("failed: device-action: {message}"), true),
+                };
+                json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{"type": "text", "text": text}], "isError": failed}})
             };
-            let head = String::from_utf8_lossy(&data[..end]).into_owned();
-            let length = head
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.trim()
-                        .eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
-                .unwrap_or(0);
-            let body = end.checked_add(4).unwrap_or(end);
-            while data.len() < body.saturating_add(length) {
-                let read = stream.read(&mut chunk)?;
-                if read == 0 {
-                    break;
-                }
-                data.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            if writeln!(&*stream, "{answered}").is_err() {
+                return;
             }
-            let body_bytes = data
-                .get(body..body.saturating_add(length))
-                .unwrap_or_default();
-            return Ok((head, body_bytes.to_vec()));
         }
     }
 
-    /// The login a real daemon would keep for the computer that asked.
-    fn keep_login(paths: &IdentityPaths) {
+    /// What a real daemon makes of the computer that asked: the certificate the person's root
+    /// signs for its key, filed, and the device it enters as.
+    fn log_in(paths: &IdentityPaths) -> Device {
         let root = SigningKey::from_bytes(&[0x42; 32]);
         let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
         let cert = cert_for(&root, &key, "the kitchen computer");
         let server_cert = cert_for(&root, &root, "the server");
         let place = Place::here(paths.clone()).expect("a place");
-        let device = Device {
+        tilo_device_identity::login::file_certificate(&place, &cert)
+            .expect("the certificate filed");
+        Device {
             site: "https://tilo.test/".into(),
             host_origin: "https://eu1.tilo.test".into(),
             workspace: WORKSPACE.into(),
@@ -559,8 +489,7 @@ pub(crate) mod testing {
             cert,
             server_cert,
             server_address: None,
-        };
-        tilo_device_identity::login::store(&place, &device).expect("the login kept");
+        }
     }
 
     /// A member certificate `root` signs for `key`.
@@ -582,7 +511,7 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::testing::{Answer, FakeDaemon, WORKSPACE};
+    use super::testing::{Answer, FakeDaemon};
     use super::*;
     use ed25519_dalek::SigningKey;
     use std::path::PathBuf;
@@ -679,20 +608,27 @@ pub(crate) mod tests {
             let NearbyEvent::Joined(minted) = wait_for_outcome(&mut join) else {
                 panic!("the stand-in daemon certified this computer");
             };
-            // The login is kept, the device's certificate is this computer's,
+            // The certificate is filed for the person, it is this device's,
             // and the person is this account's identity, held as a public
             // record: the root stayed on the device that printed the code.
-            let place = Place::here(account.paths.clone()).expect("a place");
-            let device = tilo_device_identity::login::load(&place)
-                .expect("the kept login reads")
-                .expect("a login is kept")
-                .1;
-            assert_eq!(device.workspace, WORKSPACE);
-            assert_eq!(device.label(), "the kitchen computer");
+            let person = SigningKey::from_bytes(&[0x42; 32]).verifying_key().to_bytes();
+            let filed = tilo_device_identity::persist::read_device_cert(
+                &account.paths.device_cert_for_user(&person),
+            )
+            .expect("the certificate filed under the person");
+            assert_eq!(filed.device_label, "the kitchen computer");
             let kept = tilo_device_identity::persist::read_device_cert(&account.paths.device_cert)
                 .expect("this device's certificate");
-            assert_eq!(kept, device.cert);
-            assert_eq!(minted.fingerprint, hex::encode(device.cert.user_public_key));
+            assert_eq!(kept, filed);
+            assert!(
+                !Place::here(account.paths)
+                    .expect("a place")
+                    .dir()
+                    .join("login.json")
+                    .exists(),
+                "nothing of the login is kept beside the certificate"
+            );
+            assert_eq!(minted.fingerprint, hex::encode(person));
             assert!(
                 crate::identity::holds_no_identity_secret(&minted.path),
                 "the joined device holds no secret of the identity"
@@ -727,124 +663,6 @@ pub(crate) mod tests {
             assert_eq!(failure.cause, NearbyCause::Unreached);
             assert!(failure.message().contains("connected"), "{}", failure.message());
         }
-    }
-
-    /// The person's device that printed a code, as it serves it: its root signs the certificate
-    /// of the computer that brings the code.
-    struct RootSigns {
-        root: SigningKey,
-        device: SigningKey,
-        cert: tilo_user_identity::DeviceCert,
-    }
-
-    impl tilo_device_identity::login::Approver for RootSigns {
-        fn approve(
-            &self,
-            asked: tilo_device_identity::login::Asked,
-        ) -> tilo_device_identity::login::Approval {
-            use ed25519_dalek::Signer as _;
-            let mut cert = asked.cert.clone();
-            tilo_user_identity::sign_device_cert(&mut cert, &self.root).expect("the root signs");
-            Box::pin(std::future::ready(Ok(
-                tilo_device_identity::login::Approved {
-                    cert,
-                    approver: self.cert.clone(),
-                    signature: self.device.sign(&asked.digest).to_bytes(),
-                },
-            )))
-        }
-    }
-
-    /// A computer no person's certificate names yet, whose daemon serves its device key alone,
-    /// joins with a code itself: the device that printed it, reached over iroh, has the person's
-    /// root certify this computer's key, and the person is this account's identity.
-    #[test]
-    fn a_computer_nobody_certified_yet_joins_with_a_code_itself() {
-        use tilo_device_identity::login::{Entry, Ticket};
-        let account = Account::new();
-        let identity_dir = account.identity_dir();
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime");
-        let root = SigningKey::from_bytes(&[0x42; 32]);
-        let device = SigningKey::from_bytes(&[0x43; 32]);
-        let cert = super::testing::cert_for(&root, &device, "the person's laptop");
-        let endpoint = runtime.block_on(async {
-            iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                .secret_key(iroh::SecretKey::from_bytes(&device.to_bytes()))
-                .relay_mode(iroh::RelayMode::Disabled)
-                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-                .expect("a loopback address")
-                .bind()
-                .await
-                .expect("the laptop's endpoint")
-        });
-        let reached = tilo_api::daemon::enter::reached_of(&endpoint.addr());
-        let ticket = Ticket::new(reached.clone());
-        let router = {
-            let _entered = runtime.enter();
-            tilo_api::daemon::enter::issuing_for_test(
-                &endpoint,
-                &device,
-                ticket.clone(),
-                root.verifying_key().to_bytes(),
-                Entry {
-                    workspace: WORKSPACE.into(),
-                    workspace_name: Some("Studio".into()),
-                    server_cert: cert.clone(),
-                    server: reached,
-                    site: "https://tilo.test/".into(),
-                    host_origin: "https://eu1.tilo.test".into(),
-                },
-                Arc::new(RootSigns {
-                    root: root.clone(),
-                    device: device.clone(),
-                    cert,
-                }),
-            )
-        };
-        let key = tilo_device_identity::persist::load_device_key(&account.paths).expect("a key");
-        let place = Place::here(account.paths.clone()).expect("a place");
-        assert!(
-            !tilo_device_identity::login::claimed(&place, &key.verifying_key().to_bytes()),
-            "no person's certificate names this computer yet"
-        );
-
-        let mut join = NearbyJoin::start(
-            ticket.encode(),
-            &identity_dir,
-            &account.paths,
-            "the kitchen computer",
-        )
-        .expect("the join starts");
-        let outcome = wait_for_outcome(&mut join);
-        let NearbyEvent::Joined(minted) = outcome else {
-            panic!("the device that printed the code certified this computer: {outcome:?}");
-        };
-        let person = root.verifying_key().to_bytes();
-        let joined = tilo_device_identity::login::load(&place)
-            .expect("the kept login reads")
-            .expect("a login is kept")
-            .1;
-        assert_eq!(joined.cert.user_public_key, person);
-        assert_eq!(
-            joined.cert.device_public_key,
-            key.verifying_key().to_bytes()
-        );
-        assert_eq!(joined.label(), "the kitchen computer");
-        assert_eq!(
-            tilo_device_identity::persist::read_device_cert(
-                &account.paths.device_cert_for_user(&person)
-            )
-            .expect("the certificate filed under the person"),
-            joined.cert
-        );
-        assert_eq!(minted.fingerprint, hex::encode(person));
-        runtime.block_on(async {
-            let _ = router.shutdown().await;
-            endpoint.close().await;
-        });
     }
 
     #[test]

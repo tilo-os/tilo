@@ -34,8 +34,7 @@ pub(crate) struct Displays {
     /// The snapshot generation `set` was taken from.
     generation: Option<u64>,
     /// The settings document last read, so an unchanged one is not read again on every pass.
-    stamp: Option<settings_store::SettingsStamp>,
-    seen: bool,
+    settings: settings_store::SettingsFollower,
     /// When the change waiting for the person is put back.
     deadline: Option<u64>,
     /// What the compositor was last given, so it is not given the same settings on every pass.
@@ -66,16 +65,13 @@ impl Displays {
     ) -> Result<(), tilo_compositor::Error> {
         let now = tilo_clock::unix_now_ms();
         let expired = self.deadline.is_some_and(|deadline| now >= deadline);
-        let stamp = settings_store::stamp();
-        let document = settings_store::document_changed(self.seen, self.stamp, stamp);
+        let document = self.settings.changed(settings_store::stamp());
         let generation = compositor.displays_generation();
         let monitors_changed = self.generation != Some(generation);
         let turned_changed = self.turned_changed(turned);
         if !document && !expired && !monitors_changed && !turned_changed {
             return Ok(());
         }
-        self.seen = true;
-        self.stamp = stamp;
         self.generation = Some(generation);
         // The tools whose risky changes apply without asking: a trust given or revoked in Settings
         // reaches the compositor on this pass.

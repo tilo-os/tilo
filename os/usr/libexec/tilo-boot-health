@@ -92,7 +92,7 @@ GREETER_RECORD="${TILO_BOOT_HEALTH_GREETER_RECORD:-/run/tilo-greeter/startup-met
 # touch screen to reach it.
 INPUT_WAIT="${TILO_BOOT_HEALTH_INPUT_WAIT:-30}"
 # The greeter's record of the keyboard or touch screen it was given
-# (crates/session/greeter/src/seat_input.rs). Like the startup record it is in
+# (crates/os/greeter/src/seat_input.rs). Like the startup record it is in
 # the greeter user's own directory and describes the greeter running now.
 GREETER_INPUT="${TILO_BOOT_HEALTH_GREETER_INPUT:-/run/tilo-greeter/input}"
 

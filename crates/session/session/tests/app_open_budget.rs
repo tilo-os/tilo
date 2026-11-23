@@ -11,8 +11,8 @@
 //! for to the app's first presented frame, read from the kernel's scheduler statistics for each of
 //! their threads. A test job shares its node, so the wall clock of an open mostly measures how long
 //! its threads waited for a core; the time they waited, and the wall time, are reported beside the
-//! work for whoever reads a failure. The apps and the launcher are optimised builds, as they are on
-//! a person's machine (t.toml's `starts`); the session is the tests' own build of it.
+//! work for whoever reads a failure. The session, the apps and the launcher are optimised builds, as
+//! they are on a person's machine (t.toml's `starts`).
 //!
 //! Each app opens twice: once on an idle machine and once while one busy thread per core
 //! saturates the job, so an app whose open does more work under contention (a spin, a retry, a
@@ -227,10 +227,12 @@ fn timeline(device: &Device, app: &str) -> Option<serde_json::Value> {
 
 /// A timeline's steps, each the milliseconds since the one before it: the launcher's marks (Unix
 /// epoch), the app's process starting (`exec-to-main`: from the sandbox executing it to the app's
-/// own first mark), then the app's own marks up to its first frame. Steps under a millisecond are
-/// left out.
+/// own first mark), then the app's own marks up to its first frame. An app's step is
+/// `name:wall/ran`, the CPU its process ran in that step beside the wall time, where its timeline
+/// says. Steps under a millisecond of either are left out. The steps that ran the most follow,
+/// heaviest first, so a failure says where an app's own work went.
 fn steps(timeline: &serde_json::Value) -> String {
-    let mut marks: Vec<(String, f64)> = timeline["launcher"]
+    let mut marks: Vec<(String, f64, Option<f64>)> = timeline["launcher"]
         .as_array()
         .into_iter()
         .flatten()
@@ -238,11 +240,12 @@ fn steps(timeline: &serde_json::Value) -> String {
             Some((
                 mark["name"].as_str()?.to_owned(),
                 mark["epoch_us"].as_f64()?,
+                None,
             ))
         })
         .collect();
     let origin = timeline["origin_epoch_us"].as_f64().unwrap_or(0.0);
-    marks.push(("exec-to-main".to_owned(), origin));
+    marks.push(("exec-to-main".to_owned(), origin, None));
     marks.extend(
         timeline["events"]
             .as_array()
@@ -252,19 +255,46 @@ fn steps(timeline: &serde_json::Value) -> String {
                 Some((
                     event["name"].as_str()?.to_owned(),
                     origin + event["ns"].as_f64()? / 1000.0,
+                    event["cpu_ns"].as_f64(),
                 ))
             }),
     );
-    let mut previous = marks.first().map_or(0.0, |(_, at)| *at);
+    let mut previous = marks.first().map_or(0.0, |(_, at, _)| *at);
+    let mut previous_cpu = 0.0;
     let mut out = Vec::new();
-    for (name, at) in marks {
+    let mut ran = Vec::new();
+    for (name, at, cpu) in marks {
         let elapsed = (at - previous) / 1000.0;
         previous = previous.max(at);
-        if elapsed >= 1.0 {
-            out.push(format!("{name}:{elapsed:.0}"));
+        let step_ran = cpu.map(|cpu| {
+            let step = (cpu - previous_cpu).max(0.0) / 1e6;
+            previous_cpu = previous_cpu.max(cpu);
+            step
+        });
+        match step_ran {
+            Some(step) if elapsed >= 1.0 || step >= 1.0 => {
+                out.push(format!("{name}:{elapsed:.0}/{step:.0}"));
+                ran.push((step, name));
+            }
+            None if elapsed >= 1.0 => out.push(format!("{name}:{elapsed:.0}")),
+            _ => {}
         }
     }
-    out.join(",")
+    ran.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let heaviest = ran
+        .iter()
+        .take(6)
+        .map(|(step, name)| format!("{name} {step:.0}"))
+        .collect::<Vec<_>>();
+    if heaviest.is_empty() {
+        out.join(",")
+    } else {
+        format!(
+            "{}\n               ran most: {}",
+            out.join(","),
+            heaviest.join(", ")
+        )
+    }
 }
 
 /// Open `app` on `device` and return the open the session logged for it: the window asked for to
@@ -479,11 +509,24 @@ fn descends(pid: u32, session: u32, under: &mut HashMap<u32, bool>) -> bool {
     answer
 }
 
-/// The session the run built, in a directory with the launcher it starts apps through beside it,
-/// where an installed session finds its launcher. The directory is made beside that build, so the programs are linked into it rather
-/// than copied where the file system allows.
+/// The session in a directory with the launcher it starts apps through beside it, where an
+/// installed session finds its launcher. The session is the optimised build the run made for this
+/// test (`t.toml` `starts`), whose passes are what the budget counts: the tests' own debug build
+/// spends several times the work on the same pass, so a run that made no optimised one has nothing
+/// to judge and says so. The directory is made beside that build, so the programs are linked into
+/// it rather than copied where the file system allows.
 fn session_beside_launcher() -> (tempfile::TempDir, PathBuf) {
-    let session = tilo_test_env::sibling_binary("tilo-session", "tilo-session");
+    let session = tilo_test_env::started_variant("tilo-session", "fast", "dev-overrides")
+        .unwrap_or_else(|| {
+            panic!(
+                "no optimised session to time: the budget is about the `fast` build of \
+                 tilo-session with `dev-overrides`, which `t test` builds from t.toml's starts \
+                 (`tilo-session:tilo-session@fast=dev-overrides`) and hands over as \
+                 T_STARTED_BIN_tilo-session_fast_dev-overrides. Run it with `t test \
+                 test/tilo-session --test app_open_budget::`, or set that variable to a session \
+                 built with `--profile fast --features dev-overrides`"
+            )
+        });
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let directory = session
         .parent()

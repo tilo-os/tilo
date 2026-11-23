@@ -158,7 +158,10 @@ mapped_capabilities() {
 runtime() {
     local icd required
     icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
-    if [[ -r $icd ]]; then
+    # On macOS wgpu draws with the Mac's own GPU through Metal: lavapipe is Linux's CPU driver.
+    if [[ ${OSTYPE:-} == darwin* ]]; then
+        :
+    elif [[ -r $icd ]]; then
         provide WGPU_BACKEND vulkan
         provide WGPU_ADAPTER_NAME llvmpipe
         provide VK_DRIVER_FILES "$icd"
@@ -201,8 +204,11 @@ runtime() {
     provide TILO_FONT_ASSET_CACHE "$font_cache"
     provide TILO_REQUIRE_FONTS "${TILO_REQUIRE_FONTS:-1}"
     # The audio endpoint is promised the same way, and is the `audio` step's to start: a test
-    # that requires one (tilo_test_env's `Audio`) in a package that step leaves out fails.
-    provide TILO_REQUIRE_AUDIO "${TILO_REQUIRE_AUDIO:-1}"
+    # that requires one (tilo_test_env's `Audio`) in a package that step leaves out fails. A Mac
+    # promises none: the endpoint is PulseAudio's, which macOS doesn't have.
+    local audio=1
+    [[ ${OSTYPE:-} != darwin* ]] || audio=0
+    provide TILO_REQUIRE_AUDIO "${TILO_REQUIRE_AUDIO:-$audio}"
 }
 
 # The pinned font catalog every frame is set in. A build prepares its own into the cargo output
@@ -220,13 +226,13 @@ runtime() {
 fonts() {
     test_cache
     provide TILO_FONT_ASSET_CACHE "$font_cache"
-    python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
+    python3 "$repo/tools/font-catalog.py" root "$repo/crates/ui/ui-core/assets/fonts" \
         --scope fixtures --cache "$font_cache" >/dev/null
 }
 
 audio() {
     local owner=${TILO_TEST_ENV_OWNER:-$PPID} ready daemon name line
-    [[ ${TILO_REQUIRE_AUDIO:-} != 0 ]] || return 0
+    [[ ${TILO_REQUIRE_AUDIO:-} != 0 && ${OSTYPE:-} != darwin* ]] || return 0
     if [[ -n ${TILO_HEADLESS_AUDIO_PID:-} && -n ${PULSE_RUNTIME_PATH:-} &&
         ${PULSE_SERVER:-} == "unix:$PULSE_RUNTIME_PATH/native" &&
         -S $PULSE_RUNTIME_PATH/native ]] && kill -0 "$TILO_HEADLESS_AUDIO_PID" 2>/dev/null; then
@@ -272,7 +278,7 @@ audio() {
 }
 
 ntfs() {
-    local crate="$repo/crates/session/tilo-ntfs-helper"
+    local crate="$repo/crates/os/tilo-ntfs-helper"
     local key root dir stage status=0
     if [[ -n ${TILO_NTFS_FIXTURES:-} ]]; then
         provide TILO_NTFS_FIXTURES "$TILO_NTFS_FIXTURES"

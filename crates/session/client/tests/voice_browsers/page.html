@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tilo call member</title>
+<!-- One member of voice_browsers.rs: the production call modules
+     (web/voice-peer.mjs, web/voice.mjs, web/voice-audio.mjs) with the real
+     microphone, Opus codecs and playback of the browser, over the fixture's
+     certified session for `who`, which says this page's presence on the
+     workspace's live session and carries its call's media, as the page's own
+     wasm peer does. -->
+<script type="module">
+import {createPeerVoice} from './web/voice-peer.mjs';
+import {createBrowserAudio} from './web/voice-audio.mjs';
+import {changed} from './web/changes.mjs';
+
+const who = new URL(location.href).searchParams.get('who');
+const api = (path, body) => fetch(`/api/${who}/${path}`, body === undefined
+  ? {cache: 'no-store'}
+  : {method: 'POST', body, cache: 'no-store'});
+const workspace = await (await api('workspace')).text();
+const device = await (await api('device')).text();
+const person = await (await api('person')).text();
+
+// What the session last said of the workspace's calls: the wasm peer answers
+// these at once from its own state, and so does this page from the poll below.
+let channels = 'null';
+let allows = {};
+const peer = {
+  callJoin: (_, channel, name) => { void api('join', JSON.stringify({channel, name: name ?? ''})); },
+  callLeave: () => { void api('leave', ''); },
+  callShow: (_, camera, screen, muted, deafened) => { void api('show', JSON.stringify({camera, screen, muted, deafened})); },
+  callChannels: () => channels,
+  callAllows: (_, channel) => allows[channel] ?? 'null',
+  callAudio: (_, frames) => {
+    window.published = (window.published ?? 0) + JSON.parse(frames).length;
+    void api('audio', frames);
+  },
+  callPictures: () => {},
+  callShowing: () => {},
+  callPictureRestart: () => {},
+  moderateCall: async (_, _person, operation) => (await api('moderate', operation)).text(),
+};
+
+// Frames this page played, by the device that sent them.
+const played = {};
+const reports = [];
+const factory = createBrowserAudio({onReport: report => { reports.push(`${report.stage}: ${report.error ?? report.type}`); changed(); }});
+const audio = {start(options) {
+  return factory.start(options).then(session => {
+    const play = session.play.bind(session);
+    session.play = frame => {
+      const taken = play(frame);
+      if (taken) { played[frame.publisherId] = (played[frame.publisherId] ?? 0) + 1; changed(); }
+      return taken;
+    };
+    return session;
+  });
+}};
+const peerVoice = createPeerVoice({peer: () => peer, workspace, device, person, audio,
+  onReport: report => { reports.push(`${report.type}: ${report.error?.message ?? ''}`); changed(); }});
+const voice = peerVoice.call;
+// The session's state and the call's media, as the wasm peer hands them over on every pass.
+(async () => {
+  for (;;) {
+    const {channels: listed, allows: allowed, events} = await (await api('poll')).json();
+    channels = JSON.stringify(listed);
+    allows = Object.fromEntries(Object.entries(allowed).map(([channel, rule]) => [channel, JSON.stringify(rule)]));
+    peerVoice.pump(JSON.stringify(events));
+    changed();
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+})();
+/** How many frames this page played of `device`. */
+const playedOf = device => played[device] ?? 0;
+Object.assign(window, {voice, peerVoice, played, playedOf, reports, ready: true});
+changed();
+</script>

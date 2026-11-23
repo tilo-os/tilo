@@ -1,4 +1,4 @@
-//! Which device takes an agent's turn ([`takes_turn`] for [`Turn::Agent`]).
+//! Which device takes an agent's turn ([`takes_turn`] for a [`Turn::Once`] acting as the agent).
 #![allow(
     clippy::large_futures,
     clippy::significant_drop_tightening,
@@ -13,10 +13,9 @@ use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use super::super::Workspaces;
-use super::super::fixtures::{TestHost, device_cert, test_host};
-use super::super::work_tests::offer_compute;
+use super::super::fixtures::{TestHost, device_cert};
 use super::tests::{member_service, shared_with};
-use crate::work::{AgentEngine, Ineligible, NotTaken, Turn, takes_turn};
+use crate::work::{Actor, AgentEngine, Ineligible, NotTaken, Turn, takes_turn};
 
 const CHAT: &str = "so.tilo.chat";
 
@@ -24,33 +23,34 @@ const CHAT: &str = "so.tilo.chat";
 struct Keys(bool);
 
 impl AgentEngine for Keys {
-    fn holds<'a>(
+    fn acts_as<'a>(
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [u8; 32],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(std::future::ready(self.0))
     }
 }
 
-/// The root of the person the agent acts for: the one the first device's fixture is
+/// The root of the person both devices are of: the one the first device's fixture is
 /// certified by.
 fn persons_root() -> SigningKey {
     SigningKey::from_bytes(&[1; 32])
 }
 
-/// What somebody asked in Chat's `part` of the agent acting for `person`'s person, and the lease
-/// it is claimed under.
-fn turn_in(person: &DeviceCert, part: &str) -> (Turn, String) {
-    let lease = format!("turn/scout/{part}");
-    let turn = Turn::Agent {
-        agent: "scout".to_owned(),
-        place: part.to_owned(),
-        acts_for: person.user_public_key,
-        app: CHAT.to_owned(),
-        record: part.to_owned(),
-    };
+/// The agent's turn on what somebody wrote in Chat's `part`, and the lease it is claimed under.
+fn turn_in(part: &str) -> (Turn, String) {
+    let turn = Turn::once(
+        "agents.agent:scout#answer",
+        serde_json::json!({ "place": part }),
+    )
+    .acting_as(Actor::Agent("scout".to_owned()))
+    .about(CHAT, part);
+    let lease = turn.lease();
+    assert!(
+        lease.starts_with("once/agents.agent:scout#answer/"),
+        "{lease}"
+    );
     (turn, lease)
 }
 
@@ -86,7 +86,7 @@ async fn reads_claim(workspaces: &Workspaces, workspace: &str, lease: &str, devi
     .await;
 }
 
-/// Both devices of the person the agent acts for read what started the turn and claim it. Once the claims meet, the
+/// Both devices hold the agent's key, read what started the turn and claim it. Once the claims meet, the
 /// first keeps the turn and the other's renewal says it lost, so that device stops before it
 /// writes; asked again, it says whose turn it is. A minute after the desktop last wrote, the
 /// laptop takes the turn over.
@@ -95,8 +95,10 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let laptop = device_cert(&persons_root(), "laptop", DeviceCapabilities::member());
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), laptop, 41).await;
-    let person = desktop.workspaces().serving_certificate().clone();
-    let (turn, lease) = turn_in(&person, "messages-1");
+    desktop.workspaces().run_agents(Arc::new(Keys(true)));
+    laptop.workspaces().run_agents(Arc::new(Keys(true)));
+    let desktop_cert = desktop.workspaces().serving_certificate().clone();
+    let (turn, lease) = turn_in("messages-1");
 
     let first = takes_turn(desktop.workspaces(), &workspace, &turn)
         .await
@@ -106,10 +108,10 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
         laptop.workspaces(),
         &workspace,
         &lease,
-        person.device_public_key,
+        desktop_cert.device_public_key,
     )
     .await;
-    let taken_by = NotTaken::TakenBy(person.device_public_key);
+    let taken_by = NotTaken::TakenBy(desktop_cert.device_public_key);
     match second {
         Ok(lost) => assert!(!lost.renew().await, "the second claim loses once they meet"),
         Err(not_taken) => assert_eq!(not_taken, taken_by),
@@ -142,12 +144,11 @@ async fn two_devices_start_one_turn_and_exactly_one_answers_until_its_claim_goes
     assert!(renewed, "and the turn is the laptop's from then on");
 }
 
-/// A device of another person runs no agent it holds no key of, whoever asked; one that holds
-/// the agent's approved key runs it. A device the workspace keeps from what the turn is about
-/// refuses for that reason and writes no claim.
+/// A device runs no agent it cannot act as, whoever asked; one that holds the agent's approved
+/// key runs it. A device the workspace keeps from what the turn is about refuses for that reason
+/// and writes no claim.
 #[tokio::test]
-async fn only_a_device_that_holds_the_agents_key_or_belongs_to_the_person_it_acts_for_claims_what_it_may_open()
- {
+async fn only_a_device_that_acts_as_the_agent_claims_what_it_may_open() {
     let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let other = device_cert(
         &SigningKey::from_bytes(&[42; 32]),
@@ -156,13 +157,13 @@ async fn only_a_device_that_holds_the_agents_key_or_belongs_to_the_person_it_act
     );
     let reader = other.1.user_public_key;
     let (desktop, laptop, workspace) = two_devices((one.path(), two.path()), other, 42).await;
-    let person = desktop.workspaces().serving_certificate().clone();
-    let (turn, _) = turn_in(&person, "messages-2");
+    let desktop_cert = desktop.workspaces().serving_certificate().clone();
+    let (turn, _) = turn_in("messages-2");
     assert_eq!(
         takes_turn(laptop.workspaces(), &workspace, &turn)
             .await
             .err(),
-        Some(NotTaken::Ineligible(Ineligible::CannotRunAgent)),
+        Some(NotTaken::Ineligible(Ineligible::CannotActAs)),
     );
     laptop.workspaces().run_agents(Arc::new(Keys(true)));
     takes_turn(laptop.workspaces(), &workspace, &turn)
@@ -171,12 +172,12 @@ async fn only_a_device_that_holds_the_agents_key_or_belongs_to_the_person_it_act
 
     // Without the agent's key again, the device claims nothing while the grant reaches it.
     laptop.workspaces().run_agents(Arc::new(Keys(false)));
-    let (unopened, lease) = turn_in(&person, "messages-3");
+    let (unopened, lease) = turn_in("messages-3");
     desktop
         .workspaces()
         .put_workspace_grants(
             &workspace,
-            &person,
+            &desktop_cert,
             [42; 32],
             vec![Grant::new(
                 "no-chat",
@@ -184,7 +185,7 @@ async fn only_a_device_that_holds_the_agents_key_or_belongs_to_the_person_it_act
                 TreePath::workspace(&workspace).app(CHAT),
                 KindSet::READ,
                 Answer::Deny,
-                Grantee::person(hex::encode(person.user_public_key)),
+                Grantee::person(hex::encode(desktop_cert.user_public_key)),
             )],
         )
         .await
@@ -210,38 +211,8 @@ async fn only_a_device_that_holds_the_agents_key_or_belongs_to_the_person_it_act
             .claims
             .is_empty()
     );
+    desktop.workspaces().run_agents(Arc::new(Keys(true)));
     takes_turn(desktop.workspaces(), &workspace, &unopened)
         .await
-        .expect("the person's device that opens Chat claims the turn");
-}
-
-/// A server of the person's whose entry offers no compute never runs their agent; once it offers
-/// compute, it does.
-#[tokio::test]
-async fn a_server_that_offers_no_compute_never_claims() {
-    let state = tempfile::tempdir().unwrap();
-    let (key, cert) = device_cert(&persons_root(), "server", DeviceCapabilities::member());
-    let server = test_host(state.path(), &key, &cert).await;
-    let workspaces = server.workspaces();
-    let workspace = workspaces.create("Asked").await.unwrap().workspace;
-    workspaces.run_agents(Arc::new(Keys(false)));
-    let (turn, lease) = turn_in(&cert, "messages-4");
-    offer_compute(&server, &cert, false).await;
-    assert_eq!(
-        takes_turn(workspaces, &workspace, &turn).await.err(),
-        Some(NotTaken::Ineligible(Ineligible::OffersNoCompute)),
-    );
-    let state = workspaces.state(&workspace).await.unwrap();
-    assert!(
-        state
-            .workspace()
-            .lease(&lease, tilo_clock::wall())
-            .claims
-            .is_empty()
-    );
-    offer_compute(&server, &cert, true).await;
-    takes_turn(workspaces, &workspace, &turn)
-        .await
-        .expect("a server that offers compute claims it");
-    server.shutdown().await;
+        .expect("a device that acts as the agent and opens Chat claims the turn");
 }

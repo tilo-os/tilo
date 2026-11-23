@@ -54,7 +54,7 @@ d-dtd4czyv = Ungelesen
 d-rxoe5vzb = Gesamt
 
 d-al2vjuet = Mehr
-    .doc = Ob der Server des Kontos Nachrichten hält, die älter sind als die, die dieser Arbeitsbereich hält: das, wofür „Ältere Nachrichten anzeigen“ die Seite davor liest.
+    .doc = Ob der Server des Kontos ältere Nachrichten hat als dieser Arbeitsbereich: das, wofür „Ältere Nachrichten anzeigen“ die Seite davor liest.
 
 d-ecbhcqdr-filter-unread = Ungelesen
 
@@ -156,11 +156,15 @@ d-sbrol5fc = Auszug
 
 d-4bchz3ch = Text
 
+d-plb4mg2p = Html
+    .doc = Was sie sagt, wie ihr Absender es gestaltet hat: ihr HTML-Teil, die Bilder, die sie an Ort und Stelle zeigt, aus den Inhalten dieses Geräts gelesen.
+
 d-anuds3qt = Kennung der Nachricht
 
 d-asu6ymha = Verweise
 
-d-4zhzrkne = Anhänge
+d-yltl32r3 = Anhänge
+    .doc = Die Dateien, mit denen sie kam, jede in den Inhalten des Arbeitsbereichs: eine, deren Bytes noch nicht auf diesem Gerät sind, ist ohne Inhalt genannt.
 
 d-ubfcf6ep = Ungelesen
 
@@ -219,9 +223,12 @@ d-h2nvr2op = Zurückgeholt
 d-em6rrmae = Einladung
     .doc = Die Kalendereinladung, die sie trägt (iCalendar), neben dem, was sie sagt, damit der Kalender des Gasts sie beantworten kann: leer für keine.
 
+d-2tq2zegc = Anhänge
+    .doc = Die Dateien, die sie mitnimmt.
+
 d-lidkonvr-filter-drafts = Entwürfe
 
-d-lidkonvr-filter-sent = Gesendet
+d-lidkonvr-filter-outbox = Postausgang
 
 d-su4h67i5 = Mail
     .doc = Die Mail der Person: die Konten, die die Einstellungen des Arbeitsbereichs halten, was sie gerade schreibt und die Labels, die sie ihren Unterhaltungen gegeben hat.
@@ -259,14 +266,13 @@ d-arnkrvgw = Jetzt abrufen
     .doc = Fragt jetzt den Server des Kontos nach seiner Mail: was eine Person drückt, wenn das Fenster sagt, der Server sei nicht erreichbar gewesen oder was es geholt hat, habe sich nicht sichern lassen.
 
 d-wgbxl4or = Ältere Nachrichten anzeigen
-    .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hält, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
+    .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hat, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
 
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
 
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
-    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-hom44or2 = Per Mail einladen
     .doc = Beginnt eine Nachricht, die `to` zu einem Termin einlädt, mit ihrer Einladung (`calendar_ics`, iCalendar) neben dem, was sie sagt: was der Kalender Mail für jeden Gast übergibt, den er einlädt.
@@ -322,7 +328,7 @@ d-ydo5gq5e = Als .eml exportieren
     .doc = Die Nachricht als `.eml`-Datei, die jedes Mailprogramm öffnet.
 
 d-3vrmj56n = Eine Nachrichtendatei öffnen
-    .doc = Öffnet eine Nachricht, die als Datei eines Mailprogramms vorliegt (`.eml`, eine einzelne Nachricht einer mbox oder Apples `.emlx`): ihre Kopfzeilen werden gelesen, und sie wird zu der Mail gelegt, die außerhalb der Konten gehalten wird, gelesen, im Posteingang.
+    .doc = Öffnet eine Nachricht, die als Datei eines Mailprogramms vorliegt (`.eml`, eine einzelne Nachricht einer mbox oder Apples `.emlx`): ihre Kopfzeilen werden gelesen, und sie wird zu der Mail gelegt, die außerhalb der Konten liegt, gelesen, im Posteingang.
     .w-the-file-holds-no-message = Die Datei enthält keine Nachricht
 
 d-3vrmj56n-file = Datei
@@ -340,10 +346,32 @@ d-ym62maet = Allen antworten
     .doc = Beantwortet eine Nachricht der Unterhaltung an alle, an die sie ging, außer die Person, die antwortet.
 
 d-jokcwung = Nachricht weiterleiten
-    .doc = Schickt eine Nachricht der Unterhaltung weiter, mit ihrem Absender, wann sie kam und was sie sagt.
+    .doc = Schickt eine Nachricht der Unterhaltung weiter, mit ihrem Absender, wann sie kam und was sie sagt, und den Dateien, mit denen sie kam.
 
 d-q6ltvsjf = Weiterleiten
-    .doc = Schickt die neueste Nachricht der Unterhaltung weiter, mit ihrem Absender und was sie sagt.
+    .doc = Schickt die neueste Nachricht der Unterhaltung weiter, mit ihrem Absender, was sie sagt und den Dateien, mit denen sie kam.
+
+d-ipew27sc = Anhang speichern
+    .doc = Eine Datei, mit der die Nachricht kam, als eigene Datei: was Speichern in Dateien ablegt und was ein Agent liest oder einer anderen App gibt.
+    .w-it-came-with-no = Sie kam ohne { $name }
+    .w-is-not-downloaded-yet = { $name } ist noch nicht heruntergeladen
+
+d-ipew27sc-name = Name
+
+d-dshny4x3 = Datei anhängen
+    .doc = Nimmt eine Datei mit der Nachricht mit: eine, die die Person wählt, oder eine, die ein Agent übergibt.
+    .w-this-message-went-already = Diese Nachricht ist schon raus
+    .w-a-message-takes-up-to-16 = Eine Nachricht nimmt bis zu 16 Dateien mit
+    .w-is-larger-than-32-mb = { $name } ist größer als 32 MB
+
+d-dshny4x3-file = Datei
+
+d-jk7ep3bb = Anhang entfernen
+    .doc = Lässt eine Datei zurück, die die Nachricht mitnehmen sollte.
+    .w-this-message-went-already = Diese Nachricht ist schon raus
+    .w-it-takes-no = Sie nimmt kein { $name } mit
+
+d-jk7ep3bb-name = Name
 
 d-eqvgypxr = Archivieren
     .doc = Archiviert die Unterhaltung: ihre Nachrichten verlassen den Posteingang.
@@ -366,7 +394,7 @@ d-xytb2lle = Löschen
 d-pz2ntes2 = Endgültig löschen
     .doc = Löscht die gelöschten Nachrichten der Unterhaltung endgültig, auch von ihrem Server, und mit ihnen die Unterhaltung, wenn keine Nachricht von ihr mehr übrig ist.
     .w-it-is-not-in-the-trash = Sie ist nicht im Papierkorb
-    .w-nothing-of-it-is-in-the = Nichts von ihr ist im Papierkorb
+    .w-nothing-of-it-is-in-the = Nichts davon liegt im Papierkorb
 
 d-le4lvs2c = Markieren
     .doc = Markiert die Unterhaltung oder nimmt die Markierung zurück.
@@ -486,6 +514,9 @@ d-a4rv5wm6 = Antworten
 
 d-a4rv5wm6-body = Text
 
+d-t57taubn = Weitergeleitet
+    .w-not-downloaded-so-not-sent-on = Nicht heruntergeladen, daher nicht weitergeschickt: { $names }
+
 d-dqdt6fce = Titel des Platzes
     .w-all-mail = Alle Mails
 
@@ -501,13 +532,16 @@ d-k2js7gyd = Zustellung sagt
 
 d-2zkppx6r = Zeit zum Zurückholen~present
 
-d-gcixhwyt = Neuer Entwurf~present
-
 d-7jf4pn3j = Kalendereinladung vorbereiten~present
 
 d-s2qkkueu = Nachricht zustellen~present
 
 d-vdfbsj4a = Nachrichtendatei öffnen~present
+d-swcww42a = Anhang~present
+
+d-fxtnru4s = Anhängen~present
+
+d-p76r6z3v = Entfernen~present
 
 d-bj7uen6f = Archivieren~present
 
@@ -556,9 +590,6 @@ d-dhradxj7 = Kontohinweis
     .w-try-again = Erneut versuchen
 
 d-7rcrynvm = Mail
-    .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
-    .w-mail = Mail
-    .w-recovered-mail = Wiederhergestellte Mail
 
 d-4fjgzcq6 = Zusammengeführt
     .w-all-accounts = Alle Konten
@@ -594,6 +625,11 @@ d-u43u7z6w = Unterhaltungszeile
 d-77noqogh = Entwurfszeile
 
 d-bbuecgsi = Unterhaltung
+    .w-delete-this-conversation-permanently = Diese Unterhaltung endgültig löschen?
+    .w-it-is-in-the-trash = Sie ist im Papierkorb
+    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
+    .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
+    .w-delete-permanently = Endgültig löschen
     .w-reply-to = Antwort auf { $subject }
     .w-reply = Antworten
 
@@ -606,7 +642,9 @@ d-n2xgxnbw = Nachricht
     .w-to = an { $to }
     .w-hide-quoted-text = Zitierten Text ausblenden
     .w-show-quoted-text = Zitierten Text anzeigen
-    .w-attached = Angehängt: { $attachments }
+
+d-llqqdcy5 = Anhang-Chip
+    .w-not-downloaded = { $name }, nicht heruntergeladen
 
 d-nxayphhi = Nachrichtendatei
     .w-message = Nachricht
@@ -632,6 +670,7 @@ d-oqpazwvc = Schreiben
     .w-https-example-org = https://example.org
     .w-add-link = Link hinzufügen
     .w-write-your-message = Schreib deine Nachricht
+    .w-attach = Anhängen
     .w-send = Senden
 
 d-ozukvva2 = Zur Seite gelegt

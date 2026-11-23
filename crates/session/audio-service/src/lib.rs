@@ -19,16 +19,7 @@
 
 pub mod client;
 pub mod handoff;
-/// What a resource of a kind this crate publishes from outside a document is
-/// called, in the person's language: the kind's entry in the catalogue beside
-/// this crate, read the way a declaration's words are.
-mod i18n {
-    tilo_resource::declared_catalogue!(CATALOGUE);
-
-    pub(crate) fn name(kind: &str, source: &str) -> String {
-        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
-    }
-}
+tilo_resource::declared_names!();
 
 pub mod media;
 #[cfg(feature = "service")]
@@ -36,7 +27,7 @@ pub mod mpris;
 #[cfg(feature = "service")]
 pub mod policy;
 pub mod sound;
-#[cfg(feature = "service")]
+#[cfg(feature = "sounds")]
 pub mod sounds;
 
 use serde::{Deserialize, Serialize};

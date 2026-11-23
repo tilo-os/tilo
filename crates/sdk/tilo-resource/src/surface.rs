@@ -158,10 +158,27 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         label: vocabulary.label.to_owned(),
         version,
         person: false,
+        readers: reader_rule(vocabulary.readers),
         verbs,
         fields,
         types: types.into_types(),
         shows: Vec::new(),
+    }
+}
+
+/// The rule `#[resource(readers = "...")]` wrote, which the macro checked:
+/// `None` for a kind every member reads.
+fn reader_rule(readers: &str) -> Option<tilo_actions::surface::ReaderRule> {
+    use tilo_actions::surface::ReaderRule;
+    match readers.split(' ').collect::<Vec<_>>().as_slice() {
+        [""] => None,
+        ["author"] => Some(ReaderRule::Author { until: None }),
+        ["author", "until", until] => Some(ReaderRule::Author {
+            until: Some((*until).to_owned()),
+        }),
+        _ => Some(ReaderRule::Field {
+            field: readers.to_owned(),
+        }),
     }
 }
 
@@ -212,6 +229,7 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
         label: label.to_owned(),
         version: 1,
         person: false,
+        readers: None,
         verbs,
         fields,
         types: declared,

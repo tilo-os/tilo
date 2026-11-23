@@ -339,7 +339,7 @@ impl WeatherApp {
         )])
         .with_accessible_name(crate::i18n::t("weather-a11y-places"))
         .rail()
-        .on_view("weather.rail", {
+        .on_choose("weather.rail", {
             let core = Rc::clone(core);
             move |id| core.borrow_mut().select_place(&id)
         });

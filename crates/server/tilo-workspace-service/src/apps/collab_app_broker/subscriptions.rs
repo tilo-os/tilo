@@ -341,6 +341,17 @@ mod tests {
         told
     }
 
+    /// The records each `RecordsMoved` the subscriber was sent named.
+    fn moved(rx: &mut mpsc::UnboundedReceiver<ContextUpdate>) -> Vec<Vec<String>> {
+        let mut moved = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let ContextUpdate::RecordsMoved(records) = envelope {
+                moved.push(records);
+            }
+        }
+        moved
+    }
+
     /// A broker over `channels`, with the receiver of its action
     /// directory bridge, kept for as long as the broker is used.
     fn broker(
@@ -604,5 +615,186 @@ mod tests {
                 "a write the broker admitted is not refused after the switch"
             );
         }
+    }
+
+    /// The route, and the records, of each `ResourcesArrived` a window that holds the documents
+    /// was told, in order.
+    type Announced = std::sync::Arc<Mutex<Vec<(CrdtRoute, Vec<String>)>>>;
+
+    /// The windows one peer's writes reach, and the broker that carries them: the app's window
+    /// opened on `workspace`, another workspace's window, the subscriber of `record` alone, and
+    /// what a window that holds the documents is told of the parts a peer wrote.
+    struct PeerWrites {
+        channels: std::sync::Arc<Mutex<BrokerChannels>>,
+        fanout: std::sync::Arc<crate::apps::collab_broker::FanoutState>,
+        workspace: String,
+        app: CrdtRoute,
+        _broker: std::sync::Arc<super::super::AppBrokerState>,
+        _bridge: std::sync::mpsc::Receiver<super::super::ActionDirectoryBridgeRequest>,
+        window: mpsc::UnboundedReceiver<ContextUpdate>,
+        elsewhere: mpsc::UnboundedReceiver<ContextUpdate>,
+        record_route: mpsc::UnboundedReceiver<ContextUpdate>,
+        announced: Announced,
+    }
+
+    /// The windows of `workspace` and of another workspace, a subscriber of `record` alone, and a
+    /// window that holds the documents, all open while a peer's writes are delivered.
+    fn peer_writes(workspace: &str, record: &str) -> PeerWrites {
+        use crate::apps::collab_broker::FanoutState;
+        use crate::apps::collab_outbound::PeerPublisher;
+        use std::sync::Arc;
+        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let fanout = Arc::new(FanoutState::new());
+        let (broker, bridge) = super::super::AppBrokerState::new(
+            &fanout,
+            Arc::clone(&channels),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_app_broker(Arc::clone(&broker));
+        let app = CrdtRoute::app(CHAT, workspace);
+        broker.ensure_channel(&app.channel_key());
+        let window = broker.subscribe_context(&app.channel_key(), 1, None);
+        let elsewhere = broker.subscribe_context(
+            &CrdtRoute::app(CHAT, uuid::Uuid::from_u128(8).to_string()).channel_key(),
+            2,
+            None,
+        );
+        let record_route = broker.subscribe_context(
+            &CrdtRoute::record(CHAT, workspace, record).channel_key(),
+            3,
+            None,
+        );
+        let announced = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&announced);
+        let _app = fanout.subscribe_workspaces(
+            vec![workspace.to_owned()],
+            Box::new(move |event, origin| {
+                if let super::super::CollabEvent::ResourcesArrived { records } = event {
+                    sink.lock().unwrap().push((origin.clone(), records.clone()));
+                }
+            }),
+        );
+        PeerWrites {
+            channels,
+            fanout,
+            workspace: workspace.to_owned(),
+            app,
+            _broker: broker,
+            _bridge: bridge,
+            window,
+            elsewhere,
+            record_route,
+            announced,
+        }
+    }
+
+    impl PeerWrites {
+        /// `envelope`, which a peer wrote into `record`, delivered to this broker.
+        fn deliver(
+            &self,
+            record: &str,
+            envelope: SignedOp,
+        ) -> crate::apps::collab_inbound::Delivery {
+            use crate::apps::collab_inbound::{RemoteDocument, deliver};
+            use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
+            let editor = tilo_action_policy::PersonId::from_root(EDITOR);
+            let mut policy = WorkspacePolicy::new(&self.workspace, "owner");
+            policy
+                .members
+                .insert(editor.as_str().to_owned(), Role::Editor);
+            deliver(
+                &self.channels,
+                &self.fanout,
+                RemoteDocument {
+                    app_id: CHAT.into(),
+                    cluster_id: self.workspace.clone(),
+                    document_id: record.into(),
+                    author: MemberAccess::person(policy, editor),
+                    replayed: false,
+                    envelope,
+                },
+            )
+        }
+    }
+
+    /// The root key of the person whose device a peer's edits are signed by.
+    const EDITOR: [u8; 32] = [5; 32];
+
+    /// A peer's `sequence`-th edit of `record` in `workspace`, setting its title.
+    fn edit(workspace: &str, record: &str, sequence: u64, title: &str) -> SignedOp {
+        use collab_types::{OpKind, field_edit_mutation, sign_op};
+        let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+        let (mutation, _) = field_edit_mutation("note", "title", title, &EDITOR).unwrap();
+        let mut op = SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            document_artifact_id(CHAT, workspace, record),
+            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            document_attestation_id(CHAT, workspace, record),
+            OpKind::Change,
+            tilo_clock::wall(),
+            sequence,
+        );
+        sign_op(&mut op, &key).unwrap();
+        op
+    }
+
+    /// A peer's write of a record reaches the window open on the app. A window that keeps no
+    /// document of its own and reads the workspace's store a record at a time (a tilolang app's
+    /// window) is told which record moved, on the app's route, for every op — a later edit of a
+    /// record it already read, and the document a type's resources live in, not only the first
+    /// write of a record of a tree. A window that holds the documents is told a part a peer wrote
+    /// once, when it first arrives, which is what opens it.
+    #[test]
+    fn a_peer_written_record_reaches_the_apps_open_window() {
+        use crate::apps::collab_inbound::Delivery;
+        let workspace = uuid::Uuid::from_u128(7).to_string();
+        let value = part(0);
+        let root = "root-note".to_owned();
+        let mut open = peer_writes(&workspace, &value);
+        assert_eq!(
+            open.deliver(&value, edit(&workspace, &value, 1, "hello")),
+            Delivery::Done
+        );
+        assert_eq!(moved(&mut open.window), [vec![value.clone()]]);
+        assert_eq!(
+            open.announced.lock().unwrap().as_slice(),
+            &[(open.app.clone(), vec![value.clone()])],
+            "a window that holds the documents opens the part a peer wrote, told once"
+        );
+        assert_eq!(
+            open.deliver(&value, edit(&workspace, &value, 2, "hello again")),
+            Delivery::Done,
+            "a later edit of a record the window opened is delivered to it"
+        );
+        assert_eq!(
+            moved(&mut open.window),
+            [vec![value]],
+            "every op of a record tells the window it moved, not only the first"
+        );
+        assert_eq!(
+            open.deliver(&root, edit(&workspace, &root, 1, "a note")),
+            Delivery::Done,
+            "a peer wrote the document a type's resources live in"
+        );
+        assert_eq!(
+            moved(&mut open.window),
+            [vec![root]],
+            "the window is told the root document, on the app's route"
+        );
+        assert!(
+            moved(&mut open.elsewhere).is_empty(),
+            "another workspace's window is told nothing"
+        );
+        assert!(
+            moved(&mut open.record_route).is_empty(),
+            "a record's subscriber holds the document itself and is told no move"
+        );
+        assert_eq!(
+            open.announced.lock().unwrap().len(),
+            1,
+            "only the part's first op is an arrival a document window opens, not every edit"
+        );
     }
 }

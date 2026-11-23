@@ -37,6 +37,10 @@ crate::effects::effect_family!(SpeakerEffect => answer);
 
 crate::area::pane_area! {
     SpeakersArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Speakers);
     fn poll(&self) {
         SpeakersArea::poll(self);
     }

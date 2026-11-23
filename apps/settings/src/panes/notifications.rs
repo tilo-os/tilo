@@ -25,7 +25,13 @@ use provider_settings_ui::widgets::{
 };
 use ui::storage::SettingsCache;
 
-crate::area::pane_area!(NotificationsArea);
+crate::area::pane_area! {
+    NotificationsArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Notifications);
+}
 
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NotificationsArea> {
     app.areas().find()

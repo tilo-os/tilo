@@ -279,6 +279,78 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
     drop(home);
 }
 
+/// The device daemon's profiles under a home (the account's own, and one named apart the way a test
+/// or a VM host names it) hold its store, its device's key and, for the one named apart, its native
+/// endpoint. An app with the whole home granted reaches none of them, nor the endpoint of the
+/// account's own daemon in the runtime directory.
+#[test]
+fn a_home_grant_never_reaches_the_device_daemons_profiles_or_endpoint() {
+    use collab_types::caps::Access;
+    use std::os::unix::net::UnixListener;
+
+    let _ = workspacetest_payload();
+    let mut home = tilo_test_env::TestHome::new().expect("temporary home");
+    let own = tilo_paths::machine::account_daemon_profile().expect("the home names a profile");
+    assert!(own.starts_with(home.home()), "{}", own.display());
+    let named = home.home().join("dev/runtime");
+    home.env()
+        .set(tilo_paths::machine::DAEMON_PROFILE_VAR, &named);
+    let endpoint_dir = home.runtime().join("tilo");
+    std::fs::create_dir_all(&endpoint_dir).expect("endpoint dir");
+
+    let mut listeners = Vec::new();
+    let mut keys = Vec::new();
+    let mut endpoints = Vec::new();
+    for (profile, sockets) in [(&own, &endpoint_dir), (&named, &named)] {
+        let key = profile.join("data/tilo/device/device.key");
+        std::fs::create_dir_all(key.parent().expect("parent")).expect("profile");
+        std::fs::write(&key, "device-key").expect("key");
+        let endpoint = sockets.join(tilo_paths::machine::DAEMON_NATIVE);
+        let listener = UnixListener::bind(&endpoint).expect("endpoint");
+        listener.set_nonblocking(true).expect("nonblocking");
+        listeners.push(listener);
+        keys.push(key);
+        endpoints.push(endpoint);
+    }
+    let path = |p: &std::path::Path| p.display().to_string();
+    let data = DataHome::new();
+    let grant = [(path(home.home()), Access::Write)];
+    let run = |argv: &[&str]| launch_with_grants(&data, &grant, argv);
+
+    // The grant itself works.
+    let note = home.home().join("note.txt");
+    std::fs::write(&note, "my note").expect("note");
+    assert_eq!(
+        run(&["read", &path(&note)]),
+        format!("OK {} my note", path(&note))
+    );
+    for key in &keys {
+        let line = run(&["read", &path(key)]);
+        assert!(line.starts_with("ERR "), "{line}");
+    }
+    for profile in [&own, &named] {
+        assert_eq!(
+            run(&["readdir", &path(profile)]),
+            format!("OK {}", path(profile)),
+            "the profile must read as empty"
+        );
+        let line = run(&["writeabs", &path(&profile.join("planted")), "x"]);
+        assert!(line.starts_with("ERR "), "{line}");
+    }
+    for endpoint in &endpoints {
+        let line = run(&["connect", &path(endpoint)]);
+        assert!(line.starts_with("ERR "), "{line}");
+    }
+    for listener in &listeners {
+        assert_eq!(
+            listener.accept().map(|_| ()).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "no connection may reach the daemon from the sandbox"
+        );
+    }
+    drop(home);
+}
+
 /// Run the fixture as Settings, the one package the launcher gives parts of the session's
 /// configuration, with Landlock enforced as in production.
 fn run_as_settings(data: &DataHome, argv: &[&str]) -> String {

@@ -268,7 +268,7 @@ impl Device for OsDevice {
     }
 
     fn change(&self, change: &Change) -> Result<(), String> {
-        use os_actions::{Dispatcher as _, RadioChange, RealDispatcher};
+        use os_actions::RadioChange;
         match change {
             Change::Wifi(on) => radio(RadioChange::Wifi(*on)),
             Change::Airplane(on) => radio(RadioChange::Airplane(*on)),
@@ -323,10 +323,11 @@ impl Device for OsDevice {
                 let profile = os_actions::modem::mobile_profile_uuid()?;
                 os_actions::set_mobile_roaming(&profile, *on)
             }
-            Change::Bluetooth(on) => RealDispatcher.set_bluetooth(*on),
+            Change::Bluetooth(on) => os_actions::bluez::set_powered(*on),
             Change::Connect { address } => os_actions::bluez::connect_address(address),
             Change::Disconnect { address } => os_actions::bluez::disconnect_address(address),
-            Change::ScanBluetooth(on) => RealDispatcher.scan_bluetooth(*on),
+            Change::ScanBluetooth(true) => os_actions::bluez::start_scan(),
+            Change::ScanBluetooth(false) => os_actions::bluez::stop_scan(),
             Change::Pair { address } => os_actions::bluez::pair_handoff(address),
             Change::ForgetBluetooth { address } => os_actions::bluez::forget_address(address),
             Change::Vpn { profile, on } => os_actions::set_vpn_connection_uuid(profile, *on),
@@ -341,10 +342,5 @@ impl Device for OsDevice {
 /// Make a radio change and check the radios show it: a switch may hold a
 /// radio off although the change was taken.
 fn radio(change: os_actions::RadioChange) -> Result<(), String> {
-    use os_actions::Dispatcher as _;
-    let radios = match os_actions::RealDispatcher.apply_radio_change(change)? {
-        Some(radios) => radios,
-        None => os_actions::get_radio_state()?,
-    };
-    change.outcome(&radios)
+    change.outcome(&change.apply()?)
 }

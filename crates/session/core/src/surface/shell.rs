@@ -306,7 +306,8 @@ struct OnGpu {
 /// it read this, each through [`SurfaceFrame`].
 #[derive(Debug)]
 struct Held {
-    /// Premultiplied RGBA, `size.0 * 4` bytes a row; nothing for a frame drawn on the GPU.
+    /// Premultiplied RGBA, `size.0 * 4` bytes a row; nothing for a frame drawn on the GPU, and
+    /// nothing until a frame drawn here is first drawn into.
     pixels: Vec<u8>,
     /// What it shows, cell by cell; `None` for a frame a surface handed over whole, whose drawing
     /// this side has not seen.
@@ -365,11 +366,15 @@ pub struct SurfaceFrame {
 
 impl SurfaceFrame {
     /// An empty frame of `size` physical pixels.
+    ///
+    /// It holds no pixels until something is drawn into it ([`Self::set_pixels`]): a desktop's
+    /// hidden panels and sheets have a frame each and cost nothing until they show something, and
+    /// a surface that draws takes the bytes its size needs then.
     #[must_use]
     pub fn new(size: (u32, u32)) -> Self {
         Self {
             held: Shared::new(Held {
-                pixels: vec![0; pixels_in(size)],
+                pixels: Vec::new(),
                 coverage: Some(Coverage::new(size)),
                 damage: Vec::new(),
                 #[cfg(unix)]
@@ -477,13 +482,14 @@ impl SurfaceFrame {
         }
     }
 
-    /// The alpha of one pixel of the frame, if it lies inside.
+    /// The alpha of one pixel of the frame, if it lies inside: `0` where nothing was drawn there,
+    /// which is every pixel of a frame nothing was drawn into.
     #[must_use]
     pub fn alpha(&self, x: u32, y: u32) -> Option<u8> {
         if x >= self.size.0 || y >= self.size.1 {
             return None;
         }
-        alpha_at(&self.held().pixels, self.size.0, x, y)
+        Some(alpha_at(&self.held().pixels, self.size.0, x, y).unwrap_or(0))
     }
 
     /// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes a row of this frame's
@@ -495,6 +501,11 @@ impl SurfaceFrame {
         let width = self.size.0 as usize;
         let size = self.size;
         let mut held = self.held();
+        // The frame's pixels are taken when it is first drawn into, not when it is made: what one
+        // that never shows anything holds is its size, not its layer.
+        if held.pixels.len() < pixels_in(size) {
+            held.pixels = vec![0; pixels_in(size)];
+        }
         for region in regions {
             for row in region.y..region.y.saturating_add(region.height) {
                 let start = (row as usize)
@@ -1094,6 +1105,28 @@ mod tests {
             None,
             "an empty layer has no layer"
         );
+    }
+
+    #[test]
+    fn a_frame_takes_its_pixels_when_it_is_first_drawn() {
+        let frame = SurfaceFrame::new(SIZE);
+        assert_eq!(
+            frame.held().pixels.len(),
+            0,
+            "a frame nothing was drawn into holds no layer to cost the session"
+        );
+        assert_eq!(frame.alpha(0, 0), Some(0), "and its pixels are clear");
+        let bar = Region::new(8, 16, 24, 8);
+        frame.set_pixels(
+            &painted(pixels(|_, _| CLEAR), (8, 16), (24, 8), OPAQUE_RED),
+            &[bar],
+        );
+        assert_eq!(
+            frame.held().pixels.len(),
+            pixels_in(SIZE),
+            "the draw it takes is its layer"
+        );
+        assert_eq!(frame.alpha(8, 16), Some(255), "and it shows what was drawn");
     }
 
     #[test]

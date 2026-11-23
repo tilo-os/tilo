@@ -32,12 +32,6 @@ pub(super) struct AdmittedHostAction {
     key: Option<InvocationKey>,
 }
 
-fn unavailable(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::Unavailable {
-        reason: reason.into(),
-    }
-}
-
 impl AppBrokerState {
     /// Preserve original caller ownership and UUID, and durably sign admission
     /// before allowing a host service's first side effect.
@@ -68,7 +62,7 @@ impl AppBrokerState {
         let _admission = self
             .admission_lock
             .lock()
-            .map_err(|_| unavailable("invocation admission unavailable"))?;
+            .map_err(|_| ActionCallError::unavailable("invocation admission unavailable"))?;
         if !self.is_accepting()
             || (caller.execution_id().is_some() && !caller.execution_is_live())
             || request.invocation.0.is_nil()
@@ -82,11 +76,11 @@ impl AppBrokerState {
             return Err(ActionCallError::NotPermitted);
         }
         if self.durable_owner_required || self.publisher.has_owner() {
-            self.owner_health().map_err(unavailable)?;
+            self.owner_health().map_err(ActionCallError::unavailable)?;
         }
         let actor = BrokerActor::for_caller(caller);
         let owner = self.host_action_owner(caller, origin, workspace, request.invocation)?;
-        owner.validate().map_err(unavailable)?;
+        owner.validate().map_err(ActionCallError::unavailable)?;
         self.retain_host_action(&actor, owner, admission, start)
     }
 
@@ -107,8 +101,10 @@ impl AppBrokerState {
                 caller: original, ..
             }) => {
                 self.checked_policy_time(original.policy_time.as_ref())
-                    .map_err(unavailable)?;
-                let current = self.current_action_caller(original).map_err(unavailable)?;
+                    .map_err(ActionCallError::unavailable)?;
+                let current = self
+                    .current_action_caller(original)
+                    .map_err(ActionCallError::unavailable)?;
                 let expected = current.broker_actor();
                 if original.workspace != workspace || expected.member() != actor.member() {
                     return Err(ActionCallError::NotPermitted);
@@ -116,16 +112,18 @@ impl AppBrokerState {
                 // Revalidation checks the full certificate, not an actor supplied
                 // by the transport or an actor reconstructed from a display name.
                 let certificate = current.certificate.as_ref().ok_or_else(|| {
-                    unavailable("action_evidence_unavailable: caller certificate missing")
+                    ActionCallError::unavailable(
+                        "action_evidence_unavailable: caller certificate missing",
+                    )
                 })?;
                 if caller.device_public_key().is_none() {
                     // Only the native facade combines a physical projection
                     // with retained signed admission. Recheck its protected device
                     // at the effect barrier, not only when it queued the request.
                     self.current_native_person(workspace, certificate)
-                        .map_err(unavailable)?;
+                        .map_err(ActionCallError::unavailable)?;
                 }
-                original.owner().map_err(unavailable)?
+                original.owner().map_err(ActionCallError::unavailable)?
             }
             Some(InvocationCaller::Local {
                 route,
@@ -133,17 +131,17 @@ impl AppBrokerState {
                 time,
             }) => {
                 self.checked_policy_time(time.as_ref())
-                    .map_err(unavailable)?;
+                    .map_err(ActionCallError::unavailable)?;
                 let current = self
                     .revalidate_admission(route, admitted)
-                    .map_err(|error| unavailable(error.to_string()))?;
+                    .map_err(|error| ActionCallError::unavailable(error.to_string()))?;
                 self.checked_policy_time(time.as_ref())
-                    .map_err(unavailable)?;
+                    .map_err(ActionCallError::unavailable)?;
                 let Some(certificate) = current.certificate.as_ref() else {
                     if self.services.local_person.is_some()
                         || self.services.native_certificates.is_some()
                     {
-                        return Err(unavailable(
+                        return Err(ActionCallError::unavailable(
                             "action_evidence_unavailable: original certificate missing",
                         ));
                     }
@@ -192,9 +190,10 @@ impl AppBrokerState {
                 certificate,
                 time,
             }) => {
-                self.checked_policy_time(Some(time)).map_err(unavailable)?;
+                self.checked_policy_time(Some(time))
+                    .map_err(ActionCallError::unavailable)?;
                 self.current_native_person(workspace, certificate)
-                    .map_err(unavailable)?;
+                    .map_err(ActionCallError::unavailable)?;
                 if original_workspace != workspace
                     || *original_invocation != invocation
                     || actor.member().person_id()
@@ -225,7 +224,7 @@ impl AppBrokerState {
                     || caller.device_public_key().is_some()
                     || caller.user_public_key().is_some()
                 {
-                    return Err(unavailable(
+                    return Err(ActionCallError::unavailable(
                         "action_evidence_unavailable: original caller missing",
                     ));
                 }
@@ -257,76 +256,82 @@ impl AppBrokerState {
                 std::sync::atomic::Ordering::Relaxed,
                 |id| id.checked_add(1),
             )
-            .map_err(|_| unavailable("invocation handle space exhausted"))?;
+            .map_err(|_| ActionCallError::unavailable("invocation handle space exhausted"))?;
         let mut guard = self
             .journal
             .lock()
-            .map_err(|_| unavailable("invocation journal unavailable"))?;
-        let journal = guard.as_mut().map_err(|error| unavailable(error.clone()))?;
+            .map_err(|_| ActionCallError::unavailable("invocation journal unavailable"))?;
+        let journal = guard
+            .as_mut()
+            .map_err(|error| ActionCallError::unavailable(error.clone()))?;
         if owner.verified_actor().is_some() && journal.is_none() {
-            return Err(unavailable(
+            return Err(ActionCallError::unavailable(
                 "action_evidence_unavailable: admission journal unavailable",
             ));
         }
         let mut admitted = invocation_journal::Durable::settled();
-        let key =
-            if let Some(journal) = journal {
-                let key = InvocationKey {
-                    workspace: workspace.into(),
-                    host: journal.host(),
-                    owner: owner.clone(),
-                    invocation: request.invocation,
-                };
-                // Host services expose no resolved revision identifier. Bind the
-                // descriptor actually authorized by the host instead; the caller's
-                // revision remains part of the exact request, not an authority claim.
-                let resolved_descriptor = serde_json::to_value(descriptor)
-                    .map_err(|error| unavailable(error.to_string()))?;
-                let descriptor_digest = hex::encode(invocation_journal::admission_request_digest(
-                    &resolved_descriptor,
-                ));
-                let mut intent = serde_json::json!({
-                    "host_action": true,
-                    "host_descriptor_digest": descriptor_digest,
-                    "request": request,
-                    "contract": descriptor.contract,
-                    "operation_kind": descriptor.kind,
-                    "context": request.context,
-                    "actor": actor.member(),
-                    "app_id": app_id,
-                    "document_id": "",
-                    "resource": descriptor.address.resource,
-                    "resource_kind": descriptor.resource_kind,
-                    "action": descriptor.address.action,
-                });
-                if let (Some(start), Some(fields)) = (start, intent.as_object_mut()) {
-                    fields.insert("host_start".into(), start);
-                }
-                let evidence =
-                    if owner.verified_actor().is_some() {
-                        let facts = invocation_journal::evidence_facts(&key, &intent)
-                            .map_err(unavailable)?;
-                        Some(crate::apps::action_evidence::mint(facts, &intent).map_err(|_| {
-                    unavailable("action_evidence_unavailable: host signing identity unavailable")
-                })?)
-                    } else {
-                        None
-                    };
-                let (fresh, durable) = journal
-                    .admit_with_evidence(key.clone(), intent, id, evidence)
-                    .map_err(unavailable)?;
-                if !fresh {
-                    return Err(ActionCallError::Refused {
-                        reason: "invocation already admitted".into(),
-                    });
-                }
-                admitted = durable;
-                Some(key)
+        let key = if let Some(journal) = journal {
+            let key = InvocationKey {
+                workspace: workspace.into(),
+                host: journal.host(),
+                owner: owner.clone(),
+                invocation: request.invocation,
+            };
+            // Host services expose no resolved revision identifier. Bind the
+            // descriptor actually authorized by the host instead; the caller's
+            // revision remains part of the exact request, not an authority claim.
+            let resolved_descriptor = serde_json::to_value(descriptor)
+                .map_err(|error| ActionCallError::unavailable(error.to_string()))?;
+            let descriptor_digest = hex::encode(invocation_journal::admission_request_digest(
+                &resolved_descriptor,
+            ));
+            let mut intent = serde_json::json!({
+                "host_action": true,
+                "host_descriptor_digest": descriptor_digest,
+                "request": request,
+                "contract": descriptor.contract,
+                "operation_kind": descriptor.kind,
+                "context": request.context,
+                "actor": actor.member(),
+                "app_id": app_id,
+                "document_id": "",
+                "resource": descriptor.address.resource,
+                "resource_kind": descriptor.resource_kind,
+                "action": descriptor.address.action,
+            });
+            if let (Some(start), Some(fields)) = (start, intent.as_object_mut()) {
+                fields.insert("host_start".into(), start);
+            }
+            let evidence = if owner.verified_actor().is_some() {
+                let facts = invocation_journal::evidence_facts(&key, &intent)
+                    .map_err(ActionCallError::unavailable)?;
+                Some(
+                    crate::apps::action_evidence::mint(facts, &intent).map_err(|_| {
+                        ActionCallError::unavailable(
+                            "action_evidence_unavailable: host signing identity unavailable",
+                        )
+                    })?,
+                )
             } else {
                 None
             };
+            let (fresh, durable) = journal
+                .admit_with_evidence(key.clone(), intent, id, evidence)
+                .map_err(ActionCallError::unavailable)?;
+            if !fresh {
+                return Err(ActionCallError::Refused {
+                    reason: "invocation already admitted".into(),
+                });
+            }
+            admitted = durable;
+            Some(key)
+        } else {
+            None
+        };
         drop(guard);
-        admitted.wait_blocking().map_err(unavailable)?;
+        admitted
+            .wait_blocking()
+            .map_err(ActionCallError::unavailable)?;
         self.record_completion(
             id,
             owner.clone(),
@@ -366,7 +371,7 @@ impl AppBrokerState {
         let _admission = self
             .admission_lock
             .lock()
-            .map_err(|_| unavailable("invocation admission unavailable"))?;
+            .map_err(|_| ActionCallError::unavailable("invocation admission unavailable"))?;
         if !self.is_accepting() || (caller.execution_id().is_some() && !caller.execution_is_live())
         {
             tracing::warn!(
@@ -393,8 +398,11 @@ impl AppBrokerState {
             let guard = self
                 .journal
                 .lock()
-                .map_err(|_| unavailable("invocation journal unavailable"))?;
-            let Some(journal) = guard.as_ref().map_err(|e| unavailable(e.clone()))?.as_ref() else {
+                .map_err(|_| ActionCallError::unavailable("invocation journal unavailable"))?;
+            let journal = guard
+                .as_ref()
+                .map_err(|e| ActionCallError::unavailable(e.clone()))?;
+            let Some(journal) = journal.as_ref() else {
                 return Ok(None);
             };
             let looked = journal.lookup(&InvocationKey {
@@ -404,15 +412,15 @@ impl AppBrokerState {
                 invocation: request.invocation,
             });
             drop(guard);
-            looked.map_err(unavailable)?
+            looked.map_err(ActionCallError::unavailable)?
         };
         let Some(record) = record.filter(|record| {
             record.intent.get("host_action") == Some(&serde_json::Value::Bool(true))
         }) else {
             return Ok(None);
         };
-        let intent =
-            serde_json::to_value(request).map_err(|error| unavailable(error.to_string()))?;
+        let intent = serde_json::to_value(request)
+            .map_err(|error| ActionCallError::unavailable(error.to_string()))?;
         if !record.admitted_request_is(&intent) {
             return Err(ActionCallError::Refused {
                 reason: "invocation identity reused with different intent".into(),
@@ -423,11 +431,11 @@ impl AppBrokerState {
                 .intent
                 .get(name)
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| unavailable("host invocation intent invalid"))
+                .ok_or_else(|| ActionCallError::unavailable("host invocation intent invalid"))
         };
         let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
-                .map_err(|_| unavailable("host invocation contract invalid"))?;
+                .map_err(|_| ActionCallError::unavailable("host invocation contract invalid"))?;
         let actor = self.host_replay_actor(workspace, origin)?;
         self.authorize_invocation_permission(
             workspace,
@@ -439,13 +447,13 @@ impl AppBrokerState {
             ),
             &contract.need(),
             &actor,
-            self.policy_now_ns().map_err(unavailable)? / 1_000_000_000,
+            self.policy_now_ns().map_err(ActionCallError::unavailable)? / 1_000_000_000,
         )
-        .map_err(unavailable)?;
+        .map_err(ActionCallError::unavailable)?;
         let mut log = self
             .remote_invocations
             .lock()
-            .map_err(|_| unavailable("invocation log unavailable"))?;
+            .map_err(|_| ActionCallError::unavailable("invocation log unavailable"))?;
         log.reserve(caller, &Self::invocation_identity(request))?;
         log.complete(&request.invocation, record.wire_id);
         drop(log);
@@ -467,7 +475,7 @@ impl AppBrokerState {
             } => {
                 let mut admitted = self
                     .current_action_caller(original)
-                    .map_err(unavailable)?
+                    .map_err(ActionCallError::unavailable)?
                     .broker_actor();
                 admitted.capped |= super::cap_applies_in(
                     self.certificate_authority.get().map(AsRef::as_ref),
@@ -487,9 +495,9 @@ impl AppBrokerState {
                 time,
             } => {
                 self.checked_policy_time(time.as_ref())
-                    .map_err(unavailable)?;
+                    .map_err(ActionCallError::unavailable)?;
                 self.revalidate_admission(route, admitted)
-                    .map_err(|error| unavailable(error.to_string()))?
+                    .map_err(|error| ActionCallError::unavailable(error.to_string()))?
                     .broker_actor()
             }
             InvocationCaller::NativePerson { certificate, .. } => {
@@ -525,7 +533,7 @@ impl AppBrokerState {
         let _admission = self
             .admission_lock
             .lock()
-            .map_err(|_| unavailable("invocation admission unavailable"))?;
+            .map_err(|_| ActionCallError::unavailable("invocation admission unavailable"))?;
         if !self.is_accepting()
             || update.invocation() != admitted.invocation
             || !update.is_terminal()
@@ -543,24 +551,28 @@ impl AppBrokerState {
         if self
             .completed_invocations
             .lock()
-            .map_err(|_| unavailable("invocation registry unavailable"))?
+            .map_err(|_| ActionCallError::unavailable("invocation registry unavailable"))?
             .get(&admitted.id)
             .is_some_and(|(owner, update)| owner != &admitted.owner || update.is_terminal())
         {
-            return Err(unavailable("host invocation is no longer running"));
+            return Err(ActionCallError::unavailable(
+                "host invocation is no longer running",
+            ));
         }
         if let Some(key) = &admitted.key {
             let durable = self
                 .journal
                 .lock()
-                .map_err(|_| unavailable("invocation journal unavailable"))?
+                .map_err(|_| ActionCallError::unavailable("invocation journal unavailable"))?
                 .as_mut()
-                .map_err(|error| unavailable(error.clone()))?
+                .map_err(|error| ActionCallError::unavailable(error.clone()))?
                 .as_mut()
-                .ok_or_else(|| unavailable("durable admission unavailable"))?
+                .ok_or_else(|| ActionCallError::unavailable("durable admission unavailable"))?
                 .record_update(key, update.clone(), uncertain)
-                .map_err(unavailable)?;
-            durable.wait_blocking().map_err(unavailable)?;
+                .map_err(ActionCallError::unavailable)?;
+            durable
+                .wait_blocking()
+                .map_err(ActionCallError::unavailable)?;
         }
         self.record_completion(admitted.id, admitted.owner.clone(), update);
         Ok(())

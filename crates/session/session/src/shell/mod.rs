@@ -70,6 +70,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::notifications::surface(),
         crate::osd::surface(),
         crate::controls::night_light_surface(),
+        crate::notifications::banners_surface(),
         crate::time::surface(),
         crate::controls::apps_surface(),
         crate::device_lists::windows_surface(),
@@ -78,6 +79,9 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::styles_surface(),
         crate::device_lists::folders_surface(),
         crate::shell::state::overlays_surface(),
+        tilo_workspace_service::apps::nearby_send::surface(),
+        crate::devices::surface(),
+        crate::quick_settings::controls_surface(),
     ]
 }
 
@@ -1171,14 +1175,19 @@ pub(crate) fn chrome_surface<T: tilo_session_core::surfaces::Published + 'static
 /// launcher (on what the person asked for, when a query comes with it), as the desktop's own search
 /// draws nothing under the shell; a search with a query still runs, its rows published for the
 /// palette and the agents.
-pub(crate) fn lists_surface<T: tilo_session_core::surfaces::Published + 'static>(
+pub(crate) fn lists_surface(
     shell: bool,
-    lists: T,
+    lists: crate::platform::surfaces::ShellDesktop,
     surfaces: crate::device_lists::Surfaces,
 ) -> tilo_session_core::surfaces::Shared {
+    let desktop = lists.clone();
     let lists: tilo_session_core::surfaces::Shared = Rc::new(RefCell::new(lists));
     if shell {
-        Rc::new(RefCell::new(ShellLists { lists, surfaces }))
+        Rc::new(RefCell::new(ShellLists {
+            lists,
+            desktop,
+            surfaces,
+        }))
     } else {
         lists
     }
@@ -1226,6 +1235,17 @@ impl ShellChrome {
             "quick-settings" => {
                 self.surfaces
                     .toggle(tilo_desktop::overlays::Overlay::QuickSettings.name());
+                true
+            }
+            // The About sheet is the shell's own view where the shell draws the screen: this
+            // computer's name, which Tilo it runs, and where to read more.
+            "about" => {
+                let open = opens(address, arguments, self.surfaces.about_open())?;
+                if open {
+                    self.surfaces.open(crate::device_lists::ABOUT);
+                } else {
+                    self.surfaces.close(crate::device_lists::ABOUT);
+                }
                 true
             }
             // The workspaces are the shell's one workspace surface: the shell's menu, the workspaces
@@ -1310,6 +1330,12 @@ impl tilo_session_core::surfaces::Published for ShellChrome {
         self.chrome.borrow_mut().accessible_labels()
     }
 
+    /// What the chrome's surfaces say of their rows now: the shell replaced what the chrome
+    /// draws, never what it offers, so a row it publishes is listed and acts as it does there.
+    fn row_status(&self, row: &str) -> Vec<tilo_actions::RowStatus> {
+        self.chrome.borrow().row_status(row)
+    }
+
     fn revision(&self) -> Option<u64> {
         self.chrome.borrow().revision()
     }
@@ -1334,6 +1360,9 @@ impl tilo_session_core::surfaces::Published for ShellChrome {
 /// The shell's lists on the shell ([`lists_surface`]).
 struct ShellLists {
     lists: tilo_session_core::surfaces::Shared,
+    /// The desktop whose windows the shell frames: what the windows' own apps
+    /// describe of their content, which the shell lists beside its controls.
+    desktop: crate::platform::surfaces::ShellDesktop,
     surfaces: crate::device_lists::Surfaces,
 }
 
@@ -1418,6 +1447,56 @@ impl tilo_session_core::surfaces::Published for ShellLists {
 
     fn accessible_labels(&mut self) -> Vec<String> {
         self.lists.borrow_mut().accessible_labels()
+    }
+
+    /// What the desktop's rows say of themselves now: the window only a foreign reader may look
+    /// at, the app of an unresponsive window that may be force quit.
+    fn row_status(&self, row: &str) -> Vec<tilo_actions::RowStatus> {
+        self.lists.borrow().row_status(row)
+    }
+
+    /// The controls the windows' own apps describe of their content, each where
+    /// it stands on the desktop: the shell replaced what the desktop draws, never
+    /// the windows standing in it, so their controls reach the session as in the
+    /// Rust shell.
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
+        self.desktop.window_controls()
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        self.lists.borrow_mut().press(name)
+    }
+
+    fn press_identity(
+        &mut self,
+        identity: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        self.lists.borrow_mut().press_identity(identity, action)
+    }
+
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        self.lists.borrow_mut().press_action(name, action)
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        self.lists.borrow_mut().a11y_tree()
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        self.lists.borrow().a11y_name()
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.lists.borrow_mut().a11y_action(target, action)
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        self.lists.borrow().wants_keyboard()
     }
 
     fn revision(&self) -> Option<u64> {
@@ -1918,32 +1997,162 @@ mod tests {
                 );
             }
         }
+    }
 
-        phase the_device_surface_file_is_what_the_session_publishes;
-        // The device's surface the shell compiles against is the one the session publishes.
-        {
-            let published = super::device_surfaces();
-            let committed = tilolang_tilo::platform_apps::device_surfaces()
-                .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
-            if committed == published {
-                return;
-            }
-            let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-                .expect("a surface writes as JSON");
-            // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's
-            // own snapshot test does: a resource whose verbs changed is regenerated in place rather
-            // than pasted from a failing run.
-            if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
-                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
-                std::fs::write(&path, &text).expect("device-surface.json is written");
-                return;
-            }
-            panic!(
-                "crates/session/session/device-surface.json is not what the session publishes; \
+    /// The device's surface the shell compiles against is the one the session publishes. Its own
+    /// test, so `UPDATE_SNAPSHOTS=1` can write the file without first compiling the shell package
+    /// that reads it.
+    #[test]
+    fn the_device_surface_file_is_what_the_session_publishes() {
+        let published = super::device_surfaces();
+        let committed = tilolang_tilo::platform_apps::device_surfaces()
+            .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
+        if committed == published {
+            return;
+        }
+        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
+            .expect("a surface writes as JSON");
+        // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's own
+        // snapshot test does: a resource whose verbs changed is regenerated in place rather than
+        // pasted from a failing run.
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
+            std::fs::write(&path, &text).expect("device-surface.json is written");
+            return;
+        }
+        panic!(
+            "crates/session/session/device-surface.json is not what the session publishes; \
              regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
-             device_surface, or write what it publishes:\n{text}"
+             the_device_surface_file_is_what_the_session_publishes, or write what it \
+             publishes:\n{text}"
+        );
+    }
+
+    /// The device's surfaces a shell shows over, as the session starts them.
+    fn shell_surfaces() -> crate::device_lists::Surfaces {
+        struct Blank;
+
+        impl tilo_desktop_surface::TileSource for Blank {
+            fn tile(
+                &mut self,
+                _: &tilo_desktop_model::Workspace,
+                tab: &tilo_desktop_model::Tab,
+            ) -> ui::widget::TileHost {
+                ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail: String::new(),
+                })
+            }
+        }
+
+        let (_surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+            tilo_desktop_model::Layout::default(),
+            1,
+            Box::new(Blank),
+        );
+        crate::device_lists::Surfaces {
+            status_panel: false,
+            shell: true,
+            overlays: tilo_desktop::overlays::Overlays::new(),
+            notices: tilo_desktop_surface::DesktopNotifications::default(),
+            overview: std::rc::Rc::new(std::cell::Cell::new(false)),
+            handle,
+            emoji: std::rc::Rc::new(std::cell::Cell::new(false)),
+            about: std::rc::Rc::new(std::cell::Cell::new(false)),
+        }
+    }
+
+    /// The tilolang shell draws what the desktop drew, so the session keeps its offer: every
+    /// app window's controls are found here as in the Rust shell, and a press on one reaches
+    /// the app through the same route — Files' and Shortcuts' alike, never one app's alone.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_shell_keeps_every_app_windows_controls() {
+        use tilo_compositor::policy::{LayoutPoint, LayoutRect};
+        use tilo_compositor::{WindowInfo, WindowPolicy as _};
+        use ui::window_targets::{TargetAction, WindowTarget};
+
+        // The windows' arrival settles at once rather than over frames that now take no time.
+        let _settled = ui::motion::testing::settled();
+        let (mut desktop, mut policy) = crate::platform::surfaces::desktop(7, 1.0);
+        tilo_session_core::surface::ShellSurface::outputs_changed(
+            &mut desktop,
+            &[tilo_session_core::surface::SurfaceOutput {
+                rect: (0, 0, 1280, 800),
+                scale: 1.0,
+            }],
+        );
+        let output = LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into());
+        let mut map = |id: u64, app: &str| {
+            let window = WindowInfo {
+                id,
+                app_id: Some(app.to_owned()),
+                pid: Some(u32::try_from(id).unwrap_or(4242)),
+                ..WindowInfo::default()
+            };
+            let _ = policy.initial_size(&window, &[output]);
+            let _ = policy.place(&window, (800, 600), &[output]);
+            window.id
+        };
+        let files = map(1, "so.tilo.file-explorer");
+        let shortcuts = map(2, "so.tilo.shortcuts");
+        for _ in 0..8 {
+            tilo_session_core::surface::ShellSurface::prepare_frame(&mut desktop);
+        }
+        let handle = desktop.with_policy(|policy| policy.handle().clone());
+        for (window, connection, name, identity) in [
+            (files, 41, "New folder", "so.tilo.file-explorer.NewFolder"),
+            (
+                shortcuts,
+                42,
+                "New shortcut",
+                "so.tilo.shortcuts.NewShortcut",
+            ),
+        ] {
+            let tab = desktop.with_policy(|policy| policy.tab_of(window));
+            let tab = tab.expect("the window is given a tab");
+            handle.declare_targets(
+                tab,
+                connection,
+                vec![WindowTarget {
+                    role: "Button".to_owned(),
+                    name: name.to_owned(),
+                    identity: Some(identity.to_owned()),
+                    rect: [10.0, 20.0, 110.0, 40.0],
+                    actions: vec![TargetAction::Activate],
+                    level: None,
+                    selected: false,
+                }],
             );
         }
+        tilo_session_core::surface::ShellSurface::prepare_frame(&mut desktop);
+
+        let lists = super::lists_surface(true, desktop, shell_surfaces());
+        let mut lists = lists.borrow_mut();
+        let controls = lists.controls();
+        let mut names: Vec<(&str, Option<&str>)> = controls
+            .iter()
+            .map(|control| (control.name.as_str(), control.identity.as_deref()))
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                ("New folder", Some("so.tilo.file-explorer.NewFolder")),
+                ("New shortcut", Some("so.tilo.shortcuts.NewShortcut")),
+            ],
+            "each window's own control reaches the shell, and nothing the desktop draws itself"
+        );
+        for name in ["New folder", "New shortcut"] {
+            lists
+                .press_action(name, TargetAction::Activate)
+                .unwrap_or_else(|why| panic!("a press on {name} reaches its window: {why}"));
+        }
+        assert_eq!(
+            handle.take_target_presses().len(),
+            2,
+            "each app is told of the press, as a screen reader's activation is"
+        );
     }
 
     /// A host that counts what is asked of it, to show what the aside never asks.

@@ -2,7 +2,7 @@
 use super::invocation_journal::{InvocationJournal, InvocationKey};
 use super::{AppBrokerState, BrokerActor, DurableInvocation, InvocationCaller, InvocationOwner};
 use tilo_action_policy::MemberId;
-use tilo_actions::remote::Caller;
+use tilo_actions::remote::{ActionCallError, Caller};
 
 /// The action check of one admission, decided on the caller's borrowed
 /// sample of exactly that workspace's committed workspace.
@@ -60,12 +60,6 @@ impl AppBrokerState {
                     now,
                 )
             })?
-    }
-}
-
-fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionCallError {
-    tilo_actions::remote::ActionCallError::Unavailable {
-        reason: reason.into(),
     }
 }
 
@@ -190,39 +184,27 @@ impl AppBrokerState {
     {
         let workspace = caller
             .workspace()
-            .ok_or_else(|| unavailable("caller workspace unavailable"))?;
+            .ok_or_else(|| ActionCallError::unavailable("caller workspace unavailable"))?;
         let actor = self.caller_actor(caller, workspace);
-        // Ordinary durable observations may reconcile effects too. A workspace
-        // that confines its agents keeps an agent from observing on a grant
-        // alone: only one in an agent session that still goes observes.
-        if actor.is_agent() && !actor.is_app() && self.confines_agents(workspace) {
-            match self.agent_session_of(Some(caller), Some(origin), workspace) {
-                Some(Ok(_)) => {}
-                Some(Err(ended)) => return Err(unavailable(ended)),
-                None => {
-                    return Err(unavailable("an agent acts only in an agent session"));
-                }
-            }
-        }
         let owner = self
             .invocation_owner(Some(origin), workspace, &actor)
-            .map_err(unavailable)?;
-        let now = self.policy_now_ns().map_err(unavailable)? / 1_000_000_000;
+            .map_err(ActionCallError::unavailable)?;
+        let now = self.policy_now_ns().map_err(ActionCallError::unavailable)? / 1_000_000_000;
         let record = {
             let guard = self
                 .journal
                 .lock()
-                .map_err(|_| unavailable("invocation journal unavailable"))?;
+                .map_err(|_| ActionCallError::unavailable("invocation journal unavailable"))?;
             let Some(journal) = guard
                 .as_ref()
-                .map_err(|error| unavailable(error.clone()))?
+                .map_err(|error| ActionCallError::unavailable(error.clone()))?
                 .as_ref()
             else {
                 return Ok(None);
             };
             let record = self
                 .retained_invocation(journal, workspace, &owner, invocation, &actor, now)
-                .map_err(unavailable)?;
+                .map_err(ActionCallError::unavailable)?;
             drop(guard);
             record
         };

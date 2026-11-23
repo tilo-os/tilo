@@ -80,26 +80,17 @@ fn person() -> Person {
     let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
-    // The other of the person's devices, enrolled as a pairing enrolls one: the token is this
-    // device's, the certificate is the identity's root's.
+    // The other of the person's devices: this device holds their root, so it certifies the key
+    // that device keeps.
     let store = DeviceFleetStore::from_env().expect("the device fleet");
     let now = tilo_clock::unix_now_ns();
-    let token = store
-        .mint_enrollment(
-            &profile.id,
-            tilo_user_identity::DeviceCapabilities::member(),
-            now,
-            now.saturating_add(3_600_000_000_000),
-            &[],
-        )
-        .expect("this device may enroll another of the person's");
     let other_device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
     let other_cert = store
-        .complete_enrollment(
+        .certify_device(
             &profile.id,
-            &token,
             other_device.verifying_key().to_bytes(),
             "The phone",
+            tilo_user_identity::DeviceCapabilities::member(),
             now,
         )
         .expect("the second device is enrolled");

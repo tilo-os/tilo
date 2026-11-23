@@ -114,7 +114,7 @@ pub fn no_exec() -> bool {
     NO_EXEC.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn set_limits(max_open_files: u64) -> Result<(), String> {
     for (resource, value) in [
         (libc::RLIMIT_CORE, 0),
@@ -732,7 +732,7 @@ mod tests {
         {
             failures |= 32;
         }
-        if crate::shm::from_bytes("probe", b"ok").is_err() {
+        if tilo_shm::from_bytes("probe", b"ok").is_err() {
             failures |= 1 << 6;
         }
         failures

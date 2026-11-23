@@ -235,7 +235,7 @@ impl State {
         }
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let time = self.now_ms();
-        self.mark_redraw_all();
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::INPUT);
         match *event {
             InputEvent::PointerMotion { x, y } => {
                 if let Some(held) = self.seats.get_mut(seat) {

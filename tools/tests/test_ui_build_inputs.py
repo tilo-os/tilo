@@ -9,13 +9,13 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "crates/sdk/ui-core"
-SCAN = ROOT / "crates/sdk/tilo-component-scan"
+SOURCE = ROOT / "crates/ui/ui-core"
+SCAN = ROOT / "crates/ui/tilo-component-scan"
 FIXTURES = {
     "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex":
         "TiloSansFeaturesFixture-Regular.ttf",
     "tests/fixtures/test_image.png.hex": "test_image.png",
-    "../../browser/paint-stream/tests/fixtures/layers.top.png.hex": "layers.top.png",
+    "../../engines/paint-stream/tests/fixtures/layers.top.png.hex": "layers.top.png",
 }
 
 
@@ -23,7 +23,7 @@ class UiBuildInputs(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.package = Path(self.temporary.name) / "crates/sdk/ui-core"
+        self.package = Path(self.temporary.name) / "crates/ui/ui-core"
         (self.package / "src").mkdir(parents=True)
         (self.package / "Cargo.toml").write_text(
             '[package]\nname = "ui-build-inputs"\nversion = "0.0.0"\n'
@@ -32,6 +32,15 @@ class UiBuildInputs(unittest.TestCase):
             'tilo-component-scan = { path = "scan" }\n'
         )
         shutil.copyfile(SOURCE / "build.rs", self.package / "build.rs")
+        # The icon set the build script reads: one stroked source on the shared root, which is
+        # what every icon in the crate is drawn on.
+        icons = self.package / "assets/icons"
+        icons.mkdir(parents=True)
+        (icons / "fixture.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+            'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+            'stroke-linejoin="round"><line x1="4" y1="4" x2="20" y2="20"/></svg>'
+        )
         # The registry's reader, without the workspace's shared dependency set: the fixture
         # builds offline on its own.
         scan = self.package / "scan"

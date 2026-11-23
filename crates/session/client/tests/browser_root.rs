@@ -12,8 +12,8 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_enrollment::certification::{IssuedRole, certify_with_root, issue_device_cert};
 use tilo_server_client::DeviceSigner as _;
+use tilo_server_client::certification::{IssuedRole, certify_with_root, issue_device_cert};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{Device, ready, start_host, start_peer};

@@ -307,3 +307,144 @@ impl Service for Served {
 pub(crate) fn handoff(shared: &crate::Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
     *shared.handoff.borrow_mut() = offer;
 }
+
+/// The Devices section as a view of another language reads it (`device.devices`): the person's
+/// devices, and what plays here that one of them can take. The section itself publishes the rows
+/// the panel draws ([`DevicesReading`]); a view reads the devices it shows and presses the same
+/// resource, so the two never say different things.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct DevicesView {
+    pub devices: Vec<PersonalDeviceView>,
+    /// What plays here, titled, while media continuity is on: what a press on another device
+    /// sends.
+    #[serde(default)]
+    pub playing: Option<String>,
+    /// The sound of this device's that a press on a device would send.
+    #[serde(default)]
+    pub chosen: Option<u64>,
+}
+
+/// One of the person's devices as a view of another language reads it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "what the fabric says of this device now: independent facts"
+)]
+pub(crate) struct PersonalDeviceView {
+    /// The fabric id, which names the device in the section's actions.
+    pub id: String,
+    pub label: String,
+    /// It has a live session with this device now.
+    pub online: bool,
+    /// It is heard on this device's local network, so the two reach each other directly.
+    pub nearby: bool,
+    /// This machine.
+    pub local: bool,
+    /// It shows, so its display can be arranged beside this one's.
+    pub display: bool,
+    /// One of its interfaces wakes on a magic packet.
+    pub wakeable: bool,
+    /// It plays the sound this device sends it.
+    pub audio_output: bool,
+}
+
+impl From<&DevicesReading> for DevicesView {
+    fn from(reading: &DevicesReading) -> Self {
+        Self {
+            devices: reading
+                .devices
+                .iter()
+                .map(|device| PersonalDeviceView {
+                    id: device.id.clone(),
+                    label: device.label.clone(),
+                    online: device.online,
+                    nearby: device.nearby,
+                    local: device.local,
+                    display: device.display,
+                    wakeable: device.wakeable,
+                    audio_output: device.audio_output,
+                })
+                .collect(),
+            playing: reading.playing.clone(),
+            chosen: reading.chosen,
+        }
+    }
+}
+
+/// The Devices section as a view of another language reads it (`device.devices`).
+#[must_use]
+pub(crate) fn surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<DevicesView, DevicesAction>("devices", "Devices")
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    /// A view's fields are the section's own, under the names it publishes them by: a field the
+    /// view leaves out is one a view cannot read, and one it invents is a lie.
+    #[test]
+    fn the_view_reads_the_devices_the_section_publishes() {
+        let reading = DevicesReading {
+            devices: vec![PersonalDevice {
+                id: "device-a".to_owned(),
+                label: "Ada's laptop".to_owned(),
+                online: true,
+                nearby: true,
+                local: false,
+                display: true,
+                wakeable: false,
+                audio_output: true,
+            }],
+            playing: Some("A song".to_owned()),
+            chosen: Some(7),
+            ..DevicesReading::default()
+        };
+        let section = serde_json::to_value(&reading).expect("the section serialises");
+        let view = serde_json::to_value(DevicesView::from(&reading)).expect("the view serialises");
+        let section_fields = section.as_object().expect("the section is an object");
+        let view_fields = view.as_object().expect("the view is an object");
+        // Which fields, not their order: the workspace's serde_json keeps insertion order.
+        assert_eq!(
+            view_fields
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<&str>>(),
+            std::collections::BTreeSet::from(["chosen", "devices", "playing"]),
+            "the view reads the devices, what plays and what would be sent"
+        );
+        for key in view_fields.keys() {
+            assert!(
+                section_fields.contains_key(key),
+                "{key} is not the section's"
+            );
+        }
+        let device = &view["devices"][0];
+        let published = &section["devices"][0];
+        let published = published.as_object().expect("a device is an object");
+        for key in device.as_object().expect("a device is an object").keys() {
+            assert!(
+                published.contains_key(key),
+                "{key} is not a field of the device the fabric reads"
+            );
+        }
+    }
+}

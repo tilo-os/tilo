@@ -4,10 +4,13 @@
 
 use crate::common::{addr, device, localhost_endpoint};
 
+use automerge::transaction::CommitOptions;
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use std::collections::BTreeMap;
 use std::time::Duration;
+use tilo_actions::{ActionContext, ActionInvoker, Did, EditOp, FieldEdit, PathStep};
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
@@ -19,7 +22,12 @@ const RECORD: &str = "tab:1";
 
 /// Write `value` into the test record as `key`'s device, and answer the heads
 /// the record holds afterwards.
-fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerge::ChangeHash>> {
+fn edit(
+    peer: &DirectSync,
+    key: &SigningKey,
+    person: &[u8; 32],
+    value: &str,
+) -> Option<Vec<automerge::ChangeHash>> {
     let mut edit =
         AutoCommit::load(&peer.read(|peer| peer.document(APP, RECORD)).unwrap()).unwrap();
     edit.set_actor(automerge::ActorId::from(
@@ -27,7 +35,7 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerg
     ));
     let heads = edit.get_heads();
     edit.put(ROOT, "value", value).unwrap();
-    edit.commit_edit("fixture", "value");
+    edit.commit_edit("fixture", "value", person);
     let change = edit.save_after(&heads);
     peer.publish(|peer| {
         peer.publication_mut()
@@ -69,7 +77,7 @@ async fn two_devices_of_one_person_converge_directly() {
     a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
@@ -111,7 +119,7 @@ async fn two_devices_of_one_person_converge_directly() {
     );
 
     // B edits the document; A converges to B's edit.
-    let edited = edit(&b, &b_key, "from b");
+    let edited = edit(&b, &b_key, &root.verifying_key().to_bytes(), "from b");
     until(&a, "A holds B's edit", |a| {
         a.document_heads(APP, RECORD) == edited
     })
@@ -171,7 +179,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, std::slice::from_ref(&a_cert))
@@ -236,12 +244,12 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     );
 
     // What B writes reaches A, and A's next write reaches B.
-    let edited = edit(&b, &b_key, "from b");
+    let edited = edit(&b, &b_key, &root.verifying_key().to_bytes(), "from b");
     until(&a, "A holds the edit", |a| {
         a.document_heads(APP, RECORD) == edited
     })
     .await;
-    let edited = edit(&a, &a_key, "from a again");
+    let edited = edit(&a, &a_key, &root.verifying_key().to_bytes(), "from a again");
     until(&b, "B holds the edit", |b| {
         b.document_heads(APP, RECORD) == edited
     })
@@ -272,7 +280,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     made.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &cert.user_public_key);
     made.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &cert, &roster).unwrap(),
@@ -303,7 +311,12 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     })
     .await;
     // The member writes as the device the host serves: its own.
-    let edited = edit(&member, &key, "from the member");
+    let edited = edit(
+        &member,
+        &key,
+        &root.verifying_key().to_bytes(),
+        "from the member",
+    );
     until(&host, "the host holds the member's edit", |host| {
         host.document_heads(APP, RECORD) == edited
     })
@@ -313,7 +326,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
 
 /// Device A seeded with the test record, and device B knowing only the roster, each as a direct
 /// link, with their keys.
-fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
+fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey, [u8; 32]) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let (a_key, a_cert) = device(&root, 2);
     let (b_key, b_cert) = device(&root, 3);
@@ -330,7 +343,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
     a.select_exact_admissions().unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from a").unwrap();
-    document.commit_edit("fixture", "value");
+    document.commit_edit("fixture", "value", &a_cert.user_public_key);
     a.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
@@ -351,6 +364,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
         a_key,
         DirectSync::new(b, b_key.clone()),
         b_key,
+        root.verifying_key().to_bytes(),
     )
 }
 
@@ -358,7 +372,7 @@ fn two_devices() -> (DirectSync, SigningKey, DirectSync, SigningKey) {
 /// writer's ownership names it: the hash of the frame it published.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_device_dialled_answers_each_write_it_takes_in() {
-    let (a, a_key, b, b_key) = two_devices();
+    let (a, a_key, b, b_key, person) = two_devices();
     let a_endpoint = localhost_endpoint(&a_key).await;
     let _a_router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(DIRECT_ALPN, a.clone())
@@ -378,7 +392,7 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     ));
     let heads = written.get_heads();
     written.put(ROOT, "value", "from b").unwrap();
-    written.commit_edit("fixture", "value");
+    written.commit_edit("fixture", "value", &person);
     let change = written.save_after(&heads);
     let message = b
         .publish(|peer| {
@@ -403,4 +417,94 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     .await
     .expect("A answers B's write");
     assert_eq!(answered.kept, Kept::Durable);
+}
+
+/// A checkpoint its owner's device publishes commits its coverage into the
+/// workspace's own document, and that change reaches a linked device live:
+/// the record is in the other device's replica before it asks for anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_checkpoints_coverage_reaches_a_linked_device_live() {
+    let root = SigningKey::from_bytes(&[0x31; 32]);
+    let (a_key, a_cert) = device(&root, 0x32);
+    let (b_key, b_cert) = device(&root, 0x33);
+    let roster = vec![a_cert.clone(), b_cert];
+    let now = SystemTime::now();
+    let mut governor = StatePeer::new(
+        WORKSPACE,
+        a_cert.clone(),
+        roster.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    governor.select_exact_admissions().unwrap();
+    governor
+        .install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
+                documents: Vec::new(),
+            },
+            &a_key,
+            now,
+        )
+        .unwrap();
+    let a = DirectSync::new(governor, a_key.clone());
+    let b_peer = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
+    let b = DirectSync::new(b_peer, b_key.clone());
+
+    let a_endpoint = localhost_endpoint(&a_key).await;
+    let host_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(DIRECT_ALPN, a.clone())
+        .spawn();
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let mut caught_up = b.caught_up();
+    let dialing = tokio::spawn({
+        let b = b.clone();
+        let b_endpoint = b_endpoint.clone();
+        let target = addr(&a_endpoint);
+        async move { b.connect(&b_endpoint, target).await }
+    });
+    tokio::time::timeout(Duration::from_secs(30), caught_up.wait_for(|up| *up))
+        .await
+        .expect("the other device catches up")
+        .expect("the link is up");
+
+    // The governor's device publishes a record as a checkpoint: the coverage
+    // row it commits to the workspace's own document goes with it.
+    let record = "tab:7";
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "checkpoint").unwrap();
+    let context = ActionContext {
+        what: Some(Did::Edit(FieldEdit {
+            ty: "fixture".into(),
+            field: "value".into(),
+            path: vec![PathStep::Field("value".into())],
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: BTreeMap::new(),
+        })),
+        invoker: Some(ActionInvoker::person(hex::encode(a_cert.user_public_key))),
+        ..ActionContext::for_resource("fixture", "fixture", "Fixture")
+    };
+    let mut options = CommitOptions::default();
+    if let Some(message) = context.change_message() {
+        options.set_message(message);
+    }
+    document.commit_with(options);
+    a.publish(|peer| {
+        peer.publication_mut()
+            .publish_document(APP, record, document.save(), &a_key, now)
+    })
+    .expect("the governor publishes its checkpoint");
+    let written = a.read(|peer| peer.document_heads(APP, record));
+    assert!(written.is_some(), "the publisher holds what it wrote");
+    until(&b, "the linked device takes the checkpoint in", |peer| {
+        peer.document_heads(APP, record) == written
+    })
+    .await;
+
+    dialing.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(10), host_router.shutdown()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), b_endpoint.close()).await;
 }

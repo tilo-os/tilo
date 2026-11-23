@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 # The Python proof emitter is now only the seed the installer-code bootstrap
 # puts on old immutable media; the installer image runs the compiled one
-# (crates/system/install-helpers, tests/install_proof.rs).
+# (crates/os/install-helpers, tests/install_proof.rs).
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/installer-code-bootstrap/tilo-vm-install-proof.py"
 BACKEND = Path(__file__).resolve().parents[1] / "usr/libexec/tilo-install"
 SPEC = importlib.util.spec_from_file_location("vm_install_proof", SCRIPT)

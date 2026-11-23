@@ -398,7 +398,7 @@ impl Credentials {
     }
     /// A button of this panel, its words from `key`, a catalogue message.
     fn button(&self, id: &str, key: &str, action: Action) -> Button {
-        Button::new(id, &crate::CATALOG.t(key)).on_effect(self.command(action))
+        Button::new(id, &crate::CATALOG.t(key)).on_click(self.command(action))
     }
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
@@ -415,7 +415,7 @@ impl Credentials {
     ) -> ListRow {
         let mut row = ListRow::new(id, title.as_ref())
             .selected(chosen)
-            .on_view(self.command(action));
+            .on_open(self.command(action));
         if let Some(detail) = detail {
             row = row.secondary(detail);
         }
@@ -438,14 +438,14 @@ impl Credentials {
                         Icon::Refresh,
                         &crate::CATALOG.t("browser-credentials-refresh-addresses"),
                     )
-                    .on_effect(self.command(Action::Refresh))
+                    .on_click(self.command(Action::Refresh))
                 } else {
                     Button::icon_only(
                         "browser.credentials.refresh",
                         Icon::Refresh,
                         &crate::CATALOG.t("browser-credentials-refresh"),
                     )
-                    .on_effect(self.command(Action::Refresh))
+                    .on_click(self.command(Action::Refresh))
                 }
             });
         let title = if self.address_mode {

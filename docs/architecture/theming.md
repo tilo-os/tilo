@@ -16,7 +16,7 @@ The rules:
    and there is no selector language over app structure.
 2. **Two levels.** Most people stay at the **token level**: data
    (`ThemeDocument`, `THEME_SCHEMA_VERSION` in
-   `crates/sdk/ui-core/src/theme_document.rs`): roles, density, motion
+   `crates/ui/ui-core/src/theme_document.rs`): roles, density, motion
    presets, built-in painter sets (Default, Glass, Block). The **full level**
    adds programs: part painters, state transitions, scroll feel and assets
    (§ "Part painters").
@@ -33,7 +33,7 @@ Live surfaces (an interactive background, a lock-screen animation) are a third
 kind, beside views and themes: a program of its own the person chooses. A
 theme may ship one in the same bundle; it is not part of the theme.
 
-It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9).
+It builds on the HIG (`crates/ui/ui-core/HIG.md`, §7 and §9).
 
 ## What other platforms teach
 
@@ -106,7 +106,7 @@ at the palette's hue and chroma, so a hue never moves contrast.
 ### Data, versioned
 
 The document is `ThemeDocument`
-(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 8):
+(`crates/ui/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 8):
 
 ```json
 {
@@ -210,7 +210,7 @@ from its base and content (`Palette::light_at`). Ids are `tilo-dark`,
 
 The finishes (Glass, Block, Pixelated, Liquid Glass, each with a light side)
 are not presets: a theme document chooses them in `material`. The painter
-tests render them from `crates/sdk/ui-core/tests/fixtures/finishes/`.
+tests render them from `crates/ui/ui-core/tests/fixtures/finishes/`.
 
 ### Validation and legibility
 
@@ -299,7 +299,7 @@ focused, selected, disabled, dragging, changed-by-someone).
 - **Window effects** (open, close, minimise, focus) and window frames use the
   same painter interface in the compositor (`WindowEffect`, `WindowFrame`).
 
-**The SDK and the host.** `tilo-theme-sdk` (`crates/sdk/theme-sdk`) is the
+**The SDK and the host.** `tilo-theme-sdk` (`crates/ui/theme-sdk`) is the
 interface: `PartPainter` (`paint`, `params`, `transition`), the scene a
 painter returns (fills, strokes, layers; solid, gradient, pattern and
 backdrop brushes) and the wire bytes a wasm painter exchanges. The host is
@@ -340,7 +340,7 @@ outline at all. It is encoded last, for the same reason as the light.
 - The module may import nothing, so it has no clock, no I/O and no host to
   ask; a module that imports anything is refused.
 - It runs on wasmi, in an engine library of its own beside the shared runtime
-  (`libtilo_theme_painter_engine.so`, `crates/runtime/engines/theme-painter`),
+  (`libtilo_theme_painter_engine.so`, `crates/engines/loadable/theme-painter`),
   which the toolkit opens the first time a theme names a set it does not have
   built in. Every other build links the interpreter in `part_paint::wasm`.
 - Each call has a fuel budget (`FUEL_PER_CALL`) and the memory is capped
@@ -365,7 +365,7 @@ take a theme's name.
 alone, built as a `cdylib` for `wasm32-unknown-unknown`, exporting its
 painter with `export_painter!`. Its tests run the painter natively through
 `guest::answer`, over the same wire bytes the host exchanges with the
-module. Bauhaus (`crates/sdk/themes/bauhaus`) is the worked example:
+module. Bauhaus (`crates/ui/themes/bauhaus`) is the worked example:
 - square surfaces and an accent rule down floating chrome;
 - surfaces shading towards their ink in ordered-dither bands, where
   `levels`, `depth` and `grain` set the number of bands, how deep they
@@ -629,7 +629,7 @@ Verified against the code at the time of writing:
   a mid-dark grey; Liquid Glass light is the bright glass, dark ink over
   what shows through lifted toward white. Glass, Glass light, Block, Block
   light, Pixelated, Liquid Glass and Liquid Glass light are documents in
-  `crates/sdk/ui-core/tests/fixtures/finishes/`, rendered by the painter tests. Legibility is checked
+  `crates/ui/ui-core/tests/fixtures/finishes/`, rendered by the painter tests. Legibility is checked
   against the worst backdrop each material can show (`audit_materials`), and
   `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
   transparency, forced colours and the high-contrast palettes keep floating

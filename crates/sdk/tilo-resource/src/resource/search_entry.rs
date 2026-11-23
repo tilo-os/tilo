@@ -58,6 +58,10 @@ pub struct SearchEntry {
     /// keeps its metadata but finds it only while the app reports its
     /// secrets unlocked ([`SearchEntry::secret_bearing`]).
     pub secret: bool,
+    /// The picture the entry is about, as its address in the content store:
+    /// what the system's image analysis reads, so the picture is found by the
+    /// words in it and by what it shows.
+    pub picture: Option<String>,
 }
 
 impl Clone for SearchEntry {
@@ -82,6 +86,7 @@ impl Clone for SearchEntry {
             fields: self.fields.clone(),
             facets: self.facets.clone(),
             secret: self.secret,
+            picture: self.picture.clone(),
         }
     }
 }
@@ -107,6 +112,7 @@ impl PartialEq for SearchEntry {
             && self.fields == other.fields
             && self.facets == other.facets
             && self.secret == other.secret
+            && self.picture == other.picture
     }
 }
 

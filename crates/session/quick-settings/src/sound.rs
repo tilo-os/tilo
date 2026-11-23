@@ -180,7 +180,7 @@ mod tests {
             }],
             streams: vec![audio::sound::Stream {
                 node: 60,
-                app: "Music".into(),
+                application: "Music".into(),
                 media: Some("Clair de lune".into()),
                 playback: true,
                 target: Some(41),

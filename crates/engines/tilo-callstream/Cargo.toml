@@ -1,0 +1,51 @@
+[package]
+name = "tilo-callstream"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Tilo reusable video-streaming stack: encode/decode through the shared media stack, per-subscriber frame transport substrate, the throttled screen/camera share composition shared by the compositor's collab surface streaming and the chat call app, the shared-surface decoder and the recording muxer."
+
+[package.metadata.cargo-machete]
+# The self dev-dependency only turns on every feature for the tests.
+ignored = ["tilo-callstream"]
+
+[lib]
+name = "tilo_callstream"
+path = "src/lib.rs"
+
+[features]
+# Decoder admission for sequenced units, shared by workspace-control and
+# peer surface viewers without exposing the neighbour protocol to apps.
+unit-chain = ["dep:neighbour-wire"]
+# `surface_decoder`: the shared-surface receive path (every wire codec, RGBA or
+# P010, the sender's announced colorimetry). The colorimetry types ride in the
+# neighbour protocol, so this pulls in its wire vocabulary; the chat call path
+# does not need it.
+surface-decoder = ["unit-chain"]
+# `mp4_recording`: muxes encoded access units into MP4/MOV through `appsrc`.
+recording = ["dep:gstreamer-app"]
+
+[dependencies]
+# Encode and decode through the shared GStreamer media stack, which picks
+# hardware first, then royalty-free software, then Cisco's openh264 binary.
+media = { package = "tilo-media", path = "../tilo-media", features = ["realtime"] }
+tracing = "0.1"
+# Shared decoder admission and the wire colorimetry the surface decoder applies.
+neighbour-wire = { path = "../../collab/neighbour-wire", optional = true }
+# Recording muxes the encoder's access units through `appsrc`; the same pin
+# as `media`, so one copy resolves.
+gstreamer-app = { workspace = true, features = ["v1_24"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# The crate's own tests cover every module, whichever features a consumer picks.
+tilo-callstream = { path = ".", features = ["surface-decoder", "recording"] }
+# The recording tests write into a scratch directory.
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -53,7 +53,7 @@ const FILES_APP_ID: &str = tilo_app_id::apps::FILE_EXPLORER;
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceKind {
     /// Another of the person's own devices, reached over the device fabric.
     #[default]
@@ -217,7 +217,7 @@ pub enum NearbySendAction {
     /// Offer again a transfer that failed
     #[effect(kind = "outside")]
     #[effect(own_device)]
-    Retry {
+    RetryTransfer {
         /// The transfer, as the reading lists it.
         #[param("The transfer")]
         transfer: String,
@@ -240,7 +240,13 @@ pub fn surface() -> tilo_actions::surface::Surface {
 /// The resource as the session's services publish it.
 #[must_use]
 pub fn resource(label: impl Into<String>) -> ResourceSpec {
-    tilo_resource::LiveRow::typed::<NearbySendRoot>(RESOURCE, label).into_resource()
+    // The verbs go with the resource: a press, a script and an agent reach the same ones, and
+    // what moved is personal to the person the engine answers for.
+    tilo_resource::offer::<NearbySendAction>(
+        tilo_resource::LiveRow::typed::<NearbySendRoot>(RESOURCE, label)
+            .into_resource()
+            .with_personal_reading(),
+    )
 }
 
 /// A receiver at an address this host names, as a lab stands one up: no
@@ -257,7 +263,7 @@ impl LabReceiver {
     /// The handle the reading lists it by.
     #[must_use]
     pub fn handle(&self) -> String {
-        "lab-receiver".to_owned()
+        "lab_receiver".to_owned()
     }
 }
 
@@ -447,7 +453,7 @@ impl NearbySend {
                 let handle = transfer_handle(&transfer)?;
                 self.answer(NearbyTransferCommand::Cancel { handle })
             }
-            NearbySendAction::Retry { transfer } => {
+            NearbySendAction::RetryTransfer { transfer } => {
                 let handle = transfer_handle(&transfer)?;
                 self.answer(NearbyTransferCommand::Retry { handle })
             }

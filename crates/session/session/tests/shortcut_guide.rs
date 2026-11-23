@@ -466,15 +466,20 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The guide's Done, pressed as a person or a script presses it: the dialog's primary control.
+/// The guide's Done, pressed as a person's assistive tool presses it: the dialog's primary
+/// button.
 fn done(session: &mut Session) {
-    session
-        .invoke(
-            "tilo.control:shortcut-guide.primary",
-            "invoke",
-            &serde_json::Map::new(),
-        )
-        .expect("the guide publishes its Done while it is up");
+    let (place, node) = session
+        .a11y_windows()
+        .into_iter()
+        .find_map(|(place, _, tree)| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Done"))
+                .map(|(id, _)| (place, *id))
+        })
+        .expect("the guide shows its Done while it is up");
+    assert!(session.a11y_perform(place, node, &ui::a11y::Action::Activate));
     session.step(Duration::from_millis(1)).expect("step");
 }
 

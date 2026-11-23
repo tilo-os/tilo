@@ -23,7 +23,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# The installer's handoff guard is compiled (crates/system/install-helpers);
+# The installer's handoff guard is compiled (crates/os/install-helpers);
 # its fixture example takes the firmware variables and the ESP from the
 # environment, and decodes a Boot#### variable as the installer does.
 cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-install-helpers \

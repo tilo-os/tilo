@@ -1238,7 +1238,10 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
                         if retry_later(&access.source) =>
                     {
                         lit.queued = false;
-                        state.mark_redraw(&lit.output);
+                        state.mark_redraw(
+                            &lit.output,
+                            tilo_frame_metrics::paint_reason::PRESENTATION,
+                        );
                     }
                     Err(error) => {
                         tracing::warn!(?error, output = lit.output.name(), "frame not queued");

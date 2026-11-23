@@ -36,7 +36,7 @@ fn session_log(rust_log: &str) -> Vec<String> {
     )
     .expect("a settings document no reader takes");
     let control = runtime.path().join("test-control.sock");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-session"))
+    let mut child = Command::new(tilo_test_env::package_binary!("tilo-session"))
         .args([
             "--backend",
             "headless",

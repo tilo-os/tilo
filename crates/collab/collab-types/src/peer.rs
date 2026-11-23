@@ -147,6 +147,14 @@ pub enum PeerPresencePayload {
     Profile {
         changed_ms: u64,
     },
+    /// Who a bridge carries into a call from another service: the account
+    /// there, the name and picture they are shown by, and the member they are
+    /// linked to. Said on behalf of one bridged participant, so each is shown
+    /// and turned down on their own, never as the bridge's own person.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame;
+    /// older peers reject only what they cannot show of a bridged person.
+    Bridged(crate::presence::Bridged),
 }
 
 #[cfg(test)]
@@ -229,6 +237,13 @@ mod tests {
                 }),
             })),
             PeerPresencePayload::Person { name: "Ada".into() },
+            PeerPresencePayload::Bridged(crate::presence::Bridged {
+                service: "discord".into(),
+                account: "7001".into(),
+                name: "Dana".into(),
+                avatar: Some("ab".repeat(32)),
+                linked: None,
+            }),
         ]
     }
 

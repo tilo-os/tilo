@@ -10,7 +10,6 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use walkdir::WalkDir;
 
 use collab_types::Ed25519PublicKey;
-use threshold_identity::ThresholdIdentity;
 
 use crate::blobs::{BlobHash, BlobSource, Collection, OpenBlob};
 use crate::id::PackageId;
@@ -20,17 +19,8 @@ use crate::signed::SignedRoot;
 use crate::validate::{ManifestError, validate_manifest_with_payload};
 
 /// A signing identity that can sign the package's signed-root bytes.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "ThresholdIdentity is already boxed (see its own doc below); the remaining gap to \
-              Ed25519's plain SigningKey is inherent to ed25519_dalek's expanded-key caching, \
-              not something a second box would meaningfully shrink for a type constructed once \
-              per pack/sign call, never per-item in a hot loop"
-)]
 pub enum SigningIdentity {
     Ed25519(ed25519_dalek::SigningKey),
-    /// A 1-of-1 threshold identity; goes through the same `sign_raw` path and produces a regular Ed25519 sig.
-    ThresholdSingleDevice(Box<ThresholdIdentity>),
 }
 
 impl SigningIdentity {
@@ -59,7 +49,6 @@ impl SigningIdentity {
     pub fn public_key_bytes(&self) -> [u8; 32] {
         match self {
             Self::Ed25519(sk) => sk.verifying_key().to_bytes(),
-            Self::ThresholdSingleDevice(ti) => *ti.group_public_key().as_bytes(),
         }
     }
 
@@ -67,15 +56,8 @@ impl SigningIdentity {
         Ed25519PublicKey::from_bytes(self.public_key_bytes())
     }
 
-    /// Sign the signing-bytes prefix of a [`SignedRoot`]; errors only in
-    /// the (unsupported) true-threshold mode — Ed25519/1-of-1 paths are infallible.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PackError::ThresholdSigningUnsupported`] if this identity is
-    /// a true `t`-of-`n` threshold identity (`t >= 2`); single-device and
-    /// plain Ed25519 identities never fail.
-    pub fn sign_signed_root(&self, root: &SignedRoot) -> Result<[u8; 64], PackError> {
+    /// Sign the signing-bytes prefix of a [`SignedRoot`].
+    pub fn sign_signed_root(&self, root: &SignedRoot) -> [u8; 64] {
         let preimage = root.signing_bytes();
         self.sign_message(&preimage)
     }
@@ -86,29 +68,10 @@ impl SigningIdentity {
     /// identity as the package — e.g. a registry index entry vouching
     /// "this publisher's build of app X at version V has tapp
     /// content-hash H". Verification is a plain Ed25519 check against
-    /// [`Self::public_key_bytes`], so consumers need only the verifying
-    /// key, not threshold machinery.
-    ///
-    /// Errors only in the (unsupported) true-threshold mode; Ed25519/1-of-1 paths are infallible.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PackError::ThresholdSigningUnsupported`] if this identity is
-    /// a true `t`-of-`n` threshold identity, or [`PackError::ThresholdInternal`]
-    /// if the underlying single-device threshold signing call fails.
-    pub fn sign_message(&self, msg: &[u8]) -> Result<[u8; 64], PackError> {
+    /// [`Self::public_key_bytes`].
+    pub fn sign_message(&self, msg: &[u8]) -> [u8; 64] {
         match self {
-            Self::Ed25519(sk) => Ok(sk.sign(msg).to_bytes()),
-            Self::ThresholdSingleDevice(ti) => {
-                if !ti.is_single_device() {
-                    return Err(PackError::ThresholdSigningUnsupported);
-                }
-                let mut rng = UnwrapErr(SysRng);
-                let sig = ti
-                    .sign_raw(msg, &mut rng)
-                    .map_err(|e| PackError::ThresholdInternal(e.to_string()))?;
-                Ok(*sig.as_bytes())
-            }
+            Self::Ed25519(sk) => sk.sign(msg).to_bytes(),
         }
     }
 }
@@ -127,12 +90,6 @@ pub enum PackError {
     ManifestEncode(#[from] crate::manifest::ManifestParseError),
     #[error("publisher identity in manifest does not match signing identity")]
     IdentityMismatch,
-    #[error(
-        "true-threshold signing is not implemented at pack time; use the multi-device ceremony to produce an aggregated signature and pass it to `pack_with_signature`"
-    )]
-    ThresholdSigningUnsupported,
-    #[error("threshold-internal error: {0}")]
-    ThresholdInternal(String),
     #[error("payload path {0:?} is not valid UTF-8 — Tilo packages require UTF-8 path names")]
     NonUtf8Path(PathBuf),
     #[error("payload path {0:?} is reserved for a file the packer writes")]
@@ -313,8 +270,7 @@ fn prepare(
 /// [`PackError::Manifest`] if manifest validation (standalone or against the
 /// payload) fails, [`PackError::Walk`] or [`PackError::Io`] if walking or
 /// reading `payload_dir` fails, [`PackError::ManifestEncode`] if re-encoding
-/// the manifest fails, or whatever [`SigningIdentity::sign_signed_root`]
-/// returns.
+/// the manifest fails.
 pub fn pack(
     payload_dir: &Path,
     manifest: &Manifest,
@@ -330,7 +286,7 @@ pub(crate) fn pack_with_files(
     extra: Vec<(String, Vec<u8>)>,
 ) -> Result<Packed, PackError> {
     let prepared = prepare(payload_dir, manifest, identity.public_key_bytes(), extra)?;
-    let signature = identity.sign_signed_root(&prepared.root)?;
+    let signature = identity.sign_signed_root(&prepared.root);
     prepared.finish(signature)
 }
 
@@ -365,7 +321,7 @@ pub fn sign_placeholder_root(
         signature: Some([0u8; 64]),
         ..meta.root.clone()
     };
-    let signature = identity.sign_signed_root(&placeholder)?;
+    let signature = identity.sign_signed_root(&placeholder);
     Ok(PackageMeta::from_root(
         SignedRoot {
             signature: Some(signature),
@@ -374,25 +330,6 @@ pub fn sign_placeholder_root(
         meta.manifest_bytes.clone(),
         meta.collection_bytes.clone(),
     )?)
-}
-
-/// Pack with a pre-computed aggregated threshold signature — used by
-/// the multi-device publisher pipeline where round-2 partials are
-/// collected and aggregated *outside* this crate.
-///
-/// # Errors
-///
-/// Returns [`PackError::IdentityMismatch`] if the manifest's declared
-/// publisher identity does not match `publisher_identity`, or any of the
-/// walk/validate/encode errors [`pack`] can return — this variant skips only
-/// the signing step, substituting the pre-computed `signature`.
-pub fn pack_with_signature(
-    payload_dir: &Path,
-    manifest: &Manifest,
-    publisher_identity: [u8; 32],
-    signature: [u8; 64],
-) -> Result<Packed, PackError> {
-    prepare(payload_dir, manifest, publisher_identity, Vec::new())?.finish(signature)
 }
 
 #[cfg(test)]

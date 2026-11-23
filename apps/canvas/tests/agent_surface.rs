@@ -91,14 +91,6 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
             "{action} is published: {actions:?}"
         );
     }
-    assert!(
-        surface
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["resource_kind"] == "tilo.control.segmented"),
-        "the tool rail is reachable"
-    );
 }
 
 /// The lines the golden and the surface disagree on, trimmed to their

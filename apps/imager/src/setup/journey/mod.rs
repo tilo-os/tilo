@@ -1746,7 +1746,7 @@ impl InstallerPreview {
                     && self.journey.categories[0]
                     && self.portable_source.mounted_needs_restart() =>
             {
-                let (home, system_refs) = self.migration_sources()?;
+                let (home, system_refs) = self.tilo_migrate()?;
                 let selected_applications = self.selected_applications();
                 self.portable_source.refresh_mounted(
                     home,
@@ -1777,7 +1777,7 @@ impl InstallerPreview {
             {
                 #[cfg(target_os = "linux")]
                 {
-                    let (home, refs) = self.migration_sources()?;
+                    let (home, refs) = self.tilo_migrate()?;
                     let capture_files = self.selected_files()?;
                     if self.journey.destination == Some(Destination::Another) {
                         let selected_applications = self.selected_applications();
@@ -2222,7 +2222,7 @@ impl InstallerPreview {
                     if capture_files && self.portable_source.mounted_permission_active() {
                         return Err("installer-mounted-home-grants-required");
                     }
-                    let (home, system_refs) = self.migration_sources()?;
+                    let (home, system_refs) = self.tilo_migrate()?;
                     self.portable_source.request_with_choices(
                         home,
                         portable_source::Choices {
@@ -2250,7 +2250,7 @@ impl InstallerPreview {
                     && self.journey.destination == Some(Destination::Computer)
                     && (capture_files || capture_applications || capture_account_anchor)
                 {
-                    let (home, refs) = self.migration_sources()?;
+                    let (home, refs) = self.tilo_migrate()?;
                     self.migration_selection.request_selected(
                         home,
                         self.capture_categories()?,
@@ -2665,8 +2665,7 @@ impl InstallerPreview {
                         && self.selected_applications()
                         && self.journey.destination == Some(Destination::Another)
                     {
-                        let requires_package =
-                            !capture_files || !self.migration_sources()?.1.is_empty();
+                        let requires_package = !capture_files || !self.tilo_migrate()?.1.is_empty();
                         let source = self.portable_source.reviewed_applications();
                         if requires_package && source.is_none() {
                             return Err("installer-preview-flatpak-unavailable");
@@ -3945,7 +3944,7 @@ impl InstallerPreview {
         }
     }
 
-    fn migration_sources(
+    fn tilo_migrate(
         &self,
     ) -> Result<
         (
@@ -4582,7 +4581,7 @@ impl InstallerPreview {
         }
         Button::new(id, &t(label))
             .with_enabled(enabled)
-            .on_effect(move || {
+            .on_click(move || {
                 if matches!(effect, InstallerPreviewEffect::ContinuePreview) {
                     queue_continue(&commands);
                 } else {
@@ -4673,7 +4672,7 @@ impl InstallerPreview {
             .secondary(secondary)
             .two_line_secondary()
             .disclosure()
-            .on_effect(move || {
+            .on_click(move || {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::EditPreview {
@@ -5047,7 +5046,7 @@ impl InstallerPreview {
             },
         );
         let input = if focus_confirmation {
-            input.on_submit_view(move |_| {
+            input.on_submit(move |_| {
                 if submit_enabled {
                     next_focus.set(true);
                 }
@@ -5056,7 +5055,7 @@ impl InstallerPreview {
             submits(self.actions.as_ref(), input, continues())
         } else if submit_enabled {
             let commands = self.commands.clone();
-            input.on_submit_view(move |_| {
+            input.on_submit(move |_| {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::ContinuePreview);
@@ -8016,7 +8015,7 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(preview.migration_sources().unwrap().1.is_empty());
+            assert!(preview.tilo_migrate().unwrap().1.is_empty());
             assert!(
                 !preview.migration_categories()[1],
                 "an empty application selection must not start export"
@@ -8029,7 +8028,7 @@ mod tests {
         })
         .unwrap();
         let (source_home, refs) = app
-            .with_widget::<InstallerPreview, _>(|preview| preview.migration_sources().unwrap())
+            .with_widget::<InstallerPreview, _>(|preview| preview.tilo_migrate().unwrap())
             .unwrap();
         assert_eq!(refs, vec![selected]);
         let source = PortableFlatpakSource::review(&runner, &source_home, refs).unwrap();
@@ -8085,7 +8084,7 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(preview.migration_sources().unwrap().1.is_empty());
+            assert!(preview.tilo_migrate().unwrap().1.is_empty());
             assert_eq!(preview.migration_categories(), [false, false, false]);
         })
         .unwrap();
@@ -8095,7 +8094,7 @@ mod tests {
         })
         .unwrap();
         let (home, refs) = app
-            .with_widget::<InstallerPreview, _>(|preview| preview.migration_sources().unwrap())
+            .with_widget::<InstallerPreview, _>(|preview| preview.tilo_migrate().unwrap())
             .unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].installation, flatpak_transfer::Installation::User);
@@ -8214,7 +8213,7 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            let (source, selected) = preview.migration_sources().unwrap();
+            let (source, selected) = preview.tilo_migrate().unwrap();
             assert_eq!(source, home.path());
             assert_eq!(selected, vec![reader.clone()]);
             assert_eq!(preview.migration_categories(), [true, true, false]);
@@ -8246,7 +8245,7 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.migration_sources().unwrap().1, vec![reader.clone()]);
+            assert_eq!(preview.tilo_migrate().unwrap().1, vec![reader.clone()]);
             let choices = preview.journey.draft_choices();
             let encoded = serde_json::to_vec(&choices).unwrap();
             let restored: draft::PublicChoices = serde_json::from_slice(&encoded).unwrap();
@@ -8255,7 +8254,7 @@ mod tests {
                 .restore_draft(&restored, draft::IdentityKind::New, "Ada".into());
             preview.journey.page = Page::Belongings;
             preview.journey.details = true;
-            assert_eq!(preview.migration_sources().unwrap().1, vec![reader.clone()]);
+            assert_eq!(preview.tilo_migrate().unwrap().1, vec![reader.clone()]);
             preview.journey.page = Page::Review;
         })
         .unwrap();
@@ -8270,7 +8269,7 @@ mod tests {
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(
-                preview.migration_sources().unwrap().1,
+                preview.tilo_migrate().unwrap().1,
                 vec![editor.clone(), reader.clone()]
             );
         })
@@ -8278,7 +8277,7 @@ mod tests {
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.journey.page, Page::Review);
-            assert_eq!(preview.migration_sources().unwrap().1, vec![reader.clone()]);
+            assert_eq!(preview.tilo_migrate().unwrap().1, vec![reader.clone()]);
             preview.journey.page = Page::Belongings;
             preview.journey.details = true;
         })
@@ -8304,7 +8303,7 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert!(preview.migration_sources().unwrap().1.is_empty());
+            assert!(preview.tilo_migrate().unwrap().1.is_empty());
             assert_eq!(preview.migration_categories(), [false, false, false]);
         })
         .unwrap();
@@ -8314,7 +8313,7 @@ mod tests {
         })
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
-            assert_eq!(preview.migration_sources().unwrap().1, vec![editor.clone()]);
+            assert_eq!(preview.tilo_migrate().unwrap().1, vec![editor.clone()]);
             assert_eq!(preview.migration_categories(), [false, true, false]);
         })
         .unwrap();
@@ -8496,7 +8495,7 @@ mod tests {
         .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.migration_categories(), [true, true, false]);
-            let selected = preview.migration_sources().unwrap().1;
+            let selected = preview.tilo_migrate().unwrap().1;
             assert_eq!(selected.len(), 1);
             assert_eq!(
                 selected[0].installation,

@@ -1013,9 +1013,7 @@ can.
   stop in-flight substitution; human review is still fallible, so
   operators should quarantine suspicious entries and revoke the key.
   Publishers should keep signing keys in hardware and rotate on
-  compromise; the Tilo threshold
-  identity work (`crates/collab/threshold-identity`) is the
-  long-term path to publisher-key resilience.
+  compromise.
 - **Denial of service** — no rate limiting is built in. Put the
   reverse proxy in front, or run `fail2ban` against
   `journalctl -u tilo-registry-server`. All POSTs perform an

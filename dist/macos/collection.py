@@ -25,7 +25,6 @@ from app_release import app_catalog
 
 SPECIAL = {
     'browser': 'Requires scripts/browser/package.py: CEF engine, helpers and per-process JIT entitlement qualification; generic SDK bundle is incomplete.',
-    'imager': 'Requires apps/imager/packaging/package-host.sh: privileged writer and host assets; generic SDK bundle is not the host installer.',
 }
 
 

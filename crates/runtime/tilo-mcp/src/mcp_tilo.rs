@@ -938,7 +938,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             caller = caller.acting_for(person);
         }
         let caller = caller.in_workspace(workspace.clone()).in_new_execution();
-        Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
+        Self::from_caller(host, workspace, caller)
     }
 
     /// Attribute every invocation of this session to `group`, the run of a task whose own
@@ -2275,7 +2275,7 @@ mod tests {
         // steps of the task's history beside it.
         {
             let host = Native::new();
-            let server = McpServer::new(host, "workspace".to_owned(), "owner".to_owned());
+            let server = McpServer::for_person(host, "workspace".to_owned(), "owner");
             server.programs.lock_recover().steps.push(Step {
                 number: 1,
                 apps: vec!["so.tilo.notes".to_owned()],
@@ -2436,7 +2436,7 @@ mod tests {
         phase undoing_a_task_step_starts_the_native_apps_and_takes_their_steps_back;
         {
             let host = Native::new();
-            let server = McpServer::new(host.clone(), "workspace".to_owned(), "owner".to_owned());
+            let server = McpServer::for_person(host.clone(), "workspace".to_owned(), "owner");
             server.programs.lock_recover().steps.push(Step {
                 number: 1,
                 apps: vec!["so.tilo.tasks".to_owned(), "so.tilo.chat".to_owned()],

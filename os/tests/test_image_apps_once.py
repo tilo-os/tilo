@@ -3,7 +3,7 @@
 Runs the actual prebuilt-collection path of the image packaging script.
 External package tools are explicit process doubles here: these tests prove
 which steps run and what the store keeps, not cryptographic signature
-validity (crates/dev/tilo-vmd/src/cohort.rs rebuilds and checks archives).
+validity (crates/os/tilo-device-steps/src/cohort.rs rebuilds and checks archives).
 """
 import os
 import shutil

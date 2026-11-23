@@ -167,6 +167,11 @@ pub struct InboundState {
     /// redactions (hash original bytes, not marker bytes). Bounded by the
     /// redaction set, small by construction.
     pub original_envelopes: HashMap<OpId, Box<SignedOp>>,
+
+    /// Whose a change of this write is when it names no one: the person an
+    /// import step attributes a history kept before every change named its
+    /// invoker to. `None` refuses such a change, as every other write.
+    pub imported: Option<tilo_action_policy::Acting>,
 }
 
 impl Default for InboundState {
@@ -184,6 +189,7 @@ impl Default for InboundState {
             max_in_memory_ops: DEFAULT_MAX_IN_MEMORY_OPS,
             redacted_ops: HashSet::new(),
             original_envelopes: HashMap::new(),
+            imported: None,
         }
     }
 }
@@ -532,8 +538,10 @@ pub fn document_access_target<'a>(app: &str, document: &'a str) -> Option<&'a st
 /// the document. Parts and chunks inherit the requirement of their root.
 #[must_use]
 pub fn requires_independent_document_keys(app: &str, document: &str) -> bool {
-    document_access_target(app, document)
-        .is_some_and(|root| tilo_action_policy::roles::requires_document_keys(app, root))
+    // A call's media keys go only to the people its rule admits ([`crate::calls::media_document`]).
+    (app == crate::scope::MEDIA_APP && crate::calls::parse_media_document(document).is_some())
+        || document_access_target(app, document)
+            .is_some_and(|root| tilo_action_policy::roles::requires_document_keys(app, root))
 }
 
 /// The access editor's route: an empty app selects workspace defaults or the default for the
@@ -778,13 +786,18 @@ fn check_op_permission(
         |invoker: Option<&tilo_action_policy::Acting>,
          node: &tilo_action_policy::TreePath,
          kind: ActionKind| { author.answer(invoker, node, kind, &cx) == Answer::Allow };
-    match crate::receipt::decide_op(
+    match crate::receipt::decide_op_imported(
         op,
         &document,
-        state.artifact_kinds.get(&op.artifact).map(String::as_str),
+        (
+            state.artifact_kinds.get(&op.artifact).map(String::as_str),
+            None,
+            None,
+        ),
         None,
         &state.surfaces,
         &allows,
+        state.imported.as_ref(),
     ) {
         Ok(crate::receipt::Receipt::Admit) => Ok(()),
         Ok(crate::receipt::Receipt::Hold) => Err(ValidationError::SurfaceUnavailable),

@@ -109,5 +109,12 @@ fn init_tracing() {
 /// them) without any install running, so the builds an earlier one left are collected here. A
 /// failure is logged and retried on the next start.
 fn startup(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
-    package_service::service::collect_after_change(store, catalog, max_store_bytes, &[]);
+    let target = package_service::change::Target {
+        store,
+        catalog,
+        max_store_bytes,
+    };
+    if let Err(error) = package_service::change::collect_after_change(&target, Vec::new()) {
+        tracing::warn!(%error, "collection at startup failed");
+    }
 }

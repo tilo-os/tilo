@@ -128,6 +128,43 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-time-zone.rules \
     os/etc/polkit-1/rules.d/49-tilo-battery-cap.rules \
     /etc/polkit-1/rules.d/
+# The device's steps: one templated unit per step, which the device's daemon (user tilo) starts
+# for an invocation it admitted, and the rule that lets it start and stop exactly those.
+COPY \
+    os/usr/lib/systemd/system/tilo-device-account-create@.service \
+    os/usr/lib/systemd/system/tilo-device-account-list@.service \
+    os/usr/lib/systemd/system/tilo-device-account-restart@.service \
+    os/usr/lib/systemd/system/tilo-device-account-rm@.service \
+    os/usr/lib/systemd/system/tilo-device-account-show@.service \
+    os/usr/lib/systemd/system/tilo-device-app-install@.service \
+    os/usr/lib/systemd/system/tilo-device-awake@.service \
+    os/usr/lib/systemd/system/tilo-device-boot-confirm@.service \
+    os/usr/lib/systemd/system/tilo-device-build@.service \
+    os/usr/lib/systemd/system/tilo-device-ci-layer@.service \
+    os/usr/lib/systemd/system/tilo-device-control@.service \
+    os/usr/lib/systemd/system/tilo-device-device-unlock-enrol@.service \
+    os/usr/lib/systemd/system/tilo-device-exec@.service \
+    os/usr/lib/systemd/system/tilo-device-gc@.service \
+    os/usr/lib/systemd/system/tilo-device-input@.service \
+    os/usr/lib/systemd/system/tilo-device-install-packages@.service \
+    os/usr/lib/systemd/system/tilo-device-layer-import@.service \
+    os/usr/lib/systemd/system/tilo-device-layer-list@.service \
+    os/usr/lib/systemd/system/tilo-device-layer-verify@.service \
+    os/usr/lib/systemd/system/tilo-device-poweroff@.service \
+    os/usr/lib/systemd/system/tilo-device-reboot@.service \
+    os/usr/lib/systemd/system/tilo-device-rollback@.service \
+    os/usr/lib/systemd/system/tilo-device-seat-claim@.service \
+    os/usr/lib/systemd/system/tilo-device-seat-release@.service \
+    os/usr/lib/systemd/system/tilo-device-shot@.service \
+    os/usr/lib/systemd/system/tilo-device-status@.service \
+    os/usr/lib/systemd/system/tilo-device-logs@.service \
+    os/usr/lib/systemd/system/tilo-device-network-wake@.service \
+    os/usr/lib/systemd/system/tilo-device-swap@.service \
+    os/usr/lib/systemd/system/tilo-device-tree-sync@.service \
+    os/usr/lib/systemd/system/tilo-device-upgrade@.service \
+    os/usr/lib/systemd/system/tilo-device-userspace-apply@.service \
+    /usr/lib/systemd/system/
+COPY os/etc/polkit-1/rules.d/49-tilo-device-steps.rules /etc/polkit-1/rules.d/49-tilo-device-steps.rules
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 # Graphical installer. Primarily consumed by the layered installer image
@@ -365,7 +402,7 @@ RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselec
 #
 # 70-tilo-console.rules hands a VM's console port (org.tilo.console.0, which
 # only a hypervisor can attach) to the greetd user, whose greeter answers the
-# tilo-control action protocol there (crates/session/console-control).
+# tilo-control action protocol there (crates/os/console-control).
 #
 # 70-tilo-ddc.rules hands the display controllers' I²C buses to the active
 # session so external monitors' brightness can be set over DDC/CI; the
@@ -387,7 +424,8 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf \
+    os/usr/lib/tmpfiles.d/tilo-device-control.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
 
@@ -434,7 +472,7 @@ COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-po
 COPY os/etc/systemd/ /etc/systemd/
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
-COPY crates/session/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
+COPY crates/os/install-profile-model/locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync transport and diagnostics doc).

@@ -6,6 +6,9 @@ use std::sync::atomic::AtomicBool;
 
 use ui::lock::MutexRecover as _;
 
+pub use crate::cloud_transfer::TransferProgress;
+use tilo_cloud_files::cloud::ImportEntry;
+
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::Settled;
 
@@ -32,6 +35,17 @@ pub enum FileOp {
     Copy {
         paths: Vec<String>,
         folder: String,
+    },
+    ImportMounted {
+        paths: Vec<String>,
+        folder: String,
+    },
+    CloudImport {
+        job_id: String,
+        account: String,
+        entries: Vec<ImportEntry>,
+        folder: String,
+        destination: crate::cloud_transfer::DestinationIdentity,
     },
     Write {
         folder: String,
@@ -69,15 +83,49 @@ pub enum IfExists {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
-    Created { path: String },
-    Moved { from: String, to: String },
-    Copied { from: String, to: String },
-    Trashed { from: String, entry: Option<String> },
-    Restored { entry: String, to: String },
-    Removed { path: String },
-    Wrote { path: String },
-    ClipboardTransfer { operation: String },
-    ClipboardUndo { operation: String },
+    Created {
+        path: String,
+    },
+    Moved {
+        from: String,
+        to: String,
+    },
+    Copied {
+        from: String,
+        to: String,
+    },
+    CloudImported {
+        from: String,
+        to: String,
+        destination: crate::cloud_transfer::DestinationIdentity,
+        output: crate::cloud_transfer::DestinationIdentity,
+    },
+    CloudTrashed {
+        to: String,
+        entry: String,
+        destination: crate::cloud_transfer::DestinationIdentity,
+        output: crate::cloud_transfer::DestinationIdentity,
+    },
+    Trashed {
+        from: String,
+        entry: Option<String>,
+    },
+    Restored {
+        entry: String,
+        to: String,
+    },
+    Removed {
+        path: String,
+    },
+    Wrote {
+        path: String,
+    },
+    ClipboardTransfer {
+        operation: String,
+    },
+    ClipboardUndo {
+        operation: String,
+    },
 }
 
 impl Default for FileOp {
@@ -117,7 +165,10 @@ impl FileOp {
                 }
             }
             Self::Extract { folder, .. } => Some(folder.clone()),
-            Self::ClipboardReceipt { .. } | Self::Revert { .. } => None,
+            Self::ImportMounted { .. }
+            | Self::CloudImport { .. }
+            | Self::ClipboardReceipt { .. }
+            | Self::Revert { .. } => None,
         }
     }
 }
@@ -336,6 +387,25 @@ pub fn execute_tracked(
 }
 
 pub fn execute(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
+    execute_with_progress(op, reverting, &AtomicBool::new(false), |_| {})
+}
+
+pub fn execute_with_progress(
+    op: &FileOp,
+    reverting: Option<&[Change]>,
+    cancel: &AtomicBool,
+    progress: impl Fn(TransferProgress),
+) -> Outcome {
+    if matches!(
+        op,
+        FileOp::CloudImport { .. } | FileOp::ImportMounted { .. }
+    ) {
+        return Settled::Failed {
+            reason: "cloud import requires a host-private source consent".into(),
+            partial: vec![],
+        };
+    }
+    let _ = (cancel, progress);
     let mut changes = Vec::new();
     let result = match op {
         FileOp::NewFolder { parent, name } => {
@@ -367,6 +437,8 @@ pub fn execute(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
                 });
             })
         }),
+        FileOp::ImportMounted { .. } => Err("mounted import requires host-private consent".into()),
+        FileOp::CloudImport { .. } => Err("cloud import requires its transfer worker".into()),
         FileOp::Write {
             folder,
             name,
@@ -731,6 +803,18 @@ pub(crate) fn trash(path: &Path) -> Result<Change, String> {
 
 fn compensate(change: &Change) -> Result<Change, String> {
     match change {
+        Change::CloudTrashed {
+            to,
+            entry,
+            destination,
+            output,
+        } => crate::cloud_transfer::restore(to, entry, destination, output),
+        Change::CloudImported {
+            to,
+            destination,
+            output,
+            ..
+        } => crate::cloud_transfer::compensate(to, destination, output),
         Change::ClipboardTransfer { .. } | Change::ClipboardUndo { .. } => {
             Err("clipboard compensation requires its current native caller".into())
         }
@@ -1138,7 +1222,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         #[cfg(unix)]
-        fn trash_undoes_without_changing_its_source;
+        fn trash_and_mounted_imports_undo_without_changing_their_sources;
 
         phase move_to_trash_records_its_entry_and_undo_restores_it;
         {
@@ -1168,6 +1252,94 @@ mod tests {
             done(&execute(&revert, Some(trashed.result().as_slice())));
             assert_eq!(std::fs::read(&film).unwrap(), b"frames");
             assert!(!entry.exists());
+        }
+
+        phase mounted_import_is_writable_without_changing_source_or_ordinary_copy;
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
+            fileops::ensure_trash_dir().expect("open Trash before recording undo entries");
+            let root = tempfile::tempdir_in(home.home()).unwrap();
+            let source = root.path().join("mounted.txt");
+            let folder = root.path().join("local");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(&source, b"original").unwrap();
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+            let paths = vec![text(&source)];
+            let op = FileOp::ImportMounted {
+                paths: paths.clone(),
+                folder: text(&folder),
+            };
+            assert!(
+                !execute(&op, None).is_done(),
+                "serialized jobs supply no private consent"
+            );
+            let mut app =
+                ui::prelude::TestApp::<crate::resource::FileExplorerShell>::on_device("laptop")
+                    .unwrap();
+            app.invoke(crate::resource::FileExplorer::queueing("laptop", op).unwrap())
+                .unwrap();
+            tilo_test_env::wait_until("the queued operation to settle", || {
+                app.settle();
+                app.state().ops.pending().next().is_none()
+            });
+            let imported = app
+                .state()
+                .ops
+                .entries()
+                .next()
+                .unwrap()
+                .1
+                .settled
+                .clone()
+                .unwrap();
+            let destination = folder.join("mounted.txt");
+            assert_eq!(
+                done(&imported),
+                [Change::Copied {
+                    from: text(&source),
+                    to: text(&destination),
+                }]
+            );
+            assert_eq!(
+                std::fs::metadata(&destination).unwrap().mode() & 0o777,
+                0o644
+            );
+            std::fs::write(&destination, b"edited locally").unwrap();
+            assert_eq!(std::fs::read(&source).unwrap(), b"original");
+            assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
+
+            let copied = execute(
+                &FileOp::Copy {
+                    paths,
+                    folder: text(&folder),
+                },
+                None,
+            );
+            let ordinary = folder.join("mounted 2.txt");
+            assert_eq!(
+                done(&copied),
+                [Change::Copied {
+                    from: text(&source),
+                    to: text(&ordinary)
+                }]
+            );
+            assert_eq!(std::fs::metadata(&ordinary).unwrap().mode() & 0o777, 0o444);
+
+            let revert = FileOp::Revert {
+                op: "import".into(),
+            };
+            let undone = execute(&revert, Some(done(&imported)));
+            done(&undone);
+            assert!(!destination.exists());
+            let redone = execute(&revert, Some(done(&undone)));
+            done(&redone);
+            assert_eq!(std::fs::read(&destination).unwrap(), b"edited locally");
+            assert_eq!(
+                std::fs::metadata(&destination).unwrap().mode() & 0o777,
+                0o644
+            );
+            assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
         }
     }
 

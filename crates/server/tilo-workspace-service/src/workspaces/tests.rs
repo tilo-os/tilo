@@ -13,7 +13,6 @@ pub(crate) use super::fixtures::{
     signed_pre_admission, test_host, test_host_with_grants,
 };
 
-mod access_projection;
 pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
@@ -235,7 +234,8 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
         let mut candidate = governed.peer().clone();
         assert!(
             candidate
-                .admit_certificate(page.clone(), &workspaces.inner.host.key, now)
+                .governance_mut()
+                .admit_member_device(&page, &workspaces.inner.host.key, now)
                 .unwrap()
         );
         let state = governed.collaboration().clone();
@@ -243,10 +243,9 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
             .commit(candidate, &workspaces.inner.host.key, now, |_, _| Ok(state))
             .unwrap();
     }
-    let access = &workspaces.inner.host.access;
     assert!(
-        !access
-            .projects_access(created.workspace_id, page.device_public_key)
+        !workspaces
+            .decides_for(created.workspace_id, page.device_public_key)
             .await,
         "the cut-off entry left the device out of the device_access changes are decided against"
     );
@@ -256,8 +255,8 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
         "the device is admitted already"
     );
     assert!(
-        access
-            .projects_access(created.workspace_id, page.device_public_key)
+        workspaces
+            .decides_for(created.workspace_id, page.device_public_key)
             .await,
         "the next entry settled the admission"
     );
@@ -1701,6 +1700,7 @@ fn write_windows(
             person: Some(&person),
             mine: &mine,
             records: tilo_desktop_model::shared_resource::device::Writer::NOTHING_NOTED,
+            items: tilo_desktop_model::shared_resource::device::Writer::NOTHING_ITEMED,
         },
     )
     .unwrap();
@@ -2733,6 +2733,131 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     assert!(
         live(&members, guest.user_public_key),
         "a new invitation admits them again: {members:?}"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// The member list `workspace_id`'s runtime on this host admits by.
+async fn admitted(workspaces: &Workspaces, workspace: &str) -> tilo_peer_state::GovernedAccess {
+    let id = workspaces
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .workspace_id();
+    let runtime = workspaces
+        .inner
+        .host
+        .workspaces
+        .lock()
+        .await
+        .get(&id)
+        .cloned()
+        .expect("the host serves the workspace");
+    let runtime = runtime.lock().await;
+    runtime.members.as_ref().clone()
+}
+
+/// A removal is answered once the host admits by the list without the person,
+/// and a change the signed member list committed is durable before anything
+/// admits by it: a host stopped right after the commit starts again admitting
+/// exactly what that list says.
+#[tokio::test]
+async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Plans").await.unwrap();
+    let (guest_key, guest) = guest_device();
+    entry_join(
+        &workspaces,
+        &cert,
+        &created.workspace,
+        (&guest_key, &guest),
+        42,
+    )
+    .await;
+    assert!(
+        admitted(&workspaces, &created.workspace)
+            .await
+            .member_devices
+            .contains(&guest.device_public_key),
+        "a join is answered once the host admits the device"
+    );
+    workspaces
+        .remove_member(
+            &created.workspace,
+            &cert,
+            RemoveMemberRequest {
+                request_id: [43; 32],
+                user_public_key: guest.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        !admitted(&workspaces, &created.workspace)
+            .await
+            .member_devices
+            .contains(&guest.device_public_key),
+        "a removal is answered once the host no longer admits the device"
+    );
+    // Another device of the owner, as a browser page signed in as them is: the
+    // member list commits it, and the host stops before admitting by it.
+    let (_, page) = device_cert(
+        &SigningKey::from_bytes(&[1; 32]),
+        "browser",
+        DeviceCapabilities::member(),
+    );
+    {
+        let governed = workspaces.workspace(&created.workspace).await.unwrap();
+        let mut governed = governed.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        assert!(
+            candidate
+                .governance_mut()
+                .admit_member_device(&page, &workspaces.inner.host.key, now)
+                .unwrap()
+        );
+        let state = governed.collaboration().clone();
+        governed
+            .commit(candidate, &workspaces.inner.host.key, now, |_, _| Ok(state))
+            .unwrap();
+    }
+    drop(workspaces);
+    server.shutdown().await;
+
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let governed = {
+        let state = workspaces.workspace(&created.workspace).await.unwrap();
+        let state = state.lock().await;
+        state
+            .peer()
+            .governance()
+            .governed_access(SystemTime::now())
+            .unwrap()
+    };
+    assert!(governed.member_devices.contains(&page.device_public_key));
+    assert!(!governed.member_devices.contains(&guest.device_public_key));
+    let admitted = admitted(&workspaces, &created.workspace).await;
+    let sorted = |mut devices: Vec<[u8; 32]>| {
+        devices.sort_unstable();
+        devices
+    };
+    assert_eq!(
+        admitted.member_devices,
+        sorted(governed.member_devices),
+        "the restarted host admits the devices the member list has"
+    );
+    assert_eq!(
+        admitted.member_user_roots,
+        sorted(governed.member_user_roots),
+        "and the people it has"
     );
     drop(workspaces);
     server.shutdown().await;

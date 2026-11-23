@@ -21,7 +21,7 @@
 
 use super::{
     ActionCallError, ActionKind, ActionParam, Args, CHOOSES_SERVERS, CatalogueRow, Governed, Id,
-    ParamType, Verb, Workspaces, refused, roles,
+    ParamType, Verb, Workspaces, roles,
 };
 use crate::workspaces::servers;
 use tilo_actions::remote::InvokeRequest;
@@ -257,7 +257,11 @@ impl Workspaces {
             || caller.device_public_key() != Some(&certificate.device_public_key)
             || workspace_id.to_string()
                 != tilo_server_protocol::servers::person_workspace_id(person)
-            || !(caller.acting().is_person() || caller.is_session_delegated())
+            || !(caller.acting().is_person() || caller.is_device_agent())
+            || certificate
+                .capabilities
+                .agent
+                .is_some_and(|scope| !scope.reaches(&workspace_id.to_string()))
         {
             return None;
         }
@@ -292,7 +296,7 @@ impl Workspaces {
                     servers::Servers::RENAME_SERVER.with((Id::from_raw(server), name.clone())),
                 )
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
                 return Ok(serde_json::json!({ "name": name.trim() }));
             }
             RETIRE => {
@@ -325,14 +329,14 @@ impl Workspaces {
             )),
         )
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
         let asked = self
             .wait_for_answer(&workspace, &server, &request_id, &mut writes)
             .await?;
         let result = asked
             .result()
-            .ok_or_else(|| refused(&"the server's answer does not read"))?;
-        serde_json::to_value(result).map_err(|error| refused(&error))
+            .ok_or_else(|| ActionCallError::refused("the server's answer does not read"))?;
+        serde_json::to_value(result).map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
     /// Retire the server `server` of the person `device` belongs to in their
@@ -352,7 +356,9 @@ impl Workspaces {
         let entry = serde_json::from_str::<tilo_user_identity::RevocationEntry>(revocation)
             .ok()
             .filter(|entry| entry.user_public_key == device.user_public_key)
-            .ok_or_else(|| refused(&"a server is retired with its person's revocation of it"))?;
+            .ok_or_else(|| {
+                ActionCallError::refused("a server is retired with its person's revocation of it")
+            })?;
         let id = Id::from_raw(server.clone());
         let mut writes = self.document_writes();
         servers::apply_on(
@@ -361,7 +367,7 @@ impl Workspaces {
             servers::Servers::ASK_RETIREMENT.with((id.clone(), revocation.to_owned())),
         )
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
         let retired = |servers: &servers::Servers| {
             servers
                 .servers
@@ -389,11 +395,11 @@ impl Workspaces {
         if !itself {
             servers::apply_on(self, workspace, servers::Servers::RETIRE_SERVER.with(id))
                 .await
-                .map_err(|error| refused(&error))?;
+                .map_err(ActionCallError::refused)?;
         }
         self.take_revocations(vec![entry])
             .await
-            .map_err(|error| refused(&error))?;
+            .map_err(ActionCallError::refused)?;
         Ok(serde_json::json!({ "server": server, "retired": true, "answered": itself }))
     }
 
@@ -426,7 +432,7 @@ impl Workspaces {
                     heard = writes.recv() => match heard {
                         Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            return Err(refused(&"the server did not answer"));
+                            return Err(ActionCallError::refused("the server did not answer"));
                         }
                     },
                     // An answer reaches this copy through a holder's, which
@@ -438,8 +444,8 @@ impl Workspaces {
         tokio::time::timeout(SERVER_ANSWER_WAIT, waiting)
             .await
             .unwrap_or_else(|_| {
-                Err(refused(
-                    &"the server did not answer; it may be away, and does it when it is back",
+                Err(ActionCallError::refused(
+                    "the server did not answer; it may be away, and does it when it is back",
                 ))
             })
     }
@@ -477,7 +483,7 @@ impl Workspaces {
             servers::Servers::BEGIN_INSTALL.with((device, nonce, drives, ask)),
         ))
         .await
-        .map_err(|error| refused(&error))?;
+        .map_err(ActionCallError::refused)?;
         Ok(serde_json::json!({ "admitted": true }))
     }
 }

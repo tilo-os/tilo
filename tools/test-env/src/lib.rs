@@ -160,6 +160,17 @@ pub fn package_binary_at(name: &str, built_at: &str) -> PathBuf {
         .map_or_else(|| PathBuf::from(built_at), PathBuf::from)
 }
 
+/// The build of this package's own binary `bin` that the run made with another
+/// profile and features, as a `starts` entry in `t.toml` asks for it
+/// (`package:bin@profile=features`): t hands it to the tests as
+/// `T_STARTED_BIN_<bin>_<profile>_<features>`, and leaves the plain build where
+/// [`package_binary!`] finds it, for the tests that start that one. `None` when
+/// the run made no such build, as a plain `cargo test` does not.
+#[must_use]
+pub fn started_variant(bin: &str, profile: &str, features: &str) -> Option<PathBuf> {
+    env::var_os(format!("T_STARTED_BIN_{bin}_{profile}_{features}")).map(PathBuf::from)
+}
+
 /// Give `command` the environment a launcher gives the app it starts: none of
 /// the `TILO_*` or `QUICK_*` choices this test process was started with, and
 /// the prepared fonts the run draws with, which a launch hands on

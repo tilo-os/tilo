@@ -166,10 +166,6 @@ aarch64 = 3604480
 x86_64 = 851968
 aarch64 = 720896
 
-[apps."so.tilo.imager"]
-x86_64 = 2555904
-aarch64 = 2490368
-
 [apps."so.tilo.launcher"]
 x86_64 = 655360
 aarch64 = 6000000

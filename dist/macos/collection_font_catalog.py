@@ -34,12 +34,12 @@ def regular(root, name):
 
 
 def make_plan(source):
-    root = source / 'crates/sdk/ui-core/assets/fonts'
+    root = source / 'crates/ui/ui-core/assets/fonts'
     if root.resolve(strict=True) != root or not root.is_dir():
         raise ValueError('font catalog root must be canonical')
     manifest = regular(root, 'manifest.toml')
     raw = manifest.read_bytes()
-    compiled = regular(source, 'crates/sdk/font-catalog/manifest.toml')
+    compiled = regular(source, 'crates/ui/font-catalog/manifest.toml')
     if raw != compiled.read_bytes():
         raise ValueError('font catalog differs from compiled manifest')
     data = tomllib.loads(raw.decode())

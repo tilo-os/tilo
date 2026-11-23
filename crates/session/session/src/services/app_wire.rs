@@ -230,6 +230,9 @@ pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     handle: &DesktopHandle,
+    shortcuts: Option<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::ShortcutLibraryServices>,
+    >,
     activity: &activity::Activity,
     services: Knitted,
     collaboration: Collaboration<'_>,
@@ -296,6 +299,7 @@ pub(crate) fn start_app_wire(
             content: Some(std::sync::Arc::clone(&options.content)),
             records,
             layout: std::sync::Arc::clone(&layout),
+            shortcuts,
             activity: activity_wire,
             agents: services.agents,
             agent_sessions: services.agent_sessions,
@@ -347,13 +351,7 @@ pub(crate) fn start_app_wire(
         actions.install(broker.device_host());
         attach_remote_use(&actions, options);
     }
-    let files_tree = serve_files_tree(
-        &path,
-        service,
-        content.as_deref(),
-        options,
-        services.folders,
-    )?;
+    let files_tree = serve_files_tree(service, content.as_deref(), options, services.folders)?;
     // This device runs its workspaces' agents in its own workspace service once that opens: the
     // one engine a workspace's host runs, in this process, each turn's calls decided by this
     // broker as the person's own calls are.
@@ -380,12 +378,11 @@ pub(crate) fn start_app_wire(
     }))
 }
 
-/// The trees of the workspaces this device's service holds, served beside the app wire at
-/// `wire` to the files daemon this session recorded as the Files endpoint: the daemon's mounts
-/// sync through this device's one service. A session that keeps no resource content has no
-/// workspaces, and serves none.
+/// The trees of the workspaces this device's service holds, served where the files daemon
+/// dials them ([`tilo_device_identity::login::files_tree_socket`]) to the daemon this session
+/// recorded as the Files endpoint: the daemon's mounts sync through this device's one service.
+/// A session that keeps no resource content has no workspaces, and serves none.
 fn serve_files_tree(
-    wire: &std::path::Path,
     service: tilo_workspace_service::service::ServiceSlot,
     content: Option<&crate::content::ContentService>,
     options: &Options,
@@ -396,7 +393,7 @@ fn serve_files_tree(
         return Ok(None);
     };
     let launches = std::sync::Arc::clone(&options.launches);
-    let socket = wire.with_file_name(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    let socket = tilo_device_identity::login::files_tree_socket().map_err(std::io::Error::other)?;
     // The keys of a tree's group, as this person's identity service hands them to this device:
     // only ever for the workspace the connection was admitted for.
     let identity = tilo_paths::xdg::service_socket("identity");
@@ -418,7 +415,7 @@ fn serve_files_tree(
         }),
         content.files_offers(keys),
         folders,
-    )?))
+    )))
 }
 
 /// What the broker decides against, from this pass on: the shell as it is

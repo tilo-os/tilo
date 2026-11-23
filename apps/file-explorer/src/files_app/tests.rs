@@ -1663,7 +1663,113 @@ mod command_path_tests {
     }
 
     tilo_test_env::scenario! {
-        fn nearby_sharing_and_history_commands_stay_governed;
+        fn cloud_nearby_sharing_and_history_commands_take_their_actions;
+
+        phase one_time_cloud_import_is_an_independent_copy_through_the_action_api;
+        {
+            for kind in [
+                crate::remote_accounts::RemoteAccountKind::Dropbox,
+                crate::remote_accounts::RemoteAccountKind::GoogleDrive,
+            ] {
+                one_time_cloud_import_for_kind(kind);
+            }
+        }
+
+        phase cloud_import_retains_local_destination_after_alias_changes;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let mount = home.path().join("Cloud");
+            let destination = home.path().join("Downloads");
+            let alias = home.path().join("destination-alias");
+            std::fs::create_dir(&mount).unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::write(mount.join("document.txt"), b"remote bytes").unwrap();
+            std::os::unix::fs::symlink(&destination, &alias).unwrap();
+            let mut account = remote_account(
+                crate::remote_accounts::RemoteAccountHealth::Healthy,
+                Some(mount.clone()),
+            );
+            account.kind = crate::remote_accounts::RemoteAccountKind::Dropbox;
+            let mut app =
+                ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
+                    .unwrap();
+            let row = app
+                .with_surface(|files: &mut FileExplorerWidget| {
+                    files.state().home_path = Some(home.path().to_path_buf());
+                    files.state().startup_accounts = Some(vec![account]);
+                    files.state().navigate(mount.clone());
+                    files.state().dispatcher = Some(ui::framework::testing::dispatcher::<
+                        crate::resource::FileExplorer,
+                    >("files"));
+                    files
+                        .state()
+                        .published_rows()
+                        .into_iter()
+                        .find(|row| row.label == "document.txt")
+                        .unwrap()
+                })
+                .unwrap();
+            app.call_on(
+                row.id.as_str(),
+                "import-once",
+                serde_json::json!({"folder": alias}),
+            )
+            .unwrap();
+            assert!(!destination.join("document.txt").exists());
+            let op = app
+                .with_surface(|files: &mut FileExplorerWidget| {
+                    assert_eq!(files.state().awaiting_ops.len(), 1);
+                    files.state().awaiting_ops[0].0.clone()
+                })
+                .unwrap();
+            std::fs::remove_file(&alias).unwrap();
+            std::os::unix::fs::symlink(&mount, &alias).unwrap();
+            app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
+                .unwrap();
+            tilo_test_env::wait_until("the queued operation to settle", || {
+                app.settle();
+                app.state().ops.pending().next().is_none()
+            });
+            let state = app.state();
+            let outcome = state
+                .ops
+                .entries()
+                .next()
+                .unwrap()
+                .1
+                .settled
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(outcome, ui::tilo_resource::Settled::Done(_)),
+                "{outcome:?}"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("document.txt")).unwrap(),
+                b"remote bytes"
+            );
+            assert!(!mount.join("document 2.txt").exists());
+            std::fs::write(mount.join("document.txt"), b"remote edit").unwrap();
+            assert_eq!(
+                std::fs::read(destination.join("document.txt")).unwrap(),
+                b"remote bytes"
+            );
+            std::fs::write(destination.join("document.txt"), b"local edit").unwrap();
+            assert_eq!(
+                std::fs::read(mount.join("document.txt")).unwrap(),
+                b"remote edit"
+            );
+
+            assert!(
+                app.call_on(
+                    row.id.as_str(),
+                    "import-once",
+                    serde_json::json!({"folder": "."})
+                )
+                .is_err()
+            );
+            assert_eq!(app.state().ops.entries().count(), 1);
+        }
 
         phase a_cloud_account_needing_sign_in_is_visible_and_says_what_to_do;
         {
@@ -1880,6 +1986,104 @@ mod command_path_tests {
         }
     }
 
+    fn one_time_cloud_import_for_kind(kind: crate::remote_accounts::RemoteAccountKind) {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Remote/Cloud");
+        let destination = home.path().join("Downloads");
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::create_dir(mount.join("Folder")).unwrap();
+        std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
+        std::fs::write(
+            mount.join("Folder/document.gdoc"),
+            b"{\"url\":\"https://docs.google.com/document/d/test\"}",
+        )
+        .unwrap();
+        let mut account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Healthy,
+            Some(mount.clone()),
+        );
+        account.kind = kind;
+        let mut app =
+            ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
+                .unwrap();
+        let row = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files.state().home_path = Some(home.path().to_path_buf());
+                files.state().user_dirs = favorites::UserDirs {
+                    downloads: Some(destination.clone()),
+                    ..Default::default()
+                };
+                files.state().startup_accounts = Some(vec![account]);
+                files.state().navigate(mount.clone());
+                files
+                    .state()
+                    .published_rows()
+                    .into_iter()
+                    .find(|row| row.label == "Folder")
+                    .unwrap()
+            })
+            .unwrap();
+        assert!(row.actions.iter().any(|action| action.id == "import-once"));
+        app.call_on_finished(
+            row.id.as_str(),
+            "import-once",
+            serde_json::json!({"folder": destination}),
+        )
+        .unwrap();
+        assert!(app.state().ops.pending().next().is_none());
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+            b"original bytes"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.gdoc")).unwrap(),
+            std::fs::read(mount.join("Folder/document.gdoc")).unwrap()
+        );
+        std::fs::write(mount.join("Folder/document.txt"), b"later remote edit").unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+            b"original bytes"
+        );
+        std::fs::write(
+            destination.join("Folder/document.txt"),
+            b"local import edit",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(mount.join("Folder/document.txt")).unwrap(),
+            b"later remote edit"
+        );
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            let index = files
+                .state()
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.name == "Folder")
+                .unwrap();
+            files.state().select(Some(index));
+            assert!(
+                files
+                    .state()
+                    .context_menu_spec(&[])
+                    .iter()
+                    .all(|(label, _)| !label.contains("Downloads")),
+                "cloud import never chooses a destination on the person's behalf"
+            );
+        })
+        .unwrap();
+        let link = home.path().join("cloud-link");
+        std::os::unix::fs::symlink(&mount, &link).unwrap();
+        assert!(
+            app.call_on(
+                row.id.as_str(),
+                "import-once",
+                serde_json::json!({"folder": link})
+            )
+            .is_err()
+        );
+    }
+
     fn remote_account(
         health: crate::remote_accounts::RemoteAccountHealth,
         mount: Option<PathBuf>,
@@ -1890,6 +2094,7 @@ mod command_path_tests {
             label: "Cloud".into(),
             host: "cloud.example".into(),
             health,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount,
         }
     }
@@ -2193,7 +2398,66 @@ mod command_path_tests {
         exported_rename_changes_case_without_overwriting_another_entry();
         new_folder_creates_the_folder_and_opens_inline_rename();
         new_from_template_creates_the_file_and_opens_rename();
+        new_folders_name_typed_in_a_burst_keeps_every_character();
+        a_new_folders_name_typed_before_its_field_opens_is_kept();
         super::headless_f2_renames_fixture_without_opening_a_file();
+    }
+
+    fn a_new_folders_name_typed_before_its_field_opens_is_kept() {
+        // The press has happened and the row's field is on its way: the person types the name at
+        // once, and Enter with it. None of it may read as choosing a row.
+        let widget = FileExplorerWidget::new();
+        widget.state().naming_ahead = Some(super::NamingAhead::default());
+        widget.state().awaiting_ops.push((
+            crate::file_ops::FileOp::NewFolder {
+                parent: "/".to_owned(),
+                name: "New folder".to_owned(),
+            },
+            super::OpFollowUp::NewFolder,
+        ));
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+        driver.type_text("Walks");
+        driver.key("Enter");
+        let widget = driver
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FileExplorerWidget>())
+            .expect("the Files window");
+        let ahead = widget.state().naming_ahead.take().expect("the name waited");
+        assert_eq!(ahead.typed, "Walks", "every character typed is kept");
+        assert!(ahead.commit, "Enter with it asks for it to be made");
+    }
+
+    fn new_folders_name_typed_in_a_burst_keeps_every_character() {
+        let d = tempfile::tempdir().unwrap();
+        let widget = FileExplorerWidget::new();
+        widget.state().navigate(d.path().to_path_buf());
+        assert!(
+            widget.state().apply_command(FileCommand::NewFolder),
+            "New folder runs"
+        );
+        assert!(
+            widget.state().is_renaming(),
+            "the new folder asks for its name"
+        );
+        let mut driver =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
+        // The name typed as one burst, Enter in the same breath.
+        driver.type_text("Walks");
+        driver.key("Enter");
+        let names: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            d.path().join("Walks").is_dir(),
+            "the folder takes every character typed: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name == "New folder"),
+            "the proposed name is not what is kept: {names:?}"
+        );
     }
 
     fn rename_flow_renames_the_selected_file_on_disk() {
@@ -2870,6 +3134,105 @@ mod command_path_tests {
         assert_eq!(
             target.choice_label(&hex::encode([7u8; 16])),
             Some("Kitchen tablet")
+        );
+    }
+
+    /// The surface the session's catalogue is built from says what each row offers with a device
+    /// near: the row's `send-to` names every device online as a choice of its target, read by the
+    /// device's name, and a value outside them binds nothing. An agent or a script picks the
+    /// device from here, as a person does in the row's menu.
+    #[test]
+    #[cfg(unix)]
+    fn a_published_row_offers_each_nearby_device_as_a_send_to_choice() {
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTargetHandle, NearbyTransferCommand,
+            NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferTarget,
+        };
+        fn find<'a>(
+            rows: &'a [ui::tilo_actions::ResourceSpec],
+            action: &str,
+        ) -> Option<&'a ui::tilo_actions::ActionSpec> {
+            rows.iter().find_map(|row| {
+                row.actions
+                    .iter()
+                    .find(|spec| spec.id == action)
+                    .or_else(|| find(&row.children, action))
+            })
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("report.txt"), b"to send").unwrap();
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::FileExplorerShell>::for_person(
+                &"fe".repeat(32),
+            )
+            .unwrap();
+        app.with_widget(|w: &mut FileExplorerWidget| {
+            w.state().navigate(directory.path().to_path_buf());
+        });
+        app.settle();
+        app.with_widget(|w: &mut FileExplorerWidget| {
+            w.state()
+                .nearby_send
+                .handle_event(&CollabEvent::NearbyTransferChanged);
+            let request_id = w
+                .state()
+                .nearby_send
+                .take_requests()
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::NearbyTransferCommand {
+                        request_id,
+                        command: NearbyTransferCommand::Snapshot,
+                    } => Some(*request_id),
+                    _ => None,
+                })
+                .unwrap();
+            let handle = NearbyTargetHandle::from_issued_bytes([7; 16]);
+            w.state()
+                .nearby_send
+                .handle_event(&CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Ok(NearbyTransferReply::Snapshot {
+                        snapshot: NearbyTransferSnapshot {
+                            targets: vec![NearbyTransferTarget {
+                                handle,
+                                label: "Kitchen tablet".into(),
+                                online: true,
+                            }],
+                            ..NearbyTransferSnapshot::default()
+                        },
+                    }),
+                });
+        });
+        app.settle();
+        let resources = app.harness().resources();
+        let send = find(&resources, "send-to")
+            .expect("a row offers sending to the device the surface names");
+        let target = send
+            .params()
+            .iter()
+            .find(|param| param.name == "target")
+            .expect("the device is the action's target");
+        let device = hex::encode([7u8; 16]);
+        assert_eq!(
+            target
+                .choices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec![device.clone()],
+            "the device online is the one choice"
+        );
+        assert_eq!(
+            target.choice_label(&device),
+            Some("Kitchen tablet"),
+            "the choice reads as the device's name"
+        );
+        let mut refused = serde_json::Map::new();
+        refused.insert("target".into(), "not-a-device".into());
+        assert!(
+            send.build_json(&refused).is_err(),
+            "a value the surface did not offer binds nothing"
         );
     }
 
@@ -4449,6 +4812,7 @@ mod injected_startup_tests {
                 label: "Cloud".into(),
                 host: "cloud.example".into(),
                 health: crate::remote_accounts::RemoteAccountHealth::Offline,
+                files_mode: accounts::cloud_types::FilesMode::Sync,
                 mount: Some(mount.clone()),
             });
         let mut widget =
@@ -4497,6 +4861,7 @@ mod injected_startup_tests {
             label: "Host fixture".to_string(),
             host: "fixture.invalid".to_string(),
             health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+            files_mode: accounts::cloud_types::FilesMode::Sync,
             mount: None,
         };
         let mut inputs = startup(&child);
@@ -5212,6 +5577,9 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+#[path = "oauth_cloud_location_tests.rs"]
+mod oauth_cloud_location_tests;
 
 #[path = "person_accounts_places_tests.rs"]
 mod person_accounts_places_tests;

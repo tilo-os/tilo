@@ -178,7 +178,7 @@ RemoveProjectArgs = TypedDict("RemoveProjectArgs", {
 
 class Task(Resource):
     """Task — `tl.so.tilo.lang.tasks.Task`."""
-    __surface__ = "so.tilo.lang.tasks@dc2b3dd12a37e169"
+    __surface__ = "so.tilo.lang.tasks@e57366bbdfb4b3bf"
     oidkt4g5: str  # title
     fgvmlm5n: bool  # done
     g6kykjp2: str | None  # due
@@ -425,7 +425,7 @@ class Task(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.lang.tasks.Project`."""
-    __surface__ = "so.tilo.lang.tasks@dc2b3dd12a37e169"
+    __surface__ = "so.tilo.lang.tasks@e57366bbdfb4b3bf"
     sgnau7vd: str  # name
     c5pgzhqt: str  # notes
 
@@ -460,7 +460,7 @@ class Project(Resource):
 
 class Section(Resource):
     """Section — `tl.so.tilo.lang.tasks.Section`."""
-    __surface__ = "so.tilo.lang.tasks@dc2b3dd12a37e169"
+    __surface__ = "so.tilo.lang.tasks@e57366bbdfb4b3bf"
     yfd266wj: str  # name
     ohbjjsu7: Project  # project
 
@@ -487,7 +487,7 @@ class Section(Resource):
 
 class Tasks(Resource):
     """Tasks — `tl.so.tilo.lang.tasks.Tasks`."""
-    __surface__ = "so.tilo.lang.tasks@dc2b3dd12a37e169"
+    __surface__ = "so.tilo.lang.tasks@e57366bbdfb4b3bf"
     lg5gedbh: list[Entry[Task]]  # items
     mdhllpbo: list[Entry[Project]]  # projects
     nk5542m7: list[Entry[Section]]  # sections
@@ -575,5 +575,5 @@ class Tasks(Resource):
 
 class LangTasks(Resource):
     """Tasks — `tl.so.tilo.lang.tasks`."""
-    __surface__ = "so.tilo.lang.tasks@dc2b3dd12a37e169"
+    __surface__ = "so.tilo.lang.tasks@e57366bbdfb4b3bf"
 

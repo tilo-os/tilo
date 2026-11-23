@@ -21,12 +21,14 @@ struct Waiting {
 }
 
 /// The channels' workspace transport over the host session: what they say
-/// waits here for the session to send it, newest per group, until the host
-/// admitted the session to the workspace that carries the group.
+/// waits here for the session to send it, until the host admitted the session
+/// to the workspace that carries the group: the newest access request of each
+/// group, and every frame of a call's media group in the order it was written.
 #[derive(Default)]
 pub(super) struct HostGovernance {
     pub(super) inbound: Mutex<Vec<tilo_workspace_keys::InboundGovernance>>,
     outbound: Mutex<BTreeMap<WorkspaceId, Waiting>>,
+    frames: Mutex<Vec<Waiting>>,
 }
 
 impl HostGovernance {
@@ -48,6 +50,15 @@ impl HostGovernance {
             }
         }
         self.outbound.lock_recover().extend(waiting);
+        let (frames, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut *self.frames.lock_recover())
+            .into_iter()
+            .partition(|entry| admitted(entry.workspace));
+        *self.frames.lock_recover() = waiting;
+        due.extend(
+            frames
+                .into_iter()
+                .map(|entry| (entry.workspace, entry.message)),
+        );
         due
     }
 }
@@ -55,23 +66,36 @@ impl HostGovernance {
 impl tilo_workspace_keys::GovernanceTransport for HostGovernance {
     fn publish(&self, message: neighbour_wire::NeighbourMsg) -> bool {
         use neighbour_wire::NeighbourMsg;
-        // A reader commits nothing.
-        let NeighbourMsg::MlsAccessRequest { request, .. } = &message else {
-            return false;
-        };
-        // The group a request is for is not always the workspace that carries
+        // The group a message is for is not always the workspace that carries
         // it: a document's or a reader set's group asks on its workspace's
         // transport, and the host takes it there. A page is admitted to the
-        // workspace, never to the group, so a request kept until the group is
+        // workspace, never to the group, so a message kept until the group is
         // sent would never leave.
         let Some(workspace) = message.governance_workspace().and_then(WorkspaceId::parse) else {
             return false;
         };
-        let group = request.workspace;
-        self.outbound
-            .lock_recover()
-            .insert(group, Waiting { workspace, message });
-        true
+        match &message {
+            NeighbourMsg::MlsAccessRequest { request, .. } => {
+                let group = request.workspace;
+                self.outbound
+                    .lock_recover()
+                    .insert(group, Waiting { workspace, message });
+                true
+            }
+            // A page founds and commits a call's media group, and no other
+            // ([`tilo_workspace_keys::KeyRole::Follower`]).
+            NeighbourMsg::MlsGovernance {
+                workspace: scope, ..
+            } if neighbour_wire::KeyScope::parse(scope)
+                .is_some_and(|scope| tilo_workspace_keys::is_call_media(&scope)) =>
+            {
+                self.frames
+                    .lock_recover()
+                    .push(Waiting { workspace, message });
+                true
+            }
+            _ => false,
+        }
     }
 
     fn take_inbound(&self) -> Vec<tilo_workspace_keys::InboundGovernance> {

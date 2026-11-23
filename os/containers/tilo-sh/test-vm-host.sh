@@ -107,8 +107,10 @@ grep -q "guest kernel .*hosted-$(tr -d '[:space:]' < "$guest/digest" | sed 's/^s
   die 'the guest is not the local image this check handed it'
 }
 member=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
-  --inh-caps=-all tilo-device-admin key \
-  --identity-root /var/lib/tilo-hosted/member/identity 2>&1)
+  --inh-caps=-all -- env HOME=/var/lib/tilo-hosted/member/home \
+  XDG_STATE_HOME=/var/lib/tilo-hosted/member/profile/state \
+  TILO_IDENTITY_ROOT=/var/lib/tilo-hosted/member/identity \
+  tilo device key 2>&1)
 printf '%s\n' "$member" >&2
 grep -q '"device"' <<<"$member" || die 'the host holds no member device key'
 

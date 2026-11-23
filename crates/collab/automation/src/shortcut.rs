@@ -113,7 +113,14 @@ pub enum ShortcutChange {
 }
 
 /// One step, named so later steps can refer to its output.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Written as one flat map: the step's own fields and its kind's. A
+/// `#[serde(flatten)]` would write the same JSON, but it opens a map whose
+/// length it cannot state, which a non-self-describing format such as the
+/// host's postcard cannot encode; a shortcut is hashed in that form when a
+/// device commits its save. [`Step`] therefore writes the map itself, with
+/// its length known, and reads the flat form back through the fields.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Step {
     /// Unique within the shortcut; ASCII letters, digits, `-` and `_`.
     pub id: String,
@@ -124,6 +131,38 @@ pub struct Step {
     pub on_error: StepPolicy,
     #[serde(flatten)]
     pub kind: StepKind,
+}
+
+impl Serialize for Step {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::{Error as _, SerializeMap as _};
+        let kind = serde_json::to_value(&self.kind).map_err(S::Error::custom)?;
+        let fields: std::collections::BTreeMap<String, serde_json::Value> = kind
+            .as_object()
+            .ok_or_else(|| S::Error::custom("a step's kind is written as a map"))?
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let policy = !StepPolicy::is_fail(&self.on_error);
+        let fields_count = fields
+            .len()
+            .saturating_add(1)
+            .saturating_add(usize::from(policy));
+        let mut map = serializer.serialize_map(Some(fields_count))?;
+        map.serialize_entry("id", &self.id)?;
+        if policy {
+            map.serialize_entry("on_error", &self.on_error)?;
+        }
+        // Sorted by name, so a proof over the bytes does not depend on how
+        // serde_json's map keeps its order in the build that writes it.
+        for (name, value) in fields {
+            map.serialize_entry(&name, &value)?;
+        }
+        map.end()
+    }
 }
 
 impl Step {
@@ -574,7 +613,12 @@ pub enum TriggerSpec {
     /// A committed change to a record of `kind` in the workspace. Empty
     /// `actions` and `fields` match any change; otherwise a change matches
     /// when it ran one of the verbs (public ids) or edited a field whose
-    /// path matches one of the patterns (`channels.*.name`).
+    /// path matches one of the patterns (`channels.*.name`). `filter` then
+    /// narrows it by what the change holds ([`ChangeFilter`]): who made it,
+    /// whose change it copies, the verb's arguments and the changed item's
+    /// fields. Who made a change does not decide on its own whether it
+    /// counts: a change written for someone who is no member (a message a
+    /// service carries in) matches like any other.
     ResourceChanged {
         kind: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -583,6 +627,8 @@ pub enum TriggerSpec {
         fields: Vec<String>,
         #[serde(default, skip_serializing_if = "ActorFilter::is_anyone")]
         by: ActorFilter,
+        #[serde(default, skip_serializing_if = "ChangeFilter::is_empty")]
+        filter: ChangeFilter,
     },
     /// An event from a connector's declared trigger source on the
     /// workspace's host. Only a bot can carry one: a person's devices see no
@@ -650,6 +696,118 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
         filter: serde_json::Map<String, serde_json::Value>,
     },
+}
+
+/// What a [`TriggerSpec::ResourceChanged`] asks of a change beyond its kind, its verbs and its
+/// fields: every test must hold. Each names a field of what the change holds by a dotted path
+/// ([`ChangeFilter::subject`]): `by`, the member who made it (`agent:<id>`, a person's id,
+/// `app:<id>`); `origin`, the member whose change this one copies, when a writer copied one
+/// ([`tilo_actions::ORIGIN_FACET`]); `arguments.<name>`, what the verb was given; `item.<name>`,
+/// the changed item's fields after the change; `kind`, the record's kind;
+/// `incoming_message`, whether the change brings a message the workspace received, as a store's
+/// own outside-origin write says it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ChangeFilter(pub Vec<FieldTest>);
+
+/// One test of a [`ChangeFilter`]: the field at `field` and what it must be.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FieldTest {
+    /// The dotted path of the field in [`ChangeFilter::subject`].
+    pub field: String,
+    #[serde(flatten)]
+    pub test: Test,
+}
+
+/// What a field must be.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Test {
+    /// Equal to the value.
+    Is(serde_json::Value),
+    /// Missing, or anything but the value.
+    IsNot(serde_json::Value),
+    /// A list holding the value, a map with it as a key, or text containing it, anywhere within
+    /// the field.
+    Has(serde_json::Value),
+    /// Missing, or holding the value nowhere within it.
+    Lacks(serde_json::Value),
+}
+
+impl ChangeFilter {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// A filter of `tests`.
+    #[must_use]
+    pub fn of(tests: impl IntoIterator<Item = (impl Into<String>, Test)>) -> Self {
+        Self(
+            tests
+                .into_iter()
+                .map(|(field, test)| FieldTest {
+                    field: field.into(),
+                    test,
+                })
+                .collect(),
+        )
+    }
+
+    /// What the tests read of a change: who made it, whose change it copies, the verb's
+    /// arguments, the changed item, the record's kind and whether it brings a received message.
+    #[must_use]
+    pub fn subject(event: &crate::dispatch::DocumentEvent) -> serde_json::Value {
+        serde_json::json!({
+            "by": String::from_utf8_lossy(&event.actor.by.actor_bytes()),
+            "origin": event.origin,
+            "kind": event.kind,
+            "arguments": event.arguments,
+            "item": event.after,
+            "incoming_message": event.incoming_message,
+        })
+    }
+
+    /// Whether every test holds of `subject` ([`Self::subject`]).
+    #[must_use]
+    pub fn holds(&self, subject: &serde_json::Value) -> bool {
+        self.0.iter().all(|test| {
+            let field = test
+                .field
+                .split('.')
+                .try_fold(subject, |value, step| match value {
+                    serde_json::Value::Object(fields) => fields.get(step),
+                    serde_json::Value::Array(items) => {
+                        step.parse::<usize>().ok().and_then(|at| items.get(at))
+                    }
+                    _ => None,
+                })
+                .filter(|value| !value.is_null());
+            match &test.test {
+                Test::Is(wanted) => field == Some(wanted),
+                Test::IsNot(wanted) => field != Some(wanted),
+                Test::Has(wanted) => field.is_some_and(|field| holds_within(field, wanted)),
+                Test::Lacks(wanted) => !field.is_some_and(|field| holds_within(field, wanted)),
+            }
+        })
+    }
+}
+
+/// Whether `wanted` is in `value`: an element or key of it or of anything it holds, or a part of
+/// a text it holds.
+fn holds_within(value: &serde_json::Value, wanted: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            wanted.as_str().is_some_and(|wanted| text.contains(wanted))
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| item == wanted || holds_within(item, wanted)),
+        serde_json::Value::Object(fields) => fields.iter().any(|(key, item)| {
+            wanted.as_str() == Some(key.as_str()) || item == wanted || holds_within(item, wanted)
+        }),
+        _ => value == wanted,
+    }
 }
 
 /// Whose changes a [`TriggerSpec::ResourceChanged`] counts.

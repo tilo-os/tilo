@@ -440,7 +440,10 @@ tilo_test_env::scenario! {
             "injected"
         );
         replica
-            .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 9, 15)))
+            .apply(Workbench::ADD_TRIGGER.with((
+                id.clone(),
+                json!({"trigger": "schedule", "schedule": {"every": "calendar", "at": {"hour": 9, "minute": 15}}, "catch_up": "run_once"}),
+            )))
             .unwrap();
         assert_eq!(
             program(&replica).triggers,
@@ -457,16 +460,16 @@ tilo_test_env::scenario! {
         );
         assert!(
             replica
-                .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 24, 0)))
-                .is_err()
+                .apply(Workbench::ADD_TRIGGER.with((
+                    id,
+                    json!({"trigger": "schedule", "schedule": {"every": "calendar", "at": {"hour": 24, "minute": 0}}}),
+                )))
+                .is_err(),
+            "a time of day the clock cannot keep is refused"
         );
-        replica
-            .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
-            .unwrap();
-        assert!(program(&replica).triggers.is_empty());
     }
 
-    phase morning_refresh_schedule_edits_preserve_other_saved_triggers;
+    phase a_trigger_edit_keeps_the_others_and_its_place;
     {
         use tilo_automation::{CatchUp, Schedule, TimeOfDay, TriggerSpec, Weekday};
         let (replica, id) = with_draft();
@@ -502,14 +505,45 @@ tilo_test_env::scenario! {
             .apply(Workbench::OPEN_SHORTCUT.with(serde_json::to_value(saved).unwrap()))
             .unwrap();
         let id = draft_id(&reopened);
+        let added = TriggerSpec::AppOpened {
+            app_id: "so.tilo.chat".into(),
+        };
         reopened
-            .apply(Workbench::SET_SCHEDULE.with((id.clone(), true, 9, 15)))
+            .apply(Workbench::ADD_TRIGGER.with((
+                id.clone(),
+                serde_json::to_value(&added).unwrap(),
+            )))
             .unwrap();
-        assert_eq!(program(&reopened).triggers[..existing.len()], existing);
+        assert_eq!(
+            program(&reopened).triggers[..existing.len()],
+            existing,
+            "a new trigger goes after the saved ones"
+        );
+        let replacement = TriggerSpec::Keyboard {
+            chord: "Super+Shift+R".into(),
+        };
         reopened
-            .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
+            .apply(Workbench::REPLACE_TRIGGER.with((
+                id.clone(),
+                2,
+                serde_json::to_value(&replacement).unwrap(),
+            )))
             .unwrap();
-        assert_eq!(program(&reopened).triggers, existing);
+        assert_eq!(
+            program(&reopened).triggers,
+            vec![existing[0].clone(), existing[1].clone(), replacement, added],
+            "a changed trigger keeps its place"
+        );
+        reopened
+            .apply(Workbench::REMOVE_TRIGGER.with((id.clone(), 0)))
+            .unwrap();
+        assert_eq!(program(&reopened).triggers.len(), 3);
+        assert!(
+            reopened
+                .apply(Workbench::REMOVE_TRIGGER.with((id, 7)))
+                .is_err(),
+            "a trigger that is not there is not removed"
+        );
     }
 
     phase new_drafts_with_one_name_are_numbered;

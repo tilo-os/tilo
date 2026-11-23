@@ -2,8 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use tilo_user_identity::{
-    DeviceCert, EnrollmentToken, RevocationEntry, verify_device_cert, verify_enrollment_token,
-    verify_revocation_entry,
+    DeviceCert, RevocationEntry, verify_device_cert, verify_revocation_entry,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -12,8 +11,5 @@ fuzz_target!(|data: &[u8]| {
     }
     if let Ok(revocation) = postcard::from_bytes::<RevocationEntry>(data) {
         let _ = verify_revocation_entry(&revocation);
-    }
-    if let Ok(enrollment) = postcard::from_bytes::<EnrollmentToken>(data) {
-        let _ = verify_enrollment_token(&enrollment, 2_000_000_000_000_000_000);
     }
 });

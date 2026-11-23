@@ -225,15 +225,15 @@ impl Apps {
                 // The tab the window was asked for says the launch could not open, rather than
                 // waiting on a window that is not coming.
                 let held = launch.as_ref().and_then(|launch| launch.instance);
-                // The card says why in the person's words; what the app said is its Details.
-                let said = sentence_not_opened(&event);
-                let details = event.said.stderr.join("\n");
+                // The card says the reason the launch gave; what it printed besides that reason
+                // is its Details.
+                let details = details_not_opened(&event, could_not_open);
                 if let Some(tab) = held.filter(|_| could_not_open) {
                     self.could_not_open_saying(
                         Some(tab),
                         &asked,
                         Some(&event.title),
-                        &said,
+                        &why,
                         &details,
                     );
                     continue;
@@ -247,8 +247,7 @@ impl Apps {
                 }
                 let notice = desktop.with_policy(|policy| {
                     if could_not_open {
-                        let answer =
-                            not_opened(policy, &asked, Some(&event.title), &said, &details);
+                        let answer = not_opened(policy, &asked, Some(&event.title), &why, &details);
                         policy.not_opened(&asked, &event.title, answer)
                     } else {
                         // In the tab its last window was in, where the person left it.
@@ -382,10 +381,41 @@ fn log_what_it_said(event: &Event) {
     }
 }
 
-/// What the person reads of why the launch `event` ended before its window came: the cause the
-/// launcher named by its exit, when it is one it knows, else that it stopped first. What the app
-/// itself said is the card's Details.
-fn sentence_not_opened(event: &Event) -> String {
+/// The Details of a launch `event` that ended before its window came: what the app and the
+/// launcher said, line for line, without the launcher's own name on its lines.
+fn details_said(event: &Event) -> String {
+    event
+        .said
+        .stderr
+        .iter()
+        .map(|said| said.strip_prefix(launcher::SAYS).unwrap_or(said))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What the app itself said last, when `event` ended before its window came: the last of its
+/// stderr lines that is not the launcher's own account of the launch. "tilo-launcher: … ended:
+/// exit status: 1" is no reason the app gave, and tells a person nothing to act on.
+fn app_said(event: &Event, could_not_open: bool) -> Option<&str> {
+    if !could_not_open {
+        return None;
+    }
+    event
+        .said
+        .stderr
+        .iter()
+        .rev()
+        .find(|line| !line.starts_with(launcher::SAYS))
+        .map(String::as_str)
+}
+
+/// The reason the app whose launch `event` ended gives the person: its own last word when it said
+/// one and never opened, else the cause the launcher named by its exit, when it is one it knows,
+/// else the shell's account that its window did not come.
+fn why_not_opened(event: &Event, could_not_open: bool) -> String {
+    if let Some(said) = app_said(event, could_not_open) {
+        return said.to_owned();
+    }
     let key = match event.end {
         tilo_app_launch::End::Exited {
             code: launcher::user_namespaces::EXIT_NO_USER_NAMESPACES,
@@ -396,14 +426,12 @@ fn sentence_not_opened(event: &Event) -> String {
     tilo_session_core::desktop::i18n::t(key)
 }
 
-/// The reason the app whose launch `event` ended gives the person: its own last word when it said
-/// one and never opened, else the shell's account that its window did not come.
-fn why_not_opened(event: &Event, could_not_open: bool) -> String {
-    event
-        .said
-        .stderr
-        .last()
-        .filter(|_| could_not_open)
-        .cloned()
-        .unwrap_or_else(|| tilo_session_core::desktop::i18n::t("answer-why-not-opened"))
+/// The Details of the launch `event` that could not open, when the card's reason is the shell's
+/// own account: what the launch said, line for line. An app that said why it could not come has
+/// said the reason itself, and the card says that; nothing further is kept behind Details.
+fn details_not_opened(event: &Event, could_not_open: bool) -> String {
+    if app_said(event, could_not_open).is_some() {
+        return String::new();
+    }
+    details_said(event)
 }

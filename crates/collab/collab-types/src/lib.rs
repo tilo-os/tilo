@@ -144,7 +144,7 @@ pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
     check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
-    decide_op, decide_op_pinned, recorded_contexts, written_node,
+    decide_op, decide_op_imported, decide_op_pinned, recorded_contexts, written_node,
 };
 pub use record_id::{
     is_personal_cluster, person_document_context, person_document_for_workspace,

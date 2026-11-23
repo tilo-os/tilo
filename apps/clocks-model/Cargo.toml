@@ -20,7 +20,7 @@ path = "src/lib.rs"
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-recurrence = { path = "../../crates/sdk/tilo-recurrence" }
+tilo-recurrence = { path = "../../crates/engines/tilo-recurrence" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -701,17 +701,34 @@ pub fn materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, Mater
     Ok(resolved.tree)
 }
 
-/// Resolve an admitted image on the user's filesystem, suitable as an overlay lower.
-/// System image trees can themselves sit on bootc/system-extension overlays;
-/// another overlay over those exceeds the kernel's stacking limit. Rebuild the
-/// same signed tree from verified bytes in the existing content store instead.
-/// Every call checks current publisher trust before consulting this cache.
+/// The read-only root of image `id`, suitable as an overlay lower.
+///
+/// A system image is served where the image keeps it when its tree is a plain
+/// directory on a filesystem that is not itself an overlay: it is already the
+/// tree an environment stacks, so writing a copy for this account was a first
+/// session spent copying thousands of files for nothing. Its bytes, links and
+/// modes are still checked against the signed manifest, as the copy's are. A
+/// tree on an overlay (bootc, a system extension) is rebuilt instead: another
+/// overlay over those exceeds the kernel's stacking limit. The same signed tree
+/// is rebuilt too when the system ships it sparse, leaving bytes to host files
+/// that are not the image.
+///
+/// Every call checks current publisher trust before consulting the user's copy.
 pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf, MaterializeError> {
     let Resolved {
         meta,
         tree: source,
         host,
     } = store.resolve(*id)?;
+    if served_where_it_lies(store, *id, (&source, host.as_ref()))? {
+        // The image's own tree is where an environment can read it already:
+        // serving it in place saves writing and publishing a copy for this
+        // account. Its bytes, links and modes are checked against the signed
+        // manifest exactly as the copy's are, so a modified system tree is
+        // refused here too.
+        verify_local_tree(&meta, &source)?;
+        return Ok(source);
+    }
     let local = store.user.layout().payload(*id);
     let _lock = store.user.lock()?;
     if read_image(store.user.layout(), *id)?.is_some() {
@@ -727,6 +744,107 @@ pub fn local_materialized_tree(store: &Store, id: &PackageId) -> Result<PathBuf,
     })?;
     verify_local_tree(&meta, &local)?;
     Ok(local)
+}
+
+/// Whether image `id` needs no copy into this account's store: the tree of a
+/// system image is served where the image keeps it
+/// ([`local_materialized_tree`]'s in-place answer). A store that holds no copy
+/// answers `false`: asking never fetches, so a caller may ask about any image.
+///
+/// # Errors
+///
+/// A publisher trust or store error, as [`local_materialized_tree`].
+pub fn serves_in_place(store: &Store, id: &PackageId) -> Result<bool, MaterializeError> {
+    if !is_a_system_tree(store, *id)? {
+        return Ok(false);
+    }
+    let resolved = store.resolve(*id)?;
+    Ok(served_where_it_lies(
+        store,
+        *id,
+        (&resolved.tree, resolved.host.as_ref()),
+    )?)
+}
+
+/// Whether image `id`, whose `tree` and `host` stand-ins a store holds, is served
+/// where that store keeps it: a plain directory on a filesystem that is not
+/// itself an overlay, with no bytes left to host files.
+fn served_where_it_lies(
+    store: &Store,
+    id: PackageId,
+    (tree, host): (&std::path::Path, Option<&HostSources>),
+) -> Result<bool, StoreError> {
+    Ok(host.is_none() && is_a_system_tree(store, id)? && sits_outside_any_overlay(tree))
+}
+
+/// Whether image `id` is one a system store holds: a tree the image already has,
+/// not one materialised for this account.
+fn is_a_system_tree(store: &Store, id: PackageId) -> Result<bool, StoreError> {
+    Ok(store.local(id)?.is_some_and(|(_, _, placed)| placed))
+}
+
+/// Whether `tree` sits on a filesystem that is not itself an overlay, and so may
+/// be an overlay's lower as it is ([`sits_outside_any_overlay_in`]). Where the
+/// kernel's mount table cannot be read, it cannot be told, and the tree is
+/// rebuilt rather than risk stacking an overlay on an overlay.
+fn sits_outside_any_overlay(tree: &std::path::Path) -> bool {
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    let tree = std::fs::canonicalize(tree).unwrap_or_else(|_| tree.to_path_buf());
+    sits_outside_any_overlay_in(&tree, &mountinfo)
+}
+
+/// [`sits_outside_any_overlay`] decided from the text of `/proc/self/mountinfo`:
+/// of the mount points `tree` is under, the longest one is its filesystem, and
+/// that is any filesystem but an overlay. A resolved path is under `/` on every
+/// system, so no covering mount at all means the table was not the kernel's.
+fn sits_outside_any_overlay_in(tree: &std::path::Path, mountinfo: &str) -> bool {
+    let mut covering: Option<(usize, &str)> = None;
+    for line in mountinfo.lines() {
+        let Some((left, right)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(mount_point) = left.split(' ').nth(4) else {
+            continue;
+        };
+        let Some(fstype) = right.split(' ').next() else {
+            continue;
+        };
+        let mount_point = std::path::PathBuf::from(mountinfo_unescape(mount_point));
+        if tree.starts_with(&mount_point) {
+            let depth = mount_point.as_os_str().len();
+            if covering.is_none_or(|(longest, _)| depth >= longest) {
+                covering = Some((depth, fstype));
+            }
+        }
+    }
+    covering.is_some_and(|(_, fstype)| fstype != "overlay")
+}
+
+/// The characters kernel mount tables write escaped (`\040` for a space and
+/// their kin), as the path they stand for.
+fn mountinfo_unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            out.push(character);
+            continue;
+        }
+        let digits: String = chars.by_ref().take(3).collect();
+        match digits.as_str() {
+            "040" => out.push(' '),
+            "011" => out.push('\t'),
+            "012" => out.push('\n'),
+            "134" => out.push('\\'),
+            other => {
+                out.push('\\');
+                out.push_str(other);
+            }
+        }
+    }
+    out
 }
 
 fn import_image_payload(
@@ -915,4 +1033,61 @@ pub(crate) fn list_images(layout: &Layout) -> Result<Vec<PackageMeta>, StoreErro
     }
     images.sort_by_key(|meta| meta.id);
     Ok(images)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mountinfo_unescape, sits_outside_any_overlay_in};
+    use std::path::Path;
+
+    /// `/proc/self/mountinfo` as the kernel writes it, cut to the fields that
+    /// matter here: a root filesystem, `/usr` on bootc's overlay, and `/var` on
+    /// a plain filesystem beneath both (a later, longer mount point wins).
+    const MOUNTINFO: &str = "\
+1 0 8:1 / / rw,relatime - btrfs /dev/vda1 rw
+30 1 0:29 / /usr rw,relatime - overlay overlay rw,lowerdir=/a:/b
+40 1 8:2 / /var rw,relatime - xfs /dev/vda2 rw
+41 40 8:3 /sub /var/lib/tilo rw,relatime - xfs /dev/vda3 rw
+";
+
+    #[test]
+    fn a_tree_on_an_overlay_is_not_served_where_it_lies() {
+        assert!(!sits_outside_any_overlay_in(
+            Path::new("/usr/share/tilo/images/ab"),
+            MOUNTINFO
+        ));
+        assert!(
+            !sits_outside_any_overlay_in(Path::new("/usr"), MOUNTINFO),
+            "the overlay's own mount point"
+        );
+    }
+
+    #[test]
+    fn a_tree_on_any_filesystem_but_an_overlay_is() {
+        assert!(sits_outside_any_overlay_in(Path::new("/"), MOUNTINFO));
+        assert!(sits_outside_any_overlay_in(
+            Path::new("/var/lib/tilo/store/ab"),
+            MOUNTINFO
+        ));
+        assert!(
+            sits_outside_any_overlay_in(Path::new("/var/lib/tilo"), MOUNTINFO),
+            "the longest covering mount point is the tree's filesystem"
+        );
+    }
+
+    #[test]
+    fn a_path_no_mount_point_covers_is_not_served() {
+        assert!(!sits_outside_any_overlay_in(
+            Path::new("/usr/x"),
+            "garbage without a mount table"
+        ));
+    }
+
+    #[test]
+    fn mount_table_escapes_read_back_as_their_characters() {
+        assert_eq!(mountinfo_unescape("/a\\040b"), "/a b");
+        assert_eq!(mountinfo_unescape("/a\\011b\\012c"), "/a\tb\nc");
+        assert_eq!(mountinfo_unescape("/a\\134b"), "/a\\b");
+        assert_eq!(mountinfo_unescape("/plain"), "/plain");
+    }
 }

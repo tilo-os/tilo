@@ -168,9 +168,17 @@ touch (Rust and Cargo files, against the ref being updated), checks the changed
 files' formatting with rustfmt, and runs Clippy over every target of the host for
 those packages, with the features the workspace's whole build gives them. Only
 the touched packages are linted; a push without Rust files passes immediately.
-Every failure prints the command that reruns it. The crates that use what you
-changed, the packages as they ship and the page's wasm32 build are linted by t's
-clippy families on `main`.
+Every failure prints the command that reruns it. Packages that build directly on
+one of the touched packages through a path dependency are linted too, and a
+package the page family names is linted for wasm32; what a change reaches beyond
+those, and the packages as they ship, is t's clippy families' work on `main`.
+
+Let a push run to the end. Its lint can take minutes, so run the push as a task
+and wait for it: do not stop the task, end an agent's turn, or interrupt the
+shell while its push runs. A shell torn down under a push takes its process
+group with it, the hook included, and Git reports the hook as killed by a
+signal. Never kill processes by pattern on a shared machine; kill only the PIDs
+you started.
 
 With [t](https://code.tilo.so/tilo/t) installed, the lint is t's own checks
 (`clippy/<package>` and the like), which t answers from its result cache when

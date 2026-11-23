@@ -1,0 +1,1204 @@
+//! Native owner-route bridge. SDK retains signing, encryption and transport.
+use super::*;
+pub(super) use crate::collaboration::document_routes::{
+    decode_routed_mutation, validated_route_payload_with,
+};
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
+use crate::state::StateHistory as _;
+
+/// The user-visible status a transport outcome implies for a route: `Some`
+/// replaces the current one (clearing it on success), `None` leaves it (a
+/// transient refusal is retried silently).
+#[allow(
+    clippy::option_option,
+    reason = "three outcomes: replace with a message, clear it, or leave the current status"
+)]
+pub(super) fn outbound_failure(
+    result: &Result<(), crate::collaboration::CollabSendError>,
+) -> Option<Option<String>> {
+    match result {
+        Ok(()) => Some(None),
+        Err(crate::collaboration::CollabSendError::TooLarge { actual, max }) => {
+            Some(Some(format!(
+                "Changes are no longer shared: one change is {}, above the {} collaboration limit. \
+             They remain on this device.",
+                crate::format::size(u64::try_from(*actual).unwrap_or(u64::MAX)),
+                crate::format::size(u64::try_from(*max).unwrap_or(u64::MAX)),
+            )))
+        }
+        Err(_) => None,
+    }
+}
+
+fn live_document_owners(root: &dyn Widget) -> Vec<crate::history_mode::HistoryOwner> {
+    LiveOwners::of(root).all
+}
+
+/// The live document owners of a window's widgets, by role.
+struct LiveOwners {
+    /// Every record a widget holds: those its views show, and those kept
+    /// beside them.
+    all: Vec<crate::history_mode::HistoryOwner>,
+    /// The records its views show ([`Widget::history_owner`]).
+    shown: Vec<crate::history_mode::HistoryOwner>,
+    /// The records kept beside what the views show
+    /// ([`Widget::resource_owners`]: the person's, the workspace's emoji).
+    beside: Vec<crate::history_mode::HistoryOwner>,
+}
+
+impl LiveOwners {
+    fn of(root: &dyn Widget) -> Self {
+        fn push(
+            owners: &mut Vec<crate::history_mode::HistoryOwner>,
+            owner: &crate::history_mode::HistoryOwner,
+        ) {
+            if !owners.iter().any(|known| known.same_owner(owner)) {
+                owners.push(owner.clone());
+            }
+        }
+        fn collect(root: &dyn Widget, owners: &mut LiveOwners) {
+            let shown = root.history_owner();
+            let beside = root.resource_owners();
+            if let Some(owner) = &shown {
+                push(&mut owners.shown, owner);
+            }
+            for owner in &beside {
+                push(&mut owners.beside, owner);
+            }
+            for owner in shown.iter().chain(beside.iter()) {
+                push(&mut owners.all, owner);
+            }
+            for child in root.children() {
+                collect(child, owners);
+            }
+        }
+        let mut current = Self {
+            all: vec![],
+            shown: vec![],
+            beside: vec![],
+        };
+        collect(root, &mut current);
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current);
+        });
+        current
+    }
+
+    /// Whether `entry` syncs only records kept beside what the views show.
+    /// Such a record takes no part in the window's controls, so neither
+    /// the surface the window publishes nor an invocation of one of its
+    /// actions acts through it, and neither waits for its route.
+    fn keeps_only_beside(&self, entry: &crate::history_mode::routes::OwnerRoute) -> bool {
+        entry.owners.iter().all(|owner| {
+            self.beside.iter().any(|kept| kept.same_owner(owner))
+                && !self.shown.iter().any(|shown| shown.same_owner(owner))
+        })
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DOCUMENT_ROUTE_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl App {
+    pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
+        let _background = crate::local_document_action::suspend();
+        // Document traffic enters only the exact ownership-checked merge API.
+        // A mutable widget callback is not a read-only notification boundary.
+        if !matches!(
+            event,
+            CollabEvent::Document { .. }
+                | CollabEvent::ScrollbackBatch { .. }
+                | CollabEvent::CommittedDocument { .. }
+        ) {
+            crate::widget::handle_collab_event(self.root_widget.as_mut(), event);
+        }
+    }
+    #[allow(
+        clippy::vec_box,
+        reason = "consume the existing SDK event envelope representation without copying it"
+    )]
+    pub(super) fn apply_document_scrollback(
+        &mut self,
+        ops: Vec<Box<collab_types::SignedOp>>,
+        decrypted_payloads: &[Option<Vec<u8>>],
+    ) {
+        for (index, envelope) in ops.into_iter().enumerate() {
+            self.apply_signed_document_envelope(
+                &envelope,
+                decrypted_payloads
+                    .get(index)
+                    .and_then(|payload| payload.as_deref()),
+            );
+        }
+    }
+
+    /// Local queue state, not an acknowledgement of remote delivery/durability.
+    ///
+    /// Distinguishes pending or unsigned action history from remote document
+    /// synchronization; lack of internet alone does not mean signing is offline.
+    pub fn document_sync_status(&self) -> Option<std::borrow::Cow<'_, str>> {
+        use std::borrow::Cow;
+        let reported = self
+            .local_input_capture
+            .failure
+            .as_deref()
+            .or(self.action_publication_failure.as_deref())
+            .or(self
+                .document_routes
+                .status
+                .as_deref()
+                .or(self.document_routes.primary.failure.as_deref())
+                .or(self.document_routes.outbound.as_deref())
+                // The workspace answered that it will not take one change;
+                // the connection is fine, so say which change is not
+                // accepted while the rest of the record syncs on.
+                .or(self
+                    .collaboration
+                    .manager
+                    .refused_change()
+                    .as_deref()
+                    .map(|_| "history-sync-refused"))
+                .or_else(|| {
+                    self.document_routes
+                        .owners
+                        .iter()
+                        .find_map(|entry| entry.pending.failure.as_deref())
+                })
+                .or_else(|| {
+                    self.document_routes
+                        .owners
+                        .iter()
+                        .find_map(|entry| entry.outbound_failure.as_deref())
+                }));
+        if let Some(reported) = reported {
+            return Some(Cow::Borrowed(reported));
+        }
+        // Writes this device holds for the workspace's hosts, which none of
+        // them carries now or kept: not yet synced, as the workspace's sync
+        // says.
+        if let Some(unsynced) = crate::workspace_sync::unsynced_status() {
+            return Some(Cow::Owned(unsynced));
+        }
+        // A change still on its way to the history says nothing.
+        let key = if self.document_routes.observation.is_none() {
+            let manager = &self.collaboration.manager;
+            if !self.native_document_chrome {
+                return None;
+            }
+            // The broker refused the workspace's join: say why. The app
+            // keeps working on what this device holds.
+            if let Some(reason) = manager.join_refusal() {
+                return Some(Cow::Owned(crate::i18n::I18nManager::format(
+                    "history-sync-join-refused",
+                    &[("reason", reason.to_owned().into())],
+                )));
+            }
+            if manager.join_hold().is_some() {
+                // Joining, and the broker says what holds the join up: the
+                // workspace is not ready on this device yet, or the broker
+                // cannot be reached. A join that is merely under way says
+                // nothing.
+                Some("history-sync-reconnecting")
+            } else {
+                // A lost connection says it is offline: reconnecting resumes
+                // it. A refused change is reported above, while still
+                // connected.
+                manager.sync_lost().then_some("history-sync-offline")
+            }
+        } else if !self.document_routes.primary.is_empty()
+            || self
+                .document_routes
+                .owners
+                .iter()
+                .any(|entry| !entry.pending.is_empty())
+        {
+            Some("history-sync-remote-waiting")
+        } else {
+            None
+        };
+        key.map(|key| Cow::Owned(crate::i18n::I18nManager::lookup_plain(key)))
+    }
+    /// Queue acceptance may have advanced producer heads before a later
+    /// worker failure. Restore history obligations before observing another
+    /// route or attempting publication, once when publication fails and once
+    /// when it recovers (what was refused meanwhile goes out then); the real
+    /// broker still authorizes retry.
+    pub(super) fn restore_failed_document_publications(&mut self) {
+        let primary_changed = self
+            .collaboration
+            .manager
+            .take_document_publication_change();
+        let workspace_changed = self
+            .collaboration
+            .workspace_manager
+            .as_mut()
+            .is_some_and(CollaborationManager::take_document_publication_change);
+        if primary_changed {
+            self.restore_primary_publication_obligations();
+        }
+        if (primary_changed || workspace_changed)
+            && let Some(workspace) = self.persistence.workspace_index.as_mut()
+        {
+            workspace.advance_outbound(Vec::new());
+        }
+    }
+
+    fn restore_primary_publication_obligations(&mut self) {
+        self.state.advance_outbound(Vec::new());
+        self.document_routes.primary_whole = false;
+        for owner in &mut self.document_routes.owners {
+            owner.sent = crate::state::DocumentFrontier::default();
+            owner.needs_snapshot = true;
+        }
+    }
+
+    pub(super) fn refresh_document_routes(&mut self) {
+        self.restore_failed_document_publications();
+        self.reconcile_document_routes();
+    }
+
+    /// Follow the document owners the tree holds now with the routes.
+    pub(super) fn reconcile_document_routes(&mut self) {
+        #[cfg(test)]
+        DOCUMENT_ROUTE_REFRESHES.set(DOCUMENT_ROUTE_REFRESHES.get() + 1);
+        let before = self
+            .document_sync_status()
+            .map(std::borrow::Cow::into_owned);
+        let observation = self.bound_broker_route().cloned();
+        let joins = self.document_routes.reconcile(
+            self.root_widget.as_ref(),
+            observation,
+            self.autosave_generation,
+            &self.state.doc,
+        );
+        // The routes an accepted invocation of this window's actions waits
+        // to be current on before it runs: never one only kept beside.
+        let live = LiveOwners::of(self.root_widget.as_ref());
+        let routes = self
+            .document_routes
+            .observation
+            .iter()
+            .map(|observation| observation.route().clone())
+            .chain(
+                self.document_routes
+                    .owners
+                    .iter()
+                    .filter(|entry| !live.keeps_only_beside(entry))
+                    .map(|owner| owner.route.clone()),
+            )
+            .collect();
+        self.collaboration
+            .manager
+            .set_document_owner_routes(routes, self.autosave_generation);
+        // The exact live owner map exists before any join can deliver callbacks.
+        for join in joins {
+            self.collaboration
+                .manager
+                .join_route(join.route, join.resource_type);
+        }
+        if self.document_sync_status().as_deref() != before.as_deref() {
+            self.layout.layout_dirty = true;
+        }
+    }
+    /// Published operations wait for the actual live owners' initial history.
+    /// Joining a route is insufficient: the owner must apply its capture first.
+    pub(super) fn published_action_history_ready(&mut self) -> bool {
+        self.refresh_document_routes();
+        self.published_action_history_ready_after_refresh()
+    }
+
+    pub(super) fn published_action_history_ready_after_refresh(&self) -> bool {
+        // A later event may replace owners or the primary route in this batch.
+        // Withhold publication until the normal pump reconciles that new ownership.
+        if self.document_routes.observation.as_ref() != self.bound_broker_route() {
+            return false;
+        }
+        let route = self
+            .document_routes
+            .observation
+            .as_ref()
+            .map(|observation| observation.route());
+        let live = LiveOwners::of(self.root_widget.as_ref());
+        live.all.iter().all(|owner| {
+            self.document_routes.owners.iter().any(|entry| {
+                entry
+                    .owners
+                    .iter()
+                    .any(|installed| installed.same_owner(owner))
+            })
+        }) && self.collaboration.manager.document_route_ready(route)
+            && self.document_routes.owners.iter().all(|entry| {
+                // A record held only for a tree (a chat's next part) or kept
+                // beside the shown ones (the person's, the workspace's
+                // emoji) syncs on its own; the surface the person acts
+                // through never waits for its route to open, or every input
+                // meanwhile would act through a stale one, or through none
+                // while that route never opens.
+                self.document_routes.holds_only_tree_records(entry)
+                    || live.keeps_only_beside(entry)
+                    || self
+                        .collaboration
+                        .manager
+                        .document_route_ready(Some(&entry.route))
+            })
+    }
+
+    pub(crate) fn native_admission_snapshot(
+        &self,
+    ) -> tilo_startup_metrics::NativeAdmissionSnapshot {
+        let manager = &self.collaboration.manager;
+        let observation = self.document_routes.observation.as_ref();
+        let route = observation.map(|observation| observation.route());
+        let (enqueued, counts) = manager.action_directory_observation();
+        let installed = self
+            .document_routes
+            .owners
+            .iter()
+            .map(|entry| entry.owners.len())
+            .sum();
+        let continuity = crate::process::environment()
+            .identity
+            .continuity_instance
+            .as_deref()
+            .and_then(|value| value.parse().ok());
+        tilo_startup_metrics::NativeAdmissionSnapshot {
+            process_id: std::process::id(),
+            continuity_instance: continuity,
+            connection: tilo_startup_metrics::NativeAdmissionConnection {
+                manager_connected: manager.is_connected(),
+                ownership_reconciled: observation == self.bound_broker_route(),
+            },
+            live_document_owners: live_document_owners(self.root_widget.as_ref()).len(),
+            installed_document_owners: installed,
+            history: tilo_startup_metrics::NativeAdmissionHistory {
+                primary_history_ready: manager.document_route_ready(route),
+                all_owner_histories_ready: self
+                    .document_routes
+                    .owners
+                    .iter()
+                    .all(|entry| manager.document_route_ready(Some(&entry.route))),
+                action_history_ready: self.published_action_history_ready_after_refresh(),
+            },
+            directory: tilo_startup_metrics::NativeAdmissionDirectory {
+                directory_enqueued: enqueued,
+                transport_directory_rpc_successes: counts.map(|counts| counts.0),
+                transport_directory_rpc_failures: counts.map(|counts| counts.1),
+            },
+        }
+    }
+
+    /// Ordinary background/history publication remains best effort. Only a
+    /// directed terminal requires the explicit complete-queue result below.
+    pub(super) fn publish_owned_documents(&mut self) {
+        let _ = self.queue_owned_documents();
+    }
+
+    /// Enqueue all changed live owned records. Success is queue admission, not
+    /// durability: the SDK still awaits each document RPC before a terminal.
+    fn queue_owned_documents(&mut self) -> Result<Handoff, &'static str> {
+        self.refresh_document_routes();
+        self.queue_owned_documents_after_refresh()
+    }
+
+    fn queue_owned_documents_after_refresh(&mut self) -> Result<Handoff, &'static str> {
+        // A surface's records stay in its process: the shell that placed
+        // it gets its actions, never its document, so there is no route to
+        // publish one on and none it waits for.
+        if self.collaboration.manager.hosts_surface() {
+            return Ok(Handoff::Queued);
+        }
+        // Every live owner must have an actual publication route.
+        let current = live_document_owners(self.root_widget.as_ref());
+        if current.is_empty() {
+            return Ok(Handoff::Queued);
+        }
+        if self.document_routes.observation.is_none() {
+            return Err("the admitted document route is unavailable");
+        }
+        let blocked = current
+            .iter()
+            .any(|owner| {
+                !self.document_routes.owners.iter().any(|entry| {
+                    entry
+                        .owners
+                        .iter()
+                        .any(|installed| installed.same_owner(owner))
+                })
+            })
+            .then_some("a live document owner has no usable publication route");
+        let published = self
+            .document_routes
+            .publish_owned(&mut self.collaboration.manager, &self.state.doc);
+        if published.status_changed {
+            self.layout.layout_dirty = true;
+        }
+        // Answers held for a route that has joined now go out on this pass's
+        // sync, after the record's changes they cover.
+        if !published.opening && std::mem::take(&mut self.actions.answers_await_route) {
+            self.needs_sync = true;
+        }
+        blocked.or(published.blocked).map_or(
+            Ok(if published.opening {
+                Handoff::Opening
+            } else {
+                Handoff::Queued
+            }),
+            Err,
+        )
+    }
+
+    /// A local mutation may already exist. Suppress its terminal and retire the
+    /// transport; broker disconnect/recovery retains admitted uncertainty.
+    pub(super) fn queue_documents_before_terminal(&mut self) -> Handoff {
+        if self.action_publication_failure.is_some() {
+            return Handoff::Stopped;
+        }
+        match self.queue_owned_documents() {
+            Ok(handoff) => handoff,
+            Err(reason) => {
+                tracing::error!(reason, "pre-terminal document publication blocked");
+                self.action_publication_failure = Some(format!(
+                    "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
+                ));
+                self.restore_primary_publication_obligations();
+                if let Some(workspace) = self.persistence.workspace_index.as_mut() {
+                    workspace.advance_outbound(Vec::new());
+                }
+                self.collaboration.manager.stop_after_publication_failure();
+                self.layout.layout_dirty = true;
+                Handoff::Stopped
+            }
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn drain_document_routes(&mut self) {
+        self.refresh_document_routes();
+        self.drain_document_routes_after_refresh();
+    }
+
+    fn drain_document_routes_after_refresh(&mut self) {
+        let mut changed = self.document_routes.merge_owned(&mut self.state.doc);
+        while let Some(mutation) = self.document_routes.primary.front() {
+            // A window whose document cannot take a peer's document yet must not load — and, on
+            // bytes that do not load, quarantine — it now:
+            // [`StateHistory::defers_remote`](crate::state::StateHistory::defers_remote) says so before the whole document is read.
+            if self.state.defers_remote() {
+                break;
+            }
+            let state = &mut self.state;
+            match crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                state.merge_remote_committed(incoming)
+            }) {
+                Ok(Some(applied)) => {
+                    self.document_routes.primary.pop_applied();
+                    changed |= applied;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let reason = format!(
+                        "Remote document could not be applied: {error}. Synchronization needs recovery."
+                    );
+                    if error.is_invalid_mutation() {
+                        self.document_routes
+                            .primary
+                            .quarantine_invalid_front(reason);
+                        continue;
+                    }
+                    self.document_routes.primary.failure = Some(reason);
+                    break;
+                }
+            }
+        }
+        if changed {
+            self.invalidate_widget_resource_cache();
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+    }
+
+    /// Peers wrote `records` of this window's trees (a chain's next part, a
+    /// container's child) that it does not hold: every store a live owner
+    /// reads from is told, so whatever follows a tree there holds them, and
+    /// they sync on their own routes from then on
+    /// ([`crate::history_mode::routes`]).
+    pub(super) fn resources_arrived(&mut self, records: &[String]) {
+        let records: Vec<crate::resource::DocumentId> = records
+            .iter()
+            .filter_map(|record| crate::resource::DocumentId::parse(record))
+            .collect();
+        for store in &self.live_resource_stores() {
+            store.announce(records.iter().cloned());
+        }
+        self.needs_sync = true;
+    }
+
+    /// The workspace's hosts have nothing of the on-demand record on `route`, or
+    /// none is connected: every store a live owner reads from is told
+    /// ([`crate::resource::ResourceStore::note_workspace_answered`]).
+    pub(super) fn resource_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
+        let Some(id) = route
+            .document
+            .as_deref()
+            .and_then(crate::resource::DocumentId::parse)
+        else {
+            return;
+        };
+        for store in &self.live_resource_stores() {
+            store.note_workspace_answered(id.clone());
+        }
+        self.needs_sync = true;
+    }
+
+    /// The committed history of a record no window holds arrived, one a
+    /// store here asked the workspace for and could not open yet (an
+    /// on-demand record, or a record the app keeps beside its own): every
+    /// store a live owner reads from looks again
+    /// ([`crate::resource::ResourceStore::note_kept`]), and what asked for it
+    /// opens it.
+    ///
+    /// A record the window holds needs nothing here: its owner takes the read
+    /// in ([`Self::queue_committed_document`]'s pump). One it only asked for
+    /// has no owner to take it, and would wait forever for the next reading of
+    /// it without this: it is not here, so nothing it holds is published, and
+    /// nothing that names it is offered.
+    pub(super) fn unheld_resource_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
+        let held = self
+            .document_routes
+            .owners
+            .iter()
+            .any(|entry| entry.route == *route);
+        if held {
+            return;
+        }
+        for store in &self.live_resource_stores() {
+            store.note_kept();
+        }
+        self.needs_sync = true;
+    }
+
+    /// Every store a live document owner reads from, once each.
+    fn live_resource_stores(&self) -> Vec<crate::resource::ResourceStore> {
+        let mut stores: Vec<crate::resource::ResourceStore> = Vec::new();
+        for owner in live_document_owners(self.root_widget.as_ref()) {
+            let (store, _) = owner.store_checkout();
+            if !stores.iter().any(|known| known.same_owner(store)) {
+                stores.push(store.clone());
+            }
+        }
+        stores
+    }
+
+    pub(super) fn pump_document_routes(&mut self) {
+        self.refresh_document_routes();
+        self.drain_document_routes_after_refresh();
+        let _ = self.queue_owned_documents_after_refresh();
+    }
+    pub(super) fn apply_signed_document_envelope(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) {
+        // Before the first record checkout the launcher's unqualified route
+        // carries workspace-index discovery, never the editable record document.
+        if self.persistence.records.is_some()
+            && self.collaboration.workspace_manager.is_none()
+            && self.native_workspace_route.is_none()
+        {
+            if let Some(route) = self
+                .collaboration
+                .manager
+                .primary_route()
+                .map(|observation| observation.route().clone())
+            {
+                let _ = self.apply_workspace_index_document_envelope(
+                    &route,
+                    envelope,
+                    decrypted_payload,
+                );
+            }
+            return;
+        }
+        self.refresh_document_routes();
+        if self.document_routes.observation.is_none() {
+            return;
+        }
+        // Signature/role/replay verification remains the SDK's responsibility.
+        // This API additionally checks deterministic artifact, attestation and
+        // encrypted channel against the actual installed route before decoding.
+        if let Some(refused) = self
+            .document_routes
+            .admit_owned(envelope, decrypted_payload)
+        {
+            if refused {
+                self.layout.layout_dirty = true;
+            }
+            self.drain_document_routes_after_refresh();
+            return;
+        }
+        let Some(observation) = self.document_routes.observation.as_ref() else {
+            return;
+        };
+        let primary =
+            validated_route_payload_with(observation.route(), envelope, decrypted_payload)
+                .and_then(|payload| {
+                    let active = !self.document_routes.retired_route(observation.route())
+                        && match observation.route().document.as_deref() {
+                            Some(record) => self
+                                .persistence
+                                .records
+                                .as_ref()
+                                .and_then(|set| set.active())
+                                .is_some_and(|id| id.as_str() == record),
+                            None => self
+                                .persistence
+                                .records
+                                .as_ref()
+                                .is_none_or(|set| set.active().is_none()),
+                        };
+                    active.then_some(payload)
+                });
+        let Some(payload) = primary else {
+            return;
+        };
+        let mutation = match decode_routed_mutation(payload, decrypted_payload) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: invalid routed document mutation");
+                return;
+            }
+        };
+        let queue = &mut self.document_routes.primary;
+        let accepted = queue.admit(mutation);
+        if !accepted {
+            self.layout.layout_dirty = true;
+            tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
+        }
+        self.drain_document_routes_after_refresh();
+    }
+}
+
+/// Where the changes of a window's records stand before an answer to an
+/// action that made them goes out: the answer follows its changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Handoff {
+    /// Every change is in the transport's queue.
+    Queued,
+    /// A record's route is still joining (a record the action created): its
+    /// changes go out on the pass it opens, and the answer with them.
+    Opening,
+    /// Publication failed and collaboration stopped: the answer is withheld.
+    Stopped,
+}
+
+/// What publishing a holder's records reported.
+pub(super) struct Published {
+    /// Why some record's changes are not reaching peers, if any.
+    pub(super) blocked: Option<&'static str>,
+    /// A route's user-visible status changed.
+    pub(super) status_changed: bool,
+    /// A record's route is still joining: its whole document waits for it.
+    pub(super) opening: bool,
+}
+
+/// One unit's part of a publication pass: what changed in it, and the route
+/// it travels on.
+struct Part {
+    route: crate::collaboration::RouteSpec,
+    mutation: collab_types::DocumentMutation,
+    heads: Vec<automerge::ChangeHash>,
+    document: automerge::AutoCommit,
+}
+
+/// The commit each part of the pass travels under: the units one action
+/// wrote share one, so a peer applies all of it or none. `None` for a part
+/// that carries no commit of its own — a whole document, or a change the
+/// record's own ownership carries.
+///
+/// A commit names one workspace, so the parts of another workspace's route
+/// are committed to apart. The author's device is left as zeros: the
+/// transport signs the frame and stamps the device it signs with.
+fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::WorkspaceCommit>> {
+    let mut commits = vec![None; parts.len()];
+    // Every unit of the pass, by the workspace it belongs to.
+    let mut groups: Vec<(uuid::Uuid, Vec<(usize, collab_types::UnitMutation)>)> = Vec::new();
+    for (index, part) in parts.iter_mut().enumerate() {
+        let workspace = part.route.cluster_id;
+        let unit = collab_types::UnitMutation {
+            app: &part.route.app_id,
+            document_id: part.route.document.as_deref().unwrap_or(""),
+            mutation: &part.mutation,
+            document: Some(part.document.document()),
+        };
+        match groups.iter_mut().find(|(known, _)| *known == workspace) {
+            Some((_, group)) => group.push((index, unit)),
+            None => groups.push((workspace, vec![(index, unit)])),
+        }
+    }
+    for (workspace, group) in groups {
+        let units: Vec<collab_types::UnitMutation> = group.iter().map(|(_, unit)| *unit).collect();
+        for ((index, _), commit) in group.iter().zip(unit_commits(workspace, &units)) {
+            if let Some(slot) = commits.get_mut(*index) {
+                *slot = commit;
+            }
+        }
+    }
+    commits
+}
+
+/// The commit each of `units`, all of `workspace`, travels under: one entry
+/// per unit, `None` for one that carries no change or names no action.
+pub(super) fn unit_commits(
+    workspace: uuid::Uuid,
+    units: &[collab_types::UnitMutation],
+) -> Vec<Option<collab_types::WorkspaceCommit>> {
+    let author = collab_types::CommitAuthor {
+        actor: None,
+        device: [0; 32],
+    };
+    collab_types::WorkspaceCommit::of_units(workspace, &author, units).unwrap_or_else(|error| {
+        tracing::warn!(%error, "collab: a published change commits to no action");
+        vec![None; units.len()]
+    })
+}
+
+/// What one part of the pass sends: its changes under the commit of the
+/// action that made them, or as the transport carries them when the part is
+/// no action's.
+pub(super) fn part_request(
+    mutation: collab_types::DocumentMutation,
+    commit: Option<collab_types::WorkspaceCommit>,
+) -> CollabRequest {
+    match commit {
+        Some(commit) => CollabRequest::document_action(mutation, commit),
+        None => CollabRequest::Document {
+            mutation,
+            commit: None,
+        },
+    }
+}
+
+impl crate::history_mode::routes::OwnerDocumentRoutes {
+    /// Publish what changed in every held record through `manager`: a
+    /// route's whole document once it opens or a peer asks, its changes
+    /// since what the transport last accepted otherwise. `outer` is the
+    /// window's document, which an owner of the window's own record reads.
+    pub(super) fn publish_owned(
+        &mut self,
+        manager: &mut crate::collaboration::CollaborationManager,
+        outer: &automerge::AutoCommit,
+    ) -> Published {
+        let mut blocked = None;
+        let mut status_changed = false;
+        let mut opening = false;
+        let mut parts = vec![];
+        for entry in &mut self.owners {
+            if !entry.publishes {
+                // A record this app only reads: what changes in it here —
+                // the in-memory replica's genesis among it — is never sent.
+                // The identity service signs no change of another app's
+                // record, and a refused signature would stop the whole
+                // bridge instead of this record alone.
+                continue;
+            }
+            if manager.take_unpublished_route(&entry.route) {
+                // The route was not open for what was queued for it: the
+                // record goes out whole once it is.
+                entry.sent = crate::state::DocumentFrontier::default();
+                entry.needs_snapshot = true;
+                entry.opening = true;
+            }
+            if entry.opening {
+                if !manager.document_route_publishable(&entry.route) {
+                    // Its whole document goes out once the route opens. An
+                    // answer waits for that while the route still joins (a
+                    // record the action created opens as its join ends). A
+                    // route that found history to read first waits on that,
+                    // possibly on another device, and a failed join opens on
+                    // no pass: that record alone waits, and says why.
+                    if let Some(failure) = manager.route_join_failure(&entry.route) {
+                        if entry.outbound_failure.as_ref() != Some(&failure) {
+                            entry.outbound_failure = Some(failure);
+                            status_changed = true;
+                        }
+                    } else if manager.document_route_joining(&entry.route) {
+                        opening = true;
+                    }
+                    continue;
+                }
+                entry.opening = false;
+            }
+            let Some(owner) = entry.owners.first() else {
+                blocked.get_or_insert("a document route has no owner");
+                continue;
+            };
+            if entry.owners.iter().any(|other| !owner.same_document(other)) {
+                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
+                blocked.get_or_insert("document owners conflict on the publication route");
+                continue;
+            }
+            let publication = owner.prepare_publication(
+                outer,
+                &mut entry.sent,
+                entry.needs_snapshot,
+                entry.pending.failure.is_some(),
+            );
+            let (mutation, heads, document) = match publication {
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
+                    blocked.get_or_insert("an owned document has unfinished changes");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Blocked) => {
+                    blocked.get_or_insert("a changed document requires synchronization recovery");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
+                    mutation,
+                    heads,
+                    document,
+                }) => (mutation, heads, document),
+                Err(_) => {
+                    blocked.get_or_insert("an owned document is unreadable");
+                    continue;
+                }
+            };
+            parts.push(Part {
+                route: entry.route.clone(),
+                mutation,
+                heads,
+                document,
+            });
+        }
+        let commits = publication_commits(&mut parts);
+        for (part, commit) in parts.into_iter().zip(commits) {
+            let route = part.route;
+            let heads = part.heads;
+            let request = part_request(part.mutation, commit);
+            #[cfg(test)]
+            let result = if let Some(refusal) = self.refuse_for_test.clone() {
+                Err(refusal)
+            } else {
+                let observation = (route.clone(), request.clone());
+                let result = manager.try_send_to_route(route.clone(), request);
+                if result.is_ok() {
+                    self.sent.push(observation);
+                }
+                result
+            };
+            #[cfg(not(test))]
+            let result = manager.try_send_to_route(route.clone(), request);
+            let failure = outbound_failure(&result);
+            if result.is_err() {
+                blocked.get_or_insert("the document command could not enter the transport queue");
+            }
+            let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == route) else {
+                continue;
+            };
+            // Only an accepted change moves the route's frontier; a refused
+            // one is offered again on the next publication.
+            if result.is_ok() {
+                entry.sent.advance(heads);
+                entry.needs_snapshot = false;
+            }
+            if let Some(failure) = failure
+                && entry.outbound_failure.as_ref() != failure.as_ref()
+            {
+                entry.outbound_failure = failure;
+                status_changed = true;
+            }
+        }
+        Published {
+            blocked,
+            status_changed,
+            opening,
+        }
+    }
+
+    /// Merge what peers sent into every held record, each as an action boundary of the window's
+    /// document `outer` ([`crate::history_mode::HistoryOwner::merge_remote`]). Whether a record
+    /// changed.
+    pub(super) fn merge_owned(&mut self, outer: &mut automerge::AutoCommit) -> bool {
+        let mut changed = false;
+        for entry in &mut self.owners {
+            let Some(owner) = entry.owners.first() else {
+                continue;
+            };
+            if entry.owners.iter().any(|other| !owner.same_document(other)) {
+                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
+                continue;
+            }
+            while let Some(mutation) = entry.pending.front() {
+                // A document that cannot take a peer's changes yet must not load — and, on
+                // bytes that do not load, quarantine — them now: hold them queued, closing an
+                // unfinished named step when that is what holds it.
+                if owner.defers_remote() && !owner.close_named_step(outer) {
+                    break;
+                }
+                use automerge::transaction::Transactable as _;
+                let (store, checkout) = owner.store_checkout();
+                // A peer's whole document that this replica merges and is
+                // still ahead of: the sender lacks something only we hold.
+                let sender_heads = match mutation {
+                    collab_types::DocumentMutation::Snapshot(bytes) if entry.answers_snapshots => {
+                        automerge::AutoCommit::load(bytes)
+                            .ok()
+                            .map(|mut sent| crate::history_mode::sorted_heads(sent.get_heads()))
+                    }
+                    _ => None,
+                };
+                match crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                    owner.merge_remote(incoming, outer)
+                }) {
+                    Ok(merged) => {
+                        // The route delivered these changes, so they are never
+                        // published back on it; this app's own unsent changes
+                        // stay unsent and go out on the next publication.
+                        entry.sent.observe(merged.observed);
+                        let Some(applied) = merged.changed else {
+                            break;
+                        };
+                        entry.pending.pop_applied();
+                        changed |= applied;
+                        if let Some(sender_heads) = sender_heads
+                            && store
+                                .read_checked(&checkout.id, |doc| {
+                                    crate::history_mode::sorted_heads(doc.base_heads())
+                                })
+                                .is_ok_and(|heads| heads != sender_heads)
+                        {
+                            entry.needs_snapshot = true;
+                        }
+                        if applied
+                            && let Err(error) = store.schedule_committed_history(&checkout.id)
+                        {
+                            tracing::error!(%error, "an applied remote change was not saved");
+                        }
+                    }
+                    Err(error) => {
+                        let reason = format!(
+                            "Remote document could not be applied: {error}. Synchronization needs recovery."
+                        );
+                        if error.is_invalid_mutation() {
+                            entry.pending.quarantine_invalid_front(reason);
+                            continue;
+                        }
+                        entry.pending.failure = Some(reason);
+                        break;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Queue `envelope` for the held record whose route it came on, if any:
+    /// `Some` whether its queue refused it, `None` when no held record's
+    /// route carried it.
+    pub(super) fn admit_owned(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> Option<bool> {
+        let (index, payload) = self.owners.iter().enumerate().find_map(|(index, entry)| {
+            validated_route_payload_with(&entry.route, envelope, decrypted_payload)
+                .map(|payload| (index, payload))
+        })?;
+        let mutation = match decode_routed_mutation(payload, decrypted_payload) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: invalid routed document mutation");
+                return Some(false);
+            }
+        };
+        let entry = self.owners.get_mut(index)?;
+        let refused = !entry.pending.admit(mutation);
+        if refused {
+            tracing::warn!(status = ?entry.pending.failure, "collab: routed document deferred queue refused update; resynchronization required");
+        }
+        Some(refused)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What one action made in a unit: `field` set to `value`, invoked under
+    /// `invocation`.
+    fn action_mutation(
+        field: &str,
+        value: &str,
+        invocation: uuid::Uuid,
+    ) -> collab_types::DocumentMutation {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, field, value).unwrap();
+        let context = tilo_actions::ActionContext {
+            what: Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+                ty: "so.tilo.test-tasks".to_owned(),
+                field: field.to_owned(),
+                path: vec![tilo_actions::PathStep::Field(field.to_owned())],
+                op: tilo_actions::EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })),
+            invoker: Some(tilo_actions::ActionInvoker::person("alice")),
+            source_invocation: Some(tilo_actions::InvocationId(invocation)),
+            ..tilo_actions::ActionContext::for_resource("tasks", "tasks", field)
+        };
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
+        options.set_message(context.change_message().unwrap());
+        doc.commit_with(options).unwrap();
+        collab_types::DocumentMutation::Incremental(doc.save_after(&[]))
+    }
+
+    fn part(
+        route: crate::collaboration::RouteSpec,
+        mutation: collab_types::DocumentMutation,
+    ) -> Part {
+        Part {
+            route,
+            mutation,
+            heads: Vec::new(),
+            document: automerge::AutoCommit::new(),
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn document_routes_publish_under_the_action_that_made_them;
+
+        phase one_actions_units_publish_under_one_commit;
+        // One action that changed resources two apps keep: a task's field in the
+        // tasks app, and a thread in the discussion app. A peer that gets one of
+        // them has neither change, and gets both together.
+        {
+            let workspace = uuid::Uuid::new_v4();
+            let invocation = uuid::Uuid::new_v4();
+            let other = uuid::Uuid::new_v4();
+            let mut parts = vec![
+                part(
+                    crate::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
+                    action_mutation("title", "a", invocation),
+                ),
+                part(
+                    crate::collaboration::RouteSpec::document(
+                        "so.tilo.test-discussion",
+                        workspace,
+                        "thread",
+                    ),
+                    action_mutation("body", "b", invocation),
+                ),
+                part(
+                    crate::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
+                    action_mutation("title", "c", other),
+                ),
+                part(
+                    crate::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
+                    collab_types::DocumentMutation::Snapshot(Vec::new()),
+                ),
+            ];
+            let commits = publication_commits(&mut parts);
+
+            let action = commits[0]
+                .as_ref()
+                .expect("a unit that changed travels under its action's commit");
+            assert_eq!(
+                commits[1].as_ref(),
+                Some(action),
+                "both units of the action carry the one commit"
+            );
+            assert_eq!(action.parts.len(), 2, "the commit names both of its units");
+            assert!(action.covers("so.tilo.test-tasks", ""));
+            assert!(action.covers("so.tilo.test-discussion", "thread"));
+            assert_eq!(action.invocation, Some(invocation));
+            assert_eq!(action.author.actor, Some(tilo_actions::MemberId::person("alice").into()));
+            assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
+            assert_eq!(
+                action.author.device, [0; 32],
+                "the transport stamps the device"
+            );
+
+            let single = commits[2]
+                .as_ref()
+                .expect("another action travels under a commit of its own");
+            assert_ne!(single.id(), action.id());
+            assert_eq!(single.parts.len(), 1);
+            assert_eq!(commits[3], None, "a whole document is part of no action");
+
+            // Every unit the action wrote goes out as a part of it.
+            for (part, commit) in parts.into_iter().zip(commits) {
+                let request = part_request(part.mutation, commit.clone());
+                match commit {
+                    Some(commit) => assert!(
+                        matches!(
+                            request,
+                            CollabRequest::Document {
+                                commit: Some(carried),
+                                ..
+                            } if carried == commit
+                        ),
+                        "a unit of an action travels as a part of it"
+                    ),
+                    None => assert!(matches!(
+                        request,
+                        CollabRequest::Document { commit: None, .. }
+                    )),
+                }
+            }
+        }
+
+        phase every_letter_typed_publishes_under_the_typists_action;
+        // Typing a word writes its first letter as the action and every next letter
+        // as a continuation of it. Each letter goes out in its own pass, and each
+        // travels under the action of the person who typed it.
+        {
+            let mut fixture = super::super::framework_history_tests::RoutedOwners::new();
+            fixture.app.publish_owned_documents();
+            fixture.app.document_routes.sent.clear();
+            let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+            let typed = |text: &str| tilo_actions::ActionContext {
+                action: Some(tilo_actions::EncodedAction {
+                    type_id: "notes.type".into(),
+                    payload: format!("{text:?}").into_bytes(),
+                }),
+                invoker: Some(tilo_actions::ActionInvoker::person("alice")),
+                ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
+            };
+            let id = fixture.bindings[0].checkout.id.clone();
+            let records = fixture.records.clone();
+            let write = |text: &str, message: String| {
+                records
+                    .with_history(&id, |doc, _| {
+                        automerge::transaction::Transactable::put(doc, automerge::ROOT, "body", text)
+                            .unwrap();
+                        doc.commit_with(
+                            automerge::transaction::CommitOptions::default().with_message(message),
+                        );
+                    })
+                    .unwrap();
+            };
+            write("a", typed("a").change_message().unwrap());
+            fixture.app.publish_owned_documents();
+            write("ab", typed("ab").continuation_of(&typed("a")).unwrap());
+            fixture.app.publish_owned_documents();
+
+            let sent = &fixture.app.document_routes.sent;
+            assert_eq!(sent.len(), 2, "each letter goes out in its own pass");
+            for (_, request) in sent {
+                let CollabRequest::Document { commit, .. } = request else {
+                    panic!("a letter is a document change");
+                };
+                let commit = commit
+                    .as_ref()
+                    .expect("every letter travels under its action");
+                assert_eq!(commit.author.actor, Some(tilo_actions::MemberId::person("alice").into()));
+            }
+        }
+    }
+}

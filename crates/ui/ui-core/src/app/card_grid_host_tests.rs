@@ -1,0 +1,490 @@
+use super::*;
+use crate::widget::{AppModel, ModelPath};
+use crate::widget::{Button, Card, CardGrid, Column, Container, Element};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+/// The grid, as a host other than an [`App`] takes it: a tree hands its
+/// controls' ownership to the host that adopts it first, and a tree an `App`
+/// already holds belongs to that app's domain.
+fn fixture_tree(count: usize) -> (Box<dyn Widget>, Rc<RefCell<Vec<usize>>>) {
+    let clicks = Rc::new(RefCell::new(Vec::new()));
+    let cards: Vec<Element> = (0..count)
+        .map(|i| {
+            let clicks = clicks.clone();
+            Box::new(Card::new(Box::new(
+                Button::new(&format!("card-{i}"), &format!("Card {i}"))
+                    .on_open(move || clicks.borrow_mut().push(i)),
+            ))) as Element
+        })
+        .collect();
+    let root = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(20.0)
+        .push(Box::new(CardGrid::new(cards)))
+        .push(Box::new(
+            Container::new().with_no_padding().with_height(10.0),
+        ));
+    (Box::new(root), clicks)
+}
+
+fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
+    let (root, clicks) = fixture_tree(count);
+    let mut app = App::new_with_controlled_inputs(State::new(), root);
+    app.init_layout();
+    (app, clicks)
+}
+
+fn layout(app: &mut App, width: u32) {
+    app.layout.layout_dirty = true;
+    run_layout_pass(
+        app,
+        app.layout.root_node.unwrap(),
+        width,
+        2000,
+        1.0,
+        false,
+        None,
+    )
+    .unwrap();
+}
+
+fn button_rects(app: &App) -> Vec<KurboRect> {
+    app.root_widget.children()[0]
+        .children()
+        .iter()
+        .map(|card| card.children()[0].get_rect())
+        .collect()
+}
+
+tilo_test_env::scenario! {
+    fn card_grid_keeps_geometry_focus_and_edit_state;
+
+    phase card_grid_has_geometry_focus_and_input_before_paint;
+    {
+        {
+            let (mut app, clicks) = fixture(6);
+            layout(&mut app, 900);
+            assert_eq!(
+                app.focusable_order.len(),
+                6,
+                "all card buttons enter host focus traversal"
+            );
+            let before = button_rects(&app);
+            for (index, &node) in app.focusable_order.iter().enumerate() {
+                assert_eq!(
+                    app.inspect_node(node, |widget| widget.name().to_owned())
+                        .unwrap(),
+                    "Button"
+                );
+                assert_eq!(
+                    app.inspect_node(node, |widget| widget.get_rect()).unwrap(),
+                    before[index]
+                );
+                assert!(before[index].width() > 0.0 && before[index].height() > 0.0);
+                assert_eq!(
+                    app.inspect_node(node, |widget| widget.accessibility().unwrap().semantic_key)
+                        .unwrap(),
+                    Some(format!("card-{index}"))
+                );
+            }
+            let target = before[4].center();
+            assert!(app.dispatch_semantic_click(target.x, target.y));
+            assert_eq!(*clicks.borrow(), vec![4]);
+            assert_eq!(app.focused_node, Some(app.focusable_order[4]));
+            let order = app.focusable_order.clone();
+            let mut scene = Scene::new();
+            app.root_widget.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut app.text_renderer,
+                &app.theme,
+                &PresenceCtx::default(),
+            );
+            assert_eq!(
+                button_rects(&app),
+                before,
+                "paint must not establish or change geometry"
+            );
+            assert_eq!(app.focusable_order, order);
+        }
+
+        {
+            let (root, clicks) = fixture_tree(2);
+            let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
+                State::new(),
+                root,
+                (200, 600),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::MemberId::person("grid-test"),
+            );
+            let snapshot = driver.inspection();
+            let grid = &snapshot.root.children[0];
+            let [_, first_y, first_w, first_h] = grid.children[0].rect;
+            let [_, second_y, second_w, _] = grid.children[1].rect;
+            let gap = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
+            assert_eq!((first_w, second_w), (200.0, 200.0), "one full-width column");
+            assert!((second_y - (first_y + first_h + gap)).abs() < 0.5);
+            driver.click_named("card-1").unwrap();
+            assert_eq!(
+                *clicks.borrow(),
+                vec![1],
+                "the card's action runs with the click's frame"
+            );
+        }
+
+        {
+            let (mut app, clicks) = fixture(6);
+            let child = std::mem::replace(&mut app.root_widget, Box::new(Column::new()));
+            app.root_widget = Box::new(crate::widget::Scrollable::new_vertical().with_child(child));
+            app.init_layout();
+            app.layout.layout_dirty = true;
+            let root_node = app.layout.root_node.unwrap();
+            run_layout_pass(&mut app, root_node, 200, 190, 1.0, true, None).unwrap();
+            let root = app.root_widget.children()[0];
+            assert!(root.children()[0].get_rect().height() > 190.0);
+            let hidden_button = root.children()[0].children()[5].children()[0].get_rect();
+            assert!(hidden_button.y0 >= 190.0);
+            let target = hidden_button.center();
+            app.dispatch_semantic_click(target.x, target.y);
+            assert!(
+                clicks.borrow().is_empty(),
+                "off-viewport card must not receive pointer activation"
+            );
+            let visible_button = app.root_widget.children()[0].children()[0].children()[0].children()
+                [0]
+            .get_rect()
+            .center();
+            app.dispatch_semantic_click(visible_button.x, visible_button.y);
+            assert_eq!(*clicks.borrow(), vec![0]);
+        }
+
+        {
+            let requested = Rc::new(Cell::new(1));
+            let clicks = Rc::new(RefCell::new(Vec::new()));
+            let body = GrowingBody {
+                column: Column::new(),
+                requested: requested.clone(),
+                count: 0,
+                dirty: false,
+                clicks: clicks.clone(),
+            };
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CardGrid::new(vec![Box::new(Card::new(Box::new(body)))])),
+            );
+            app.root_widget.update(&app.state.doc, &app.state.root);
+            app.init_layout();
+            layout(&mut app, 300);
+            assert_eq!(app.focusable_order.len(), 1);
+            app.root_widget.take_structure_dirty();
+            requested.set(2);
+            assert!(app.root_widget.update(&app.state.doc, &app.state.root));
+            assert!(app.root_widget.take_structure_dirty());
+            app.rebuild_structure();
+            let root = app.layout.root_node.unwrap();
+            run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
+            assert_eq!(app.focusable_order.len(), 2);
+            let rects = app
+                .focusable_order
+                .iter()
+                .map(|&node| app.inspect_node(node, |widget| widget.get_rect()).unwrap())
+                .collect::<Vec<_>>();
+            let control = crate::widget::ControlSize::Regular.height(&Theme::dark());
+            assert_eq!(rects[0].height(), control);
+            assert_eq!(rects[1].height(), control);
+            assert_eq!(rects[1].y0 - rects[0].y1, 8.0);
+            let target = rects[1].center();
+            assert!(app.dispatch_semantic_click(target.x, target.y));
+            assert_eq!(*clicks.borrow(), vec![1]);
+            let mut scene = Scene::new();
+            app.root_widget.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut app.text_renderer,
+                &app.theme,
+                &PresenceCtx::default(),
+            );
+            for (&node, before) in app.focusable_order.iter().zip(rects) {
+                assert_eq!(
+                    app.inspect_node(node, |widget| widget.get_rect()).unwrap(),
+                    before
+                );
+            }
+        }
+
+        {
+            let nested = CardGrid::new(vec![
+                Box::new(Button::new("nested-a", "A")),
+                Box::new(Button::new("nested-b", "B")),
+            ])
+            .with_card_width(crate::widget::CardWidth::Wide);
+            let outer = CardGrid::new(vec![Box::new(Card::new(Box::new(nested)))]);
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(outer));
+            app.init_layout();
+            layout(&mut app, 200);
+            let card = app.root_widget.children()[0];
+            let nested = card.children()[0];
+            assert_eq!(card.get_rect().width(), 200.0);
+            assert!(nested.get_rect().width() < 200.0);
+            let buttons = nested.children();
+            let gap = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
+            assert_eq!(buttons[1].get_rect().y0 - buttons[0].get_rect().y1, gap);
+            assert!(
+                buttons
+                    .iter()
+                    .all(|button| button.get_rect().x1 <= card.get_rect().x1)
+            );
+            assert_eq!(app.focusable_order.len(), 2);
+        }
+    }
+
+    phase card_grid_reflows_rows_and_retains_edit_state;
+    {
+        {
+            let (mut app, _) = fixture(6);
+            layout(&mut app, 900);
+            let order = app.focusable_order.clone();
+            app.set_focused_node(Some(order[4]));
+            let gap = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
+            for width in [900, 600, 200, 900] {
+                layout(&mut app, width);
+                let grid = app.root_widget.children()[0];
+                let height = grid.get_rect().height();
+                assert_eq!(grid.get_rect().width(), f64::from(width));
+                let cards = grid.children();
+                let columns = match width {
+                    900 => 3,
+                    600 => 2,
+                    _ => 1,
+                };
+                let card_h = cards[0].get_rect().height();
+                let rows = 6_usize.div_ceil(columns);
+                assert!((height - (crate::num::f64_of_usize(rows) * (card_h + gap) - gap)).abs() < 0.5);
+                assert!((cards[columns].get_rect().y0 - (card_h + gap)).abs() < 0.5);
+                for card in cards {
+                    assert_eq!(card.get_rect().height(), card_h);
+                    assert!(card.get_rect().x1 <= f64::from(width));
+                }
+                assert_eq!(app.root_widget.children()[1].get_rect().y0, height + 20.0);
+                assert_eq!(
+                    app.focusable_order, order,
+                    "resize retains focus identities"
+                );
+                assert_eq!(app.focused_node, Some(order[4]));
+            }
+        }
+
+        {
+            let body = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(crate::widget::Text::new(
+                    &"Long content wraps across lines. ".repeat(80),
+                )))
+                .push(Box::new(Button::new("long-action", "Action")));
+            let root = CardGrid::new(vec![Box::new(Card::new(Box::new(body)))]);
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            app.init_layout();
+            layout(&mut app, 200);
+            let card = app.root_widget.children()[0].get_rect();
+            assert!(card.height() > 400.0, "content decides the card height");
+            assert_eq!(app.root_widget.get_rect().height(), card.height());
+        }
+
+        {
+            let input = crate::widget::TextInput::local().with_initial_value("saved value");
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CardGrid::new(vec![Box::new(Card::new(Box::new(input)))])),
+            );
+            app.init_layout();
+            layout(&mut app, 900);
+            let node = app.focusable_order[0];
+            app.set_focused_node(Some(node));
+            let state = app
+                .inspect_node(node, |widget| crate::undo::get_state(widget))
+                .unwrap();
+            assert!(state.is_some());
+            for width in [200, 600, 900] {
+                layout(&mut app, width);
+                assert_eq!(app.focusable_order, vec![node]);
+                assert_eq!(app.focused_node, Some(node));
+                assert_eq!(
+                    app.inspect_node(node, |widget| crate::undo::get_state(widget))
+                        .unwrap(),
+                    state
+                );
+            }
+        }
+
+        {
+            use crate::widget::{ListModel, VirtualList};
+            use std::cell::Cell;
+            struct GrowingModel {
+                keys: Rc<RefCell<Vec<u64>>>,
+                changed: Rc<Cell<bool>>,
+            }
+            impl ListModel for GrowingModel {
+                type Key = u64;
+                fn len(&self) -> usize {
+                    self.keys.borrow().len()
+                }
+                fn key_at(&self, index: usize) -> Option<u64> {
+                    self.keys.borrow().get(index).copied()
+                }
+                fn index_of(&self, key: &u64) -> Option<usize> {
+                    self.keys
+                        .borrow()
+                        .iter()
+                        .position(|candidate| candidate == key)
+                }
+                fn poll_changed(&mut self) -> bool {
+                    self.changed.replace(false)
+                }
+            }
+            let keys = Rc::new(RefCell::new(vec![1, 2]));
+            let changed = Rc::new(Cell::new(false));
+            let list = VirtualList::new(
+                GrowingModel {
+                    keys: keys.clone(),
+                    changed: changed.clone(),
+                },
+                32.0,
+                |_, _, key| Box::new(Button::new(&format!("row-{key}"), "Row")),
+            )
+            .with_viewport_height(120.0);
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CardGrid::new(vec![Box::new(Card::new(Box::new(list)))])),
+            );
+            app.init_layout();
+            layout(&mut app, 300);
+            let button_keys = |app: &App| {
+                app.focusable_order
+                    .iter()
+                    .filter_map(|&node| {
+                        app.inspect_node(node, |widget| {
+                            if widget.name() == "Button" {
+                                widget
+                                    .accessibility()
+                                    .and_then(|access| access.semantic_key)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(button_keys(&app), vec!["row-1", "row-2"]);
+            app.root_widget.take_structure_dirty();
+            keys.borrow_mut().push(3);
+            changed.set(true);
+            assert!(app.root_widget.update(&app.state.doc, &app.state.root));
+            app.root_widget.sync(&app.state.doc, &app.state.root);
+            assert!(app.root_widget.take_structure_dirty());
+            app.rebuild_structure();
+            let root = app.layout.root_node.unwrap();
+            run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
+            assert_eq!(button_keys(&app), vec!["row-1", "row-2", "row-3"]);
+            // Rebuilding and post-build sync must preserve actual delegate geometry.
+            for node in &app.focusable_order {
+                assert!(app.layout.taffy.layout(*node).unwrap().size.height > 0.0);
+                assert!(
+                    app.inspect_node(*node, |widget| widget.get_rect().height())
+                        .unwrap()
+                        > 0.0
+                );
+            }
+        }
+
+        {
+            for count in [0, 1] {
+                let (mut app, _) = fixture(count);
+                layout(&mut app, 200);
+                let grid = app.root_widget.children()[0];
+                let expected = grid
+                    .children()
+                    .first()
+                    .map_or(0.0, |c| c.get_rect().height());
+                assert_eq!(grid.get_rect().height(), expected);
+                assert_eq!(app.focusable_order.len(), count);
+            }
+        }
+    }
+}
+
+struct GrowingBody {
+    column: Column,
+    requested: Rc<Cell<usize>>,
+    count: usize,
+    dirty: bool,
+    clicks: Rc<RefCell<Vec<usize>>>,
+}
+impl Widget for GrowingBody {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
+        if self.count == self.requested.get() {
+            return false;
+        }
+        self.count = self.requested.get();
+        self.column = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(8.0);
+        for index in 0..self.count {
+            let clicks = self.clicks.clone();
+            self.column = std::mem::take(&mut self.column).push(Box::new(
+                Button::new(&format!("dynamic-{index}"), "Action")
+                    .on_click(move || clicks.borrow_mut().push(index)),
+            ));
+        }
+        self.dirty = true;
+        true
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.column.build_layout(tree, theme, map)
+    }
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.column.apply_layout(tree, node, origin);
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.column.draw(scene, transform, text, theme, presence);
+    }
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.column.handle_event(event, ctx);
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.column.children()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.column.children_mut()
+    }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.column);
+        true
+    }
+    fn get_rect(&self) -> KurboRect {
+        self.column.get_rect()
+    }
+    fn name(&self) -> &'static str {
+        "GrowingBody"
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+}

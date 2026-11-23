@@ -28,7 +28,7 @@
 //! anyone outside that group.
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::fs;
 #[cfg(not(windows))]
@@ -988,82 +988,23 @@ pub fn load_or_create_device_key(
     }
 }
 
-/// Whether the `renameat2` that just failed did so because the filesystem
-/// has no `RENAME_NOREPLACE` (gVisor's gofer mounts answer `EINVAL`).
-#[cfg(target_os = "linux")]
-fn no_replace_rename_unsupported() -> bool {
-    matches!(
-        io::Error::last_os_error().raw_os_error(),
-        Some(libc::EINVAL | libc::ENOSYS)
-    )
-}
-
-/// Claim `destination` with a hard link, which fails on an existing name as
-/// `RENAME_NOREPLACE` would, then drop the source name. Both names are in the
-/// same private directory for the moment between. Returns 0 or -1 with
-/// `errno` set, like the syscall it stands in for.
-#[cfg(target_os = "linux")]
-fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
-    // SAFETY: both pointers refer to live NUL-terminated path buffers.
-    let linked = unsafe {
-        libc::linkat(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            0,
-        )
-    };
-    if linked != 0 {
-        return -1;
-    }
-    // SAFETY: `source` is a live NUL-terminated path buffer.
-    unsafe { libc::unlink(source.as_ptr()) };
-    0
-}
-
 // Keep platform refusal in the claim operation so every outcome reaches the
 // caller's temporary-file cleanup without relying on a diverging result value.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn claim_identity_name(source: &CString, destination: &CString) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    #[cfg(target_os = "linux")]
-    let result = if result != 0 && no_replace_rename_unsupported() {
-        link_claim(source, destination)
-    } else {
-        result
-    };
-    #[cfg(target_os = "macos")]
-    // SAFETY: both paths are live NUL-terminated strings. RENAME_EXCL is the
-    // Darwin atomic no-replace claim; it cannot overwrite another creator.
-    let result = unsafe {
-        libc::renameatx_np(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            destination.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+fn claim_identity_name(source: &Path, destination: &Path) -> io::Result<()> {
+    match tilo_files::native::rename_file_noreplace(source, destination) {
+        // Once the fallback hard link succeeds, the destination holds the key
+        // even if unlinking the temporary name then fails.
+        Ok(
+            tilo_files::native::FileRename::Moved
+            | tilo_files::native::FileRename::SourceUnlinkFailed(_),
+        ) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn claim_identity_name(_: &CString, _: &CString) -> io::Result<()> {
+fn claim_identity_name(_: &Path, _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic no-replace identity publication is unsupported on this platform",
@@ -1100,12 +1041,12 @@ fn publish_identity_bytes_no_clobber(
             "device-key path has no parent",
         ))
     })?;
-    let destination = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
-        PersistError::Io(io::Error::new(
+    if path.as_os_str().as_bytes().contains(&0) {
+        return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "device-key path contains a NUL byte",
-        ))
-    })?;
+        )));
+    }
     // Validate the caller-controlled final path before persisting a temporary
     // secret. Otherwise an invalid NUL-containing basename would strand the
     // complete candidate in the shared identity directory.
@@ -1115,14 +1056,7 @@ fn publish_identity_bytes_no_clobber(
         return Err(io::Error::other("identity parent is not a directory").into());
     }
     let temp = create_device_key_claim_temp(parent, bytes, mode)?;
-    let source = CString::new(temp.as_os_str().as_bytes()).map_err(|_| {
-        let _ = fs::remove_file(&temp);
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "device-key temporary path contains a NUL byte",
-        ))
-    })?;
-    let claim = claim_identity_name(&source, &destination);
+    let claim = claim_identity_name(&temp, path);
     if claim.is_err() {
         let _ = fs::remove_file(&temp);
     }

@@ -184,11 +184,12 @@ def stage(root, output, pins, cohort, qualification=False):
     for name in ('cef.tapp', 'browser.tapp'):
         # The normal installer refuses mutable installed component pins. Buildah
         # supplies this exact staged pin as a read-only rootless build mount;
-        # installed application data remains writable at its ordinary path.
+        # installed application data remains writable at its ordinary path. An image
+        # build has no package service, so the install names the store it writes.
         recipe += ('RUN --mount=type=bind,source=rootfs/usr/share/tilo/browser-runtime-publisher.hex,'
                    'target=/usr/share/tilo/browser-runtime-publisher.hex,ro,relabel=shared '
                    'TILO_APPS_DATA_DIR=/usr/share/tilo-apps TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime '
-                   '/usr/libexec/tilo/tilo-install install /qualification-packages/' + name
+                   '/usr/libexec/tilo/tilo-install --offline-store /usr/share/tilo-apps install /qualification-packages/' + name
                    + ' --force --pinned --require-publisher ' + manifest['app_publisher']
                    + (' --allow-self-signed' if qualification else '') + '\n')
     # This tree contains public installed payloads, never signing identities or

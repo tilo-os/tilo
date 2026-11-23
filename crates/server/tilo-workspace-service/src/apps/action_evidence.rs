@@ -160,11 +160,13 @@ pub(crate) fn terminal_category(
 }
 
 fn admission_digest(receipt: &AdmissionReceipt) -> Result<[u8; 32], String> {
-    let mut bytes = b"tilo-semantic-admission-reference-v1\0".to_vec();
-    bytes.extend(canonical_bytes(
-        &serde_json::to_value(receipt).map_err(|_| "admission encoding failed")?,
-    )?);
-    Ok(*blake3::hash(&bytes).as_bytes())
+    let value = serde_json::to_value(receipt).map_err(|_| "admission encoding failed")?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo-semantic-admission-reference-v1\0");
+    tilo_canonical_json::write_bytes(&value, |chunk| {
+        hash.update(chunk);
+    });
+    Ok(*hash.finalize().as_bytes())
 }
 
 fn terminal_bytes(digest: &[u8; 32], category: TerminalCategory) -> Result<Vec<u8>, String> {
@@ -230,7 +232,7 @@ pub(crate) fn mint_local_report(
     exact_intent: &Value,
 ) -> Result<AdmissionEvidence, String> {
     let mut seed = b"tilo-local-report-private-salt-v1\0".to_vec();
-    seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)?)?);
+    seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)));
     let (_, signature) = crate::apps::evidence_signer::sign(&facts.workspace, &seed)?;
     mint_with_nonce(
         facts,
@@ -261,8 +263,8 @@ fn mint_with_nonce(
 ) -> Result<AdmissionEvidence, String> {
     let opening = IntentOpening {
         nonce,
-        intent_digest: intent_digest(exact_intent)?,
-        retained_digest: retained_digest(exact_intent)?,
+        intent_digest: intent_digest(exact_intent),
+        retained_digest: retained_digest(exact_intent),
         request: Some(RequestBinding {
             digest: exact_intent
                 .get("request")
@@ -270,7 +272,7 @@ fn mint_with_nonce(
         }),
     };
     let intent_commitment = opening.commitment();
-    let bytes = signing_bytes(&facts, &intent_commitment)?;
+    let bytes = signing_bytes(&facts, &intent_commitment);
     let (certificate, signature) = signer(&facts.workspace, &bytes)?;
     let evidence = AdmissionEvidence {
         receipt: AdmissionReceipt {
@@ -307,7 +309,7 @@ pub fn verify(receipt: &AdmissionReceipt, expected_facts: &AdmissionFacts) -> Re
     let signature = Signature::from_slice(&receipt.signature)
         .map_err(|_| "invalid admission signature length")?;
     key.verify_strict(
-        &signing_bytes(&receipt.facts, &receipt.intent_commitment)?,
+        &signing_bytes(&receipt.facts, &receipt.intent_commitment),
         &signature,
     )
     .map_err(|_| "invalid admission signature".into())
@@ -345,7 +347,7 @@ impl AdmissionEvidence {
     }
 
     pub(crate) fn validate_retained(&self, retained: &Value) -> Result<(), String> {
-        if retained_digest(retained)? != self.opening.retained_digest {
+        if retained_digest(retained) != self.opening.retained_digest {
             return Err("retained admission intent differs from signed intent".into());
         }
         Ok(())
@@ -378,7 +380,7 @@ impl IntentOpening {
     /// Also call [`verify`] with independently expected facts and trust policy;
     /// a commitment check alone does not authenticate the receipt.
     pub fn verify(&self, receipt: &AdmissionReceipt, exact_intent: &Value) -> Result<(), String> {
-        if intent_digest(exact_intent)? != self.intent_digest {
+        if intent_digest(exact_intent) != self.intent_digest {
             return Err("admission intent does not match".into());
         }
         self.validate_commitment(receipt)
@@ -413,53 +415,46 @@ impl IntentOpening {
     }
 }
 
-fn signing_bytes(facts: &AdmissionFacts, commitment: &[u8; 32]) -> Result<Vec<u8>, String> {
+fn signing_bytes(facts: &AdmissionFacts, commitment: &[u8; 32]) -> Vec<u8> {
     let mut bytes = SIGN_DOMAIN.to_vec();
-    bytes.extend(canonical_bytes(&serde_json::json!({
-        "facts": facts,
-        "intent_commitment": commitment,
-    }))?);
-    Ok(bytes)
+    tilo_canonical_json::append_vec(
+        &mut bytes,
+        &serde_json::json!({
+            "facts": facts,
+            "intent_commitment": commitment,
+        }),
+    );
+    bytes
 }
 
-fn retained_digest(intent: &Value) -> Result<[u8; 32], String> {
-    let mut retained = intent.clone();
-    if let Some(fields) = retained.as_object_mut() {
-        fields.remove("request");
-    }
+fn retained_digest(intent: &Value) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_derive_key("tilo semantic admission retained intent v1");
-    hash.update(&canonical_bytes(&retained)?);
-    Ok(*hash.finalize().as_bytes())
+    if intent
+        .as_object()
+        .is_some_and(|fields| fields.contains_key("request"))
+    {
+        let mut retained = intent.clone();
+        if let Some(fields) = retained.as_object_mut() {
+            fields.remove("request");
+        }
+        tilo_canonical_json::write_bytes(&retained, |chunk| {
+            hash.update(chunk);
+        });
+    } else {
+        tilo_canonical_json::write_bytes(intent, |chunk| {
+            hash.update(chunk);
+        });
+    }
+    *hash.finalize().as_bytes()
 }
 
-fn intent_digest(intent: &Value) -> Result<[u8; 32], String> {
+fn intent_digest(intent: &Value) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(INTENT_DOMAIN);
-    hash.update(&canonical_bytes(intent)?);
-    Ok(*hash.finalize().as_bytes())
-}
-
-// Sort recursively even when serde_json's preserve_order feature is enabled by
-// another workspace member. Arrays retain order; absent and null stay distinct.
-// This is the v1 JSON-value encoding, not a claim of RFC 8785 conformance.
-fn canonical_bytes(value: &Value) -> Result<Vec<u8>, String> {
-    fn sorted(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_unstable_by_key(|(key, _)| *key);
-                Value::Object(
-                    entries
-                        .into_iter()
-                        .map(|(k, v)| (k.clone(), sorted(v)))
-                        .collect(),
-                )
-            }
-            Value::Array(values) => Value::Array(values.iter().map(sorted).collect()),
-            other => other.clone(),
-        }
-    }
-    serde_json::to_vec(&sorted(value)).map_err(|_| "admission encoding failed".into())
+    tilo_canonical_json::write_bytes(intent, |chunk| {
+        hash.update(chunk);
+    });
+    *hash.finalize().as_bytes()
 }
 
 #[cfg(test)]
@@ -657,7 +652,7 @@ mod tests {
             hash.update(&evidence.opening.retained_digest);
             let commitment = *hash.finalize().as_bytes();
             let signature = SigningKey::from_bytes(&[12; 32])
-                .sign(&signing_bytes(&facts(), &commitment).unwrap())
+                .sign(&signing_bytes(&facts(), &commitment))
                 .to_bytes();
             historical["receipt"]["intent_commitment"] = serde_json::json!(commitment);
             historical["receipt"]["signature"] = serde_json::json!(signature.to_vec());
@@ -721,17 +716,14 @@ mod tests {
         {
             let left: Value = serde_json::from_str(r#"{"b":{"y":2,"x":1},"a":[1,2]}"#).unwrap();
             let right: Value = serde_json::from_str(r#"{"a":[1,2],"b":{"x":1,"y":2}}"#).unwrap();
-            assert_eq!(
-                intent_digest(&left).unwrap(),
-                intent_digest(&right).unwrap()
+            assert_eq!(intent_digest(&left), intent_digest(&right));
+            assert_ne!(
+                intent_digest(&serde_json::json!({})),
+                intent_digest(&serde_json::json!({"x":null}))
             );
             assert_ne!(
-                intent_digest(&serde_json::json!({})).unwrap(),
-                intent_digest(&serde_json::json!({"x":null})).unwrap()
-            );
-            assert_ne!(
-                intent_digest(&serde_json::json!([1, 2])).unwrap(),
-                intent_digest(&serde_json::json!([2, 1])).unwrap()
+                intent_digest(&serde_json::json!([1, 2])),
+                intent_digest(&serde_json::json!([2, 1]))
             );
             assert!(
                 serde_json::from_value::<VerifiedActor>(
@@ -752,5 +744,126 @@ mod tests {
                 Err("invalid authenticated local admission agent".into())
             );
         }
+    }
+
+    const CANONICAL_JSON_CORPUS: &[(&str, &str, &[u8])] = &[
+        (
+            "nested_unsorted",
+            r#"{"z":{"b":2,"a":1},"a":{"d":{"y":true,"x":false},"c":[3,2,1]},"m":0}"#,
+            br#"{"a":{"c":[3,2,1],"d":{"x":false,"y":true}},"m":0,"z":{"a":1,"b":2}}"#,
+        ),
+        (
+            "utf8_vs_utf16_key_order",
+            r#"{"\uD83D\uDE00":4,"\uE000":3,"é":2,"z":1}"#,
+            b"{\"z\":1,\"\xc3\xa9\":2,\"\xee\x80\x80\":3,\"\xf0\x9f\x98\x80\":4}",
+        ),
+        (
+            "non_bmp_vs_bmp_high_key_order",
+            r#"{"\uD83D\uDE80":1,"\uFFFF":2,"\uE000":3}"#,
+            b"{\"\xee\x80\x80\":3,\"\xef\xbf\xbf\":2,\"\xf0\x9f\x9a\x80\":1}",
+        ),
+        (
+            "ascii_empty_prefix_key_order",
+            r#"{"b":1,"":2,"a":3,"ab":4,"B":5,"A":6}"#,
+            br#"{"":2,"A":6,"B":5,"a":3,"ab":4,"b":1}"#,
+        ),
+        (
+            "nested_ten_keys",
+            r#"{"k9":9,"k8":8,"k7":{"j9":9,"j8":8,"j7":7,"j6":6,"j5":5,"j4":4,"j3":3,"j2":2,"j1":1,"j0":0},"k6":6,"k5":5,"k4":4,"k3":3,"k2":2,"k1":1,"k0":0}"#,
+            br#"{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":{"j0":0,"j1":1,"j2":2,"j3":3,"j4":4,"j5":5,"j6":6,"j7":7,"j8":8,"j9":9},"k8":8,"k9":9}"#,
+        ),
+        ("empty_object", "{}", b"{}"),
+        ("empty_array", "[]", b"[]"),
+        ("empty_string", r#""""#, br#""""#),
+        (
+            "line_seps_fffd_and_solidus",
+            r#""\u2028\u2029\ufffd/""#,
+            b"\"\xe2\x80\xa8\xe2\x80\xa9\xef\xbf\xbd/\"",
+        ),
+        (
+            "all_32_control_bytes_value",
+            r#""\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f""#,
+            br#""\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f""#,
+        ),
+        (
+            "all_32_control_bytes_key",
+            r#"{"a":2,"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f":1}"#,
+            br#"{"\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f":1,"a":2}"#,
+        ),
+        (
+            "escaped_and_unicode_string",
+            r#""q\"b\\c\u0000\u0001\u0007\u0008\u0009\u000a\u000b\u000c\u000d\u000e\u001f\u007f café 日本語 🚀""#,
+            b"\"q\\\"b\\\\c\\u0000\\u0001\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u001f\x7f caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e \xf0\x9f\x9a\x80\"",
+        ),
+        (
+            "escaped_keys_object",
+            r#"{"q\"b\\c\u0000\b\t\n\f\r\u001f\u007f":2,"a":1}"#,
+            b"{\"a\":1,\"q\\\"b\\\\c\\u0000\\b\\t\\n\\f\\r\\u001f\x7f\":2}",
+        ),
+        ("i64_min", "-9223372036854775808", b"-9223372036854775808"),
+        ("i64_max", "9223372036854775807", b"9223372036854775807"),
+        (
+            "u64_above_i64_max",
+            "9223372036854775808",
+            b"9223372036854775808",
+        ),
+        ("u64_max", "18446744073709551615", b"18446744073709551615"),
+        ("zero", "0", b"0"),
+        ("negative_zero", "-0.0", b"-0.0"),
+        ("float_whole", "1.0", b"1.0"),
+        ("float_tenth", "0.1", b"0.1"),
+        ("float_1e20", "1e20", b"1e+20"),
+        ("float_1e21", "1e21", b"1e+21"),
+        ("float_1e_neg5", "1e-5", b"0.00001"),
+        ("float_1e_neg7", "1e-7", b"1e-7"),
+        ("float_min_subnormal", "5e-324", b"5e-324"),
+        (
+            "float_max_finite",
+            "1.7976931348623157e308",
+            b"1.7976931348623157e+308",
+        ),
+        ("float_1e15", "1e15", b"1000000000000000.0"),
+        ("float_0_3_ulp", "0.30000000000000004", b"0.30000000000000004"),
+        ("bool_true", "true", b"true"),
+        ("bool_false", "false", b"false"),
+        ("null", "null", b"null"),
+        (
+            "mixed_array",
+            r#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"b":2,"a":1}]"#,
+            br#"[null,true,false,0,-1,1.0,0.1,-0.0,"a\"b",[],{},{"a":1,"b":2}]"#,
+        ),
+    ];
+
+    #[test]
+    fn canonical_evidence_pins_canonical_bytes_for_shared_corpus() {
+        const PINNED_NESTED_INTENT_DIGEST: [u8; 32] = [
+            0x0d, 0x59, 0xbe, 0x96, 0xd4, 0x62, 0x6b, 0xca, 0xf4, 0x48, 0xd1, 0xa7, 0xd8, 0x01,
+            0x08, 0x5e, 0x3b, 0xc4, 0xfe, 0x22, 0x8c, 0xf2, 0xc5, 0xa9, 0xc0, 0x9a, 0x00, 0xbb,
+            0x6f, 0x72, 0x92, 0x7e,
+        ];
+
+        for &(name, input, expected) in CANONICAL_JSON_CORPUS {
+            let value: Value = serde_json::from_str(input).unwrap();
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(INTENT_DOMAIN);
+            hasher.update(expected);
+            assert_eq!(
+                intent_digest(&value),
+                *hasher.finalize().as_bytes(),
+                "row {name}"
+            );
+        }
+        let nested: Value = serde_json::from_str(CANONICAL_JSON_CORPUS[0].1).unwrap();
+        assert_eq!(intent_digest(&nested), PINNED_NESTED_INTENT_DIGEST);
+
+        let signed = signing_bytes(&facts(), &[0; 32]);
+        assert_eq!(
+            signed,
+            [
+                SIGN_DOMAIN,
+                br#"{"facts":{"action":"append","actor":{"AuthenticatedLocal":{"agent":"agent","device":[4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4],"root":[3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]}},"actor_id":{"agent":"agent"},"app_id":"notes","document_id":"record","host":"00000000-0000-0000-0000-000000000001","invocation":"00000000-0000-0000-0000-000000000002","resource":"document/body","revision":"revision","workspace":"workspace"},"intent_commitment":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}"#,
+            ]
+            .concat()
+        );
     }
 }

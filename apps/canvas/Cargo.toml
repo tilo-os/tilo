@@ -25,7 +25,7 @@ path = "src/main.rs"
 samples = []
 thin = ["dep:runtime-dylib"]
 # Paint and find subjects through the painting engines' library in the runtime
-# bundle (libtilo_paint_engine.so, crates/runtime/engines/paint) instead of
+# bundle (libtilo_paint_engine.so, crates/engines/loadable/paint) instead of
 # the executable. The release collection enables it
 # (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
 # links the engines statically, because the engine library links only through
@@ -39,11 +39,11 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-paint-engine = { path = "../../crates/runtime/engines/paint", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
+tilo-paint-engine = { path = "../../crates/engines/loadable/paint", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Oil and watercolour layers are painted by the shared media simulation.
-tilo-wet-media = { path = "../../crates/media/wet-media" }
+tilo-wet-media = { path = "../../crates/engines/wet-media" }
 # A look or export is stored as content and answered by its address.
 tilo-content = { path = "../../crates/system/content" }
 serde.workspace = true
@@ -69,7 +69,7 @@ i_overlay = { version = "9.0", default-features = false }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 # A photo's subject is found on this device by the model the person set
 # up, through the model gateway; its edge is refined to the picture here.
-tilo-subject = { path = "../../crates/platform/tilo-subject" }
+tilo-subject = { path = "../../crates/engines/tilo-subject" }
 # A saved artwork is a ZIP package carrying its pictures.
 zip.workspace = true
 
@@ -91,7 +91,7 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
 # A stand-in subject model on the gateway's own descriptor and wire, held
 # mid-inference to show the window keeps taking input.
-tilo-model-client = { path = "../../crates/agent/model-client", default-features = false }
+tilo-model-client = { path = "../../crates/sdk/model-client", default-features = false }
 # The reach test walks every published action (framework::testing).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 

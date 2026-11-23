@@ -108,9 +108,9 @@ types = [
 
 [[layout]]
 format = "peer durable state"
-version = 12
-digest = "ce37a79415b46711"
-what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes waiting to be sent (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set)"""
+version = 13
+digest = "b288902c8025ebab"
+what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes waiting to be sent (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set; version 13 is version 12's layout, whose certificates name the retired grants their binary form already carried)"""
 types = [
   "crates/collab/tilo-peer-state/src/state/durable.rs:Durable",
   "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
@@ -136,9 +136,9 @@ types = [
 
 [[layout]]
 format = "peer store frames"
-version = 5
-digest = "f9601f82d6a82542"
-what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key)"""
+version = 6
+digest = "b8bda738e3edf66a"
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key; version 6 is version 5's layout, whose identity hello names a certificate carrying the retired grants its binary form already wrote)"""
 types = [
   "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]

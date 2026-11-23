@@ -24,40 +24,33 @@ pub(super) async fn keeps_an_assistant(
     limit_micros: Option<u64>,
 ) {
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
-    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    // The record as their device writes it, made before anything is waited
-    // for.
-    let bytes = {
-        let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(acts_for);
-        made.apply(
-            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
-                id: Some(ASSISTANT.into()),
-                model: None,
-                mcp_client: None,
-            }),
-        )
-        .unwrap();
-        made.apply(WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(
-            workspace_agents::SetAgentSpendLimit {
-                agent: tilo_resource::Id::from_raw(ASSISTANT.to_owned()),
-                limit_micros,
-            },
-        ))
-        .unwrap();
-        std::mem::take(made.doc_mut()).save()
-    };
+    assert!(
+        cert == workspaces.device_cert(),
+        "the server writes the record as its governor"
+    );
     workspaces
-        .author_workspace_document(
-            workspace,
-            cert,
-            (tilo_workspace_agent::OWNER, record.as_str()),
-            |doc| {
-                tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            },
-        )
+        .author_agents(workspace, |doc| {
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(acts_for);
+            made.apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
+                    id: Some(ASSISTANT.into()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .unwrap();
+            made.apply(WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(
+                workspace_agents::SetAgentSpendLimit {
+                    agent: tilo_resource::Id::from_raw(ASSISTANT.to_owned()),
+                    limit_micros,
+                },
+            ))
+            .unwrap();
+            std::mem::swap(doc, made.doc_mut());
+            Ok(())
+        })
         .await
         .unwrap();
 }

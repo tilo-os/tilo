@@ -18,8 +18,8 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext,
-    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch,
-    resolve_shell_ui_bind, to_service_binds,
+    resolve_blob_bind, resolve_chooser_bind, resolve_clipboard_bind,
+    resolve_service_binds_for_launch, resolve_shell_ui_bind, to_service_binds,
 };
 use entrypoint_runtime::preflight_entrypoint_runtime;
 use seccomp_fds::SeccompFds;
@@ -3057,6 +3057,12 @@ pub(crate) fn launch_with_context(
         {
             resolved.push(chooser);
         }
+        // The person's clipboard, the same service a tilolang instance reaches: a copy in either
+        // language is the person's copy. A launch without services, or a session that serves none,
+        // hands none, and the app's copies and pastes are refused.
+        if let Some(clipboard) = resolve_clipboard_bind(opts.no_services) {
+            resolved.push(clipboard);
+        }
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && !gpu_granted
@@ -3768,6 +3774,12 @@ fn launch_with_capture_spawn<T>(
         resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
     {
         resolved.push(chooser);
+    }
+    // The person's clipboard, the same service a tilolang instance reaches: a copy in either
+    // language is the person's copy. A launch without services, or a session that serves none,
+    // hands none, and the app's copies and pastes are refused.
+    if let Some(clipboard) = resolve_clipboard_bind(opts.no_services) {
+        resolved.push(clipboard);
     }
     #[cfg(target_os = "linux")]
     if matches!(opts.mode, LaunchMode::Gui)

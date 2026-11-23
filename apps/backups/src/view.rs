@@ -397,7 +397,7 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
     ])
     .selected(&page.nav_id())
     .with_accessible_name(crate::i18n::t("backups-a11y-window"))
-    .on_view("backups-places", move |id| {
+    .on_choose("backups-places", move |id| {
         if let Some(page) = Page::from_nav_id(&id) {
             intents.push(Intent::Navigate(page));
         }
@@ -816,7 +816,7 @@ fn snapshot_row(
         .secondary(secondary)
         .meta(clock(snapshot.taken))
         .selected(model.selected == Some(snapshot.id.as_str()))
-        .on_view(move || intents.push(Intent::SelectSnapshot(id.clone())));
+        .on_open(move || intents.push(Intent::SelectSnapshot(id.clone())));
     if let Some(source) = source {
         row = row.icon(source_icon(source.kind));
     }
@@ -980,14 +980,14 @@ pub fn snapshot_details(
         let intents = intents.clone();
         Button::new("backups-restore", &CATALOG.t("backups-restore"))
             .with_enabled(usable)
-            .on_view(move || intents.push(Intent::OpenRestore))
+            .on_open(move || intents.push(Intent::OpenRestore))
     };
     let verify = {
         let intents = intents.clone();
         Button::new("backups-verify", &CATALOG.t("backups-verify"))
             .with_enabled(usable)
             .tooltip("Read every file and compare its checksum")
-            .on_effect(move || intents.push(Intent::Verify))
+            .on_click(move || intents.push(Intent::Verify))
     };
     Box::new(
         Scrollable::new_vertical()
@@ -1159,12 +1159,12 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
             .with_icon(Icon::Archive)
             .with_message(CATALOG.t("backups-setup-start-hint"))
             .with_action("Choose folder…")
-            .on_view(set_up),
+            .on_open(set_up),
         Setup::ChooseDestination => EmptyState::new("Choose where to keep backups")
             .with_icon(Icon::HardDrive)
             .with_message(CATALOG.t("backups-setup-destination-hint"))
             .with_action("Choose location…")
-            .on_view(set_up),
+            .on_open(set_up),
         Setup::Running(status) => EmptyState::new("Creating your first backup")
             .with_icon(Icon::Archive)
             .with_message(*status),
@@ -1175,7 +1175,7 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
         .with_details(*error)
         .with_icon(Icon::HardDrive)
         .with_action("Choose another location…")
-        .on_view(set_up),
+        .on_open(set_up),
     };
     Box::new(state)
 }

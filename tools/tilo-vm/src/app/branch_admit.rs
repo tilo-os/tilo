@@ -8,13 +8,12 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tilo_vm_protocol::{AccountKind, AccountRestart, Status};
+use tilo_device_protocol::{AccountKind, AccountRestart};
 
-use super::{App, Resolved, StopGraces, control_json, stop_escalating};
+use super::{App, StopGraces, control_json, stop_escalating};
 use crate::config::Registry;
 use crate::error::CliError;
-use crate::hypervisor::{Runner, SystemRunner, Vm, run_all};
-use crate::remote;
+use crate::hypervisor::{Runner, Vm, run_all};
 
 /// What the host keeps for itself beside the VMs it boots, in MiB.
 pub(super) const HOST_RESERVE_MB: u64 = 2048;
@@ -441,20 +440,11 @@ impl App {
         let Ok(adapter) = Self::adapter(&vm) else {
             return;
         };
-        let poweroff = adapter.ssh_endpoint(&vm.vm(), runner).ok().map(|endpoint| {
-            remote::ssh_command(
-                &endpoint,
-                vm.entry.key.as_deref(),
-                &["systemctl".into(), "poweroff".into()],
-                false,
-            )
-        });
         let down = stop_escalating(
             runner,
             adapter.as_ref(),
             &vm.vm(),
-            poweroff.as_ref(),
-            None,
+            false,
             StopGraces::default(),
         );
         if !matches!(down, Ok((Some(true) | None, _))) && !self.json {
@@ -502,11 +492,8 @@ if ping -c 3 -W 2 TARGET >/dev/null 2>&1; then echo REACHED=yes; fi
 exit 0"#;
 
 /// [`REACH`] for `to`, as the one shell line SSH hands the guest's login shell.
-pub(super) fn reach_line(to: Ipv4Addr) -> Vec<String> {
-    vec![format!(
-        "sh -c {}",
-        crate::vmbuild::sh_quote(&REACH.replace("TARGET", &to.to_string()))
-    )]
+pub(super) fn reach_script(to: Ipv4Addr) -> String {
+    REACH.replace("TARGET", &to.to_string())
 }
 
 pub(super) fn read_reach(said: &str) -> Reach {
@@ -546,16 +533,14 @@ impl Guests for LiveGuests {
         let resolved = self.app.resolve_vm(Some(vm))?;
         let mut remote = match self.app.connect(&resolved) {
             Ok(remote) => remote,
-            Err(CliError::Unreachable { .. } | CliError::DaemonMissing { .. }) => return Ok(None),
+            // A device that does not answer yet mid-boot is read again; one that never answers
+            // is what the admission's timeout names.
+            Err(CliError::Unreachable { .. } | CliError::NotJoined { .. }) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let Ok(status) = remote.call(Status { account: None }) else {
-            // A daemon that drops the call mid-boot is read again; one that never answers is
-            // what the admission's timeout names.
-            return Ok(None);
-        };
+        let status = remote.status.clone();
         let mut guest = Guest::default();
-        let facts = self.machine(&resolved)?;
+        let facts = super::reach::device_sh(&mut remote, MACHINE)?;
         for line in facts.lines() {
             if let Some(key) = line.strip_prefix("KEY=") {
                 guest.key = Some(key.trim().to_owned());
@@ -594,18 +579,12 @@ impl Guests for LiveGuests {
 
     fn reach(&mut self, vm: &str, to: Ipv4Addr) -> Result<Option<Reach>, CliError> {
         let resolved = self.app.resolve_vm(Some(vm))?;
-        let Ok(endpoint) = self.app.endpoint(&resolved) else {
+        let Ok(mut remote) = self.app.connect(&resolved) else {
             return Ok(None);
         };
-        let command = remote::ssh_command(
-            &endpoint,
-            resolved.entry.key.as_deref(),
-            &reach_line(to),
-            false,
-        );
-        let mut runner = SystemRunner { cwd: None };
-        let output = runner.output(&command)?;
-        Ok(output.success.then(|| read_reach(&output.stdout)))
+        Ok(super::reach::device_sh(&mut remote, &reach_script(to))
+            .ok()
+            .map(|stdout| read_reach(&stdout)))
     }
 
     fn pause(&mut self) {
@@ -615,23 +594,6 @@ impl Guests for LiveGuests {
     fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }
-}
-
-impl LiveGuests {
-    fn machine(&mut self, vm: &Resolved) -> Result<String, CliError> {
-        let endpoint = self.app.endpoint(vm)?;
-        let command =
-            remote::ssh_command(&endpoint, vm.entry.key.as_deref(), &machine_line(), false);
-        let mut runner = SystemRunner { cwd: None };
-        Ok(runner.output(&command)?.stdout)
-    }
-}
-
-/// [`MACHINE`] as the one shell line SSH hands the guest's login shell: ssh joins the remote
-/// words with spaces, so `sh`, `-c` and the script as three words ran `sh -c cd` and the rest of
-/// the script in the login shell's own directory, where it found no record and said nothing.
-pub(super) fn machine_line() -> Vec<String> {
-    vec![format!("sh -c {}", crate::vmbuild::sh_quote(MACHINE))]
 }
 
 const HOSTS: [&str; 2] = ["raw", r#"{"op":"keeping_devices"}"#];

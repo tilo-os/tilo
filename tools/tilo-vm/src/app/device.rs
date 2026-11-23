@@ -1,186 +1,55 @@
-//! A device reached as its owner's account rather than as root: every remote
-//! command runs through `sudo -n`. `vm add --ssh <user>@<host>` checks what the
-//! other commands rely on and registers the device only once the required
-//! checks pass.
+//! A real machine of yours registered by its device key. `vm add` asks the device's own daemon,
+//! as this machine's device of your identity, checks what the other commands rely on, and
+//! registers it once it answers.
 
 use std::fmt::Write as _;
+use std::net::{IpAddr, SocketAddr};
 
 use serde_json::json;
-use tilo_vm_protocol::HelloResult;
+use tilo_device_protocol::StatusResult;
 
-use super::{App, Outcome, absolute, describe_tools};
+use super::{App, Outcome, Resolved, absolute, describe_tools};
 use crate::cli::AddArgs;
-use crate::config::VmEntry;
+use crate::config::{DAEMON_PORT, DeviceRoute, Source, VmEntry};
 use crate::doctor::Check;
 use crate::error::CliError;
-use crate::hypervisor::{CommandLine, DEVICE, Runner as _, SshEndpoint};
-use crate::remote::{self, Remote};
-use crate::vmbuild::sh_quote;
+use crate::hypervisor::{DEVICE, SshEndpoint};
 
-pub const PROBE: &str = r#"echo "user=$(id -un)"; if [ "$(id -u)" = 0 ]; then echo sudo=root; elif out=$(sudo -n true 2>&1); then echo sudo=ok; else echo "sudo=no $(printf %s "$out" | head -n 1)"; fi; if command -v tilo-vmd >/dev/null 2>&1; then echo tilo-vmd=yes; else echo tilo-vmd=no; fi; if command -v bootc >/dev/null 2>&1; then echo bootc=yes; else echo bootc=no; fi; echo "arch=$(uname -m)"; echo @@board; cat /usr/lib/tilo/hardware-profile.json 2>/dev/null"#;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Probe {
-    pub user: Option<String>,
-    pub root: Result<bool, String>,
-    pub tilo_vmd: bool,
-    pub bootc: bool,
-    pub arch: Option<String>,
-    pub board: Option<String>,
-}
-
-pub fn parse_probe(output: &str) -> Probe {
-    let (lines, board) = output.split_once("@@board").unwrap_or((output, ""));
-    let mut probe = Probe {
-        user: None,
-        root: Err("the probe did not run".into()),
-        tilo_vmd: false,
-        bootc: false,
-        arch: None,
-        board: None,
+pub fn device_checks(answered: Result<&StatusResult, &CliError>) -> Vec<Check> {
+    let status = match answered {
+        Ok(status) => status,
+        Err(error) => return vec![Check::fail("device", error.to_string(), error.hint())],
     };
-    for line in lines.lines().map(str::trim) {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        match key {
-            "user" => probe.user = Some(value.to_owned()).filter(|v| !v.is_empty()),
-            "sudo" => {
-                probe.root = match value {
-                    "root" => Ok(true),
-                    "ok" => Ok(false),
-                    other => Err(other
-                        .strip_prefix("no")
-                        .map(str::trim)
-                        .and_then(|why| why.strip_prefix("sudo:"))
-                        .map_or_else(|| other.to_owned(), |why| why.trim().to_owned())),
-                };
-            }
-            "tilo-vmd" => probe.tilo_vmd = value == "yes",
-            "bootc" => probe.bootc = value == "yes",
-            "arch" => probe.arch = Some(value.to_owned()).filter(|v| !v.is_empty()),
-            _ => {}
-        }
-    }
-    probe.board = serde_json::from_str::<serde_json::Value>(board.trim())
-        .ok()
-        .and_then(|profile| profile.get("id")?.as_str().map(str::to_owned))
-        .filter(|id| !id.is_empty());
-    probe
-}
-
-pub fn grant_sudo_line(user: &str) -> Result<String, CliError> {
-    let valid = !user.is_empty()
-        && user.len() <= 32
-        && user
-            .bytes()
-            .next()
-            .is_some_and(|b| b.is_ascii_lowercase() || b == b'_')
-        && user
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b));
-    if !valid {
-        return Err(CliError::InvalidInput(format!(
-            "'{user}' is not a user name tilo-vm writes into sudoers; grant it by hand (tilo-vm guide devices)"
-        )));
-    }
-    let file = sudoers_file(user);
-    let inner = format!(
-        "printf \"%s\\n\" \"# tilo-vm vm add-device --grant-sudo: tilo-vm runs tilo-vmd and its commands as root\" \"{user} ALL=(ALL) NOPASSWD: ALL\" > {file}.new && chmod 0440 {file}.new && visudo -cqf {file}.new && mv {file}.new {file}"
-    );
-    Ok(format!("sudo -- sh -c {}", sh_quote(&inner)))
-}
-
-pub fn sudoers_file(user: &str) -> String {
-    format!("/etc/sudoers.d/tilo-vm-{user}")
-}
-
-pub fn device_checks(
-    endpoint: &SshEndpoint,
-    probe: &Probe,
-    hello: Option<&Result<HelloResult, CliError>>,
-) -> Vec<Check> {
     let mut checks = vec![Check::ok(
-        "ssh",
+        "device",
         format!(
-            "{} answers as {}",
-            endpoint.ssh_spec(),
-            probe.user.as_deref().unwrap_or(&endpoint.user)
+            "answers this machine: device steps {} on {}",
+            status.daemon_version, status.arch
         ),
     )];
-    checks.push(match &probe.root {
-        Ok(true) => Check::ok("root", "logged in as root"),
-        Ok(false) => Check::ok(
-            "root",
-            format!("{} runs commands as root with sudo -n", endpoint.user),
-        ),
-        Err(why) => Check::fail(
-            "root",
-            format!(
-                "{} cannot run commands as root without a password ({why}); tilo-vm runs tilo-vmd and its own commands as root",
-                endpoint.user
-            ),
-            format!(
-                "rerun with --grant-sudo: sudo asks for {}'s password once, here, and {} lets it run commands as root without one   |   or log in as root: --ssh root@{}",
-                endpoint.user,
-                sudoers_file(&endpoint.user),
-                endpoint.host
-            ),
-        ),
+    // A device takes CI layers from this host, never pulling the image itself.
+    let tools = describe_tools(&status.tools, true);
+    checks.push(if status.tools.can_build() {
+        Check::ok("toolchain", tools)
+    } else {
+        Check::warn(
+            "toolchain",
+            tools,
+            "swaps from this worktree build on the device and need cargo and python3: move it onto a current board dev image (tilo-vm vm upgrade), or swap CI builds (--from sha:<commit>)",
+        )
     });
-    let image = "install a Tilo dev image on it (tilo-vm guide devices: a board dev image, or the dev disk)";
-    checks.push(match (probe.tilo_vmd, hello) {
-        (false, _) => Check::fail("tilo-vmd", "not installed: this is not a Tilo dev image", image),
-        (true, None) => Check::fail(
-            "tilo-vmd",
-            "installed, not asked: it runs as root",
-            "fix the root check above, then rerun",
-        ),
-        (true, Some(Ok(hello))) => Check::ok(
-            "tilo-vmd",
-            format!(
-                "{} speaks protocol {} on {}",
-                hello.daemon_version, hello.protocol, hello.arch
-            ),
-        ),
-        (
-            true,
-            Some(Err(error @ CliError::ProtocolMismatch {
-                vm, client, daemon, ..
-            })),
-        ) if daemon < client => Check::warn(
-            "tilo-vmd",
-            error.to_string(),
-            format!(
-                "accounts and swaps wait for a newer image: tilo-vm vm upgrade {vm} (it needs only SSH and bootc)"
-            ),
-        ),
-        (true, Some(Err(error))) => Check::fail("tilo-vmd", error.to_string(), error.hint()),
-    });
-    if let Some(Ok(hello)) = hello {
-        // A device takes CI layers from this host, never pulling the image itself.
-        let tools = describe_tools(&hello.tools, true);
-        checks.push(if hello.tools.can_build() {
-            Check::ok("toolchain", tools)
-        } else {
-            Check::warn(
-                "toolchain",
-                tools,
-                "swaps from this worktree build on the device and need cargo, rsync and python3: move it onto a current board dev image (tilo-vm vm upgrade), or swap CI builds (--from sha:<commit>)",
-            )
-        });
-        for issue in &hello.issues {
-            checks.push(Check::warn(
-                "accounts",
-                format!("account {}: {}", issue.account, issue.problem),
-                issue.hint.clone(),
-            ));
-        }
+    for issue in &status.issues {
+        checks.push(Check::warn(
+            "accounts",
+            format!("account {}: {}", issue.account, issue.problem),
+            issue.hint.clone(),
+        ));
     }
-    checks.push(if probe.bootc {
+    let image = "install a Tilo dev image on it (tilo-vm guide devices: a board dev image, or the dev disk)";
+    checks.push(if status.boot.bootc.is_some() {
         Check::ok(
             "bootc",
-            match &probe.board {
+            match &status.boot.board {
                 Some(board) => format!(
                     "vm upgrade --from sha:<commit> takes the {board} board image of that build"
                 ),
@@ -200,31 +69,28 @@ pub fn device_checks(
 pub fn usable(checks: &[Check]) -> bool {
     checks
         .iter()
-        .filter(|c| ["ssh", "root", "tilo-vmd"].contains(&c.check.as_str()))
+        .filter(|c| c.check == "device")
         .all(|c| c.state != "fail")
 }
 
 impl App {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one registration sequence: probe, checks, net facts, record"
-    )]
-    pub(super) fn vm_add_account(
-        &mut self,
-        args: &AddArgs,
-        endpoint: &SshEndpoint,
-    ) -> Result<Outcome, CliError> {
-        let endpoint = endpoint.clone();
-        let key = match &args.key {
-            Some(key) if !key.is_file() => {
-                return Err(CliError::InvalidInput(format!(
-                    "--key {}: no such file",
-                    key.display()
-                )));
-            }
-            Some(key) => Some(absolute(key).display().to_string()),
-            None => None,
-        };
+    pub(super) fn vm_add(&mut self, args: &AddArgs) -> Result<Outcome, CliError> {
+        let device = args.device.to_ascii_lowercase();
+        if device.len() != 64 || !device.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(CliError::InvalidInput(format!(
+                "--device {}: a device key is 64 hex digits, as tilo device list shows it",
+                args.device
+            )));
+        }
+        if let Some(ssh) = &args.ssh
+            && SshEndpoint::parse(ssh).is_none()
+        {
+            return Err(CliError::Config {
+                path: "--ssh".into(),
+                detail: format!("'{ssh}' is not [user@]host[:port]"),
+            });
+        }
+        let key = ssh_key(args)?;
         let mut registry = self.registry()?;
         if let Some(existing) = registry.vms.get(&args.name)
             && existing.hypervisor != DEVICE
@@ -237,52 +103,42 @@ impl App {
                 args.name
             )));
         }
-        if args.grant_sudo {
-            self.grant_sudo(&endpoint, key.as_deref())?;
-        }
-        let probe_line = probe_command(&endpoint, key.as_deref());
-        let output = self.runner.output(&probe_line)?;
-        if !output.stdout.contains("user=") {
-            return Err(CliError::Unreachable {
-                vm: args.name.clone(),
-                detail: if output.stderr.trim().is_empty() {
-                    format!("`{}` printed nothing", probe_line.display())
-                } else {
-                    output.stderr.trim().to_owned()
-                },
-                debug: vec![format!(
-                    "ssh {} true   (key-only login: BatchMode, no password)",
-                    endpoint.ssh_spec()
-                )],
-            });
-        }
-        let probe = parse_probe(&output.stdout);
-        let hello = (probe.root.is_ok() && probe.tilo_vmd).then(|| {
-            Remote::connect(&args.name, &endpoint, key.as_deref(), None, Vec::new())
-                .map(|remote| remote.hello.clone())
-        });
-        let checks = device_checks(&endpoint, &probe, hello.as_ref());
-        let ok = usable(&checks);
-        let mut text = checks_text(&args.name, &endpoint, &checks);
-        let arch = match &hello {
-            Some(Ok(hello)) => Some(hello.arch.clone()),
-            _ => probe.arch.clone(),
-        };
+        let machine = self.machine()?;
+        let addresses = self.daemon_address(args.address.as_deref());
         let mut entry = VmEntry {
             hypervisor: DEVICE.into(),
-            ssh: Some(endpoint.ssh_spec()),
+            ssh: args.ssh.clone(),
             key,
-            arch: arch.clone(),
+            device: Some(DeviceRoute {
+                device,
+                workspace: machine.workspace,
+                addresses,
+                relay: None,
+            }),
             ..VmEntry::default()
         };
-        if ok {
-            self.add_net_facts(&endpoint, &mut entry, &mut text);
+        let vm = Resolved {
+            name: args.name.clone(),
+            entry: entry.clone(),
+            source: Source::Argument,
+        };
+        let mut connected = self.connect(&vm);
+        let checks = device_checks(connected.as_ref().map(|remote| &remote.status));
+        let ok = usable(&checks);
+        let mut text = checks_text(&args.name, &checks);
+        if let Ok(remote) = &mut connected {
+            entry.arch = Some(remote.status.arch.clone());
+            if let Some(facts) = Self::net_facts(remote, &vm) {
+                super::reach::apply_net(&mut entry, &facts);
+            }
+            if let Some(wake) = &entry.wake {
+                let _ = write!(text, "\n  wake: {}", wake.describe());
+            }
         }
         let data = json!({
             "vm": args.name,
-            "ssh": endpoint.ssh_spec(),
-            "board": probe.board,
-            "arch": arch,
+            "device": entry.device,
+            "arch": entry.arch,
             "registered": ok,
             "checks": checks,
             "hostname": entry.hostname,
@@ -290,7 +146,7 @@ impl App {
             "wake": entry.wake,
         });
         if !ok {
-            text.push_str("\nnot registered: fix the failed checks above, then rerun this command");
+            text.push_str("\nnot registered: fix the failed check above, then rerun this command");
             let mut outcome = Outcome::new(text, data);
             outcome.failed = true;
             return Ok(outcome);
@@ -312,6 +168,7 @@ impl App {
             args.name,
             self.registry_path.display()
         );
+        self.warnings.clear();
         let use_it = format!("tilo-vm vm use {}", args.name);
         Ok(Outcome::new(text, data).next(&[
             use_it.as_str(),
@@ -321,41 +178,40 @@ impl App {
     }
 }
 
-impl App {
-    fn add_net_facts(&mut self, endpoint: &SshEndpoint, entry: &mut VmEntry, text: &mut String) {
-        let Some(facts) = self.net_facts(endpoint, entry.key.as_deref()) else {
-            return;
-        };
-        super::reach::apply_net(entry, &facts);
-        if let Some(wake) = &entry.wake {
-            let _ = write!(text, "\n  wake: {}", wake.describe());
-        }
-    }
-
-    fn grant_sudo(&mut self, endpoint: &SshEndpoint, key: Option<&str>) -> Result<(), CliError> {
-        let mut line = remote::ssh_transport(endpoint, key, true);
-        line.args.push(grant_sudo_line(&endpoint.user)?);
-        if !self.json {
-            eprintln!(
-                "tilo-vm: letting {} run commands as root without a password ({}); sudo asks for its password",
-                endpoint.user,
-                sudoers_file(&endpoint.user)
-            );
-        }
-        if self.runner.interactive(&line)? {
-            Ok(())
-        } else {
-            Err(CliError::CommandFailed {
-                command: line.display(),
-                status: "sudo did not write the grant".into(),
-                stderr: "its output above says why".into(),
-            })
-        }
+/// `--key`, made absolute, once it names a file.
+fn ssh_key(args: &AddArgs) -> Result<Option<String>, CliError> {
+    match &args.key {
+        Some(key) if !key.is_file() => Err(CliError::InvalidInput(format!(
+            "--key {}: no such file",
+            key.display()
+        ))),
+        Some(key) => Ok(Some(absolute(key).display().to_string())),
+        None => Ok(None),
     }
 }
 
-fn checks_text(name: &str, endpoint: &SshEndpoint, checks: &[Check]) -> String {
-    let mut text = format!("device {name} ({})", endpoint.ssh_spec());
+impl App {
+    /// `--address` as the daemon's socket address: as given with a port, else at the usual
+    /// daemon port of the IP it is or resolves to.
+    fn daemon_address(&mut self, address: Option<&str>) -> Vec<String> {
+        address
+            .and_then(|address| {
+                address.parse::<SocketAddr>().ok().or_else(|| {
+                    address
+                        .parse::<IpAddr>()
+                        .ok()
+                        .or_else(|| crate::reach::resolve(&mut self.runner, address))
+                        .map(|ip| SocketAddr::new(ip, DAEMON_PORT))
+                })
+            })
+            .map(|address| address.to_string())
+            .into_iter()
+            .collect()
+    }
+}
+
+fn checks_text(name: &str, checks: &[Check]) -> String {
+    let mut text = format!("device {name}");
     for check in checks {
         let _ = write!(
             text,
@@ -367,156 +223,4 @@ fn checks_text(name: &str, endpoint: &SshEndpoint, checks: &[Check]) -> String {
         }
     }
     text
-}
-
-pub fn probe_command(endpoint: &SshEndpoint, key: Option<&str>) -> CommandLine {
-    let mut line = remote::ssh_transport(endpoint, key, false);
-    line.args.push(format!("sh -c {}", sh_quote(PROBE)));
-    line
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn endpoint(user: &str) -> SshEndpoint {
-        SshEndpoint {
-            user: user.into(),
-            host: "10.0.0.223".into(),
-            port: 22,
-        }
-    }
-
-    fn hello() -> HelloResult {
-        serde_json::from_value(json!({
-            "protocol": tilo_vm_protocol::PROTOCOL_VERSION,
-            "daemon_version": "0.1.0",
-            "root": "/var/lib/tilo-vm",
-            "arch": "aarch64",
-            "issues": [],
-            "tools": {"cargo": true, "rsync": true, "python3": true, "sccache": true, "podman": true}
-        }))
-        .unwrap()
-    }
-
-    tilo_test_env::scenario! {
-        fn adding_a_device_checks_it_and_grants_sudo_once;
-
-        phase add_device_checks_root_daemon_and_toolchain_and_names_each_fix;
-        {
-            let board = r#"{"schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64"}"#;
-            let output = format!(
-                "motd line\nuser=me\nsudo=no sudo: a password is required\ntilo-vmd=yes\nbootc=yes\narch=aarch64\n@@board\n{board}\n"
-            );
-            let probe = parse_probe(&output);
-            assert_eq!(probe.user.as_deref(), Some("me"));
-            assert_eq!(probe.root, Err("a password is required".into()));
-            assert!(probe.tilo_vmd && probe.bootc);
-            assert_eq!(probe.arch.as_deref(), Some("aarch64"));
-            assert_eq!(probe.board.as_deref(), Some("lenovo-83ed"));
-            assert_eq!(
-                parse_probe("user=root\nsudo=root\ntilo-vmd=no\nbootc=no\narch=x86_64\n@@board\n").root,
-                Ok(true)
-            );
-            assert_eq!(parse_probe("user=me\nsudo=ok\n@@board\n").board, None);
-
-            let checks = device_checks(&endpoint("me"), &probe, None);
-            assert!(!usable(&checks));
-            let root = checks.iter().find(|c| c.check == "root").unwrap();
-            assert_eq!(root.state, "fail");
-            let fix = root.fix.as_deref().unwrap();
-            assert!(
-                fix.contains("--grant-sudo") && fix.contains("/etc/sudoers.d/tilo-vm-me"),
-                "{fix}"
-            );
-            assert!(fix.contains("--ssh root@10.0.0.223"), "{fix}");
-            let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
-            assert_eq!(daemon.state, "fail");
-
-            let probe = Probe {
-                root: Ok(false),
-                ..probe
-            };
-            let answered = Ok(hello());
-            let checks = device_checks(&endpoint("me"), &probe, Some(&answered));
-            assert!(usable(&checks), "{checks:?}");
-            let bootc = checks.iter().find(|c| c.check == "bootc").unwrap();
-            assert!(
-                bootc.detail.contains("lenovo-83ed board image"),
-                "{}",
-                bootc.detail
-            );
-            assert_eq!(
-                checks
-                    .iter()
-                    .find(|c| c.check == "toolchain")
-                    .unwrap()
-                    .state,
-                "ok"
-            );
-
-            let mut thin = hello();
-            thin.tools.cargo = false;
-            let checks = device_checks(&endpoint("me"), &probe, Some(&Ok(thin)));
-            assert!(usable(&checks));
-            let toolchain = checks.iter().find(|c| c.check == "toolchain").unwrap();
-            assert_eq!(toolchain.state, "warn");
-            let no_daemon = Probe {
-                tilo_vmd: false,
-                ..probe.clone()
-            };
-            let checks = device_checks(&endpoint("me"), &no_daemon, None);
-            assert!(!usable(&checks));
-            let refused = Err(CliError::ProtocolMismatch {
-                vm: "yoga".into(),
-                client: 6,
-                daemon: 5,
-                bootc: Some(true),
-            });
-            let checks = device_checks(&endpoint("me"), &probe, Some(&refused));
-            assert!(usable(&checks));
-            let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
-            assert_eq!(daemon.state, "warn");
-            assert!(
-                daemon
-                    .fix
-                    .as_deref()
-                    .unwrap()
-                    .contains("tilo-vm vm upgrade yoga ")
-            );
-            let newer = Err(CliError::ProtocolMismatch {
-                vm: "yoga".into(),
-                client: 5,
-                daemon: 6,
-                bootc: Some(true),
-            });
-            assert!(!usable(&device_checks(
-                &endpoint("me"),
-                &probe,
-                Some(&newer)
-            )));
-        }
-
-        phase granting_sudo_writes_one_checked_drop_in;
-        {
-            let line = grant_sudo_line("bob").unwrap();
-            assert!(line.starts_with("sudo -- sh -c '"), "{line}");
-            assert!(line.contains("bob ALL=(ALL) NOPASSWD: ALL"), "{line}");
-            assert!(
-                line.contains("visudo -cqf /etc/sudoers.d/tilo-vm-bob.new && mv /etc/sudoers.d/tilo-vm-bob.new /etc/sudoers.d/tilo-vm-bob"),
-                "{line}"
-            );
-            assert_eq!(line.matches('\'').count(), 2, "{line}");
-            for bad in ["", "Root", "a b", "x;rm", "a'b", &"x".repeat(33)] {
-                assert!(grant_sudo_line(bad).is_err(), "{bad}");
-            }
-            let probe = probe_command(&endpoint("me"), Some("/k/yoga"));
-            let last = probe.args.last().unwrap();
-            assert!(last.starts_with("sh -c '"), "{last}");
-            assert!(
-                !probe.args.iter().any(|a| a == "sudo"),
-                "the probe runs as the login user"
-            );
-        }
-    }
 }

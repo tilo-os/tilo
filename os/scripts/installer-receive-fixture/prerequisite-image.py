@@ -39,7 +39,7 @@ ASSETS = {
     'os/usr/lib/tmpfiles.d/tilo.conf': ('usr/lib/tmpfiles.d/tilo.conf', 0o644),
     'os/registry-runtime-publisher.hex':
         ('etc/tilo/runtime-bundle-trusted-publishers.txt', 0o644),
-    'crates/platform/imager-backend/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app':
+    'crates/os/imager-backend/src/setup/flatpak_transfer/portable/native_tests/runnable/fixture-app':
         ('usr/libexec/tilo-installer-source-fixture/fixture-app', 0o755),
     'os/scripts/installer-receive-fixture/prerequisite-readiness.py':
         ('usr/libexec/tilo-native-prerequisite-readiness', 0o755),

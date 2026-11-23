@@ -62,12 +62,6 @@ pub struct Checked {
     pub argument: InvokeArgument,
 }
 
-fn invalid(reason: &str) -> ActionCallError {
-    ActionCallError::InvalidRequest {
-        reason: reason.to_owned(),
-    }
-}
-
 impl Invocation {
     /// The argument an invocation of [`target`] carries.
     #[must_use]
@@ -85,10 +79,12 @@ impl Invocation {
     /// [`ActionCallError::InvalidRequest`] when the argument is not one.
     pub fn from_argument(argument: &InvokeArgument) -> Result<Self, ActionCallError> {
         let InvokeArgument::Json(map) = argument else {
-            return Err(invalid("an own-device invocation takes JSON arguments"));
+            return Err(ActionCallError::invalid_request(
+                "an own-device invocation takes JSON arguments",
+            ));
         };
         serde_json::from_value(serde_json::Value::Object(map.clone()))
-            .map_err(|_| invalid("the own-device invocation is malformed"))
+            .map_err(|_| ActionCallError::invalid_request("the own-device invocation is malformed"))
     }
 
     /// The invocation, checked: a device key, an application id an
@@ -98,14 +94,15 @@ impl Invocation {
     ///
     /// [`ActionCallError::InvalidRequest`] naming the part that is not.
     pub fn check(&self) -> Result<Checked, ActionCallError> {
-        let device = decode_device(&self.device).ok_or_else(|| invalid("not a device key"))?;
+        let device = decode_device(&self.device)
+            .ok_or_else(|| ActionCallError::invalid_request("not a device key"))?;
         if self.app.is_empty() || self.app.contains(':') {
-            return Err(invalid("not an application id"));
+            return Err(ActionCallError::invalid_request("not an application id"));
         }
         // A separator in either half would name another address than the
         // one checked here once it is carried as one string.
         let address = ActionAddress::checked(&self.resource, &self.action)
-            .ok_or_else(|| invalid("not an action"))?;
+            .ok_or_else(|| ActionCallError::invalid_request("not an action"))?;
         Ok(Checked {
             device,
             app: self.app.clone(),

@@ -349,7 +349,7 @@ impl Tickets {
                     tilo_user_identity::DeviceCapabilities::member(),
                     Arc::new(PageApprover(Arc::clone(&slot))),
                     self.certification.revocations(),
-                    TICKET_LIFETIME_NS,
+                    slot.expires_at_ns,
                 );
                 *slot.served.lock_recover() = Some(served.clone());
                 self.watch_certified(Arc::clone(&slot), &served);
@@ -667,13 +667,6 @@ impl Certified {
         Self { tickets }
     }
 
-    /// Refuse `reason` as the caller reads it.
-    fn refused(reason: &str) -> ActionCallError {
-        ActionCallError::Refused {
-            reason: reason.to_owned(),
-        }
-    }
-
     /// The tab a sign-in ticket waits for, to `caller`: binding the ticket to their person, so
     /// the page learns whom to pair with, then waiting for the tab's certification request, whose
     /// device and label the approval prompt names.
@@ -691,25 +684,27 @@ impl Certified {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
         else {
-            return Pending::ready(Err(Self::refused(Refusal::NotWaiting.message())));
+            return Pending::ready(Err(ActionCallError::refused(Refusal::NotWaiting.message())));
         };
         let Some(slot) = self
             .tickets
             .by_secret(&secret)
             .filter(|slot| slot.direction == Direction::SignIn)
         else {
-            return Pending::ready(Err(Self::refused(Refusal::NotSignedIn.message())));
+            return Pending::ready(Err(ActionCallError::refused(
+                Refusal::NotSignedIn.message(),
+            )));
         };
         let Some(invite) = slot.invite else {
-            return Pending::ready(Err(Self::refused(Refusal::NotWaiting.message())));
+            return Pending::ready(Err(ActionCallError::refused(Refusal::NotWaiting.message())));
         };
         if expired(&slot) {
-            return Pending::ready(Err(Self::refused(Refusal::Unknown.message())));
+            return Pending::ready(Err(ActionCallError::refused(Refusal::Unknown.message())));
         }
         {
             let mut signing = slot.signing.lock_recover();
             if let Err(refusal) = bind(&mut signing, person) {
-                return Pending::ready(Err(Self::refused(refusal.message())));
+                return Pending::ready(Err(ActionCallError::refused(refusal.message())));
             }
         }
         let certification = self.tickets.certification.clone();
@@ -744,7 +739,7 @@ impl Certified {
                         capability: tab_capability().to_owned(),
                     }))
                 }
-                None => Err(Self::refused(
+                None => Err(ActionCallError::refused(
                     "the browser has not asked to be signed in yet: try again in a moment",
                 )),
             };
@@ -769,7 +764,7 @@ impl Certified {
         let secret = argument
             .get("secret")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| Self::refused(Refusal::NotWaiting.message()))?;
+            .ok_or_else(|| ActionCallError::refused(Refusal::NotWaiting.message()))?;
         let cert: Option<DeviceCert> = argument
             .get("cert")
             .and_then(|cert| serde_json::from_value(cert.clone()).ok());
@@ -777,18 +772,21 @@ impl Certified {
             .tickets
             .by_secret(secret)
             .filter(|slot| slot.direction == Direction::SignIn)
-            .ok_or_else(|| Self::refused(Refusal::NotSignedIn.message()))?;
+            .ok_or_else(|| ActionCallError::refused(Refusal::NotSignedIn.message()))?;
         if expired(&slot) {
-            return Err(Self::refused(Refusal::Unknown.message()));
+            return Err(ActionCallError::refused(Refusal::Unknown.message()));
         }
         let Some(invite) = slot.invite else {
-            return Err(Self::refused(Refusal::NotWaiting.message()));
+            return Err(ActionCallError::refused(Refusal::NotWaiting.message()));
         };
         {
             let mut signing = slot.signing.lock_recover();
-            bind(&mut signing, person).map_err(|refusal| Self::refused(refusal.message()))?;
+            bind(&mut signing, person)
+                .map_err(|refusal| ActionCallError::refused(refusal.message()))?;
             signing.as_mut().ok_or_else(|| {
-                Self::refused("run `tilo device add` with a ticket whose browser is waiting")
+                ActionCallError::refused(
+                    "run `tilo device add` with a ticket whose browser is waiting",
+                )
             })?;
         }
         // A computer without the person's root hands the signing to one that holds it: the
@@ -801,7 +799,7 @@ impl Certified {
         // one for any device of theirs: nothing a device issued, for a browser and nothing more.
         let now = tilo_clock::unix_now_ns();
         if cert.user_public_key != person || cert.issuer.is_some() {
-            return Err(Self::refused(
+            return Err(ActionCallError::refused(
                 "a sign-in is the tab's own certificate, signed by the person's root",
             ));
         }
@@ -809,16 +807,20 @@ impl Certified {
             .tickets
             .certification
             .waiting_for(&person, &invite, now)
-            .ok_or_else(|| Self::refused("the browser has not asked to be signed in yet"))?;
+            .ok_or_else(|| {
+                ActionCallError::refused("the browser has not asked to be signed in yet")
+            })?;
         if cert.device_public_key != waiting.device_public_key
             || cert.device_label != waiting.device_label
         {
-            return Err(Self::refused(
+            return Err(ActionCallError::refused(
                 "the certificate does not name the browser that asked",
             ));
         }
         tilo_user_identity::verify_device_cert_at(&cert, now).map_err(|_| {
-            Self::refused("the certificate the person's root signed for the tab does not hold")
+            ActionCallError::refused(
+                "the certificate the person's root signed for the tab does not hold",
+            )
         })?;
         let by = argument
             .get("label")
@@ -832,7 +834,7 @@ impl Certified {
         self.tickets
             .certification
             .issue_named(&person, &invite, cert.clone(), |_| true, now)
-            .map_err(|reason| Self::refused(&reason))?;
+            .map_err(ActionCallError::refused)?;
         let mut signing = slot.signing.lock_recover();
         if let Some(open) = signing.as_mut() {
             open.cert = Some(cert);
@@ -853,15 +855,15 @@ impl Certified {
             .copied()
             .ok_or(ActionCallError::NotPermitted)?;
         let report: Report = serde_json::from_value(serde_json::Value::Object(argument.clone()))
-            .map_err(|_| Self::refused("a report names its ticket and step"))?;
+            .map_err(|_| ActionCallError::refused("a report names its ticket and step"))?;
         let ticket = Ticket::parse(&report.ticket).map_err(|_| {
-            Self::refused("the report names no Tilo ticket; ask the page for a new one")
+            ActionCallError::refused("the report names no Tilo ticket; ask the page for a new one")
         })?;
         let slot = self
             .tickets
             .by_secret(&ticket.secret_hex())
             .filter(|slot| slot.direction == Direction::Login)
-            .ok_or_else(|| Self::refused(Refusal::Unknown.message()))?;
+            .ok_or_else(|| ActionCallError::refused(Refusal::Unknown.message()))?;
         // Only the computer this ticket certified reports against it.
         let certified = slot.certified.lock_recover().clone();
         if certified.is_none_or(|cert| cert.device_public_key != device) {
@@ -918,7 +920,7 @@ impl ActionProvider for Certified {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let InvokeArgument::Json(argument) = &request.argument else {
-            return Pending::ready(Err(Self::refused(
+            return Pending::ready(Err(ActionCallError::refused(
                 "a device action asks with its arguments",
             )));
         };

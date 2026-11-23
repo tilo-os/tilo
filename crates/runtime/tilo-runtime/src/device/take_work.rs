@@ -49,7 +49,6 @@ use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tilo_actions::remote::ActionProvider;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
@@ -378,8 +377,8 @@ impl tilo_workspace_service::work::HostLinux for Machines {
         self.0.has_room()
     }
 
-    fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync> {
-        Arc::clone(&self.0) as Arc<dyn ActionProvider + Send + Sync>
+    fn runs(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
+        Arc::clone(&self.0) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
     }
 }
 
@@ -503,7 +502,6 @@ fn open_member_service(
             },
             bound,
             groups,
-            false,
             |config| config,
         )
         .await

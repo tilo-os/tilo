@@ -471,7 +471,7 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool
             (*tool, segment)
         })
         .collect();
-    let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool).on_view("Tool", |_| {});
+    let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool).on_choose("Tool", |_| {});
     if compact {
         // At regular size the tools, the picture button and the paint well fit a
         // phone-width window; the strip still scrolls when "All tools" adds more,
@@ -534,7 +534,7 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
     let held = tools.clone();
     let choose = ui::widget::ToggleGroup::from_state(choices, &tools.workspace)
         .fill()
-        .on_view("canvas-workspace", move |_| {
+        .on_choose("canvas-workspace", move |_| {
             let workspace = held.workspace.get();
             held.tool.set(if workspace == Workspace::Pixel {
                 tools::Tool::Brush
@@ -577,7 +577,7 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
                     ],
                     &tools.all_tools,
                 )
-                .on_view("canvas-tools-scope", |_| {}),
+                .on_choose("canvas-tools-scope", |_| {}),
             )),
     )
 }
@@ -689,7 +689,7 @@ fn fold(cx: &ViewCx<Artwork>, open: &LocalState<bool>) -> Element {
         Box::new(
             Button::icon_only(id, icon, &name)
                 .control_size(ControlSize::Small)
-                .on_view(move || flip.set(!flip.with(|open| *open))),
+                .on_open(move || flip.set(!flip.with(|open| *open))),
         )
     })
 }

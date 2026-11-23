@@ -349,6 +349,15 @@ fn start_roster(
             browsers as std::sync::Arc<dyn tilo_workspace_service::agents::windows::Windows>
         }))
         .knowing_placed(placed);
+        // Coding agents' harnesses run programs on the computer that starts them: only a
+        // server whose operator lets its workspaces' programs run on its own machine starts
+        // them here, as it starts their Terminal's programs.
+        #[cfg(unix)]
+        let agents = if ush::machine_programs::on_machine_from_env() {
+            agents.with_coding(tilo_workspace_service::agents::coding::Coders::here())
+        } else {
+            agents
+        };
         (agents.draining(), tokio::spawn(agents.run()))
     });
     started.unzip()

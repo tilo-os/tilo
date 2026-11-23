@@ -246,7 +246,8 @@
         {
           "open": {
             "app": "so.tilo.mail",
-            "deadline": 30
+            "deadline": 30,
+            "answer": "Allow"
           }
         }
       ]
@@ -258,7 +259,8 @@
         {
           "open": {
             "app": "so.tilo.tube",
-            "deadline": 30
+            "deadline": 30,
+            "answer": "Allow"
           }
         }
       ]

@@ -11,7 +11,7 @@
 //! workspaces: { <id>: { order: f64, workspace: <map, no strips>, layout? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author?,
 //!                       groups: { <id>: { order: f64, place?, float?, windows: { <id>: f64 } } } } }
-//! windows:    { <id>: { tab: <map>, author?, record?, opened_by?, state? } }
+//! windows:    { <id>: { tab: <map>, author?, record?, item?, opened_by?, state? } }
 //! ```
 //! A workspace, a window and a place are maps of their own fields, not one blob of
 //! text each, so two people editing different fields of the same one keep both
@@ -46,6 +46,9 @@ const NAME: &str = "name";
 const AUTHOR: &str = "author";
 const TAB: &str = "tab";
 const RECORD: &str = "record";
+/// The item the window was opened on (a conversation a send landed in), which is
+/// not the view its tab shows: a place's view is what the canvas draws.
+const ITEM: &str = "item";
 const KIND: &str = "kind";
 const PLACE: &str = "place";
 const FLOAT: &str = "float";
@@ -211,6 +214,8 @@ struct Parts {
     authors: BTreeMap<u64, String>,
     opened_by: BTreeMap<TabId, crate::ownership::OpenedBy>,
     records: Vec<(TabId, String)>,
+    /// The item each window was opened on, by tab.
+    items: Vec<(TabId, String)>,
     workspaces: Vec<Workspace>,
     strips: HashMap<Option<WorkspaceId>, Vec<(f64, u64, Strip)>>,
     /// Groups by the strip that holds them.
@@ -330,6 +335,9 @@ impl Parts {
             if let Some(record) = entry.text(RECORD) {
                 parts.records.push((id, record.to_owned()));
             }
+            if let Some(item) = entry.text(ITEM) {
+                parts.items.push((id, item.to_owned()));
+            }
             let opened = entry
                 .json(OPENED_BY)
                 .and_then(|value| serde_json::from_value(value).ok());
@@ -426,6 +434,7 @@ impl Parts {
             }
         }
         self.records.compact_sort();
+        self.items.compact_sort();
         Some(SharedDesktop {
             tree: Layout {
                 workspaces: self.workspaces,
@@ -433,6 +442,7 @@ impl Parts {
                 ..Layout::default()
             },
             records: self.records,
+            items: self.items,
             authors: self.authors,
             opened_by: self.opened_by,
         })
@@ -489,6 +499,7 @@ fn layout_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDes
     Some(SharedDesktop {
         tree,
         records: crate::desktop_doc::records(&layout_doc),
+        items: crate::desktop_doc::items(&layout_doc),
         authors: crate::desktop_doc::window_authors(&layout_doc),
         opened_by: crate::desktop_doc::opened_by(&layout_doc),
     })
@@ -719,6 +730,7 @@ pub fn write(
             doc,
             &desktop.tree,
             &desktop.records,
+            &desktop.items,
             &desktop.authors,
         );
         return Ok(crate::desktop_doc::note_opened_by(doc, &desktop.opened_by) || wrote);
@@ -900,6 +912,7 @@ fn group_fields(layout: &WorkspaceLayout, group: u64) -> Vec<(&'static str, Fiel
 /// The entries `desktop` is written as, its orders kept from `held`'s.
 fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
     let records: HashMap<u64, &String> = desktop.records.iter().map(|(t, r)| (*t, r)).collect();
+    let items: HashMap<u64, &String> = desktop.items.iter().map(|(t, i)| (*t, i)).collect();
     let author = |id: u64| {
         desktop
             .authors
@@ -962,6 +975,9 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
                     fields.extend(author(tab.id));
                     if let Some(record) = records.get(&tab.id) {
                         fields.push((RECORD, Field::Text((*record).clone())));
+                    }
+                    if let Some(item) = items.get(&tab.id) {
+                        fields.push((ITEM, Field::Text((*item).clone())));
                     }
                     if let Some(opened) = desktop
                         .opened_by
@@ -1058,6 +1074,7 @@ fn held(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Levels<HeldEntry> {
                 (TAB, Json),
                 (AUTHOR, Text),
                 (RECORD, Text),
+                (ITEM, Text),
                 (OPENED_BY, Json),
             ],
         )),

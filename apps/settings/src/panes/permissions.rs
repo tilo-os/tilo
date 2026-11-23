@@ -33,6 +33,7 @@ crate::effects::effect_family!(PermissionsEffect => answer);
 
 crate::area::pane_area! {
     PermissionsArea;
+    crate::area::serves!(Permissions);
     fn poll(&self) {
         PermissionsArea::poll(self);
     }

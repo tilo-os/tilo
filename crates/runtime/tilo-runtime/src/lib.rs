@@ -19,7 +19,7 @@ use std::{
 mod apps;
 pub mod cli;
 #[cfg(unix)]
-mod daemon;
+pub mod daemon;
 #[cfg(windows)]
 #[path = "daemon_windows.rs"]
 mod daemon;
@@ -49,19 +49,19 @@ pub mod host;
 #[cfg(windows)]
 #[path = "host/windows.rs"]
 pub mod host;
+#[cfg(unix)]
+mod seats;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
 #[cfg(all(test, unix))]
 tilo_automerge_isolate::test_worker!();
 
-/// Socket names inside a profile, shared by the daemon that binds them and
-/// the launcher that attaches an app to them.
+/// Socket names in the directory the daemon keeps its sockets in, shared by the daemon
+/// that binds them and the launcher that attaches an app to them.
 pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
-/// The profile's workspace files, served read only (`tilo-file-provider`).
-pub const FILES_SOCKET: &str = "files.sock";
 
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
@@ -110,23 +110,18 @@ pub trait RuntimeServices: Sized {
 
     fn action_provider(&self) -> io::Result<Self::ActionProvider>;
 
-    /// Construct one transport run for this exact configured audience. Hosts
-    /// with original certified ownership override this; client labels never enter.
+    /// The person's other devices, as this host reaches them; `None` for a host that reaches
+    /// none, which offers an agent no device to work on.
+    fn other_devices(&self) -> Option<crate::other_devices::OtherDevices> {
+        None
+    }
+
+    /// Construct one transport run for this exact configured audience: the person's agent,
+    /// under a key of its own. Client labels never enter.
     fn mcp_session_factory(
         &self,
         workspace: &str,
-    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionProvider>> {
-        let workspace = self.mcp_workspace(Some(workspace))?;
-        let host = self.action_provider()?;
-        let actor = self.actor().to_owned();
-        Ok(std::sync::Arc::new(move || {
-            Ok(tilo_mcp::McpServer::new(
-                host.clone(),
-                workspace.clone(),
-                actor.clone(),
-            ))
-        }))
-    }
+    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionProvider>>;
 
     /// Spawn `command` as `app_id`, connected to this session's services.
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child>;
@@ -134,12 +129,6 @@ pub trait RuntimeServices: Sized {
     /// Where MCP answers read the content apps stored; `None` for a host
     /// without a content service.
     fn media(&self) -> Option<std::sync::Arc<dyn tilo_mcp::MediaReader>> {
-        None
-    }
-
-    /// The person's other devices, as this host asks them from its own endpoint: where a
-    /// `--connect --device` client works. `None` for a host that reaches none.
-    fn other_devices(&self) -> Option<other_devices::OtherDevices> {
         None
     }
 }

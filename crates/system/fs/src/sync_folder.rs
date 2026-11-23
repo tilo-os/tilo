@@ -80,7 +80,7 @@ pub const FIRST_RETRY: Duration = Duration::from_secs(2);
 pub const LAST_RETRY: Duration = Duration::from_secs(60);
 /// What a folder waiting for its workspace's Files content keys is told
 /// ([`crate::hydration::file_keys`]): a wait for the workspace, not a path's failure.
-pub const KEYS_NOT_READY: &str = "the Files content keys are not ready";
+pub use crate::hydration::KEYS_NOT_READY;
 /// A pass whose attempts this many times in a row fail, none carried across,
 /// stops: whatever fails them fails the rest too.
 const FAILURES_IN_A_ROW: usize = 32;

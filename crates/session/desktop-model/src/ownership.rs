@@ -73,6 +73,11 @@ pub struct SharedDesktop {
     /// The record each window shows, by tab, for the windows bound to one.
     #[serde(default)]
     pub records: Vec<(TabId, String)>,
+    /// The item each window was opened on (a conversation a send landed in), by tab.
+    /// Kept apart from the tab's view, which is the view a place shows: a window is
+    /// reopened on its item, and a place is not a window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<(TabId, String)>,
     #[serde(default)]
     pub authors: Authors,
     /// The agent run that opened each window an agent opened, by tab.
@@ -501,6 +506,7 @@ mod tests {
             tree,
             authors,
             records: Vec::new(),
+            items: Vec::new(),
             opened_by: std::collections::BTreeMap::new(),
         }
     }

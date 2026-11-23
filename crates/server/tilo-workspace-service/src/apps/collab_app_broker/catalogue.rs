@@ -224,26 +224,11 @@ impl AppBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        // Ordinary directed invocation needs a live publisher. Only native
-        // task ownership can activate an inert retained route; its catalogue
-        // keeps stable providers discoverable without inventing a publisher.
-        let live = self
+        // Directed invocation needs a live publisher.
+        let published = self
             .published_surfaces()
             .into_iter()
-            .filter(|surface| surface.live)
-            .collect::<Vec<_>>();
-        let routes = live
-            .iter()
-            .map(|surface| surface.route.clone())
-            .collect::<Vec<_>>();
-        let retained =
-            self.launchable.surfaces().into_iter().filter(|surface| {
-                self.confines_agents(cluster_id) && !routes.contains(&surface.route)
-            });
-        let published = live
-            .into_iter()
-            .chain(retained)
-            .filter(|surface| surface.route.cluster_id == cluster_id)
+            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
             .collect::<Vec<_>>();
         let applications = self
             .services
@@ -286,16 +271,15 @@ impl AppBrokerState {
                             surface.actions.clear();
                         }
                         // Listed when the actor may take it, or would be asked
-                        // first; how an agent answers a turn is the host's to invoke.
+                        // first.
                         surface.actions.retain(|action| {
-                            !turns::is_answer(&surface.app_id, action)
-                                && actor.action_answer_in(
-                                    workspace,
-                                    &surface.app_id,
-                                    (&action.resource_kind, &action.resource, &action.action),
-                                    &action.contract.need(),
-                                    now,
-                                ) != Answer::Deny
+                            actor.action_answer_in(
+                                workspace,
+                                &surface.app_id,
+                                (&action.resource_kind, &action.resource, &action.action),
+                                &action.contract.need(),
+                                now,
+                            ) != Answer::Deny
                         });
                         surface
                     })

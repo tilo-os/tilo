@@ -1,11 +1,12 @@
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use settings_store::day_schedule::Location;
 use tilo_actions::ApiError;
-use tilo_service::{Service, Services, Started};
+use tilo_service::{Service, Services, Started, Wake};
 
-use crate::device::{Change, System};
+use crate::device::{Change, PowerProfiles, System};
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, SystemService, TIME_ZONE};
@@ -13,7 +14,9 @@ use crate::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, SystemService, TIME_ZONE};
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
 struct Fake {
     power: Mutex<Power>,
+    power_reads: AtomicUsize,
     power_refusal: Mutex<Option<String>>,
+    on_power_mode: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     update: Mutex<Update>,
     time: Mutex<Time>,
     keyboard_light: Mutex<KeyboardLight>,
@@ -29,7 +32,9 @@ impl Fake {
                 mode: Some(PowerMode::Balanced),
                 ..Power::default()
             }),
+            power_reads: AtomicUsize::new(0),
             power_refusal: Mutex::new(None),
+            on_power_mode: Mutex::new(None),
             update: Mutex::new(Update::default()),
             time: Mutex::new(Time {
                 zone: Some("Europe/Amsterdam".into()),
@@ -49,11 +54,27 @@ impl Fake {
     fn changes(&self) -> Vec<Change> {
         self.changes.lock().unwrap().clone()
     }
+
+    fn power_reads(&self) -> usize {
+        self.power_reads.load(Ordering::SeqCst)
+    }
 }
 
 impl System for Fake {
     fn power(&self) -> Power {
+        self.power_reads.fetch_add(1, Ordering::SeqCst);
         self.power.lock().unwrap().clone()
+    }
+
+    fn power_mode(&self) -> Option<PowerMode> {
+        if let Some(hook) = self.on_power_mode.lock().unwrap().as_ref() {
+            hook();
+        }
+        self.power.lock().unwrap().mode
+    }
+
+    fn user_switching(&self) -> bool {
+        self.power.lock().unwrap().user_switching
     }
 
     fn update(&self) -> Update {
@@ -496,4 +517,350 @@ fn the_reading_follows_the_live_update_as_it_writes_its_state() {
     let reading = service.read(SYSTEM_UPDATE).unwrap();
     assert_eq!(reading["failed"], json!("the desktop did not come back"));
     assert_eq!(reading["restart-needed"], json!(true));
+}
+
+struct FakeProfiles {
+    state: Mutex<(Vec<PowerMode>, Option<PowerMode>)>,
+    ready: std::sync::atomic::AtomicBool,
+    revision: AtomicU64,
+    wakes: Mutex<Vec<Wake>>,
+}
+
+impl FakeProfiles {
+    fn new(modes: Vec<PowerMode>, mode: Option<PowerMode>) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((modes, mode)),
+            ready: std::sync::atomic::AtomicBool::new(true),
+            revision: AtomicU64::new(1),
+            wakes: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn unready() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new((Vec::new(), None)),
+            ready: std::sync::atomic::AtomicBool::new(false),
+            revision: AtomicU64::new(0),
+            wakes: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn feed(&self, modes: Vec<PowerMode>, mode: Option<PowerMode>) {
+        *self.state.lock().unwrap() = (modes, mode);
+        self.ready.store(true, Ordering::Release);
+        self.revision.fetch_add(1, Ordering::Release);
+        self.notify();
+    }
+
+    fn set_mode(&self, mode: Option<PowerMode>) {
+        self.state.lock().unwrap().1 = mode;
+        self.revision.fetch_add(1, Ordering::Release);
+        self.notify();
+    }
+
+    fn set_modes(&self, modes: Vec<PowerMode>) {
+        self.state.lock().unwrap().0 = modes;
+        self.revision.fetch_add(1, Ordering::Release);
+        self.notify();
+    }
+
+    fn notify(&self) {
+        let wakes = self.wakes.lock().unwrap().clone();
+        for wake in wakes {
+            wake();
+        }
+    }
+}
+
+impl PowerProfiles for FakeProfiles {
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    fn snapshot(&self) -> (Vec<PowerMode>, Option<PowerMode>) {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
+    fn on_change(&self, wake: Wake) {
+        self.wakes.lock().unwrap().push(wake);
+    }
+}
+
+#[test]
+fn with_live_power_profiles_daemon_changes_reach_power_without_polling() {
+    let fake = Fake::new();
+    *fake.power.lock().unwrap() = Power {
+        modes: vec![PowerMode::Performance],
+        mode: Some(PowerMode::Performance),
+        user_switching: true,
+        ..Power::default()
+    };
+    let live = FakeProfiles::new(
+        vec![PowerMode::Saver, PowerMode::Balanced],
+        Some(PowerMode::Balanced),
+    );
+    let (wake, woken) = std::sync::mpsc::channel();
+    let wake = Mutex::new(wake);
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        Some(Arc::new(move || {
+            let _ = wake.lock().unwrap().send(());
+        })),
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+    while woken.try_recv().is_ok() {}
+
+    let reading = service.read(POWER).unwrap();
+    assert_eq!(reading["modes"], json!(["saver", "balanced"]));
+    assert_eq!(reading["mode"], json!("balanced"));
+    assert_eq!(reading["user-switching"], json!(true));
+    assert_eq!(
+        fake.power_reads(),
+        0,
+        "live power profiles never poll System::power()"
+    );
+
+    live.set_mode(Some(PowerMode::Saver));
+    woken
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("a daemon profile change wakes the service");
+    assert!(service.poll(), "poll reports the live profile change");
+    assert!(!service.poll(), "and only once");
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("saver"));
+    assert_eq!(fake.power_reads(), 0);
+}
+
+#[test]
+fn with_live_power_profiles_modes_and_set_power_mode_stay_in_step() {
+    let fake = Fake::new();
+    let live = FakeProfiles::new(
+        vec![PowerMode::Saver, PowerMode::Balanced],
+        Some(PowerMode::Balanced),
+    );
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "performance"}))
+        ),
+        Err(ApiError::InvalidArguments(
+            "this device offers no power mode performance".into()
+        ))
+    );
+
+    live.set_modes(vec![PowerMode::Performance, PowerMode::Balanced]);
+    assert!(service.poll());
+    assert_eq!(
+        service.read(POWER).unwrap()["modes"],
+        json!(["performance", "balanced"])
+    );
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "performance"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(fake.changes(), [Change::PowerMode(PowerMode::Performance)]);
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Err(ApiError::InvalidArguments(
+            "this device offers no power mode saver".into()
+        ))
+    );
+
+    live.set_modes(Vec::new());
+    assert!(service.poll());
+    assert_eq!(service.read(POWER).unwrap()["modes"], json!([]));
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "balanced"}))
+        ),
+        Err(ApiError::Unavailable {
+            code: "no_power_daemon".into(),
+            reason: "This device offers no power modes".into(),
+        })
+    );
+    assert_eq!(fake.power_reads(), 0);
+}
+
+#[test]
+fn without_live_power_profiles_system_service_polls_and_runs_set_power_mode() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    assert!(fake.power_reads() >= 1, "without a power link it polls");
+    assert_eq!(
+        service.read(POWER).unwrap()["modes"],
+        json!(["saver", "balanced"])
+    );
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("saver"));
+    assert_eq!(fake.changes(), [Change::PowerMode(PowerMode::Saver)]);
+}
+
+#[test]
+fn unready_live_source_polls_until_fed_then_hands_off_without_gap_or_double_publish() {
+    let fake = Fake::new();
+    let live = FakeProfiles::unready();
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    // While unready, SystemService polls System::power().
+    assert_eq!(fake.power_reads(), 1);
+    assert_eq!(
+        service.read(POWER).unwrap()["modes"],
+        json!(["saver", "balanced"])
+    );
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
+
+    // Feeding the exact same modes/mode hands off cleanly with no double publish and no gap.
+    live.feed(
+        vec![PowerMode::Saver, PowerMode::Balanced],
+        Some(PowerMode::Balanced),
+    );
+    assert!(
+        !service.poll(),
+        "identical live state after polling produces no double publish"
+    );
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("balanced"));
+
+    // Further refreshes no longer poll System::power().
+    service.refresh();
+    service.settle();
+    assert_eq!(fake.power_reads(), 1);
+
+    // Subsequent live changes still arrive directly.
+    live.set_mode(Some(PowerMode::Saver));
+    assert!(service.poll());
+    assert_eq!(service.read(POWER).unwrap()["mode"], json!("saver"));
+    assert_eq!(fake.power_reads(), 1);
+}
+
+#[test]
+fn live_set_power_mode_carries_new_mode_in_first_reading_when_pending_clears() {
+    let fake = Fake::new();
+    let live = FakeProfiles::new(
+        vec![PowerMode::Saver, PowerMode::Balanced],
+        Some(PowerMode::Balanced),
+    );
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    assert_eq!(
+        service.read(POWER).unwrap()["pending"],
+        json!(["set-power-mode"])
+    );
+    // Settle WITHOUT pushing any D-Bus signal to `live`.
+    service.settle();
+    let power = service.read(POWER).unwrap();
+    assert_eq!(power["pending"], json!([]));
+    assert_eq!(power["mode"], json!("saver"));
+    assert_eq!(fake.power_reads(), 0);
+
+    // When the delayed D-Bus signal later arrives with the same mode, poll reports no second publish.
+    live.set_mode(Some(PowerMode::Saver));
+    assert!(
+        !service.poll(),
+        "delayed signal matching the landed mode does not publish twice"
+    );
+}
+
+#[test]
+fn a_live_signal_during_power_mode_read_beats_the_stale_direct_read() {
+    let fake = Fake::new();
+    let live = FakeProfiles::new(
+        vec![
+            PowerMode::Saver,
+            PowerMode::Balanced,
+            PowerMode::Performance,
+        ],
+        Some(PowerMode::Balanced),
+    );
+    // Simulate a newer daemon signal moving the live source while `power_mode()`
+    // is reading back the earlier `Saver` change.
+    *fake.on_power_mode.lock().unwrap() = Some(Box::new({
+        let live = Arc::clone(&live);
+        move || live.set_mode(Some(PowerMode::Performance))
+    }));
+
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::with_power_profiles(
+        system,
+        None,
+        Arc::clone(&live) as Arc<dyn PowerProfiles>,
+    )
+    .unwrap();
+    service.settle();
+
+    assert_eq!(
+        service.invoke(
+            POWER,
+            "set-power-mode",
+            &arguments(json!({"mode": "saver"}))
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+
+    let power = service.read(POWER).unwrap();
+    assert_eq!(power["pending"], json!([]));
+    assert_eq!(
+        power["mode"],
+        json!("performance"),
+        "a newer live signal that moved revision past rev_before must not be overwritten by the stale direct read"
+    );
+    assert_eq!(fake.power_reads(), 0);
 }

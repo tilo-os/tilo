@@ -170,9 +170,8 @@ impl Service for SessionPower {
         vec![sleep_resource(), battery_resource()]
     }
 
-    /// The daemons answer on the service's own thread: the profiles they
-    /// offer, the one in force and the battery land after the session first
-    /// read them, and move while it runs.
+    /// The daemons answer on the service's own thread: the battery lands after
+    /// the session first read it, and moves while it runs.
     fn poll(&mut self) -> bool {
         let moved = self.link.bridge().readings_moved();
         std::mem::replace(&mut self.seen, moved) != moved

@@ -830,6 +830,20 @@ impl Spawner {
         }
     }
 
+    /// End the launch whose app runs as the process `pid`, as the person's own quit does: the end
+    /// is theirs, so no notice says it stopped working. Whether a launch of this session runs it.
+    pub fn end_pid(&self, pid: u32) -> bool {
+        let found = running(&self.running)
+            .iter()
+            .find(|(_, app)| app.pid == pid)
+            .map(|(id, _)| *id);
+        let Some(id) = found else {
+            return false;
+        };
+        self.end_one(id);
+        true
+    }
+
     /// The launch of the kept app `id`, which ended while no desktop was there: one that ended by
     /// itself or one whose keeper was killed outright. Taken once.
     pub fn ended_away(&mut self, id: u64) -> Option<tilo_app_keeper::registry::KeptLaunch> {
@@ -1794,6 +1808,31 @@ mod tests {
 
         drop(spawner);
         tilo_test_env::exited("the app its session no longer runs", running.pid);
+    }
+
+    /// A force quit names the app by its process, not by the launch: the launch that runs it is
+    /// found, and its end is the person's, so no notice says it stopped working.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_ended_by_its_process_is_the_persons_own_quit() {
+        let mut spawner = Spawner::default();
+        let stuck = spawner
+            .start(&shell("exec sleep infinity", BTreeMap::new()))
+            .expect("starts");
+        assert!(
+            spawner.end_pid(stuck.pid),
+            "the launch that runs that process is found"
+        );
+        let ended = events(&spawner, 1);
+        assert_eq!(ended[0].id, stuck.id);
+        assert!(
+            ended[0].asked_to_end,
+            "the quit is the person's, never a crash"
+        );
+        assert!(
+            !spawner.end_pid(u32::MAX),
+            "a process no launch of this session runs is not one"
+        );
     }
 
     /// A package's launch starts without forking the session, and with none of the descriptors the

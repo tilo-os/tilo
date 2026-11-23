@@ -166,7 +166,7 @@ impl Surface {
     /// buffers are zeroed: nothing of the other app is left to read).
     pub fn rasterize(
         &mut self,
-        gpu: &mut Gpu,
+        gpu: Option<&mut Gpu>,
         frame: &mut Frame,
         resources: &dyn Resources,
         tenant_changed: bool,
@@ -204,6 +204,9 @@ impl Surface {
             ..
         } = self;
         let scene = compose(layers, order, (width, height), composed);
+        // Without a device the blur behind a floating surface cannot be drawn:
+        // the surface shows over what is under it, unblurred.
+        let unblurred = ui::backdrop::BackdropFrame::default();
         let content = FrameContent {
             scene,
             width,
@@ -212,24 +215,29 @@ impl Surface {
             damage_regions: &damage_rects,
             scroll_copies: &scroll_copies,
             full_redraw,
-            backdrop: &backdrop,
+            backdrop: if gpu.is_some() { &backdrop } else { &unblurred },
         };
-        if tenant_changed {
-            gpu.renderer.trim_pooled_buffers();
-        }
-        let target = target.get_or_insert_with(|| new_target(&gpu.device, width, height));
-        let result = raster
-            .rasterize(
-                (&gpu.device, &gpu.queue),
-                Some(&mut gpu.renderer),
-                RetainedTarget {
-                    texture: &target.texture,
-                    view: &target.view,
-                },
-                content,
-            )
-            .0
-            .map(|_| ());
+        let result = match gpu {
+            Some(gpu) => {
+                if tenant_changed {
+                    gpu.renderer.trim_pooled_buffers();
+                }
+                let target = target.get_or_insert_with(|| new_target(&gpu.device, width, height));
+                raster
+                    .rasterize(
+                        (&gpu.device, &gpu.queue),
+                        Some(&mut gpu.renderer),
+                        RetainedTarget {
+                            texture: &target.texture,
+                            view: &target.view,
+                        },
+                        content,
+                    )
+                    .0
+                    .map(|_| ())
+            }
+            None => raster.rasterize_to_cpu(content).map(|_| ()),
+        };
         self.had_backdrop = !backdrop.is_empty();
         if let Err(error) = result {
             self.target_valid = false;
@@ -265,7 +273,10 @@ impl Surface {
     /// # Errors
     ///
     /// When buffers cannot be allocated.
-    pub fn ensure_buffers(&mut self, gpu: &Gpu) -> Result<bool, crate::buffers::BufferError> {
+    pub fn ensure_buffers(
+        &mut self,
+        gpu: Option<&Gpu>,
+    ) -> Result<bool, crate::buffers::BufferError> {
         let (width, height) = self.size;
         if self
             .buffers
@@ -277,7 +288,7 @@ impl Surface {
         self.generations = self.generations.wrapping_add(1);
         let set = match gpu {
             #[cfg(target_os = "linux")]
-            gpu if gpu.dmabufs() => {
+            Some(gpu) if gpu.dmabufs() => {
                 let format = crate::buffers::dmabuf_format(self.opaque, &self.formats)
                     .ok_or(crate::buffers::BufferError::NoFormat)?;
                 let allocator = gpu
@@ -313,7 +324,11 @@ impl Surface {
     /// `None` when the app holds every buffer: the frame waits as
     /// [`Self::pending`] for a release. On a GPU the copy is submitted, not
     /// waited for; the caller waits once for every surface it delivered.
-    pub fn deliver(&mut self, gpu: &Gpu, damage: &[Region]) -> Result<Option<Delivered>, String> {
+    pub fn deliver(
+        &mut self,
+        gpu: Option<&Gpu>,
+        damage: &[Region],
+    ) -> Result<Option<Delivered>, String> {
         let Some(set) = self.buffers.as_mut() else {
             return Ok(None);
         };
@@ -328,9 +343,9 @@ impl Surface {
         let copy = self
             .history
             .missed(buffer.holds, Region::whole(width, height));
-        match (&mut buffer.memory, self.target.as_ref()) {
+        match (&mut buffer.memory, gpu, self.target.as_ref()) {
             #[cfg(target_os = "linux")]
-            (Memory::Dmabuf(dmabuf), Some(target)) => {
+            (Memory::Dmabuf(dmabuf), Some(gpu), Some(target)) => {
                 let mut encoder =
                     gpu.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -339,10 +354,27 @@ impl Surface {
                 dmabuf.copy_from(&mut encoder, &target.texture, &copy);
                 gpu.queue.submit([encoder.finish()]);
             }
-            (Memory::Shm(memory), Some(target)) => {
+            (Memory::Shm(memory), Some(gpu), Some(target)) => {
                 read_back(gpu, target, memory.as_mut_slice(), width, &copy)?;
             }
-            (_, None) => return Ok(None),
+            // No device: the frame is the CPU canvas itself.
+            (Memory::Shm(memory), None, _) => {
+                let Some(frame) = self.raster.cpu_frame() else {
+                    return Ok(None);
+                };
+                if (frame.width, frame.height) != (width, height) {
+                    return Err("the canvas is not the buffers' size".to_owned());
+                }
+                let stride = (width as usize).saturating_mul(4);
+                for region in &copy {
+                    let start = (region.y as usize)
+                        .saturating_mul(stride)
+                        .saturating_add((region.x as usize).saturating_mul(4));
+                    let source = frame.pixels.get(start..).unwrap_or_default();
+                    copy_swizzled(source, stride, memory.as_mut_slice(), width, region);
+                }
+            }
+            _ => return Ok(None),
         }
         buffer.busy = true;
         buffer.holds = Some(frame_index);

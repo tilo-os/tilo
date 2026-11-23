@@ -540,16 +540,6 @@ impl Shared {
                 self.invoke_app_action(LaunchpadAppAction::connect_agent());
             }
             choice => {
-                // A machine that asked to join over the internet is answered here: the
-                // notification's own buttons admit it or turn it away.
-                if let Some((ask, approve)) = crate::enrollment::answer_of(choice) {
-                    self.answer_enrolling(&ask, approve);
-                    return;
-                }
-                if crate::enrollment::review_of(choice).is_some() {
-                    self.open_pair_device();
-                    return;
-                }
                 // A device another of the person's devices found asks here to act as them: the
                 // banner's own buttons are its answer.
                 if let Some(fabric) = &self.fabric
@@ -895,13 +885,21 @@ impl Shared {
             // here; a report points at what is wrong first and goes to the one place reports go.
             // The shell names that window on its next pass, and a shell with none in front leaves the
             // chord to Chat, which a send with nothing to be about has always opened.
+            // A shell that draws the screen draws the picker too: it is the shell's view, and its
+            // card takes the keys, so the chord opens and closes it there.
+            ShortcutAction::EmojiPicker =>
+            {
+                #[cfg(target_os = "linux")]
+                if self.surfaces.shell {
+                    self.surfaces.toggle(crate::device_lists::EMOJI);
+                }
+            }
             ShortcutAction::AskAgent => self.box_ask.set(Some(BoxAsk::Agent)),
             ShortcutAction::SaySomething => self.box_ask.set(Some(BoxAsk::People)),
             ShortcutAction::ReportProblem => self.box_ask.set(Some(BoxAsk::Report)),
             // The shell answers these on its own windows, strips and places before handing anything
             // on: one arriving here is one it had nothing to act on.
             ShortcutAction::WorkspaceOverview
-            | ShortcutAction::EmojiPicker
             | ShortcutAction::FocusPreviousWindow
             | ShortcutAction::FocusNextWindow
             | ShortcutAction::PreviousTab

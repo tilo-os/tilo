@@ -57,7 +57,7 @@ tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
 # The lock that keeps one daemon per device, which a command reads to see whether one is there.
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # A workspace's name as a folder name, composed as macOS and Linux read it back.
 unicode-normalization = "0.1.25"
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
@@ -70,16 +70,20 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url.workspace = true
 uuid.workspace = true
+wire-frame = { path = "../../platform/wire-frame" }
 
 [dev-dependencies]
 tilo-mcp = { path = "../../runtime/tilo-mcp", features = ["test-support"] }
-tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The account's temporary directory, which a person's own service keeps its sockets in.
+libc.workspace = true
 
 [lints]
 workspace = true

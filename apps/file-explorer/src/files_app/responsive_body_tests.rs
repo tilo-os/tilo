@@ -769,15 +769,7 @@ fn narrow_error_retry_uses_the_shared_button_and_recovers() {
 fn shared_toolbar_resource_action_opens_view_options() {
     let mut h = H::new(None, 1200.0, 720.0);
     assert!(
-        h.w.start_encoded(
-            tilo_actions::OperationKind::Effect,
-            "tilo.ui.control.invoke",
-            br#""files.view_menu""#,
-            &mut h.state.doc,
-            &h.state.root
-        )
-        .unwrap()
-        .is_some(),
+        ui::framework::press_control(&mut h.w, "files.view_menu", &mut h.state.doc, &h.state.root),
         "the same resource action an AT-SPI client discovers is handled"
     );
     h.lay_out(1200.0, 720.0);

@@ -21,7 +21,7 @@ class UiClockContractTests(unittest.TestCase):
         self,
         files: dict[str, str],
         crate_clippy: str | None = CRATE_CLIPPY,
-        crate_path: str = "crates/sdk/ui-core",
+        crate_path: str = "crates/ui/ui-core",
     ) -> Path:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -50,7 +50,7 @@ class UiClockContractTests(unittest.TestCase):
         with self.subTest(phase='the clock module lives in the host crate only'):
             root = self.fixture({"time.rs": "pub use std::time::Instant;\n"})
             paths = [Path(v.path).as_posix() for v in contract.audit(root)]
-            self.assertEqual(paths, ["crates/sdk/ui-core/src/time.rs"])
+            self.assertEqual(paths, ["crates/ui/ui-core/src/time.rs"])
         with self.subTest(phase='every toolkit crate is audited'):
             root = self.fixture({"a.rs": "use std::time::Instant;\n"})
             host = root / "crates/sdk/tilo-process-services"
@@ -62,7 +62,7 @@ class UiClockContractTests(unittest.TestCase):
                 [
                     "crates/sdk/tilo-process-services/clippy.toml",
                     "crates/sdk/tilo-process-services/src/b.rs",
-                    "crates/sdk/ui-core/src/a.rs",
+                    "crates/ui/ui-core/src/a.rs",
                 ],
             )
         with self.subTest(phase='std clock paths fail'):
@@ -92,7 +92,7 @@ class UiClockContractTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         (root / "clippy.toml").write_text(ROOT_CLIPPY, encoding="utf-8")
-        toolkit = root / "crates/sdk/ui-core"
+        toolkit = root / "crates/ui/ui-core"
         (toolkit / "src").mkdir(parents=True)
         (toolkit / "clippy.toml").write_text(CRATE_CLIPPY, encoding="utf-8")
         for relative, text in files.items():
@@ -144,12 +144,12 @@ class UiClockContractTests(unittest.TestCase):
         with self.subTest(phase='the toolkit reads its own clock module the same way'):
             root = self.tree(
                 {
-                    "crates/sdk/ui-core/src/schedule.rs": (
+                    "crates/ui/ui-core/src/schedule.rs": (
                         "pub fn due() -> crate::time::Instant { crate::time::Instant::now() }\n"
                     ),
                 }
             )
-            self.assertEqual(self.found(root), ["crates/sdk/ui-core/src/schedule.rs:1"])
+            self.assertEqual(self.found(root), ["crates/ui/ui-core/src/schedule.rs:1"])
         with self.subTest(phase='the toolkit named by its crate name'):
             root = self.tree(
                 {
@@ -170,7 +170,7 @@ class UiClockContractTests(unittest.TestCase):
                         "pub fn t(now: Instant) -> Duration { ui::time::now() - now }\n"
                         "pub fn w() -> ui::time::SystemTime { ui::time::wall() }\n"
                     ),
-                    "crates/sdk/ui-core/src/clock.rs": (
+                    "crates/ui/ui-core/src/clock.rs": (
                         "use crate::time::Instant;\n"
                         "pub fn t(now: Instant) -> crate::time::Instant { crate::time::now() }\n"
                     ),
@@ -283,7 +283,7 @@ class UiClockContractTests(unittest.TestCase):
             (root / "clippy.toml").write_text(
                 ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get"]\n', encoding="utf-8"
             )
-            crate = root / "crates/sdk/ui-core/clippy.toml"
+            crate = root / "crates/ui/ui-core/clippy.toml"
             crate.write_text(
                 ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get", "std::time::Instant::now"]\n',
                 encoding="utf-8",

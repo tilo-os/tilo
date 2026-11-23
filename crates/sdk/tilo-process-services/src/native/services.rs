@@ -1,6 +1,6 @@
 //! The native desktop implementation of [`ProcessServices`].
 //!
-//! - clipboard: `tilo_clipboard::system()`;
+//! - clipboard: `tilo_clipboard::system()`, the connection the app's session serves it over;
 //! - files and opener: `tilo_dialogs::system_picker()` and
 //!   `system_opener()` (the XDG portal on Linux, `NSOpenPanel`/`NSWorkspace`
 //!   on macOS, the Common Item Dialogs on Windows), or with
@@ -81,24 +81,6 @@ pub fn install_default_if_unset(app_id: Option<&str>) -> bool {
 /// The process inputs a native launcher passes through the process environment.
 pub use tilo_process::environment::process_environment;
 
-/// Attach the native clipboard to the runner's Wayland display, so copies go
-/// through the connection that owns the focused surface — the compositor only
-/// accepts `set_selection` from that one.
-///
-/// The runner keeps the returned guard until close. A no-op when the process
-/// installed its own clipboard, already attached, or is not on Wayland.
-pub fn attach_display(
-    handle: winit::event_loop::OwnedDisplayHandle,
-) -> Option<tilo_clipboard::ClipboardAttachment> {
-    if !std::ptr::addr_eq(
-        Arc::as_ptr(&tilo_clipboard::system()),
-        Arc::as_ptr(&crate::process::current().clipboard),
-    ) {
-        return None;
-    }
-    tilo_clipboard::attach_wayland_display(handle)
-}
-
 #[cfg(not(target_os = "android"))]
 use self::desktop_media::SystemSpeech;
 
@@ -128,59 +110,15 @@ mod desktop_media {
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
-    #[test]
-    fn windows_primary_selection_does_not_replace_explicit_copy() {
-        let clipboard = tilo_clipboard::system();
-        clipboard.set_text(
-            tilo_clipboard::ClipboardTarget::Clipboard,
-            "explicit Windows copy",
-        );
-        clipboard.set_text(
-            tilo_clipboard::ClipboardTarget::Primary,
-            "selected terminal text",
-        );
-        assert_eq!(
-            clipboard
-                .text(tilo_clipboard::ClipboardTarget::Primary)
-                .as_deref(),
-            Some("selected terminal text")
-        );
-        assert_eq!(
-            clipboard
-                .text(tilo_clipboard::ClipboardTarget::Clipboard)
-                .as_deref(),
-            Some("explicit Windows copy")
-        );
-    }
-
     #[cfg(not(target_os = "android"))]
     #[test]
-    fn native_services_share_one_round_tripping_clipboard() {
-        // phase: native_clipboard_round_trips_with_or_without_a_system_clipboard
-        // Copy → paste must round-trip within the process even with no system
-        // clipboard (the headless test env), and equally when a real clipboard
-        // is present.
-        {
-            let clipboard = tilo_clipboard::system();
-            let payload = "https://example.com/feed.xml";
-            clipboard.set_text(tilo_clipboard::ClipboardTarget::Clipboard, payload);
-            assert_eq!(
-                clipboard
-                    .text(tilo_clipboard::ClipboardTarget::Clipboard)
-                    .as_deref(),
-                Some(payload)
-            );
-        }
-        // phase: native_services_resolve_one_shared_clipboard
-        {
-            let a = services(None);
-            let b = services(Some("so.tilo.example"));
-            assert!(std::ptr::addr_eq(
-                Arc::as_ptr(&a.clipboard),
-                Arc::as_ptr(&b.clipboard)
-            ));
-            assert_eq!(a.clipboard.name(), "native");
-        }
+    fn native_services_resolve_one_shared_clipboard() {
+        let a = services(None);
+        let b = services(Some("so.tilo.example"));
+        assert!(std::ptr::addr_eq(
+            Arc::as_ptr(&a.clipboard),
+            Arc::as_ptr(&b.clipboard)
+        ));
+        assert_eq!(a.clipboard.name(), tilo_clipboard::system().name());
     }
 }

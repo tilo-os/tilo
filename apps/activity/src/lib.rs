@@ -316,7 +316,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav) -> Element {
     .with_accessible_name(tr("activity-places"))
     .with_semantic_key("activity.places")
     .bind_selection(&nav.place)
-    .on_view("activity.places", move |_| {
+    .on_choose("activity.places", move |_| {
         chosen.pane.set(ui::widget::NavPane::Content);
     });
 

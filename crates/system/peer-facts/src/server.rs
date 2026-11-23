@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_bind_fails_closed_on_missing_or_uncontrolled_parent_and_non_socket() {
+    fn a_bind_without_activation_fails_closed_on_missing_or_uncontrolled_parent_and_non_socket() {
         let root = tempfile::tempdir().unwrap();
 
         // Missing parent directory is never created.

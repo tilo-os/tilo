@@ -18,7 +18,7 @@ presentation-feedback = ["tilo-ui/presentation-feedback"]
 
 [dependencies]
 # The page-view shots run against a synchronous web engine.
-tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../crates/engines/tilo-webview" }
 # Scenarios used to live as [[example]] targets of tilo-ui and therefore
 # inherited its dependency graph. Keep the same direct crates they `use`.
 automerge.workspace = true
@@ -33,7 +33,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["test-supp
 tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 tilo-session-core = { path = "../../crates/session/core" }
 tilo-desktop-model = { path = "../../crates/session/desktop-model" }
-tilo-ui = { path = "../../crates/sdk/ui-core", default-features = false }
+tilo-ui = { path = "../../crates/ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
 

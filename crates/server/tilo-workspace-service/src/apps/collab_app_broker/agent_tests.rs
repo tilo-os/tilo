@@ -12,14 +12,8 @@ use tilo_peer_state::owner_commit::{
 };
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
-#[path = "agent_connection_tests.rs"]
-mod agent_connection;
-#[path = "agent_tools_tests.rs"]
-mod agent_tools;
-#[path = "certified_agent_tests.rs"]
-mod certified_agents;
-#[path = "turns_tests.rs"]
-mod turns;
+#[path = "agent_session_tests.rs"]
+mod agent_session;
 
 struct Native {
     owner: tilo_peer_state::owner::NativeWorkspaceOwner,
@@ -39,12 +33,6 @@ struct Native {
     opening: std::sync::atomic::AtomicBool,
     /// The agent sessions going, each with what its person allowed it.
     sessions: Mutex<Vec<(String, crate::apps::services::GoingSession)>>,
-    /// The turns people asked the agents.
-    turns: Mutex<Vec<crate::apps::services::AgentTurn>>,
-    /// What each turn's session reported it spent, in order.
-    spent: Mutex<Vec<(String, u64)>>,
-    /// The turns whose answer ended without one, as the session heard of them.
-    failed: Mutex<Vec<(String, tilo_action_policy::turn::Turn, u32, String)>>,
     /// The agents the workspace's record of its agents names.
     listed: Mutex<Vec<crate::apps::services::ListedAgent>>,
 }
@@ -257,36 +245,6 @@ impl crate::apps::services::AgentSessions for Native {
             going.answers.push(grant);
         }
     }
-
-    fn confines(&self, workspace: &str) -> bool {
-        workspace == workspace_id().to_string()
-    }
-
-    fn turns(&self, _workspace: &str) -> Vec<crate::apps::services::AgentTurn> {
-        self.turns.lock().unwrap().clone()
-    }
-
-    fn spent(&self, session: &str, total_micros: u64) {
-        self.spent
-            .lock()
-            .unwrap()
-            .push((session.to_owned(), total_micros));
-    }
-
-    fn turn_failed(
-        &self,
-        session: &str,
-        turn: &tilo_action_policy::turn::Turn,
-        attempt: u32,
-        reason: &str,
-    ) {
-        self.failed.lock().unwrap().push((
-            session.to_owned(),
-            turn.clone(),
-            attempt,
-            reason.to_owned(),
-        ));
-    }
 }
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -326,12 +284,6 @@ impl Fixture {
         resource_changes: Option<Arc<dyn crate::apps::services::DocumentChangeServices>>,
     ) -> Self {
         Self::built(launcher, host_steps, resource_changes, true)
-    }
-    /// As [`Self::with_services`], on a device of this host's own: its connections are the local
-    /// socket's, which reach the host's own steps (`is_local_host_caller`), as the agent app's
-    /// connection to the person's own session does.
-    fn on_this_device(host_steps: Vec<Arc<dyn crate::apps::services::HostStepServices>>) -> Self {
-        Self::built(None, host_steps, None, false)
     }
     /// The fixture, its signed device `foreign` to this host or one of its own.
     #[allow(
@@ -383,9 +335,6 @@ impl Fixture {
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),
             sessions: Mutex::new(Vec::new()),
-            turns: Mutex::new(Vec::new()),
-            spent: Mutex::new(Vec::new()),
-            failed: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
@@ -473,9 +422,6 @@ impl Fixture {
         .encode()
         .unwrap()
     }
-    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> runtime_collab::ChannelHandle {
-        wire_channel(self.app_handle(peer, app, agent))
-    }
     fn app_handle(&self, peer: u64, app: &str, agent: bool) -> JoinedChannel {
         let workspace = workspace_id().to_string();
         let mut admitted = self
@@ -550,41 +496,6 @@ async fn notes_target(f: &Fixture) -> (runtime_collab::ChannelHandle, Invocation
     target.publish_actions(&[notes_append()]).await.unwrap();
     let (stream, _end) = handle.invocation_feed(true).unwrap();
     (target, stream)
-}
-fn grant_notes(f: &Fixture) {
-    set_notes_permission(f, true);
-}
-fn set_notes_permission(f: &Fixture, may_write: bool) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
-    let workspace_id = workspace_id().to_string();
-    let append = tilo_actions::action_node(
-        &TreePath::workspace(&workspace_id),
-        "so.tilo.notes",
-        "document",
-        "notes:release",
-        None,
-        "append",
-    );
-    let grant = if may_write {
-        Grant::new(
-            "fixture-notes-append",
-            Grantee::agent("scribe"),
-            append,
-            KindSet::UNDOABLE,
-            Answer::Allow,
-            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
-        )
-    } else {
-        Grant::new(
-            "fixture-notes-restrict",
-            Grantee::agent("scribe"),
-            append,
-            KindSet::ALL,
-            Answer::Deny,
-            Grantee::person(hex::encode(f.native.certificate.user_public_key)),
-        )
-    };
-    put_grant(f, grant);
 }
 fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
     f.native
@@ -827,11 +738,11 @@ impl crate::apps::services::HostStepServices for TurnSteps {
     }
 }
 
-/// A step marked for turns is an agent session's step, as an app action is: the agent answering a
-/// turn takes it on the workspace's grants while its session goes, and an agent in no session that
-/// goes — or one the grants refuse — takes none.
+/// A step marked for turns is an agent session's step, as an app action is: the agent takes it on
+/// the workspace's grants while its session goes, and an agent in no session that goes — or one
+/// the grants refuse — takes none.
 #[tokio::test(flavor = "current_thread")]
-async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
+async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let steps = Arc::new(TurnSteps::default());
@@ -842,24 +753,23 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 crate::apps::services::GoingSession::default(),
             ));
             grant_the_layout(&f, true);
-            let turn =
-                tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-1");
             let person = hex::encode(f.native.certificate.user_public_key);
 
-            // The agent answering the person's turn, in its session.
-            let agent = Caller::agent_turn("scribe", person.clone(), turn.clone())
+            // The agent working in its session, answering for the person.
+            let agent = Caller::local_person(person.clone())
+                .delegated_to("scribe")
                 .in_workspace(workspace_id().to_string())
                 .in_agent_session(SESSION)
                 .in_new_execution();
-            stray_invoke(&f.state, &agent, 92).expect("the turn takes the session's step");
+            stray_invoke(&f.state, &agent, 92).expect("the session takes the session's step");
             assert_eq!(
                 steps.taken.lock().unwrap().as_slice(),
                 [tilo_actions::MemberId::agent("scribe")],
-                "the step ran once, as the turn's agent"
+                "the step ran once, as the session's agent"
             );
 
-            // A turn's step is listed to the agent working the turn, and to the person at this
-            // device as their other steps are: the REPL types what the agent would.
+            // A turn's step is listed to the agent working in its session, and to the person at
+            // this device as their other steps are: the REPL types what the agent would.
             let listed = |caller: &Caller| {
                 let actor = BrokerActor::for_caller(caller);
                 f.state
@@ -873,7 +783,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             };
             assert!(
                 listed(&agent),
-                "the agent working the turn is offered the session's step"
+                "the agent working in its session is offered the session's step"
             );
             let local =
                 Caller::local_person(person.clone()).in_workspace(workspace_id().to_string());
@@ -883,14 +793,15 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             );
 
             // An agent whose session is over takes no step.
-            let ended = Caller::agent_turn("scribe", person, turn)
+            let ended = Caller::local_person(person)
+                .delegated_to("scribe")
                 .in_workspace(workspace_id().to_string())
                 .in_agent_session("so.tilo.session/agent-session/over")
                 .in_new_execution();
             let refused = stray_invoke(&f.state, &ended, 93);
             assert!(
                 matches!(refused, Err(ActionCallError::Refused { .. })),
-                "an agent whose turn is over takes no step: {refused:?}"
+                "an agent whose session is over takes no step: {refused:?}"
             );
             assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
 

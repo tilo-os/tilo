@@ -93,6 +93,8 @@ const RICHBODY: &str = "so.tilo.lang.richbody";
 const TASKS: &str = "so.tilo.lang.tasks";
 /// The conversations the workspace has.
 const CHAT: &str = "so.tilo.chat";
+/// What people said about the workspace's resources.
+const DISCUSSION: &str = "so.tilo.lang.discussion";
 /// The day at a glance, over Tasks', Notes' and Chat's own places.
 const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
@@ -130,6 +132,11 @@ impl ui::app::AppSurface for Region {
 thread_local! {
     /// The serial of the last input event the live window was handed.
     static INPUT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The device's content store the windows opened from here on keep their files in, as the
+    /// session opens one for an app's instance: none unless a test hands one
+    /// ([`Session::keeping_files_in`]).
+    static DEVICE_CONTENT: std::cell::RefCell<Option<tilo_content::ContentStore>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// The window the person uses: the headless frame harness, or the live `App` a window process
@@ -515,6 +522,12 @@ impl Session {
         session
     }
 
+    /// The windows this thread opens from here on keep their files in `content`, the device's
+    /// content store: the one an app's other processes (its origin's connector) keep files in.
+    fn keeping_files_in(content: &tilo_content::ContentStore) {
+        DEVICE_CONTENT.with(|kept| *kept.borrow_mut() = Some(content.clone()));
+    }
+
     /// [`Self::open`], before the window had a frame.
     fn opened(app: &str, person: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
         Self::opened_in_language(app, person, "en-US", window)
@@ -556,6 +569,18 @@ impl Session {
             .in_language("en-US")
             .access(MemberAccess::person(policy, "bo"));
         Self::brokered_as(&route, spec, window)
+    }
+
+    /// `person` at a harness window of `app` in a workspace whose members it knows, alone in it:
+    /// what an app tells them reaches them as a notice, on every device of theirs.
+    fn member(app: &str, person: &str) -> Self {
+        use ui::permissions::policy::{MemberAccess, WorkspacePolicy};
+        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
+            .in_language("en-US")
+            .access(MemberAccess::person(policy, person));
+        Self::brokered_as(&route, spec, Window::in_harness)
     }
 
     /// The action the window's Ask bar asks the person about, when it is up.
@@ -694,7 +719,10 @@ impl Session {
             connection,
             (store, tilolang_process::hosted::memory_content()),
             bundle,
-            &tilolang_process::hosted::Kept::default(),
+            &tilolang_process::hosted::Kept {
+                content: DEVICE_CONTENT.with(|content| content.borrow().clone()),
+                ..tilolang_process::hosted::Kept::default()
+            },
             Box::new(transport),
             (&Rc::new(Phrases::new("en-US")), host.formats()),
             woken.waker(),

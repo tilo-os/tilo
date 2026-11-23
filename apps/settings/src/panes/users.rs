@@ -36,6 +36,10 @@ crate::effects::effect_family!(UsersEffect => answer);
 
 crate::area::pane_area! {
     UsersArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Users);
     fn poll(&self) {
         UsersArea::poll(self);
     }

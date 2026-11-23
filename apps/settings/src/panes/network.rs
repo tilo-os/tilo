@@ -13,8 +13,8 @@ use os_actions::network_settings::{
     WifiLinkDetails,
 };
 use os_actions::{
-    ConnectivityState, Dispatcher, EnterpriseWifiConfiguration, HotspotConfiguration,
-    IpConfiguration, SavedNetworkProfile, WifiNetworkInfo, WiredInfo,
+    ConnectivityState, EnterpriseWifiConfiguration, HotspotConfiguration, IpConfiguration,
+    SavedNetworkProfile, WifiNetworkInfo, WiredInfo,
 };
 use settings_store::device_vpn::{
     ClientState, ClientStatus, DeviceVpnStatus, ExitUser, OfferedExit,
@@ -28,7 +28,6 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::area::AreaContext;
 use crate::categories::Category;
-use crate::dispatcher::dispatcher_or_real;
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
@@ -377,6 +376,10 @@ crate::effects::effect_family!(NetworkEffect => answer);
 
 crate::area::pane_area! {
     NetworkArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Network);
     fn poll(&self) {
         NetworkArea::poll(self);
     }
@@ -978,8 +981,14 @@ pub(crate) trait NetworkService: Send + Sync {
     fn sign_in_page(&self) -> Result<String, String>;
 }
 
-struct DeviceNetwork {
-    dispatcher: Arc<dyn Dispatcher + Send + Sync>,
+struct DeviceNetwork;
+
+/// Turn one of the device's switches on or off through the session's connectivity service, whose
+/// actions Quick Settings, a script and an agent call too: it checks the radios show the change.
+fn switch(resource: &str, action: &str, on: bool) -> Result<(), String> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("on".into(), on.into());
+    ui::collaboration::SessionResource::invoke_without_watching(resource, action, &arguments)
 }
 
 impl NetworkService for DeviceNetwork {
@@ -1032,12 +1041,13 @@ impl NetworkService for DeviceNetwork {
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
         use os_actions::network_settings as nm;
         crate::device_read::off_ui_thread();
-        let dispatcher = &self.dispatcher;
         match change {
-            NetworkChange::Wifi(on) => dispatcher.set_wifi(*on),
-            NetworkChange::Wired(on) => dispatcher.set_wired(*on),
-            NetworkChange::Radio(Radio::Airplane, on) => dispatcher.set_airplane_mode(*on),
-            NetworkChange::Radio(Radio::Hotspot, on) => dispatcher.set_hotspot(*on),
+            NetworkChange::Wifi(on) => switch("network", "set-wifi", *on),
+            NetworkChange::Wired(on) => switch("network", "set-wired", *on),
+            NetworkChange::Radio(Radio::Airplane, on) => {
+                switch("network", "set-airplane-mode", *on)
+            }
+            NetworkChange::Radio(Radio::Hotspot, on) => switch("tethering", "set-hotspot", *on),
             NetworkChange::Autoconnect { uuid, on, .. } => {
                 os_actions::set_network_autoconnect(uuid, *on)
             }
@@ -1060,7 +1070,7 @@ impl NetworkService for DeviceNetwork {
                 nm::set_wifi_profile_password(uuid, password)
             }
             NetworkChange::Connect { ssid, password } => {
-                dispatcher.connect_wifi(ssid, password.as_deref().map(String::as_str))
+                os_actions::connect_wifi(ssid, password.as_deref().map(String::as_str))
             }
             NetworkChange::JoinHidden { ssid, password } => {
                 nm::connect_hidden_wifi(ssid, password.as_deref().map(String::as_str))
@@ -1784,12 +1794,7 @@ impl NetworkModel {
     }
 
     fn of_device(reach: Reach) -> Self {
-        let mut model = Self::with_service(
-            reach,
-            Arc::new(DeviceNetwork {
-                dispatcher: dispatcher_or_real(None),
-            }),
-        );
+        let mut model = Self::with_service(reach, Arc::new(DeviceNetwork));
         model.start_snapshot();
         model
     }

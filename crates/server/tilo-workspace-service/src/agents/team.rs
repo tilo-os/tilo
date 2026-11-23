@@ -253,7 +253,7 @@ impl TurnTeam {
         self.workspaces
             .author_application(
                 &self.workspace,
-                self.workspaces.governor(),
+                self.workspaces.device_cert(),
                 &tilo_agent_session::AppCatalogue::native(),
                 tilo_workspace_agent::OWNER,
                 &document,

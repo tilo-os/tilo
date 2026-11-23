@@ -44,6 +44,17 @@ fn fixture() -> (
     }
     (governor, member, governor_key, key, cert, now)
 }
+
+/// The person whose certified device `key` is in `peer`'s workspace.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
+}
+
 fn local_edit(
     peer: &mut StatePeer,
     key: &SigningKey,
@@ -57,7 +68,7 @@ fn local_edit(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit_edit("fixture", "fixture");
+    doc.commit_edit("fixture", "fixture", &person(peer, key));
     if !snapshot {
         return peer
             .publication_mut()
@@ -291,7 +302,7 @@ tilo_test_env::scenario! {
         unrelated.set_actor(automerge::ActorId::from(vec![99; 32]));
         let before = unrelated.get_heads();
         unrelated.put(ROOT, "same-value", "same-value").unwrap();
-        unrelated.commit_edit("fixture", "same-value");
+        unrelated.commit_edit("fixture", "same-value", &person(&member, &key));
         let second = member
             .publication_mut()
             .publish_incremental(

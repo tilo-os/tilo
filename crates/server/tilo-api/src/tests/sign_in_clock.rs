@@ -8,7 +8,7 @@
 
 use super::*;
 use futures_util::FutureExt as _;
-use tilo_enrollment::certification::{issue_agent_grant, issue_sign_in_cert};
+use tilo_server_client::certification::{issue_agent_grant, issue_sign_in_cert};
 use tilo_server_client::{grant_label, sign_in_proof};
 use tilo_user_identity::certification::CERTIFICATION_CLOCK_ALLOWANCE_NS;
 use tilo_user_identity::{CertificationPolicy, RevocationList};

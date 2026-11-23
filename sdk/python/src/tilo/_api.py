@@ -21,10 +21,11 @@ from ._errors import (
     ProtocolError,
     Refused,
     SurfaceChanged,
+    Unreachable,
     UnsupportedVersion,
     key_refusal,
 )
-from ._transport import Response, Transport, Unreachable
+from ._transport import Response, Transport
 
 # The API's major version this SDK speaks, and the header every answer names.
 API_MAJOR = "1"

@@ -44,7 +44,8 @@ use wayland_client::protocol::{
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
-    zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3::ZwpTextInputV3,
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3,
+    zwp_text_input_v3::ZwpTextInputV3,
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
@@ -65,6 +66,10 @@ struct Seen {
     keyboard: Option<WlKeyboard>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
+    /// What an input method composes in the window's text field now.
+    composed: String,
+    /// What an input method committed to the window's text field.
+    committed: String,
     configured: bool,
     pointer_inside: bool,
     buttons: Vec<(u32, bool)>,
@@ -246,6 +251,15 @@ fn session() -> Session {
     // Headless tests take no part in the peer network: no endpoint, no workspace.
     crate::common::headless(Options {
         collab: false,
+        ..Options::default()
+    })
+}
+
+/// A session whose shell is the tilolang package, drawing the whole screen (`--shell screen`).
+fn shell_session() -> Session {
+    crate::common::headless(Options {
+        collab: false,
+        shell: true,
         ..Options::default()
     })
 }
@@ -2284,7 +2298,29 @@ delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
 delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
-delegate_noop!(Seen: ignore ZwpTextInputV3);
+
+/// What reaches the window's text field from an input method: the text it composes, and the text
+/// it commits.
+impl Dispatch<ZwpTextInputV3, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTextInputV3,
+        event: zwp_text_input_v3::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_text_input_v3::Event::PreeditString { text, .. } => {
+                seen.composed = text.unwrap_or_default();
+            }
+            zwp_text_input_v3::Event::CommitString { text } => {
+                seen.committed.push_str(&text.unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+}
 
 /// The display key's action steps the displays from side by side to showing the same, to only the
 /// built-in one, to only the other.

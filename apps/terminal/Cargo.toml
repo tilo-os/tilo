@@ -56,7 +56,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
 # Where a session runs, and the environment records it can run in.
-tilo-environment = { path = "../../crates/runtime/environment" }
+tilo-environment = { path = "../../crates/vm/environment" }
 tracing.workspace = true
 # Kitty graphics transmissions carry base64-encoded payloads.
 base64.workspace = true
@@ -66,7 +66,7 @@ tilo-content = { path = "../../crates/system/content", default-features = false 
 # The desktop surface's dependencies, on by the `desktop` feature alone.
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"], optional = true }
 tilo-paths = { workspace = true, optional = true }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 portable-pty = { version = "0.9.0", optional = true }
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
@@ -98,9 +98,9 @@ tilo-automerge.workspace = true
 terminal-samples = { package = "terminal", path = ".", features = ["samples"] }
 tempfile.workspace = true
 # ush's own shell, as the process of a session whose runs are recorded.
-ush-shell = { path = "../../crates/runtime/ush-shell" }
+ush-shell = { path = "../../crates/vm/ush-shell" }
 # ush's host on the Tilo side, for a session whose shell runs there.
-ush-tilo = { path = "../../crates/runtime/ush-tilo" }
+ush-tilo = { path = "../../crates/vm/ush-tilo" }
 tilo-test-env = { path = "../../tools/test-env" }
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner

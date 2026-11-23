@@ -110,78 +110,15 @@ pub(crate) struct AdmittedJoinIdentity {
     /// MCP client): it carries the delegation a device gives its agents,
     /// not grants the workspace holds for it.
     pub(super) session_delegated: bool,
-    /// The agent certificate an agent joined under, verified: a device's
-    /// chain to its person, for one session in this workspace. Every
-    /// revalidation verifies it again and asks whether its session still goes.
-    pub(super) agent_cert: Option<Box<AgentCert>>,
 }
 
 impl AdmittedJoinIdentity {
-    /// This admission handed to `agent` by the person's own device, if any.
-    pub(super) fn delegated_to(mut self, agent: Option<&str>) -> Self {
-        if let Some(agent) = agent {
-            // The delegation names an agent, never its actor spelling.
-            self.agent_id = Some(delegated_agent_name(agent).to_owned());
-            self.session_delegated = true;
-        } else {
-            // A fresh admission to the person themselves: no earlier caller's
-            // delegation may survive into it.
-            self.agent_id = None;
-            self.session_delegated = false;
-        }
-        self
-    }
-
-    /// The durable owner of an invocation this admitted identity invokes:
-    /// [`InvocationOwner::AuthenticatedLocal`] naming the agent this session
-    /// was handed to, or no agent for the person themselves. Both apis that
-    /// admit a certified or local identity derive their owner here, so an
-    /// invocation's durable owner, its receipt actor and every later
-    /// validation name the same effective actor.
-    pub(super) fn invocation_owner(&self) -> Result<InvocationOwner, String> {
-        let cert = self
-            .certificate
-            .as_ref()
-            .ok_or("admitted caller certificate missing")?;
-        let owner = InvocationOwner::AuthenticatedLocal {
-            root: cert.user_public_key,
-            device: cert.device_public_key,
-            agent: self.agent_id.clone(),
-        };
-        owner.validate()?;
-        Ok(owner)
-    }
-
     /// The durable owner of an invocation from a certified caller
-    /// ([`VerifiedActionCaller`]).
-    ///
-    /// A session the person's own device handed to an agent is owned exactly
-    /// as the local api owns that same admitted identity
-    /// ([`Self::invocation_owner`]): [`InvocationOwner::AuthenticatedLocal`]
-    /// naming the agent, so the durable owner, the receipt actor and every
-    /// later validation agree on who acted. A plain certified person keeps
-    /// [`InvocationOwner::Certified`], which is how their invocations have
-    /// always been owned.
-    ///
-    /// A delegated session whose admission cannot name its owner (an
-    /// admission made without a retained certificate, as a network API's
-    /// can be) is refused here: falling back to [`InvocationOwner::Certified`]
-    /// would silently drop the delegation the person's device granted.
-    pub(super) fn delegated_invocation_owner(
-        &self,
-        delegated: Option<&str>,
-    ) -> Result<InvocationOwner, String> {
-        if let Some(agent) = delegated {
-            // The person and device this admission proves, and the delegation
-            // this caller says the person handed it.
-            self.invocation_owner()?;
-            if self.agent_id.as_deref() != Some(delegated_agent_name(agent)) {
-                return Err("admitted caller does not carry its delegation".into());
-            }
-            return self.invocation_owner();
-        }
+    /// ([`VerifiedActionCaller`]): the person themselves. An admission that
+    /// names an agent is no certified person's, and is refused.
+    pub(super) fn certified_owner(&self) -> Result<InvocationOwner, String> {
         if self.agent_id.is_some() || self.session_delegated {
-            return Err("admitted caller carries another agent's delegation".into());
+            return Err("admitted caller carries an agent's delegation".into());
         }
         Ok(self.person_owner())
     }
@@ -199,15 +136,10 @@ impl AdmittedJoinIdentity {
         let actor = match &self.agent_id {
             Some(agent) => {
                 let actor = BrokerActor::agent(agent.clone()).for_person(self.actor_key.clone());
-                let actor = if self.session_delegated {
+                if self.session_delegated {
                     actor.session_delegated()
                 } else {
                     actor
-                };
-                // A certified agent works in its session alone.
-                match &self.agent_cert {
-                    Some(cert) => actor.in_session(cert.session.clone()),
-                    None => actor,
                 }
             }
             None => BrokerActor::person(self.actor_key.clone()),
@@ -361,7 +293,6 @@ pub(super) fn admit_verified_join_at(
             display_handle: None,
             agent_id: None,
             session_delegated: false,
-            agent_cert: None,
         });
     }
     let workspace = workspace
@@ -381,15 +312,29 @@ pub(super) fn admit_verified_join_at(
         display_handle: None,
         agent_id: None,
         session_delegated: false,
-        agent_cert: None,
     })
 }
 
 /// Whether the launched app `app` may join `route` in its person's own
-/// workspace: only a record of the person's whose kind its surface declares
-/// (its own, or another app's it reads). The person's workspace holds nothing
-/// else for an app.
+/// workspace: its own route naming no record, which holds none; one of the
+/// workspace's records, when it is the record's app or declares that it reads
+/// that app's kinds, the workspace's grants deciding each change; or a record
+/// of the person's whose kind its surface declares (its own, or another app's
+/// it reads). The person's workspace holds nothing else for an app.
 pub(super) fn person_document_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
+    let own_route = route.app_id.is_empty() || route.app_id == app;
+    if own_route && route.document_id.is_empty() {
+        return Ok(());
+    }
+    if collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some() {
+        if own_route || collab_types::app_surface::reads_app(app, &route.app_id) {
+            return Ok(());
+        }
+        return Err(format!(
+            "{app} declares no read of {}'s resources",
+            route.app_id
+        ));
+    }
     let kind = collab_types::person_resource_type(&route.document_id)
         .ok_or("an app joins the person's workspace only for one of their records")?;
     if !collab_types::app_surface::keeps_person_resource(app, kind) {
@@ -458,11 +403,6 @@ pub(super) fn verify_join_identity(
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn crate::apps::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
-    if let Some(presentation) = runtime_collab::AgentJoinIdentity::decode(identity_bytes)
-        .map_err(|error| format!("agent join presentation is malformed: {error}"))?
-    {
-        return verify_agent_join(route, &presentation, membership, trusted_devices, authority);
-    }
     admit_join_presentation(
         route,
         &join_presentation(identity_bytes)?,

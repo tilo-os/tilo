@@ -3,8 +3,8 @@
 //!
 //! A device runs the same stack whether it has a screen or not; [`ServiceConfig::work`] is what
 //! it takes from others. [`WorkspaceService::open`] spawns nothing periodic: with no peers
-//! connected the service wakes only on I/O, and a connected peer's session is audited when its
-//! workspaces' membership files change, which the service watches. Its embedder registers
+//! connected the service wakes only on I/O, and a connected peer's session is audited when a
+//! workspace's signed member list leaves someone out ([`crate::authority_epoch`]). Its embedder registers
 //! [`WorkspaceService::protocols`] on its own router, or, when the router is built before any
 //! workspace is placed here, [`deferred_protocols`], which refuse connections until
 //! [`ServiceSlot::install`] gives them one.
@@ -12,14 +12,14 @@
 //! A member in the same process connects through [`WorkspaceService::connect_local`]: the same
 //! handshake and session as a remote member, over an in-process stream.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
-use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
 use tilo_endpoint_reachability::Reachability;
@@ -54,6 +54,10 @@ pub struct ServiceConfig {
     /// can read what the machine holds. A keeper declares it in the address it signs, so every
     /// member reads what can read their workspace.
     pub rented: bool,
+    /// The web origin this keeper's site answers at (`https://eu1.tilo.sh`), when it serves
+    /// one: the address it signs carries it, so a member's device finds the site's pages and
+    /// API without guessing them from its name.
+    pub origin: Option<String>,
     /// Who the handshake admits besides the person's own devices and the
     /// workspaces' members.
     pub trust_policy: TrustPolicy,
@@ -93,6 +97,7 @@ impl ServiceConfig {
             work,
             label: String::new(),
             rented: false,
+            origin: None,
             trust_policy: TrustPolicy::AllowMatchingUser,
             max_workspace_grants: None,
             apps: None,
@@ -153,10 +158,6 @@ pub struct ServiceSessions {
     pub handler: ServerProtocol,
     /// Ends the in-process sessions when the service shuts down.
     closing: Arc<tokio::sync::watch::Sender<bool>>,
-    /// The watch that lets its workspaces' membership be read from memory until
-    /// a file changes, so a live session is audited when something changed
-    /// rather than every second.
-    membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
 /// An app action server that answers nothing: what a service opened only for
@@ -179,8 +180,8 @@ fn no_actions() -> Arc<dyn AppActionServer> {
     Arc::new(NoActions)
 }
 
-/// A service's workspaces, when it governs them: the governance and the app action server
-/// answering its actions.
+/// A service's workspaces: their signed member lists, and the app action server answering
+/// their actions.
 pub struct Governed {
     pub workspaces: crate::workspaces::Workspaces,
     pub(crate) actions: Arc<dyn AppActionServer>,
@@ -192,21 +193,20 @@ fn empty_registry() -> WorkspaceRegistry {
 }
 
 impl ServiceSessions {
-    /// Open a service's sessions and, when `governs`, its workspaces. `wrap` gives
-    /// the app action server every session answers remote actions with, from the
-    /// workspaces and the service's own app action server (its governance and apps): a
-    /// server answers compute placement around it.
+    /// Open a service's sessions and its workspaces: those it founds, when its certificate holds
+    /// workspace keys and it admits no one beyond the people it serves, and the member copies of
+    /// its device. `wrap` gives the app action server every session answers remote actions with,
+    /// from the workspaces and the service's own app action server (its workspaces' actions and
+    /// apps): a server answers compute placement around it.
     ///
     /// # Errors
     ///
-    /// The identity is invalid or, for a certified service, not able to serve
-    /// or to govern the workspaces it was asked to govern; the state root
-    /// cannot be created; or the workspaces cannot be opened.
+    /// The identity is invalid; the state root cannot be created; or the workspaces cannot be
+    /// opened.
     pub async fn open(
         cfg: ServiceConfig,
         identity: ServiceIdentity,
         endpoint: Endpoint,
-        governs: bool,
         channels: Option<crate::workspaces::DeviceKeyGroups>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
@@ -214,7 +214,6 @@ impl ServiceSessions {
         ) -> Option<Arc<dyn AppActionServer>>,
     ) -> Result<(Self, Option<Governed>), ServiceError> {
         validate_service_device_identity(&identity)?;
-        may_govern(governs, &identity.device_cert)?;
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces = empty_registry();
         let metrics = Arc::new(Metrics::default());
@@ -226,11 +225,13 @@ impl ServiceSessions {
             revocations: revocations.clone(),
         };
         let handshake_trust = HandshakeTrust::new(&cfg.trust_policy, identity.user_public_key);
-        let governs = governs && !handshake_trust.allow_any;
-        handshake_trust.refresh(&workspaces).await;
-        // The service answers its workspaces' governance as actions itself, beside
-        // whatever apps its embedder serves.
-        let governance = governs.then(crate::workspaces::ServiceWorkspaceActions::new);
+        // Founding a workspace is holding its keys, which its records are sealed under: a
+        // service whose certificate holds none, or that admits anyone, keeps no workspace of
+        // its own. One that does answers its workspaces' actions itself, beside whatever apps
+        // its embedder serves.
+        let founds =
+            !handshake_trust.allow_any && identity.device_cert.capabilities.holds_workspace_keys();
+        let governance = founds.then(crate::workspaces::ServiceWorkspaceActions::new);
         let own_server = match &governance {
             Some(governance) => Some(Arc::new(crate::workspaces::GovernedServer {
                 governance: governance.clone(),
@@ -261,9 +262,8 @@ impl ServiceSessions {
             state_root: cfg.state_root.clone(),
             handler,
             closing: Arc::new(tokio::sync::watch::channel(false).0),
-            membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
         };
-        // A service that governs nothing still holds the member copies of a
+        // A service that founds nothing still holds the member copies of a
         // device that joined workspaces another device serves; with neither,
         // there is nothing to open.
         if governance.is_none() && cfg.member.is_none() {
@@ -282,8 +282,8 @@ impl ServiceSessions {
         .map_err(ServiceError::Workspaces)?;
         if let Some(governance) = governance {
             governance.attach(workspaces.clone());
-            // Sessions ask its governance what a device may do; the lock is set
-            // before the endpoint routes any session to a service that governs here.
+            // Sessions ask its workspaces what a device may do; the lock is set
+            // before the endpoint routes any session to the service.
             let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
             #[cfg(all(
                 not(target_arch = "wasm32"),
@@ -333,13 +333,14 @@ impl ServiceSessions {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
                 moderates: std::collections::BTreeSet::new(),
+                origin: cfg.origin.clone(),
             })),
             member: cfg.member.clone(),
             surfaces: Arc::clone(&cfg.surfaces),
         }
     }
 
-    /// The writer of the service's governed workspace access.
+    /// What settles each workspace's member list onto the service's sessions.
     pub(crate) fn access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
@@ -399,25 +400,15 @@ impl ServiceSessions {
         .await
     }
 
-    /// End every in-process session.
+    /// End every in-process session and stop what answered for them: the app
+    /// action server the embedder brought stops here, while the runtime its
+    /// threads work on still runs.
     pub fn shutdown(&self) {
         self.closing.send_replace(true);
-        self.membership_watch.stop();
+        if let Some(answers) = &self.handler.app_serving {
+            answers.shutdown();
+        }
     }
-}
-
-/// Whether a service asked to govern under `cert` may: governing a workspace is holding its
-/// keys, which its documents are sealed under, so a device enrolled without that capability
-/// serves its person's sessions but keeps no workspace.
-fn may_govern(governs: bool, cert: &DeviceCert) -> Result<(), ServiceError> {
-    if governs && !cert.capabilities.holds_workspace_keys() {
-        return Err(ServiceError::Identity(
-            "this service's certificate cannot own workspaces, so it cannot govern \
-             them: re-enroll it with the own capability"
-                .into(),
-        ));
-    }
-    Ok(())
 }
 
 /// The handlers of a governing service's ALPNs, shared between the routers
@@ -539,15 +530,16 @@ impl std::fmt::Debug for WorkspaceService {
 }
 
 impl WorkspaceService {
-    /// Open the service on `endpoint`, which the embedder owns and routes.
-    /// Spawns nothing periodic: with no peers connected it wakes only on
-    /// I/O.
+    /// Open the service on `endpoint`, which the embedder owns and routes: the workspaces it
+    /// founds, when its certificate holds workspace keys, and the member copies of the
+    /// device it serves ([`ServiceConfig::member`]). Spawns nothing periodic: with no peers
+    /// connected it wakes only on I/O.
     ///
     /// # Errors
     ///
-    /// The identity is invalid; `cfg` admits anyone, under which no workspace is governed;
-    /// the state root cannot be created; or the workspaces kept there cannot be
-    /// opened.
+    /// The identity is invalid; `cfg` admits anyone, under which no workspace is kept;
+    /// the state root cannot be created; the service keeps no workspace at all; or the
+    /// workspaces kept there cannot be opened.
     pub async fn open(
         cfg: ServiceConfig,
         identity: ServiceIdentity,
@@ -556,14 +548,13 @@ impl WorkspaceService {
     ) -> Result<Self, ServiceError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(ServiceError::Identity(
-                "a service admitting anyone governs no workspaces".into(),
+                "a service admitting anyone keeps no workspaces".into(),
             ));
         }
         let (sessions, governed) = Box::pin(ServiceSessions::open(
             cfg,
             identity,
             endpoint,
-            true,
             channels,
             |_, server| server,
         ))
@@ -574,55 +565,8 @@ impl WorkspaceService {
         }) = governed
         else {
             return Err(ServiceError::Workspaces(
-                "the service governs no workspaces".into(),
-            ));
-        };
-        let handlers = service_handlers(&sessions, &workspaces);
-        Ok(Self {
-            sessions,
-            workspaces,
-            actions,
-            handlers,
-            writes: std::sync::OnceLock::new(),
-        })
-    }
-
-    /// Open the service on `endpoint` without governing the workspaces kept
-    /// there: the embedder serves them itself, and the service holds only the
-    /// member copies the device joined. Its sessions answer the join protocol
-    /// and the direct link, which member copies sync over.
-    ///
-    /// # Errors
-    ///
-    /// The identity is invalid or not able to serve; the state root cannot be
-    /// created; or the workspaces kept there cannot be opened.
-    pub async fn open_joining(
-        cfg: ServiceConfig,
-        identity: ServiceIdentity,
-        endpoint: Endpoint,
-        channels: Option<crate::workspaces::DeviceKeyGroups>,
-    ) -> Result<Self, ServiceError> {
-        if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
-            return Err(ServiceError::Identity(
-                "a service admitting anyone governs no workspaces".into(),
-            ));
-        }
-        let (sessions, governed) = Box::pin(ServiceSessions::open(
-            cfg,
-            identity,
-            endpoint,
-            false,
-            channels,
-            |_, server| server,
-        ))
-        .await?;
-        let Some(Governed {
-            workspaces,
-            actions,
-        }) = governed
-        else {
-            return Err(ServiceError::Workspaces(
-                "the service holds no member copies".into(),
+                "the service's certificate holds no workspace keys, and it keeps no member copies"
+                    .into(),
             ));
         };
         let handlers = service_handlers(&sessions, &workspaces);
@@ -888,17 +832,17 @@ impl ProtocolHandler for Deferred {
     }
 }
 
-/// Replaces a governed workspace's admitted members and the handshake
-/// allowlist derived from them. Each workspace's governance hands it one
-/// replacement at a time; replacements of different workspaces run side by
-/// side, so no workspace's access write waits for another's.
+/// Settles each workspace's signed member list onto the sessions of the service: who its
+/// sessions admit, what each member device may do, and the people the handshake trusts.
+/// Nothing of it is kept on disk: the list is the workspace's own, and each start reads it
+/// again.
 #[derive(Clone)]
 pub(crate) struct GovernedAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
     state_root: PathBuf,
     /// The browser environments this server placed: their devices are listed
-    /// beside the members governance names, so a governance change keeps them.
+    /// beside the members the list names, so a change to it keeps them.
     environments: crate::environment::EnvironmentRegistry,
 }
 
@@ -907,103 +851,62 @@ impl GovernedAccessWriter {
         &self.state_root
     }
 
-    /// A workspace this service deleted admits nobody at the handshake either.
-    pub(crate) fn forget_workspace(&self, workspace_id: WorkspaceId) {
-        self.handshake_trust.forget(workspace_id);
+    /// Which workspaces here each person is a member of: what the handshake trusts.
+    pub(crate) fn memberships(&self) -> Arc<crate::workspaces::memberships::Memberships> {
+        Arc::clone(&self.handshake_trust.memberships)
     }
 
-    /// Whether what the server decides `workspace_id`'s changes against holds
-    /// what `device` may do. A workspace this server has not opened yet is
-    /// projected by the settle that opens it, so it counts as holding it.
-    pub(crate) async fn projects_access(
-        &self,
-        workspace_id: WorkspaceId,
-        device: [u8; 32],
-    ) -> bool {
-        let Some(workspace) = self.workspaces.lock().await.get(&workspace_id).cloned() else {
-            return true;
-        };
-        workspace
-            .lock()
-            .await
-            .device_access
-            .as_ref()
-            .is_none_or(|device_access| device_access.contains_key(&device))
+    /// The people the workspaces here have changed: the handshake trusts who they have now.
+    pub(crate) fn people_moved(&self) {
+        self.handshake_trust.apply();
     }
 
-    /// Replace the access of each member device of the workspace.
-    pub(crate) async fn replace_access(
+    /// Take `access`, the members `workspace_id`'s signed list has now, `revoked`, the keys its
+    /// people revoked, and `device_access`, what each member device may do, as what the
+    /// workspace's sessions admit and decide by.
+    pub(crate) async fn settle(
         &self,
         workspace_id: WorkspaceId,
+        mut access: tilo_peer_state::GovernedAccess,
+        revoked: Vec<[u8; 32]>,
         device_access: crate::workspace::DeviceAccess,
     ) -> Result<(), ServiceError> {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
             workspace_id,
-            crate::workspace_access::AdmissionMode::Explicit,
-            crate::peer::MAX_HELD_WORKSPACES,
-        )
-        .await?;
-        workspace.lock().await.project_access(device_access);
-        Ok(())
-    }
-
-    pub(crate) async fn replace(
-        &self,
-        workspace_id: WorkspaceId,
-        access: tilo_peer_state::GovernedAccess,
-        revoked: Vec<[u8; 32]>,
-    ) -> Result<Vec<[u8; 32]>, ServiceError> {
-        if self.handshake_trust.allow_any {
-            return Err(ServiceError::GovernedAccess(
-                "allow_any cannot serve governed workspace admission".into(),
-            ));
-        }
-        let workspace = crate::workspace_io::get_or_initialize(
-            &self.workspaces,
-            self.state_root.clone(),
-            workspace_id,
-            crate::workspace_access::AdmissionMode::Explicit,
             crate::peer::MAX_HELD_WORKSPACES,
         )
         .await?;
         // An environment this server placed in the workspace is listed by
-        // the server, not by governance: every projection keeps it until it
+        // the server, not by the member list: every settle keeps it until it
         // stops, confined to its document by the register.
-        let mut member_devices = access.member_devices;
-        member_devices.extend(
+        access.member_devices.extend(
             self.environments
                 .placed_in(workspace_id)
                 .into_iter()
                 .map(|(device, _, _)| device),
         );
-        member_devices.sort_unstable();
-        member_devices.dedup();
-        let mut member_user_roots = access.member_user_roots;
-        member_user_roots.sort_unstable();
-        member_user_roots.dedup();
-        let roots: HashSet<[u8; 32]> = member_user_roots.iter().copied().collect();
-        let result = crate::workspace_io::replace_governed_access(
-            &workspace,
-            crate::workspace_files::GovernedAccessRecord {
-                member_devices,
-                member_user_roots,
-                governed: true,
-            },
-            revoked,
-        )
-        .await;
-        // Also after an I/O error the handshake union must reflect the
-        // fail-closed ceiling. A successful write leaves the workspace
-        // holding exactly the roots it was asked for; an error leaves the
-        // intersection the workspace now holds.
-        let roots = match &result {
-            Ok(_) => roots,
-            Err(_) => workspace.lock().await.governed_user_roots.clone(),
-        };
-        self.handshake_trust.settled(workspace_id, roots);
-        Ok(result?)
+        workspace
+            .lock()
+            .await
+            .settle_members(access, revoked, Some(device_access));
+        self.handshake_trust.apply();
+        Ok(())
+    }
+
+    /// `workspace_id` is served here no more: its sessions admit nobody, and the
+    /// people only it had are trusted no more.
+    pub(crate) async fn stop(&self, workspace_id: WorkspaceId) {
+        let workspace = self.workspaces.lock().await.get(&workspace_id).cloned();
+        if let Some(workspace) = workspace {
+            workspace.lock().await.settle_members(
+                tilo_peer_state::GovernedAccess::default(),
+                [],
+                None,
+            );
+        }
+        self.handshake_trust.apply();
     }
 }
 
@@ -1012,19 +915,17 @@ pub(crate) struct HandshakeTrust {
     base_roots: Arc<HashSet<[u8; 32]>>,
     pub(crate) live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) allow_any: bool,
-    /// The user roots each governed workspace admits, by workspace: the
-    /// allow list is the operator's own together with all of them. One entry
-    /// is replaced after that workspace's access settles, so an admission
-    /// decision does not walk and lock every workspace the service governs —
-    /// which, at hundreds of workspaces, is most of the cost of admitting one
-    /// more.
-    contributions: Arc<std::sync::Mutex<HashMap<WorkspaceId, HashSet<[u8; 32]>>>>,
+    /// The people each workspace here has as members: the allow list is the operator's own
+    /// together with all of them, read from this index rather than by walking and locking
+    /// every workspace, which at hundreds of workspaces would be most of the cost of
+    /// admitting one more person.
+    memberships: Arc<crate::workspaces::memberships::Memberships>,
 }
 
 impl HandshakeTrust {
     pub(crate) fn new(operator_policy: &TrustPolicy, own_user: [u8; 32]) -> Self {
         let allow_any = matches!(operator_policy, TrustPolicy::AllowAny);
-        Self {
+        let trust = Self {
             base_roots: Arc::new(policy_roots(operator_policy, own_user)),
             live_policy: Arc::new(std::sync::RwLock::new(if allow_any {
                 TrustPolicy::AllowAny
@@ -1032,71 +933,29 @@ impl HandshakeTrust {
                 TrustPolicy::AllowList { users: Vec::new() }
             })),
             allow_any,
-            contributions: Arc::new(std::sync::Mutex::default()),
-        }
+            memberships: Arc::default(),
+        };
+        trust.apply();
+        trust
     }
 
-    /// Rebuild every workspace's contribution by reading them, for a service
-    /// starting.
-    pub(crate) async fn refresh(&self, workspaces: &WorkspaceRegistry) {
-        if self.allow_any {
-            return;
-        }
-        let mut contributions = HashMap::new();
-        let held = workspaces.lock().await;
-        for (workspace_id, runtime) in held.iter() {
-            let runtime = runtime.lock().await;
-            contributions.insert(*workspace_id, runtime.governed_user_roots.clone());
-        }
-        drop(held);
-        *self.contributions.lock_recover() = contributions;
-        self.apply();
-    }
-
-    /// `workspace_id`'s access settled: what it admits is `roots` now.
-    pub(crate) fn settled(&self, workspace_id: WorkspaceId, roots: HashSet<[u8; 32]>) {
-        if self.allow_any {
-            return;
-        }
-        self.contributions
-            .lock_recover()
-            .insert(workspace_id, roots);
-        self.apply();
-    }
-
-    /// `workspace_id` is gone: it admits nobody here any more.
-    pub(crate) fn forget(&self, workspace_id: WorkspaceId) {
-        if self.allow_any {
-            return;
-        }
-        if self
-            .contributions
-            .lock_recover()
-            .remove(&workspace_id)
-            .is_some()
-        {
-            self.apply();
-        }
-    }
-
-    /// The live allow list: the operator's own roots and every workspace's.
-    /// Held together with the contributions it reads, so a union computed
-    /// from an older map never lands after a newer one.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the contributions lock is held until the allow list is written, so a union read from an older map cannot land after a newer one"
-    )]
+    /// The live allow list: the operator's own roots and every workspace's members. Written
+    /// under the index's people as they stand, so a list read from older people never lands
+    /// after a newer one.
     fn apply(&self) {
-        let contributions = self.contributions.lock_recover();
-        let mut roots = self.base_roots.as_ref().clone();
-        for admitted in contributions.values() {
-            roots.extend(admitted.iter().copied());
+        if self.allow_any {
+            return;
         }
+        let mut live = self.live_policy.write_recover();
+        let mut roots = self.base_roots.as_ref().clone();
+        roots.extend(self.memberships.people());
         let mut users = roots.into_iter().map(hex::encode).collect::<Vec<_>>();
         users.sort_unstable();
         let next = TrustPolicy::AllowList { users };
-        let previous = std::mem::replace(&mut *self.live_policy.write_recover(), next.clone());
-        if narrows(&previous, &next) {
+        let narrowed = narrows(&live, &next);
+        *live = next;
+        drop(live);
+        if narrowed {
             crate::authority_epoch::bump();
         }
     }
@@ -1560,7 +1419,6 @@ impl tilo_peer_state::owner::session::OwnHost for WorkspaceService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     /// Only a trust policy that drops a root, or changes kind, narrows who
     /// may stay connected.
@@ -1610,8 +1468,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dynamic_handshake_refresh_preserves_operator_root_pins() {
+    #[test]
+    fn the_handshake_keeps_the_operators_pinned_roots() {
         let own_user = [1; 32];
         let operator_pin = [2; 32];
         let trust = HandshakeTrust::new(
@@ -1620,10 +1478,6 @@ mod tests {
             },
             own_user,
         );
-        let workspaces = Arc::new(AsyncMutex::new(HashMap::new()));
-
-        trust.refresh(&workspaces).await;
-
         assert_eq!(
             trust.live_policy.read_recover().clone(),
             TrustPolicy::AllowList {
@@ -1632,16 +1486,14 @@ mod tests {
         );
     }
 
-    /// What one workspace settles joins the handshake's allow list, and a
+    /// The people one workspace settles join the handshake's allow list, and a
     /// workspace forgotten leaves it, without reading any other workspace:
     /// the cost of admitting one more workspace does not grow with how many
-    /// the service governs.
+    /// the service keeps.
     #[test]
     fn a_settled_workspace_joins_the_allow_list_and_a_forgotten_one_leaves_it() {
         let own_user = [1; 32];
         let trust = HandshakeTrust::new(&TrustPolicy::AllowList { users: Vec::new() }, own_user);
-        let first = WorkspaceId::from_u128(7);
-        let second = WorkspaceId::from_u128(8);
         let listed = |trust: &HandshakeTrust| -> Vec<String> {
             let policy = trust.live_policy.read_recover().clone();
             match policy {
@@ -1652,14 +1504,16 @@ mod tests {
             }
         };
 
-        trust.settled(first, HashSet::from([[9; 32]]));
+        trust.memberships.record("first", [[9; 32]]);
+        trust.apply();
         assert_eq!(
             listed(&trust),
             vec![hex::encode(own_user), hex::encode([9; 32])],
             "the settled workspace's reader is trusted with the operator"
         );
 
-        trust.settled(second, HashSet::from([[8; 32]]));
+        trust.memberships.record("second", [[8; 32]]);
+        trust.apply();
         assert_eq!(
             listed(&trust),
             vec![
@@ -1670,52 +1524,12 @@ mod tests {
             "a second workspace adds its reader and keeps the first's"
         );
 
-        trust.forget(first);
+        trust.memberships.forget("first");
+        trust.apply();
         assert_eq!(
             listed(&trust),
             vec![hex::encode(own_user), hex::encode([8; 32])],
             "a forgotten workspace's reader is trusted no more"
-        );
-    }
-
-    /// Governing a workspace is holding its keys, so a service whose
-    /// certificate may not own workspaces keeps none: asked to govern, it
-    /// refuses instead of serving workspaces it could not seal.
-    #[tokio::test]
-    async fn a_service_whose_cert_cannot_own_governs_no_workspace() {
-        let state = tempfile::tempdir().expect("a state directory");
-        let (key, cert) = crate::workspaces::fixtures::governor_with(
-            tilo_user_identity::DeviceCapabilities::administrator(),
-        );
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-            .bind()
-            .await
-            .expect("a loopback endpoint binds");
-        let opened = ServiceSessions::open(
-            ServiceConfig::new(
-                state.path().to_owned(),
-                tilo_server_protocol::WorkSetting::none(),
-            ),
-            ServiceIdentity {
-                user_public_key: cert.user_public_key,
-                device_signing_key: key,
-                device_cert: cert,
-                revocations: RevocationList::new(),
-            },
-            endpoint.clone(),
-            true,
-            None,
-            |_, server| server,
-        )
-        .await;
-        endpoint.close().await;
-        let Err(ServiceError::Identity(reason)) = opened else {
-            panic!("a service whose certificate cannot own workspaces governed them");
-        };
-        assert!(
-            reason.contains("own capability"),
-            "the refusal names what the device needs: {reason}"
         );
     }
 }

@@ -1,14 +1,9 @@
-//! A workspace's tree, shown at its folder (`~/<workspace>`): mounted with FUSE where
-//! this user can mount it, as Tilo OS mounts `/var/workspace`, and a plain
-//! folder synced both ways everywhere else ([`tilo_fs::sync_folder`]).
-//!
-//! Both are the same filesystem ([`tilo_fs::QuickFS`]) over the tree replica:
-//! a file copied in becomes a node of the tree and its bytes this device's
-//! content, and a file read that this device does not hold yet is fetched from
-//! the workspace as it is read.
+//! A workspace's tree, shown at its folder (`~/<workspace>`) through FUSE, Linux's file
+//! provider. The filesystem ([`tilo_fs::QuickFS`]) is one over the tree replica.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(not(target_os = "linux"))]
 use std::time::Duration;
 
 use tilo_fs::fs::QuickFS;
@@ -16,16 +11,16 @@ use tilo_fs::hydration::{FileKeys, Hydrator};
 use tilo_fs::smart::Heuristics;
 use tilo_fs::tree_sync::TreeSync;
 
-/// How often a synced folder carries changes across, where nothing mounts it.
+#[cfg(not(target_os = "linux"))]
 const FOLDER_PASS: Duration = Duration::from_secs(1);
 
 /// How the tree is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Shown {
-    /// A FUSE mount.
+    #[cfg(target_os = "linux")]
     Mounted,
-    /// A folder synced both ways.
+    #[cfg(not(target_os = "linux"))]
     Folder,
 }
 
@@ -41,6 +36,7 @@ pub(crate) struct Showing {
 enum View {
     #[cfg(target_os = "linux")]
     Mount(Option<fuser::BackgroundSession>),
+    #[cfg(not(target_os = "linux"))]
     Folder(
         #[allow(dead_code, reason = "held: dropping it stops the sync")]
         tilo_fs::sync_folder::Watch,
@@ -49,12 +45,21 @@ enum View {
 
 impl Drop for Showing {
     fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
-        if let View::Mount(session) = &mut self.view
-            && let Some(session) = session.take()
-            && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session, &self.at)
-        {
-            tracing::warn!(%error, at = %self.at.display(), "the workspace did not unmount cleanly");
+        match &mut self.view {
+            #[cfg(target_os = "linux")]
+            View::Mount(session) => {
+                if let Some(session) = session.take()
+                    && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session, &self.at)
+                {
+                    tracing::warn!(
+                        %error,
+                        at = %self.at.display(),
+                        "the workspace did not unmount cleanly"
+                    );
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            View::Folder(_) => {}
         }
     }
 }
@@ -74,10 +79,8 @@ pub(crate) struct Parts<'a> {
     pub(crate) state: &'a Path,
 }
 
-/// The filesystem over the replica's namespace, as Tilo OS's filesystem
-/// daemon serves `/var/workspace`: versions with who wrote them, files on
-/// demand with keep-offline and free-up-space, writes staged on disk, and
-/// bytes a crash left unsaved put back. Must be called on a tokio runtime.
+/// The filesystem over the replica's namespace, with history, files on demand, staged writes
+/// and crash recovery. Must be called on a tokio runtime.
 pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     let hydrator = Arc::new(
         Hydrator::new(Arc::clone(&parts.store))
@@ -117,46 +120,45 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     Ok(fs)
 }
 
-/// Show the filesystem `make` makes at `at`: mounted when `mount` and this
-/// user can mount FUSE, else as a folder synced both ways, its sync state
-/// kept in `state`. What may be written is the filesystem's admission's to
-/// answer, write by write.
+/// Show the filesystem `make` makes at `at` through FUSE.
+#[cfg(target_os = "linux")]
+pub(crate) fn show(
+    make: impl Fn() -> std::io::Result<QuickFS>,
+    at: &Path,
+    _state: &Path,
+) -> std::io::Result<Showing> {
+    // A mount a peer that ended left behind answers ENOTCONN, which no mount can be made at.
+    tilo_fs::fuse_session::clear_stale_mount(at)?;
+    std::fs::create_dir_all(at)?;
+    if !tilo_fs::fuse_session::mountable(
+        Path::new("/dev/fuse"),
+        std::env::var_os("PATH").as_deref(),
+    ) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a workspace's folder is a FUSE mount, and this computer has no FUSE: \
+             /dev/fuse and fusermount3 are missing",
+        ));
+    }
+    let fs = make()?;
+    let activity = fs.activity();
+    let session = mounted(fs, at)?;
+    Ok(Showing {
+        at: at.to_path_buf(),
+        shown: Shown::Mounted,
+        activity,
+        view: View::Mount(Some(session)),
+    })
+}
+
+/// Show the filesystem `make` makes at `at` as a synced folder, macOS's until its file provider writes.
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn show(
     make: impl Fn() -> std::io::Result<QuickFS>,
     at: &Path,
     state: &Path,
-    mount: bool,
 ) -> std::io::Result<Showing> {
-    // A mount a peer that ended left behind answers ENOTCONN, which no
-    // folder can be made at.
-    #[cfg(target_os = "linux")]
-    tilo_fs::fuse_session::clear_stale_mount(at)?;
     std::fs::create_dir_all(at)?;
-    #[cfg(target_os = "linux")]
-    if mount
-        && tilo_fs::fuse_session::mountable(
-            Path::new("/dev/fuse"),
-            std::env::var_os("PATH").as_deref(),
-        )
-    {
-        let fs = make()?;
-        let activity = fs.activity();
-        match mounted(fs, at) {
-            Ok(session) => {
-                return Ok(Showing {
-                    at: at.to_path_buf(),
-                    shown: Shown::Mounted,
-                    activity,
-                    view: View::Mount(Some(session)),
-                });
-            }
-            Err(error) => {
-                tracing::warn!(%error, at = %at.display(), "the workspace is not mounted; syncing a folder instead");
-            }
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = mount;
     let commit = Box::new(|| Ok(()));
     let fs = make()?;
     let activity = fs.activity();
@@ -172,7 +174,6 @@ pub(crate) fn show(
 
 #[cfg(target_os = "linux")]
 fn mounted(fs: QuickFS, at: &Path) -> std::io::Result<fuser::BackgroundSession> {
-    tilo_fs::fuse_session::clear_stale_mount(at)?;
     let mut config = fuser::Config::default();
     config.mount_options = vec![fuser::MountOption::FSName("tilo".into())];
     // Owner-only needs no system FUSE policy; the kernel refuses every other user.

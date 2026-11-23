@@ -20,7 +20,7 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActCall, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
+    Abort, ActCall, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
     ActUndo, Actions, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
     BytesLength, CallFn, CallMembers, ChangeView, ClipboardCopyImage, ClipboardCopyText,
     ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert,
@@ -548,6 +548,9 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
+            FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
+                self.image_import(imp, a)
+            }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
@@ -555,7 +558,9 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
-            | UiActions | UiAction | ActChoose | ActSave | ActCall => self.ui_import(imp, a),
+            | UiActions | UiAction | ActChoose | ActChooseFolder | ActSave | ActCall => {
+                self.ui_import(imp, a)
+            }
             EventValue | EventPart | Actions | Lenses | CallMembers | Delivery | MetaOf
             | Versions | Links | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps
             | VersionEnd | FieldChanged | Phrase | Word | EntryParts | Viewer => {

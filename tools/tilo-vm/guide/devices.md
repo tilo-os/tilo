@@ -2,68 +2,62 @@
 
 A **device** is a real machine that already runs a Tilo dev image, such as an
 Orange Pi installed from its board dev disk or a Lenovo Yoga Slim 7x installed
-from its board dev image. tilo-vm reaches it over SSH instead of a
-hypervisor. Everything else is the VM loop: the same accounts, layers,
-generations, `swap`, `rollback`, `shot`, `control` and provenance checks.
-Never hot-fix a device by hand (`git archive | ssh`, `bootc usr-overlay`,
-`install` into `/usr/bin`): nothing can roll that back, and the next boot
-loses it.
+from its board dev image. tilo-vm reaches it through its device daemon
+instead of a hypervisor. Everything else is the VM loop: the same accounts,
+layers, generations, `swap`, `rollback`, `shot`, `control` and provenance
+checks. Never hot-fix a device by hand (`git archive | ssh`,
+`bootc usr-overlay`, `install` into `/usr/bin`): nothing can roll that back,
+and the next boot loses it.
 
-## Register it
+## How tilo-vm reaches a device
+
+Every machine and VM tilo-vm drives is one of your devices. tilo-vm sends its
+steps (`status`, `swap`, `build`, `exec`, `upgrade`, `reboot`, ...) as action
+frames to the device daemon's endpoint (`tilo-actions/1`, UDP port 7703 on a
+dev image). Each request is signed with this computer's device key from
+`tilo login`, and the device runs it only when your workspace grants this
+computer `devices/<device key>/vm`. Bytes travel as content the device does
+not have yet: a layer is one blob, a worktree a manifest plus the files that
+changed. Nothing reaches a device over SSH; `vm ssh` is the one interactive
+shell, for people.
+
+**This computer needs a Tilo login.** On a device of yours run
+`tilo device add`, then here `tilo login <the ticket it prints>`. On a
+computer with no person of its own (CI, a fresh builder) tilo-vm makes a
+throwaway one for its VMs under its state directory the first time it starts
+one (`tilo login --new-identity`); `tilo-vm doctor` says which it uses.
+
+**A VM tilo-vm starts joins by itself.** Before the VM's first boot tilo-vm
+runs `tilo device add`, which prints a one-use ticket, and hands the ticket to
+the VM as the systemd credential `tilo.ticket` (an SMBIOS OEM string, or the
+kernel command line for a direct kernel boot), next to `tilo.port=7703`, the
+port its daemon binds. The VM spends the ticket as it boots and joins as one of
+your devices; tilo-vm records its device key in `vms.toml` and drops the
+ticket. libvirt, QEMU and WHPX have that channel; a UTM or Hyper-V VM is
+registered like a real machine (below).
+
+## Register a real machine
 
 ```sh
-tilo-vm vm add opi --ssh root@10.0.0.108   # makes keys/opi_ed25519, prints the key install
-ssh -t -o StrictHostKeyChecking=accept-new -p 22 tester@10.0.0.108 'sudo install ...'   # the printed command, once
-tilo-vm vm status opi                      # reachable, tilo-vmd version and architecture
-tilo-vm vm use opi                         # this worktree (writes .tilo-vm); --global for every worktree
+tilo device list                                   # on any device of yours: the machine's device key
+tilo-vm vm add opi --device 3f2a...e1 --address 10.0.0.108
+tilo-vm vm add yoga --device 9c41...07 --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # vm ssh opens a shell there
+tilo-vm vm status opi                              # its daemon's version and architecture
+tilo-vm vm use opi                                 # this worktree (writes .tilo-vm); --global for every worktree
 ```
 
-`vm add` makes the device's own root key beside `vms.toml` and asks the
-device for tilo-vmd. A new device does not know the key yet, so `vm add`
-prints the one command that installs it for root, with the dev account
-`tester`'s password (`tilo`, from `os/account.env`; SSH asks for it, then
-sudo). After that every connection is root with that key and the device's
-own `known_hosts`, never a password. Without a terminal to type the
-password into, an agent asks a human to run the printed command.
-
-The device must already run a board dev image (`tilo-vm:<board>-ci`, which
-has tilo-vmd): `vm status` says when it does not, and `vm upgrade` moves it
-onto one (below).
-
-## As your own account (a laptop)
-
-A machine installed with an owner SSH key (the installer's dev SSH setup) lets
-only that account in: `PermitRootLogin no`, `AllowUsers <owner>`. There
-tilo-vm logs in as the owner with the owner's key and runs every remote
-command as root through `sudo -n`:
-
-```sh
-tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519
-tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519 --grant-sudo   # if the root check failed
-tilo-vm vm use yoga
-```
-
-`vm add` checks, as that account, everything the other commands rely on and
-prints each with its fix:
+The machine must already run a board dev image and be one of your devices
+(`tilo device add` on it, or `tilo login` there). `vm add` asks its daemon
+as this computer and prints each check with its fix:
 
 | Check | Needed for | Fix when it fails |
 |---|---|---|
-| `ssh` | everything | the key (`--key`), the address, the device's sshd |
-| `root` | everything: tilo-vmd, the VM lock, bootc run as root | `--grant-sudo`, or `--ssh root@` |
-| `tilo-vmd` | accounts, swaps, `shot`, `control` | a dev image; an older protocol registers anyway, so `vm upgrade` can move it on |
-| `toolchain` | `swap` from your worktree on the device (cargo, rsync, python3) | a current board dev image, or CI builds (`--from sha:`) |
+| `device` | everything | the device key, the address (`--address <ip>[:<port>]`), the grant on `devices/<key>/vm` |
+| `toolchain` | `swap` from your worktree on the device (cargo, python3) | a current board dev image, or CI builds (`--from sha:`) |
 | `bootc` | `vm upgrade`, `vm rollback-image` | a bootc dev image |
 
-It registers the device only once `ssh`, `root` and `tilo-vmd` pass; rerun
-it after a fix (it is idempotent). `--grant-sudo` writes
-`/etc/sudoers.d/tilo-vm-<user>` (`<user> ALL=(ALL) NOPASSWD: ALL`, checked
-by `visudo` before it is moved in) over an interactive SSH session: sudo asks
-for that account's own login password (the owner's, not the dev account's)
-once, on your terminal, and it is never stored. From then on whoever holds
-that key is root on the machine without a password, as the root key of a VM
-is. An agent without a terminal asks a human to run it. When the machine
-stops being a dev target, revoke it (a write into `/etc`, hence `--raw`):
-`tilo-vm vm ssh yoga --raw -- rm /etc/sudoers.d/tilo-vm-<user>`.
+It registers the device only once `device` passes; rerun it after a fix (it
+is idempotent). `--ssh` and `--key` only set where `vm ssh` opens its shell.
 
 ## A laptop: the owner's own desktop is the `device` account
 
@@ -168,7 +162,7 @@ unit in the host's own mount namespace; that unit takes no drop-in and no
 view reaches it, so a per-session view could never start the new session.
 The `systemd-sysext` links stay in `/var/lib/extensions`, so a fresh boot
 merges them again, and `tilo-vm-restore.service` restarts the session if it
-started first; an image without tilo-vmd boots its own session. Its account
+started first; an image without the device steps boots its own session. Its account
 and identity stay as they are; the device account never creates or removes a
 user. It cannot be created, removed or moved to another seat: it is the
 machine's session.
@@ -230,12 +224,12 @@ device's `/var/lib/tilo-vm/layers/<hash>/provenance.json` show.
 ## The device's image
 
 ```sh
-tilo-vm vm status opi                    # tilo-vmd, protocol, architecture
+tilo-vm vm status opi                    # its daemon and architecture
 tilo-vm vm ssh opi -- bootc status       # the image it runs and follows
 tilo-vm vm upgrade opi                   # back to its channel's newest image, then a reboot
 tilo-vm vm upgrade opi --from sha:1a2b3c4   # that commit's build of this board's image
 tilo-vm vm rollback-image opi
-tilo-vm vm restart opi                   # reboot over SSH; wait for the new boot and tilo-vmd
+tilo-vm vm restart opi                   # reboot through its daemon; wait for the new boot
 ```
 
 A board's image is sealed, so an upgrade takes a published image through the
@@ -251,15 +245,15 @@ own pull for want of a login (a private image), tilo-vm pulls the image here wit
 and switches to that copy; the credentials never reach the device. A device
 whose disk asks for a passphrase at boot waits for it at its own keyboard
 after every reboot. tilo-vm cannot power a device on: `vm start` only waits
-for SSH, `vm restart` reboots over SSH, and after `vm stop` someone has to
+for its daemon, `vm restart` reboots it, and after `vm stop` someone has to
 power it on (`vm wake` wakes one that sleeps, below). `vm create`, `vm reset`, `vm serial`, `vm shot` and
-`vm control` need a hypervisor and say so. `vm rm opi` forgets the device
-and its key; the device is untouched.
+`vm control` need a hypervisor and say so. `vm rm opi` forgets the device;
+the device is untouched.
 
 ## Asleep, awake, and on another address
 
-**It stays awake while you work on it.** Every tilo-vm command that talks to
-tilo-vmd renews a lease: a logind `sleep` lock (`tilo-vm-awake.service`,
+**It stays awake while you work on it.** Every tilo-vm command that asks its
+daemon renews a lease: a logind `sleep` lock (`tilo-vm-awake.service`,
 listed by `systemd-inhibit --list` on the device) until 30 minutes after the
 last request. A lost connection does not end it, and it ends by itself when
 you stop. The lock blocks suspend only: the screen still blanks and locks,
@@ -287,7 +281,7 @@ not fail a command. After that it reports `asleep or gone` and offers
 **Waking it.** `tilo-vm vm wake yoga` sends the device's Wake-on-LAN magic
 packet from this machine (UDP port 9, to 255.255.255.255 and the device's
 subnet broadcast), so this machine has to be on the device's LAN. It sends
-it again while it waits, up to 150 seconds, for tilo-vmd, whose first
+it again while it waits, up to 150 seconds, for its daemon, whose first
 request holds the device awake again. Whether the packet wakes it depends on
 the hardware, and `vm status` shows what the device reported:
 
@@ -308,74 +302,27 @@ then `vm status` records it. A libvirt VM is woken through the hypervisor
 ## Beyond the LAN
 
 A device that is not on this network, a laptop at home or a board in
-another office, is reached over the peer network: hole-punched QUIC between
-the two machines, through a relay when no direct path exists, which follows
-a roam or a lost link by itself. Its dev image serves tilo-vmd's request
-protocol there as `tilo-device-admin/1` (`tilo-device-admin.service`, also
-while it sits at its login screen), never a shell.
-
-```sh
-tilo-vm vm enrol-admin --via yoga   # once: yoga holds your identity and prints this machine's ticket
-tilo-vm vm status board             # on board's LAN once: records its route over the peer network
-tilo-vm vm status board             # anywhere: "reached over the peer network: relay https://..."
-```
-
-**This machine joins as one of the owner's devices.** The device admits
-only a device of its owner's identity whose certificate grants
-administration, and that the owner has not removed. `vm enrol-admin` makes
-this machine's device key (beside `vms.toml`, in `admin-identity/`), and
-joins it the way any computer does: on the device where the owner adds new
-devices, `tilo device add --capability admin` prints a one-use ticket, and
-`tilo login` here spends it. With `--via <device>` tilo-vm runs both over
-SSH on the device where the owner adds new devices, as the account it logs
-in with, which must own the identity (register it as the owner: `vm add
---ssh <owner>@<address>`). Without `--via` it prints the key and the two
-commands. The certificate lists this machine among the owner's devices, so
-Settings shows it and removing it there ends its access. tilo-vm needs
-`tilo-device-admin` beside it (or in `TILO_DEVICE_ADMIN`), and the `tilo`
-command here: `cargo build --release -p tilo-device-admin` and copy
-it next to `tilo-vm`.
-
-**The route is recorded like the address.** `vm add` and `vm status` record
-the device id and route the device reports (`tilo-device-admin id`) in
-`vms.toml`; `vm status` says `beyond the LAN:` what it has. When the device
-answers neither at its address nor by name, a command looks once (no minute
-of retries: the peer network rides out roams itself), then dials the
-recorded route and says which one it took, relay or direct. The device logs
-each session and each request (`journalctl -u tilo-device-admin` on it).
-
-**What works over it.** Everything that is a tilo-vmd request: `status`,
-`vm status`, accounts, swaps of CI layers (tilo-vm uploads them), rollbacks,
-`logs`, `shot`, `control`, `input` and `vm awake`. What needs SSH (`account
-exec`, builds on the device, `vm ssh`, `vm upgrade`) waits until it is on
-this network again.
-
-**A relay of your own.** A device and this machine use the public relays
-unless `TILO_DEVICE_ADMIN_RELAY=<url>` names one of yours: on the device in
-`/etc/tilo/device-admin.env` (then `systemctl restart tilo-device-admin`),
-where it is recorded with the route, so tilo-vm uses it too.
+another office, is reached the same way: the daemon's endpoint is dialled by
+its device key, directly when an address answers and through a relay
+otherwise, and the connection follows a roam or a lost link by itself.
+Everything works over it, builds and `vm upgrade` included; only `vm ssh`
+needs an address SSH can reach.
 
 ## When something is off
 
-- `vm add` or `vm status` says the key was refused: run the install command
-  it prints (once per device and key).
+- `this computer has no Tilo login`: on a device of yours run
+  `tilo device add`, then here `tilo login <ticket>`.
+- `has not answered as a Tilo device yet`: a VM joins at its next
+  `tilo-vm vm start`; a real machine is registered with `vm add --device`.
+- `does not let this machine act on devices/<key>/vm`: grant it from a device
+  that may: `tilo grant devices/<key>/vm <this computer's device key>`
+  (`tilo-vm doctor` names the key).
+- `runs an image that predates the <step> step`: `tilo-vm vm upgrade <name>`.
 - `asleep or gone`: it answers neither at its address nor by name for a
   minute. `tilo-vm vm wake <name>`, or wake it at the machine; then
   `tilo-vm vm awake <name> --for 2h` keeps it from sleeping again.
 - `moved from <old> to <new>`: it was found by name on another address and
   that is recorded now; nothing to do.
-- `not on this network, and it did not answer over the peer network`: it is
-  asleep, offline or cannot reach a relay; wake it at the machine, then
-  `tilo-vm vm awake <name> --for 2h`.
-- `it refused this machine`: the device said why (another identity, no
-  administration grant, removed from the owner's devices);
-  `tilo-vm vm enrol-admin` fixes each.
-- `this machine is not enrolled`: `tilo-vm vm enrol-admin --via <device>`.
-- `another device answered for it`: the recorded route is stale; `tilo-vm vm
-  status <name>` on its LAN records it again.
-- `cannot run commands as root without a password`: the `--ssh` account has
-  no passwordless sudo; rerun `vm add` with the same `--ssh` and `--key` and
-  `--grant-sudo` (each `vm add` records what it is given).
 - `no device account`: the image runs no session of its own and nobody is
   logged in to Tilo on its display (a laptop at its login screen, a VM); the
   owner logs in at the machine, or use your own account.
@@ -413,7 +360,7 @@ tilo-vm vm network-wake yoga --profile <NetworkManager-UUID> --enabled true
 tilo-vm vm network-wake yoga --profile <NetworkManager-UUID>
 ```
 
-This uses the same authenticated device-admin route as other device requests.
+This is a step like any other, asked under the same grant on `devices/<key>/vm`.
 It persists the connection property and asks NetworkManager to reapply it;
 readback distinguishes saved configuration, driver support and current driver
 state. A saved setting with a reapply error needs attention and reports failure;

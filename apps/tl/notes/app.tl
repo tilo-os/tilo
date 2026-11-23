@@ -49,12 +49,30 @@ type Note (untitled: "Untitled") {
     }
 }
 
-/// The workspace's notebook: its notes, in the tree's order.
+/// The workspace's notebook: its notes, in the tree's order, and the tags those notes carry.
 type Notebook {
     notes: Collection<Note>
     /// Notes carried over from the native Notes app that it no longer showed: a page whose
     /// parent was deleted, kept here rather than dropped, out of the tree.
     set_aside: Collection<Note>
+    /// The tags the notebook's notes carry, one a name notes hold by: a note keeps its tags as
+    /// words, and the notebook keeps the list a person names, renames and deletes them from.
+    tags: Collection<Tag>
+}
+
+/// A tag of the notebook: a name notes carry, listed once so a person reads, renames and
+/// deletes it in one place, and every note that carries it follows.
+type Tag {
+    name: Text
+}
+
+/// One place in a note the words a person looked for stand: the paragraph they are in, counted
+/// from the note's first, and its words.
+type Found {
+    /// The paragraph, counted from the note's first (1).
+    at: Int
+    /// The paragraph's words.
+    words: Text
 }
 
 root notebook: Notebook
@@ -67,11 +85,32 @@ row view note_row for Note
 
 place view notes for Notebook
 
-/// Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the
-/// caller knows them already. Started from the notebook both are empty: what is typed first
-/// names it.
-primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note (icon: .plus) {
-    nb.notes.insert(Note(title: title, body: RichText.from_markdown(body)))
+/// Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already.
+/// Started from the notebook both are empty: what is typed first names it. It stands under
+/// `parent` (at the top of the tree when none) and — where a caller names the note it belongs
+/// after (`after`) — at that place among the notes there; without one it comes after the notes
+/// already under `parent`, never at the foot of a tree it does not stand in.
+primary action new_note(
+    nb: Notebook,
+    title: Text = "",
+    body: Text = "",
+    parent: Option<Note> = .none,
+    after: Option<Note> = .none,
+) -> Note (icon: .plus) {
+    let made = nb.notes.insert(
+        Note(title: title, body: RichText.from_markdown(body), parent: parent),
+    )
+    let over = after ?? place_under(nb, parent, made)
+    if let x = over { nb.notes.move(made, after: x) }
+    made
+}
+
+/// The note a new note under `parent` comes after: the note given, else the last of the notes
+/// already there, else `parent` itself, and nothing under a parent with no notes at all.
+fn place_under(nb: Notebook, parent: Option<Note>, made: Note) -> Option<Note> {
+    if let p = parent {
+        .some(nb.notes.filter(x -> x.parent == parent and x != made).last() ?? p)
+    } else { .none }
 }
 
 /// Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the
@@ -95,9 +134,9 @@ action new_child(n: Note, words: Text = "") -> Note (icon: .plus, label: "New su
 /// documents are left as they are.
 migration action carry_native_notebook(nb: Notebook) {
     let earlier = earlier(nb)
-    let tags: Map<Text> = Map<Text>()
+    let tag_names: Map<Text> = Map<Text>()
     for tag in earlier.filter(e -> e.of == "tags") {
-        tags.put(tag.id, tag.texts.get("name") ?? "")
+        tag_names.put(tag.id, tag.texts.get("name") ?? "")
     }
     // Siblings stand in the order of their ranks, the same rank by id; a notebook kept before
     // pages had ranks keeps them in the order of its collection.
@@ -136,7 +175,7 @@ migration action carry_native_notebook(nb: Notebook) {
         let native = page.rich.get("body") ?? RichText("")
         let markdown = native.markdown
         let body = native.relinked(links: links, sources: picture_sources(markdown, pictures))
-        let reacted = reactions_said(page.lists.get("reactions") ?? [])
+        let reacted = std.reactions_said(page.lists.get("reactions") ?? [])
         let made = if end == "gone" {
             nb.set_aside.insert(Note(title: title, body: body, reacted: reacted), id: page.id)
         } else {
@@ -148,8 +187,11 @@ migration action carry_native_notebook(nb: Notebook) {
                 id: page.id,
             )
         }
-        for tag in page.lists.get("tags") ?? [] {
-            if let name = tags.get(tag) { made.tags.add(name) }
+        for kept in page.lists.get("tags") ?? [] {
+            if let name = tag_names.get(kept) {
+                made.tags.add(name)
+                if nb.tags.find(t -> t.name == name) == .none { nb.tags.insert(Tag(name: name)) }
+            }
         }
         // Each picture the page shows is the note's, under the name the page gave it; one whose
         // bytes the native app no longer held is set aside, saying so, where the page showed it.
@@ -229,41 +271,6 @@ fn chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
             "top"
         } else if left <= 0 { "circle" } else { chain_end(parents, parent, left - 1) }
     } else { "gone" }
-}
-
-/// The reactions a native page kept, each key naming an emoji and then who reacted with it, as
-/// words: each emoji and how many reacted with it, in the order they were first used. Who
-/// reacted there is not carried, since this app names people only as its own members.
-fn reactions_said(keys: List<Text>) -> Text {
-    said_from(keys.map(k -> emoji_of(k)), 0, [])
-}
-
-/// [`reactions_said`] of `emoji` from the `at`th, past the emoji already `told`.
-fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
-    if let e = emoji.at(at) {
-        if told.contains(e) {
-            said_from(emoji, at + 1, told)
-        } else {
-            let here = "{e} {emoji.count(x -> x == e)}"
-            let rest = said_from(emoji, at + 1, [told, [e]].flat_map(x -> x))
-            if rest == "" { here } else { "{here}  {rest}" }
-        }
-    } else { "" }
-}
-
-/// The emoji a native reaction's key names: what stands before its first separator. The key
-/// ends in who reacted, written in hex, after the last one.
-fn emoji_of(key: Text) -> Text {
-    let unhexed = without_hex(key)
-    let separator = unhexed.slice(unhexed.len() - 1, unhexed.len())
-    key.split(separator).first() ?? key
-}
-
-/// `key` without the hex digits it ends in.
-fn without_hex(key: Text) -> Text {
-    if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
-        without_hex(key.slice(0, key.len() - 1))
-    } else { key }
 }
 
 /// Pins or unpins a note.
@@ -409,25 +416,92 @@ fn titled(nb: Notebook, title: Text) -> Option<Note> {
     nb.notes.find(n -> n.title.trim().lower() == title.trim().lower())
 }
 
-/// Files a note titled `title` and tagged `tag` in one step: what another app writes down of
-/// what it did (Today's morning) without waiting on the note it made to name it.
-action file_note(nb: Notebook, title: Text, tag: Text) -> Note (
+/// Files a note titled `title` and carrying the tag `name` in one step: what another app writes
+/// down of what it did (Today's morning) without waiting on the note it made to name it.
+action file_note(nb: Notebook, title: Text, name: Text) -> Note (
     icon: .file_plus,
     label: "File a note",
 ) {
     let made = nb.notes.insert(Note(title: title))
-    made.tags.add(tag)
+    let known = nb.tags.find(t -> t.name.lower() == name.trim().lower())
+    let listed = known?.name ?? name.trim()
+    if known == .none { nb.tags.insert(Tag(name: listed)) }
+    made.tags.add(listed)
     made
 }
 
-/// Gives a note a tag.
-action tag(n: Note, t: Text) (icon: .tag, group: "Tags") {
-    n.tags.add(t)
+/// Makes a tag of the notebook named `name`, or gives the one already named that: the name is
+/// what people, agents and scripts know a tag by.
+action new_tag(nb: Notebook, name: Text = "") -> Tag (icon: .tag, label: "New tag") {
+    require name.trim() != "" "A tag needs a name"
+    nb.tags.find(t -> t.name == name.trim()) ?? nb.tags.insert(Tag(name: name.trim()))
 }
 
-/// Untags a note.
-action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
-    n.tags.remove(t)
+/// Gives a note the tag named `name`, and lists the tag in the notebook when it lists none of
+/// that name yet: a name is how a person, an agent and a script know a tag.
+action tag(n: Note, name: Text) (icon: .tag, group: "Tags") {
+    require name.trim() != "" "A tag needs a name"
+    let nb = root Notebook
+    let known = nb.tags.find(t -> t.name.lower() == name.trim().lower())
+    let listed = known?.name ?? name.trim()
+    if known == .none { nb.tags.insert(Tag(name: listed)) }
+    n.tags.add(listed)
+}
+
+/// Takes the tag named `name` off a note. The notebook keeps listing it, so a person finds it
+/// again for another note; deleting it from the notebook takes it off every note.
+action untag(n: Note, name: Text) (label: "Untag", group: "Tags") {
+    n.tags.remove(name.trim())
+}
+
+/// Names a tag of the notebook: every note that carries the old name carries the new one.
+action rename_tag(nb: Notebook, tag: Tag, wanted: Text) (icon: .pencil, label: "Rename") {
+    require wanted.trim() != "" "A tag needs a name"
+    require not nb.tags.any(t -> t.name == wanted.trim() and t.id != tag.id) "The notebook has that tag"
+    let before = tag.name
+    for n in nb.notes {
+        if n.tags.any(t -> t == before) {
+            n.tags.remove(before)
+            n.tags.add(wanted.trim())
+        }
+    }
+    tag.name = wanted.trim()
+}
+
+/// Deletes a tag of the notebook: no note carries the name any more, and the notebook stops
+/// listing it.
+destructive action delete_tag(nb: Notebook, tag: Tag) (icon: .trash, label: "Delete") {
+    for n in nb.notes {
+        if n.tags.any(t -> t == tag.name) { n.tags.remove(tag.name) }
+    }
+    nb.tags.remove(tag)
+}
+
+/// Lists the tags the notebook's notes carry, once each: what a notebook written before the
+/// notebook listed its tags needs, and what a start that wrote tags straight onto notes left.
+migration action carry_word_tags(nb: Notebook) {
+    for n in nb.notes {
+        for name in n.tags {
+            if nb.tags.find(t -> t.name == name) == .none { nb.tags.insert(Tag(name: name)) }
+        }
+    }
+}
+
+/// Finds the words `text` in one note, the case of their letters aside, and answers each
+/// paragraph holding them with its place in the note and its words: what the window's find bar
+/// shows, reachable by an agent or the palette that knows the note but not where in it to look.
+action find_text(n: Note, text: Text) -> List<Found> (icon: .search, label: "Find in note") {
+    applies text.trim() != "" "Type something to find"
+    let wanted = text.trim().lower()
+    let found: List<Found> = []
+    let at = 0
+    for line in n.body.text.split("\n") {
+        at = at + 1
+        if line.lower().contains(wanted) {
+            found = [found, [Found(at: at, words: line.trim())]].flat_map(x -> x)
+        }
+    }
+    found
 }
 
 /// Adds your reaction with an emoji to a note, or takes it back when you had reacted with it: a
@@ -437,10 +511,18 @@ action react(n: Note, emoji: Text) (icon: .smile_plus, label: "React") {
     if mine { n.reactions.remove(emoji, invoker) } else { n.reactions.add(emoji, invoker) }
 }
 
-/// Puts a picture in a note, where its words end: the person picks the file, and the note
-/// keeps the address of its content rather than the picture, and the name it came in as.
-action insert_image(n: Note, image: File) (icon: .image, did: "added an image") {
-    n.body = RichText(n.body, "\n![]({image.url})")
+/// Puts a picture in a note, where its words end, described by `alt` for a reader who cannot see
+/// it: the person picks the file, and the note keeps the address of its content rather than the
+/// picture, and the name it came in as. Nothing in `alt` can end the Markdown a picture is
+/// written with, so a description holding brackets or parentheses still reads as one picture.
+action insert_image(n: Note, image: File, alt: Text = "") (icon: .image, did: "added an image") {
+    let description = alt
+        .trim()
+        .replace("[", " ")
+        .replace("]", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+    n.body = RichText(n.body, "\n![{description}]({image.url})")
     n.images.put(image.url, base_name(image.name))
 }
 
@@ -1358,6 +1440,11 @@ view notebook(nb: Notebook) {
     // The note the window shows, kept by the window: the first note until a person chooses
     // another, and the one a link, a breadcrumb or a search shows.
     state open_note: Option<Note> = nb.notes.first()
+    // The tag the person chose in the tags beside the tree: the notes carrying it are shown
+    // until a note is chosen again.
+    // The tag the person chose beside the tree, kept by its name: the notes carrying it are
+    // shown while it is, and choosing a note shows that note again.
+    state shown_tag: Text = ""
     // The open note's headings, as its editor reports them, and the heading a person last chose
     // in the map of them: what the page shows of them without reading the whole note.
     state heading_lines: List<Text> = []
@@ -1382,13 +1469,72 @@ view notebook(nb: Notebook) {
     ) {
         // A file dropped anywhere on the notebook comes in as a note or as the pages of an
         // archive it holds.
-        // What the tree cannot hold: the open note's headings under it, and the page beside it.
+        // What the tree cannot hold: the open note's headings under it, the notebook's tags,
+        // and the page beside it.
         below: {
             note_outline(heading_lines, heading_levels, reveal)
+            notebook_tags(nb, shown_tag, open_note)
         }
         doc: {
             if let n = open_note {
                 note_page(n, heading_lines, heading_levels, reveal)
+            } else if let t = nb.tags.find(x -> x.name == shown_tag) {
+                notes_tagged(nb, t)
+            }
+        }
+    }
+}
+
+/// The notebook's tags as a section beside the tree, each with how many notes carry it:
+/// choosing one shows those notes, the menu beside the chosen tag renames or deletes it, and
+/// the entry at the foot makes a tag. Choosing a tag puts the open note away; choosing a note
+/// of the tree shows it again.
+view notebook_tags(nb: Notebook, chosen: State<Text>, open_note: State<Option<Note>>) {
+    stack(gap: .tight) {
+        row(gap: .related, align: .center) {
+            text("Tags", role: .label)
+            if let picked = nb.tags.find(t -> t.name == chosen) {
+                ui.MenuButton(picked.name, icon: .ellipsis, icon_only: true, target: picked)
+            }
+        }
+        if nb.tags.is_empty() {
+            text("No tags yet", role: .caption, secondary: true)
+        } else {
+            row(gap: .tight, wrap: true) {
+                for tag in nb.tags {
+                    ui.Chip(tag.name, icon: .tag) {
+                        on press: set(chosen, tag.name).then(set(open_note, .none))
+                    }
+                    text("{tagged_count(nb, tag)}", role: .caption, secondary: true)
+                }
+            }
+        }
+        std.add_entry("New tag", new_tag(nb))
+    }
+}
+
+/// How many of the notebook's notes carry the tag `t`: what its row beside the tree counts.
+fn tagged_count(nb: Notebook, t: Tag) -> Int {
+    nb.notes.filter(n -> n.tags.any(x -> x == t.name)).count()
+}
+
+/// The notes carrying the tag `t`, each opening it: what the window shows when a tag is chosen
+/// beside the tree. Choosing one opens it and leaves the tag's list.
+view notes_tagged(nb: Notebook, t: Tag) {
+    let held = nb.notes.filter(n -> n.tags.any(x -> x == t.name))
+    stack(gap: .group) {
+        text(t.name, role: .title)
+        if held.is_empty() {
+            ui.EmptyState("Nothing carries {t.name} yet", icon: .tag)
+        } else {
+            ui.VirtualList(selection_follows_focus: true, in_column: true) {
+                on select(x: Note): open(x, front: false)
+                on activate(x: Note): open(x)
+                for n in held {
+                    ui.ListItem(item: n) {
+                        note_row(n)
+                    }
+                }
             }
         }
     }
@@ -1516,8 +1662,11 @@ template view note_page(
             if not n.tags.is_empty() {
                 row(gap: .related, wrap: true) {
                     for t in n.tags {
-                        ui.Chip(t) {
-                            on remove: untag(n, t)
+                        // A tag deleted from the notebook is carried by no note any more.
+                        if nb.tags.any(x -> x.name == t) {
+                            ui.Chip(t) {
+                                on remove: untag(n, t)
+                            }
                         }
                     }
                 }
@@ -1993,12 +2142,10 @@ scenario "a week of notes" {
             pinned: true,
         ),
     )
-    plan.tags.add("planning")
-    let ada = person("Ada")
-    let leo = person("Leo")
-    invoke(react(plan, "🎉"), by: ada, at: 2026-06-29T07:05Z)
-    invoke(react(plan, "🎉"), by: leo, at: 2026-06-29T07:06Z)
-    invoke(react(plan, "🚀"), by: leo, at: 2026-06-29T07:06Z)
+    invoke(tag(plan, "planning"))
+    plan.reactions.add("🎉", person("Ada"))
+    plan.reactions.add("🎉", person("Leo"))
+    plan.reactions.add("🚀", person("Leo"))
     let standups = notebook.notes.insert(
         Note(title: "Standups", body: RichText("Ten minutes, every morning."), parent: plan),
     )

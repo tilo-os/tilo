@@ -2,7 +2,6 @@
 //! [--connector NAME] [--output [NAME=]WxH[@X,Y]]... [--scale S|--panel-mm WxH]
 //! [--shell screen] [--host-desktop] [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
-//! `tilo-session --pair-device-link-file FILE` enrolls a fresh device before its first session.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
 //! and starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
@@ -646,7 +645,15 @@ fn start(
     } else {
         tilo_session::Machine::Owned
     };
-    let (mut services, _following) = services(&wake, power.clone(), machine);
+    // This device's apps, as search and the surfaces that name an app read them, and the index
+    // apps publish what they hold into: the image analysis reads it and writes back into it.
+    let content = tilo_desktop_search::content_index::session();
+    let (mut services, _following) = services(
+        &wake,
+        power.clone(),
+        machine,
+        std::sync::Arc::clone(&content),
+    );
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -704,7 +711,7 @@ fn start(
         test_control,
         admin_control,
         hosted_browser,
-        ..device_options(machine, config)
+        ..device_options(machine, config, content)
     };
     // The person's files: the files daemon mounts them as the Files app's endpoint, so the
     // session records its process before the daemon's connections arrive.
@@ -1105,15 +1112,13 @@ fn desktop_services(
 fn device_options(
     machine: tilo_session::Machine,
     config: tilo_session::SessionConfig,
+    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> tilo_session::Options {
     use tilo_session::{
         AppSocket, Options, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
-    // This device's apps, as search and the surfaces that name an app read them, and the index
-    // apps publish what they hold into.
-    let content = tilo_desktop_search::content_index::session();
     Options {
         config,
         search: search_options(std::sync::Arc::clone(&content)),
@@ -1228,6 +1233,7 @@ fn services(
     wake: &tilo_service::LoopWake,
     power: Option<tilo_session_power::PowerLink>,
     machine: tilo_session::Machine,
+    content: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
@@ -1235,15 +1241,31 @@ fn services(
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
+    // The device's image model, and the library analysis whose words join each picture's entry in
+    // the system index. The service holds its own model-gateway connection (as `so.tilo.vision`,
+    // the package it answers as) and finds its pictures through the index search reads.
+    services.push(Box::new(tilo_vision_service::VisionService::new(
+        std::sync::Arc::new(tilo_vision_service::LocalVision::local()),
+        std::sync::Arc::new(tilo_vision_service::index::VisionIndexSource(
+            std::sync::Arc::clone(&content),
+        )),
+        std::sync::Arc::new(tilo_vision_service::index::VisionIndexSink(content)),
+        wake.handle(),
+    )));
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_reports::CrashReports::new()));
     if !machine.is_owned() {
         return (services, following);
     }
+    let mut active_power = None;
     if let Some(link) = power {
+        let live = link.clone();
         match tilo_session_power::SessionPower::start(link) {
-            Ok(power) => services.push(Box::new(power)),
+            Ok(power) => {
+                active_power = Some(live);
+                services.push(Box::new(power));
+            }
             Err(error) => tracing::warn!(%error, "the power service did not start"),
         }
     }
@@ -1257,9 +1279,10 @@ fn services(
         }
         Err(error) => tracing::warn!(%error, "connectivity service not started"),
     }
-    match tilo_system_service::SystemService::new(
+    match tilo_session::system_service(
         Arc::new(tilo_system_service::device::OsSystem),
         Some(wake.handle()),
+        active_power.as_ref(),
     ) {
         Ok(mut system) => {
             if let Err(error) = system.follow_location() {

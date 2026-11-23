@@ -60,23 +60,10 @@ impl AppBrokerState {
             origin,
             retained_time,
         } = provenance;
-        if turns::is_answer(&offered.0.app_id, &offered.1) {
-            return Err("an agent answers a turn only when the host hands it one".into());
-        }
         let continuing = ContinuingCaller::admitted(caller, origin.as_ref());
         let owner = self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?;
         owner.validate()?;
-        // In native workspaces an agent acts only in an agent session that still goes, never on
-        // a workspace grant alone.
-        let session = self.agent_session_of(caller, origin.as_ref(), &offered.0.route.cluster_id);
-        if actor.is_agent() && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id)
-        {
-            match &session {
-                Some(Ok(_)) => {}
-                Some(Err(ended)) => return Err(ended.clone()),
-                None => return Err("an agent acts only in an agent session".into()),
-            }
-        }
+        let session = self.agent_session_of(caller, &offered.0.route.cluster_id);
         // Never trust an envelope's invoker: the host sets it.
         let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
         // Where an agent works from is what the host verified of its
@@ -471,7 +458,7 @@ impl AppBrokerState {
             ),
             owner,
             original: OriginalInvocationData::capture(
-                collaboration::invocation_scope::PublishedInvocationRequest {
+                super::super::InvocationRequest {
                     wire_id: id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -484,7 +471,6 @@ impl AppBrokerState {
                 },
                 offered.0.route.clone(),
                 &offered.1,
-                revision,
                 origin,
                 policy_time.clone(),
                 execution.as_ref().map(ExecutionScope::lease),

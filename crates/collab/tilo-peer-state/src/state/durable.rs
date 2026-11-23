@@ -19,9 +19,11 @@ use automerge::transaction::Transactable as _;
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's, except the version before, which it
 /// brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 12;
+pub const DURABLE_VERSION: u32 = 13;
 
-/// The version before [`DURABLE_VERSION`], which this build brings up ([`brought_up`]).
+/// The newest version before [`DURABLE_VERSION`] that this build brings up ([`brought_up`]): a
+/// state kept while a document named the member's own record it was. Version 12, which comes
+/// after it, is refused by name.
 pub(super) const BROUGHT_UP: u32 = 11;
 
 /// Whether this build brings up a state of durable layout `version` ([`brought_up`]).
@@ -34,7 +36,7 @@ fn brings_up(version: u32) -> bool {
 }
 
 /// `bytes`, a durable state, in this build's layout: version 11 (or 10, [`brings_up`]) brought
-/// up to 12, any other as it is, for [`Durable::read`] to read or refuse.
+/// up to 13, any other as it is, for [`Durable::read`] to read or refuse.
 ///
 /// Version 11 kept with each document, and with each document write waiting to be sent, the
 /// member's own record it was, if any. Nothing reads that any more: it is dropped, and the bytes

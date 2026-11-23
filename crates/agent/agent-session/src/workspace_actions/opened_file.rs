@@ -153,9 +153,12 @@ impl Worker {
         Ok((landing, arguments))
     }
 
-    /// Answer the workspace's `app.<app>#open` (named `named`) in `request`:
-    /// a new record of the app, or, given a file, the record the file
-    /// lands in with the file in it.
+    /// Answer the workspace's `app.<app>#open` in `request`: a new record of
+    /// the app, or, given a file, the record the file lands in with the file
+    /// in it.
+    ///
+    /// Called only from [`Self::perform`], which has already checked that the
+    /// target's named workspace parses to `workspace_id`.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -165,20 +168,20 @@ impl Worker {
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        (named, state): (&str, &WorkspaceState),
+        state: &WorkspaceState,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let target = &request.target;
         // Files' verbs on the workspace's own folder change its tree, and its reads answer
         // what that tree holds, each by a path in it.
         if super::tree::acts_on_tree(target) {
-            return self.in_tree(workspace_id, caller, request, named);
+            return self.in_tree(workspace_id, caller, request);
         }
         // Many files at once (`files`) go into the workspace's folder, which
         // is Files, in one change of its tree.
         let arguments = super::invoke_arguments(&request.argument);
         if arguments.contains_key("files") {
             if self.asked_app(target).as_deref() == Some(fs_protocol::tree::FILES_APP) {
-                return self.put_in_workspace(workspace_id, caller, request, named);
+                return self.put_in_workspace(workspace_id, caller, request);
             }
             return Err(refused(
                 "`files` puts many files into Files' folder: open them with `files#open`"
@@ -193,7 +196,7 @@ impl Worker {
                 // A workspace has one folder, and Files is it: a file opened
                 // in it is written into the tree, not into an app's record.
                 if app == fs_protocol::tree::FILES_APP {
-                    return self.put_in_workspace(workspace_id, caller, request, named);
+                    return self.put_in_workspace(workspace_id, caller, request);
                 }
                 Some(self.landing_of(workspace_id, &app, file)?)
             }
@@ -206,7 +209,7 @@ impl Worker {
             .and_then(|app| Self::kept_document(state, &app));
         let opened = match kept {
             Some(route) => Self::opened_answer(&route),
-            None => self.open_asked(workspace_id, caller, named, target)?,
+            None => self.open_asked(workspace_id, caller, target)?,
         };
         match landing {
             Some((landing, arguments)) => {

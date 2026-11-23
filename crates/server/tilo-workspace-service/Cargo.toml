@@ -17,7 +17,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "tilo-accou
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]).
-agents = ["device-keys", "dep:tilolang-tilo", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tasks", "dep:tasks-model", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["device-keys", "dep:tilolang-tilo", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:tasks", "dep:tasks-model", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:runtime-collab", "dep:tilo-web-search", "dep:jiff", "dep:tilo-identity", "tilo-clock/local", "dep:rustix"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -26,7 +26,7 @@ device-keys = ["dep:tilo-workspace-keys"]
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
-files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
+files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:tilo-paths", "dep:iroh-blobs", "dep:bytes", "dep:wire-frame", "dep:rustix"]
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
@@ -34,7 +34,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
+apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -52,13 +52,15 @@ tilo-server-protocol = { path = "../tilo-server-protocol" }
 tilo-reference = { path = "../../collab/reference" }
 # What a planned machine's installation is to become: the destinations, disk
 # rules and open choices its entry carries.
-install-profile-model = { path = "../../session/install-profile-model" }
+install-profile-model = { path = "../../os/install-profile-model" }
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+# Where a workspace's files appear in the Files mount, which its access list names.
+tilo-paths = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
@@ -87,7 +89,7 @@ sha2.workspace = true
 tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
-tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false, features = ["host-backend"], optional = true }
+tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # A person's calendars on their host are read, expanded and filed by the
 # Calendar model's own code, so a device and its host agree about time. The
@@ -96,7 +98,7 @@ calendar-model = { path = "../../../apps/calendar-model", features = ["store"], 
 # The workspace's vault: Passwords' document, which this service reads and writes as a holder of
 # its keys.
 passwords-model = { path = "../../../apps/passwords-model" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true }
 tilo-automation = { path = "../../collab/automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
@@ -105,8 +107,8 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 # The apps a device serves ([features] apps).
 zeroize.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
-tilo-advisory-lock = { path = "../../system/advisory-lock", optional = true }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
+tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio"], optional = true }
 launcher = { path = "../../packaging/launcher", optional = true }
 tilo-app-package = { path = "../../packaging/tilo-app-package", optional = true }
 parking_lot = { workspace = true, optional = true }
@@ -116,6 +118,7 @@ reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
 tilo-rt.workspace = true
 futures = { workspace = true, default-features = true }
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"], optional = true }
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json", optional = true }
 tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
 tilo-broker-core = { path = "../../collab/broker-core", optional = true }
 tilo-workspace-keys = { path = "../../collab/workspace-keys", optional = true }
@@ -151,26 +154,28 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The model runtime a package's module links against, fetched from the
 # registry that offers the runtime bundle the package names when this host's
 # image carries another release's.
-app-cli = { path = "../../packaging/app-cli" }
+app-cli = { path = "../../os/app-cli" }
 # A host's workspaces keep their content in directories.
 tilo-content = { path = "../../system/content", features = ["dir"] }
 # The person's own accounts and model providers, kept beside their
 # workspace: the shared account store and vault, the settings document the
 # model configuration lives in, and the sign-in probes that reach a server a
 # page cannot.
-accounts = { path = "../../system/accounts", features = ["person"] }
+accounts = { path = "../../integrations/accounts", features = ["person"] }
 # Which vault items a workspace's machine hands its programs: a Terminal document.
-tilo-environment = { path = "../../runtime/environment", optional = true }
-agent-provider-config = { path = "../../agent/provider-config" }
+tilo-environment = { path = "../../vm/environment", optional = true }
+agent-provider-config = { path = "../../integrations/provider-config" }
+# Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
+wire-frame = { path = "../../platform/wire-frame" }
 settings-store = { path = "../../system/settings-store" }
-tilo-account-probe = { path = "../../platform/account-probe" }
+tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a
 # provider's own page leaves a person's account signed in with.
-account-credentials = { path = "../../system/account-credentials", features = ["store"] }
-tilo-oauth = { path = "../../system/tilo-oauth" }
+account-credentials = { path = "../../integrations/account-credentials", features = ["store"] }
+tilo-oauth = { path = "../../integrations/tilo-oauth" }
 # The calendar servers of the accounts a person keeps here.
-tilo-dav = { path = "../../system/tilo-dav" }
-tilo-mail-session = { path = "../../platform/mail-session" }
+tilo-dav = { path = "../../integrations/tilo-dav" }
+tilo-mail-session = { path = "../../integrations/mail-session" }
 # The one request a person's model providers make from here: a provider's own
 # list of models, asked with the key the vault keeps, through the client the
 # fetch proxy guards its own requests with.
@@ -178,12 +183,11 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 # What the agents on this server learned about a person: the type the list
 # is kept as, and the verbs that change it.
 tilo-resource = { path = "../../sdk/tilo-resource" }
-# A tilolang app's record read and changed through its own package on this device: what the
-# agent engine answers asks with (`tl_records`, `asks`).
-tilolang-tilo = { path = "../../platform/tilolang-tilo", optional = true }
-tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
+# A tilolang app's record read and changed through its own package on this device.
+tilolang-tilo = { path = "../../lang/tilolang-tilo", optional = true }
+tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
 # A person's region and formats, kept as the `locale` settings section reads them.
-tilo-formats = { path = "../../sdk/tilo-formats" }
+tilo-formats = { path = "../../ui/tilo-formats" }
 # The agents a device runs ([features] agents): what people ask them (Chat's
 # conversations and the tracker's issues), the tools they act through (the MCP
 # server's agent surface), the turns their model takes, what a turn recalls of
@@ -192,8 +196,8 @@ tilo-formats = { path = "../../sdk/tilo-formats" }
 tasks = { path = "../../../apps/tasks", optional = true }
 tasks-model = { path = "../../../apps/tasks-model", optional = true }
 tilo-mcp = { path = "../../runtime/tilo-mcp", optional = true }
-tilo-agent-turn = { path = "../../agent/agent-turn", optional = true }
-tilo-web-search = { path = "../../platform/tilo-web-search", optional = true }
+tilo-agent-turn = { path = "../../integrations/agent-turn", optional = true }
+tilo-web-search = { path = "../../integrations/tilo-web-search", optional = true }
 jiff = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -201,7 +205,7 @@ rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
 # The stand-in authorization server a sign-in test walks the browser through.
-tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
+tilo-oauth = { path = "../../integrations/tilo-oauth", features = ["fake"] }
 # A fake OpenAI sign-in and model providers, for signing in on the real path.
 fake-model-providers = { path = "../../../tools/fake-model-providers" }
 # The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
@@ -217,7 +221,7 @@ tasks-model = { path = "../../../apps/tasks-model" }
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 # The engines and pages the web tools' tests read, served from this machine.
-tilo-web-search = { path = "../../platform/tilo-web-search", features = ["fixture-servers"] }
+tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }
 # The store's continuity tests count each thread's heap.
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
@@ -232,8 +236,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
 # certificate, which no authority signed.
-tilo-account-probe = { path = "../../platform/account-probe", features = ["test-support"] }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+tilo-account-probe = { path = "../../integrations/account-probe", features = ["test-support"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../../collab/workspace-keys", features = ["test-support"] }

@@ -45,7 +45,7 @@ fn at_format(
         signature: Some([0; 64]),
         ..packed.meta.root.clone()
     };
-    root.signature = Some(identity.sign_signed_root(&root).unwrap());
+    root.signature = Some(identity.sign_signed_root(&root));
     tilo_app_package::PackageMeta::from_root(
         root,
         packed.meta.manifest_bytes.clone(),

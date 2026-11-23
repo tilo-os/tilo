@@ -3,10 +3,15 @@
 use std::{io, sync::Arc};
 
 use collab_types::WorkspaceId;
-use fuser::{FileType, ReplyData};
+#[cfg(not(target_os = "android"))]
+use fuser::ReplyData;
 use iroh_blobs::Hash;
 
-use super::{Access, EIO, EISDIR, ENOENT, QuickFS, StagedRead, to_errno, unavailable};
+use crate::node::FileType;
+
+#[cfg(not(target_os = "android"))]
+use super::to_errno;
+use super::{Access, EIO, EISDIR, ENOENT, QuickFS, StagedRead, unavailable};
 
 /// How a FUSE `read` is answered, decided by `QuickFS::plan_read` before any reply is
 /// sent.
@@ -105,6 +110,7 @@ impl QuickFS {
     /// Answer a `read` whose bytes must come from a peer. The read blocks its caller as
     /// POSIX expects, but no FUSE worker waits on the network, so a slow peer stalls only
     /// the readers of that file.
+    #[cfg(not(target_os = "android"))]
     pub(super) fn reply_remote(
         &self,
         ino: u64,
@@ -181,6 +187,7 @@ impl QuickFS {
 
     /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer. Unwritten ranges a
     /// peer must supply are hydrated on the runtime, like an unbuffered read.
+    #[cfg(not(target_os = "android"))]
     pub(super) fn reply_buffered(&self, ino: u64, buffered: BufferedRead, reply: ReplyData) {
         match buffered {
             BufferedRead::Staged(Ok(StagedRead::Ready(bytes))) => reply.data(&bytes),

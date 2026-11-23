@@ -7,6 +7,7 @@
 //! This is the window `tilolang layout-check` lays out, and the page a server renders for a
 //! browser: one composition, one HTML writer, one set of semantic actions.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -14,6 +15,7 @@ use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::resources::{LocalPort, ResourceStore};
+use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
 use ui::headless::FrameHarness;
 
@@ -36,6 +38,9 @@ pub struct Staging<'a> {
     /// The size the window is laid out at, in logical pixels.
     pub viewport: (u32, u32),
     pub dark: bool,
+    /// Where the workspace's resources open on the web, when the page stands behind one: what a
+    /// resource's `share-link` mints under ([`tilolang_tilo::share`]).
+    pub link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 /// What a page shows other than as the browser's own elements ([`AppPage::gaps`]).
@@ -52,6 +57,47 @@ pub struct AppPage {
     harness: FrameHarness,
     page: Page,
     theme: ui::Theme,
+    /// What the view asked of apps the page does not run, for its host to carry out.
+    asked: Rc<RefCell<Vec<Invocation>>>,
+}
+
+/// What a hosted page's view asks of apps it does not run (a window's Close asks the session to
+/// close its place): kept for the page's host, which carries each out where those apps' state is.
+struct Asked(Rc<RefCell<Vec<Invocation>>>);
+
+impl Invoker for Asked {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        Invoked::Sent
+    }
+}
+
+/// How a host shows an app's view of the workspace's own state on a page ([`AppPage::hosted`]).
+pub struct Hosting<'a> {
+    /// The root the view is of (`layout`) and the view (`frames`).
+    pub root: &'a str,
+    pub view: &'a str,
+    /// Where the resources the view reads come from: the workspace's own state, as a native host
+    /// writes it.
+    pub origin: tilolang_tilo::origin::SharedOrigin,
+    /// The person the page is shown to: their member id and the name they go by.
+    pub me: (&'a str, &'a str),
+    pub viewport: (u32, u32),
+    pub dark: bool,
+    /// Where the workspace's resources open on the web, when the page is a workspace's: what a
+    /// resource's `share-link` mints under ([`tilolang_tilo::share`]).
+    pub link_home: Option<tilolang_tilo::share::LinkHome>,
+}
+
+/// How a page's instance starts: from a scenario, or over a host's origin.
+struct Start<'a> {
+    root: tilolang_tilo::host::RootView,
+    scenario: Option<&'a str>,
+    origin: Option<tilolang_tilo::origin::SharedOrigin>,
+    me: (&'a str, &'a str),
+    viewport: (u32, u32),
+    dark: bool,
+    link_home: Option<tilolang_tilo::share::LinkHome>,
 }
 
 impl AppPage {
@@ -61,7 +107,55 @@ impl AppPage {
     /// A root the package declares could not be made, its scenario failed, or the window refused
     /// what the app sent.
     pub fn open(app: &str, packages: &Rc<Packages>, staging: &Staging<'_>) -> Result<Self, String> {
-        let mut theme = if staging.dark {
+        Self::start(
+            app,
+            packages,
+            Start {
+                root: tilolang_tilo::host::RootView {
+                    root: staging.root.map(str::to_owned),
+                    view: None,
+                },
+                scenario: staging.scenario,
+                origin: None,
+                me: (ME, MY_NAME),
+                viewport: staging.viewport,
+                dark: staging.dark,
+                link_home: staging.link_home.clone(),
+            },
+        )
+    }
+
+    /// The app `app` of `packages` (the app last) as a host shows it on a page: the view
+    /// `hosting.view` of its root `hosting.root`, over what `hosting.origin` writes there, as a
+    /// native host shows it. Nothing is staged: the page shows the workspace's own state.
+    ///
+    /// # Errors
+    /// A root the package declares could not be made, or the window refused what the app sent.
+    pub fn hosted(
+        app: &str,
+        packages: &Rc<Packages>,
+        hosting: Hosting<'_>,
+    ) -> Result<Self, String> {
+        Self::start(
+            app,
+            packages,
+            Start {
+                root: tilolang_tilo::host::RootView {
+                    root: Some(hosting.root.to_owned()),
+                    view: Some(hosting.view.to_owned()),
+                },
+                scenario: None,
+                origin: Some(hosting.origin),
+                me: hosting.me,
+                viewport: hosting.viewport,
+                dark: hosting.dark,
+                link_home: hosting.link_home,
+            },
+        )
+    }
+
+    fn start(app: &str, packages: &Rc<Packages>, start: Start<'_>) -> Result<Self, String> {
+        let mut theme = if start.dark {
             ui::Theme::dark()
         } else {
             ui::Theme::light()
@@ -69,32 +163,40 @@ impl AppPage {
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
         let names = Rc::new(tilolang_tilo::names::Told::new(
-            ME.into(),
+            start.me.0.into(),
             Rc::new(tilolang_tilo::names::Installed),
         ));
-        names.tell(MY_NAME.to_owned(), Vec::new(), Vec::new());
+        names.tell(start.me.1.to_owned(), Vec::new(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
-                me: ME.into(),
+                me: start.me.0.into(),
                 mode: Mode::Live,
                 device: None,
                 store: ResourceStore::new(Rc::new(LocalPort::in_memory())),
-                root: tilolang_tilo::host::RootView {
-                    root: staging.root.map(str::to_owned),
-                    view: None,
-                },
+                root: start.root,
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+                link_home: start.link_home,
             },
             Rc::clone(packages) as Rc<dyn Platform>,
             names,
             Box::new(app_end),
         );
+        let hosted = start.origin.is_some();
+        if let Some(origin) = start.origin {
+            instance.add_origin(origin);
+        }
         instance.sync();
         instance.settle_pending();
         // The package's own roots, every layer it has, are made with what each starts with, as a
         // session makes them when it loads the package.
+        let asked = Rc::new(RefCell::new(Vec::new()));
         if let Some(host) = instance.host() {
+            // A hosted view's calls to the apps whose state the host keeps (the session's
+            // arranging actions on the layout) are the host's to carry out.
+            if hosted {
+                host.runtime().set_foreign_invoker(Asked(Rc::clone(&asked)));
+            }
             let meta = host.package(app).map(|package| package.meta);
             let roots = meta.iter().flat_map(|meta| {
                 meta.roots
@@ -107,13 +209,13 @@ impl AppPage {
                     .map_err(|error| format!("a root could not be made: {error}"))?;
             }
         }
-        instance.stage(staging.scenario);
+        instance.stage(start.scenario);
         // The scenario runs with the instance's next frame.
         instance.sync();
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
-                staging.scenario.unwrap_or_default()
+                start.scenario.unwrap_or_default()
             ));
         }
         instance.update();
@@ -125,7 +227,7 @@ impl AppPage {
         let harness = FrameHarness::new_with_theme(
             ui::State::new(),
             Box::new(window),
-            staging.viewport,
+            start.viewport,
             theme.clone(),
         );
         let mut page = Self {
@@ -133,9 +235,31 @@ impl AppPage {
             harness,
             page: Page::new(),
             theme,
+            asked,
         };
         page.exchange();
         Ok(page)
+    }
+
+    /// What the view asked of apps the page does not run since this was last called, oldest
+    /// first: the host carries each out, and what that changes comes back as its origin's next
+    /// reading ([`Self::follow`]).
+    pub fn take_asked(&mut self) -> Vec<Invocation> {
+        std::mem::take(&mut *self.asked.borrow_mut())
+    }
+
+    /// What the host shows in each of the page's wells, by place ([`Page::wells`]): what stands
+    /// where a native host shows that place's window.
+    pub fn fill_wells(&mut self, wells: std::collections::HashMap<String, String>) {
+        self.page.wells = wells;
+    }
+
+    /// What changed on the page since it was last written, after the instance took in what its
+    /// origins hold now (another member moved a place): the elements to replace.
+    pub fn follow(&mut self) -> Vec<Patch> {
+        self.instance.sync();
+        self.exchange();
+        self.patch()
     }
 
     fn window(&mut self) -> Option<&mut AppWindow> {
@@ -198,7 +322,7 @@ impl AppPage {
             if matches!(node.own, Some(ui::composition::Own::Painted { .. })) {
                 count(&mut gaps.painted);
             }
-            if !node.flows && !node.children.is_empty() && node.own.is_none() {
+            if !node.flows && !node.places && !node.children.is_empty() && node.own.is_none() {
                 count(&mut gaps.placed);
             }
             stack.extend(node.children.iter());
@@ -238,6 +362,18 @@ impl AppPage {
             .perform_semantic_named(&widget, target, action)?;
         self.exchange();
         Ok(self.patch())
+    }
+
+    /// The link to the resource `resource` of this page's app, minted under the workspace's page
+    /// the page was opened with ([`Instance::share_link`]).
+    ///
+    /// # Errors
+    /// Why no link can be made: no workspace page stands behind this window, or the resource is
+    /// not the app's.
+    pub fn share_link(&self, resource: &str) -> Result<serde_json::Value, String> {
+        self.instance
+            .share_link(resource)
+            .map(|output| output.value.unwrap_or(serde_json::Value::Null))
     }
 
     /// The window laid out at a new size: a narrow one shows one column of a split at a time.

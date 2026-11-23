@@ -693,7 +693,7 @@ mod over_the_live_session {
     const TAB: u64 = 0x5EED_0000_0000_0007;
 
     /// The engine's page: a snapshot with a header, a sidebar and a button.
-    const TOP: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");
+    const TOP: &str = include_str!("../../../engines/paint-stream/tests/fixtures/layers.top.json");
 
     /// The relay the test's live sessions meet on: in-process, with no one to admit,
     /// since a local live session is its own relay's member.

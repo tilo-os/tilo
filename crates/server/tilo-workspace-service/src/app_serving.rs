@@ -93,6 +93,13 @@ pub trait AppActionServer: Send + Sync {
         let _ = workspace_id;
     }
 
+    /// Stop answering and let go of what this app action server holds, its
+    /// own worker threads included, serving what it holds before it returns.
+    /// The host calls it as the service whose sessions it answers stops,
+    /// while the runtime those threads work on is still running. Later
+    /// requests are refused as unavailable. Nothing by default.
+    fn shutdown(&self) {}
+
     /// Where `message`, sent to this host by `caller`, goes instead of this
     /// app action server: to the device of `workspace_id` that holds what it addresses, or
     /// to the caller as this app action server's own answer. Some actions exist only on a

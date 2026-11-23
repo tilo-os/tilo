@@ -1,6 +1,6 @@
 # llama.cpp's server for GGUF models, the CPU and Vulkan local model runtimes
 # (tools/release/local-model-runtime.sh builds it;
-# crates/agent/local-model-service/RELEASE.md, "Signed runtimes").
+# crates/engines/local-model-service/RELEASE.md, "Signed runtimes").
 #
 # Every package comes from Fedora 44's release repository alone, installed into
 # empty roots. That repository is frozen at the release, so with the base pinned

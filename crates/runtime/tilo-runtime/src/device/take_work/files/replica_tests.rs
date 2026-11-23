@@ -223,8 +223,23 @@ fn content(seed: u32, length: usize) -> Vec<u8> {
         .collect()
 }
 
+/// A joined workspace's folder is a FUSE mount; the real-fuse check requires it.
+macro_rules! require_fuse {
+    () => {
+        tilo_test_env::require_capability!(
+            Fuse,
+            tilo_fs::fuse_session::mountable(
+                Path::new("/dev/fuse"),
+                std::env::var_os("PATH").as_deref()
+            ),
+            "a joined workspace's folder is a FUSE mount"
+        );
+    };
+}
+
 #[test]
 fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_the_vm_host() {
+    require_fuse!();
     // The person's device: a runtime of its own that joins the workspace and
     // holds its files until the test stops it.
     let _ = tracing_subscriber::fmt()
@@ -246,8 +261,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
 
     // The VM host's member: the runtime that takes the workspace's work.
     let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
-    let (_, member_device) =
-        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
+    let (_, dev) = tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
 
     // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[41; 32]);
@@ -273,7 +287,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
         &server,
         &workspace,
         &shell,
-        Some(member_device.user_public_key),
+        Some(dev.user_public_key),
         1,
     ));
     let joined = join(&member, &issued);
@@ -352,6 +366,7 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
 /// hears the server's access request on that link.
 #[test]
 fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
+    require_fuse!();
     // The device that joins last: a runtime of its own that joins the
     // workspace and holds its files until the test stops it.
     let _ = tracing_subscriber::fmt()
@@ -480,6 +495,7 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
 /// them once more.
 #[test]
 fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
+    require_fuse!();
     let _ = tracing_subscriber::fmt()
         .with_env_filter("warn,tilo_fs=debug,tilo_runtime=debug,tilo_server=debug")
         .with_writer(std::io::stderr)
@@ -681,6 +697,7 @@ fn wait_for_clone(
 /// its changes are never refused as if the workspace were no longer held.
 #[test]
 fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole() {
+    require_fuse!();
     if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {
         let profile = isolated_root(CLONE_TEST).unwrap();
         let device = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
@@ -948,6 +965,7 @@ fn wait_until_kept(
 /// writer of each.
 #[test]
 fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
+    require_fuse!();
     if let Some(invitation) = std::env::var_os(MEMBER_INVITATION) {
         serve_as_member(&invitation);
     }
@@ -1084,6 +1102,7 @@ fn wait_for_kept_file(daemon: &Daemon, size: usize, what: &str) {
 /// it comes back though the folder and everything the folder's sync kept are gone.
 #[test]
 fn a_computer_with_no_login_keeps_its_files_in_the_workspace_founded_on_it() {
+    require_fuse!();
     let Some(profile) = isolated_root(FOUNDED_TEST) else {
         return;
     };

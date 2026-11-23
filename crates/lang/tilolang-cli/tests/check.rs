@@ -189,6 +189,66 @@ fn compile_against_apps(dir: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// The standard library is read from its source like any package: run in a checkout, the tool
+/// compiles against the checkout's, so an edit of it is what the next command sees, without
+/// rebuilding the tool. Run outside one, it has the packaged copy.
+#[test]
+fn an_edit_of_the_standard_library_in_a_checkout_is_what_the_tool_compiles_against() {
+    let scratch = tempfile::tempdir().unwrap();
+    let tree = scratch.path().join("tree");
+    let lib = tree.join(tilolang::stdlib::IN_TREE);
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("app.ids"), tilolang::stdlib::IDS).unwrap();
+    std::fs::write(
+        lib.join("app.tl"),
+        format!(
+            "{}\n/// A number standing as the title of a page.\ntemplate view big_number(n: Int) {{\n    ui.Text(\"{{n}}\", role: .title, numeric: true)\n}}\n",
+            tilolang::stdlib::SOURCE
+        ),
+    )
+    .unwrap();
+    let dir = tree.join("apps/tl/counter");
+    copy_package(&packages().join("counter"), &dir);
+    let source = dir.join("app.tl");
+    let text = std::fs::read_to_string(&source).unwrap();
+    let shown = "ui.Text(\"{c.value}\", role: .title, numeric: true)";
+    assert!(text.contains(shown), "the counter shows its value:\n{text}");
+    std::fs::write(&source, text.replace(shown, "std.big_number(c.value)")).unwrap();
+
+    let run = |cwd: &Path| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+            .arg("check")
+            .arg(&dir)
+            .current_dir(cwd)
+            .output_locked()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let (passed, said) = run(&dir);
+    assert!(passed, "the checkout's library has `big_number`:\n{said}");
+    let (passed, said) = run(scratch.path());
+    assert!(!passed, "the packaged library has no `big_number`");
+    assert!(said.contains("big_number"), "{said}");
+
+    std::fs::write(
+        lib.join("app.tl"),
+        "app tilo.std \"Standard library\"\n\nview broken(\n",
+    )
+    .unwrap();
+    let (passed, said) = run(&tree);
+    assert!(
+        !passed,
+        "a library that does not parse is no library to compile against"
+    );
+    assert!(
+        said.contains("does not compile") && said.contains("app.tl"),
+        "it says the checkout's library is what failed, and where: {said}"
+    );
+}
+
 /// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what it
 /// said.
 fn check(dir: &Path, write: bool) -> (bool, String) {

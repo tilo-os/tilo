@@ -32,6 +32,7 @@ crate::effects::effect_family!(PowerEffect => answer);
 
 crate::area::pane_area! {
     PowerArea;
+    crate::area::serves!(Power);
     fn warm(&self) {
         PowerArea::warm(self);
     }

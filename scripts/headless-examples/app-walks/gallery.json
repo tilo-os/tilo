@@ -1,0 +1,50 @@
+{
+  "app": "gallery",
+  "said": "Gallery",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.lang.gallery",
+    "package": "gallery"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Gallery on its first page",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "must": [
+            "Basics",
+            "Controls",
+            "Release board"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "open-after-quit",
+      "said": "Quit Gallery and open it again",
+      "ops": [
+        {
+          "restart": "app"
+        },
+        {
+          "must": [
+            "Basics",
+            "Controls",
+            "Release board"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -11,14 +11,14 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    reason = "layout weights, counts and sizes are small values; see crates/platform/tilolang-tilo"
+    reason = "layout weights, counts and sizes are small values; see crates/lang/tilolang-tilo"
 )]
 
 pub mod app;
 #[cfg(unix)]
 pub mod hosted;
 pub mod i18n;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 pub mod page;
 
 pub mod resource;

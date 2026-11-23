@@ -131,6 +131,257 @@ fn a_task_ticked_on_the_page_is_done_in_the_next_patch() {
 }
 
 #[test]
+fn a_pages_copy_link_names_the_resource_again_under_the_workspaces_page() {
+    const SITE: &str = "https://tilo.so/";
+    const ORIGIN: &str = "https://ada.tilo.cloud";
+    const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+    const ROOT: &str = "tl:so.tilo.notes:root-v7cub7aw";
+    let files = files_json(&app_files());
+    let options = serde_json::json!({
+        "linkHome": {
+            "origin": ORIGIN,
+            "workspace": WORKSPACE,
+            "web_entry": SITE,
+        }
+    })
+    .to_string();
+    let answer = open(&files, "apps/tl/notes", &options);
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let page = handle(&answer);
+    let answer: Json =
+        serde_json::from_str(&tilolang_web::app_share(page, ROOT)).expect("JSON answer");
+    assert_eq!(answer["ok"], true, "{answer}");
+    let url = answer["url"].as_str().expect("a link");
+    // The link names the workspace's page, the notebook's app, its record and the resource
+    // again, as a browser opens one.
+    assert!(
+        url.starts_with("https://tilo.so/app/#/@ada.tilo.cloud/w/"),
+        "the workspace's page, one app full tab, the host it opens on: {url}"
+    );
+    assert!(url.contains(WORKSPACE), "the workspace it names: {url}");
+    assert!(
+        url.contains("/so.tilo.notes/-/tl.so.tilo.notes.Notebook/tl:so.tilo.notes:root-v7cub7aw"),
+        "the notebook it names: {url}"
+    );
+    // A page no workspace stands behind has no page to mint a link under: the same system words
+    // a native window hears.
+    let answer = open(&files, "apps/tl/notes", "");
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let plain = handle(&answer);
+    let answer: Json =
+        serde_json::from_str(&tilolang_web::app_share(plain, ROOT)).expect("JSON answer");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(
+        answer["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("serves no web page")),
+        "the system's own words: {answer}"
+    );
+}
+
+#[test]
+fn the_shells_canvas_stands_its_places_where_the_layout_puts_them() {
+    let files = files_json(&app_files());
+    let answer = open(
+        &files,
+        "apps/tl/shell",
+        r#"{"scenario": "a canvas of clusters", "width": 1280, "height": 800}"#,
+    );
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let body = answer["body"].as_str().expect("a body");
+    eprintln!("shell gaps: {}", answer["gaps"]);
+    // The canvas scrolls to its places, and each stands at its point on it rather than in a
+    // column under the bar.
+    assert!(
+        body.contains("data-w=\"Map\"") && body.contains("position:relative;overflow:auto;"),
+        "the canvas is a box that scrolls: {body}"
+    );
+    let placed = body.matches("position:absolute;left:").count();
+    assert!(
+        placed >= 7,
+        "six notes and a terminal each stand at their point on the canvas, {placed} do: {body}"
+    );
+    // The terminal has no resource the shell can draw: its window's well names its place,
+    // for the page's host to fill.
+    assert!(body.contains("data-well=\"c-terminal\""), "{body}");
+    tilolang_web::app_close(handle(&answer));
+}
+
+/// A workspace's layout with two windows on its canvas, the second at `second_at`.
+fn layout(second_at: (i64, i64)) -> tilo_desktop_model::reading::LayoutReading {
+    use tilo_desktop_model::reading::{
+        LayoutPlaceReading, LayoutReading, LayoutRowReading, LayoutStripReading,
+        LayoutWorkspaceReading,
+    };
+    let strip = |key: &str, (x, y): (i64, i64)| LayoutStripReading {
+        key: key.to_owned(),
+        workspace: "w".to_owned(),
+        row: "r".to_owned(),
+        width: 667,
+        placed: true,
+        canvas_x: x,
+        canvas_y: y,
+        canvas_width: 400,
+        canvas_height: 300,
+        ..LayoutStripReading::default()
+    };
+    let place = |key: &str, strip: &str, app: &str, name: &str| LayoutPlaceReading {
+        key: key.to_owned(),
+        strip: strip.to_owned(),
+        shows: app.to_owned(),
+        title: name.to_owned(),
+        name: name.to_owned(),
+        ..LayoutPlaceReading::default()
+    };
+    LayoutReading {
+        person: "Ada".to_owned(),
+        workspaces: vec![LayoutWorkspaceReading {
+            key: "w".to_owned(),
+            name: "Home".to_owned(),
+            current: true,
+        }],
+        rows: vec![LayoutRowReading {
+            key: "r".to_owned(),
+            workspace: "w".to_owned(),
+            name: "Main".to_owned(),
+            current: true,
+            ..LayoutRowReading::default()
+        }],
+        strips: vec![strip("s1", (40, 40)), strip("s2", second_at)],
+        places: vec![
+            place("t1", "s1", "so.tilo.notes", "Groceries — Notes"),
+            place("t2", "s2", "so.tilo.tasks", "Tasks"),
+        ],
+        ..LayoutReading::default()
+    }
+}
+
+#[test]
+fn a_hosted_canvas_follows_the_layout_its_host_reads() {
+    let packages = std::rc::Rc::new(tilolang_web::Packages::new(
+        std::rc::Rc::new(tilolang_tilo::shell::compile().expect("the shell compiles")),
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages"),
+    ));
+    let origin = std::rc::Rc::new(std::cell::RefCell::new(
+        tilolang_tilo::shell::LayoutOrigin::default(),
+    ));
+    origin.borrow_mut().read(layout((600, 120)));
+    let mut page = tilolang_web::window::AppPage::hosted(
+        tilolang_tilo::shell::SHELL_APP,
+        &packages,
+        tilolang_web::window::Hosting {
+            root: "layout",
+            view: "frames",
+            origin: std::rc::Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin,
+            me: ("ada", "Ada"),
+            viewport: (1280, 800),
+            dark: false,
+            link_home: None,
+        },
+    )
+    .expect("the canvas opens");
+    page.fill_wells(
+        [(
+            "t2".to_owned(),
+            "<a href=\"/w/ws/tasks\">Tasks</a>".to_owned(),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let body = page.render();
+    assert_eq!(
+        body.matches("data-w=\"WindowFrame\"").count(),
+        2,
+        "both windows stand on the canvas: {body}"
+    );
+    assert!(
+        body.matches("position:absolute;left:").count() >= 2,
+        "each at its point: {body}"
+    );
+    assert!(
+        body.contains("data-well=\"t2\"><a href=\"/w/ws/tasks\">Tasks</a>"),
+        "the host's link stands where the window shows: {body}"
+    );
+    // Another member moved the second window: the page's next pass moves it, and only it.
+    origin.borrow_mut().read(layout((700, 160)));
+    let patches = page.follow();
+    assert!(!patches.is_empty(), "the move reaches the page");
+    assert!(
+        patches
+            .iter()
+            .all(|patch| !patch.html.contains("Groceries")),
+        "the window that stayed is not sent again: {patches:?}"
+    );
+}
+
+/// The number (`data-p`) of the button named `label` inside the element holding `inside`.
+fn button_in(body: &str, inside: &str, label: &str) -> Option<u32> {
+    let from = body.find(inside)?;
+    let rest = body.get(from..)?;
+    let at = rest.find(&format!("aria-label=\"{label}\""))?;
+    let open = rest.get(rest.get(..at)?.rfind("<button")?..)?;
+    open.split('>')
+        .next()?
+        .split("data-p=\"")
+        .nth(1)?
+        .split('"')
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[test]
+fn a_hosted_windows_close_asks_its_host_to_close_the_place() {
+    let packages = std::rc::Rc::new(tilolang_web::Packages::new(
+        std::rc::Rc::new(tilolang_tilo::shell::compile().expect("the shell compiles")),
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages"),
+    ));
+    let origin = std::rc::Rc::new(std::cell::RefCell::new(
+        tilolang_tilo::shell::LayoutOrigin::default(),
+    ));
+    origin.borrow_mut().read(layout((600, 120)));
+    let mut page = tilolang_web::window::AppPage::hosted(
+        tilolang_tilo::shell::SHELL_APP,
+        &packages,
+        tilolang_web::window::Hosting {
+            root: "layout",
+            view: "strips",
+            origin: std::rc::Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin,
+            me: ("ada", "Ada"),
+            viewport: (1280, 800),
+            dark: false,
+            link_home: None,
+        },
+    )
+    .expect("the strips open");
+    let body = page.render();
+    assert_eq!(
+        body.matches("data-w=\"WindowFrame\"").count(),
+        2,
+        "each strip is a window: {body}"
+    );
+    let close = button_in(&body, "Tasks", "Close").unwrap_or_else(|| panic!("{body}"));
+    page.act(close, None, &ui::a11y::Action::Activate)
+        .expect("the press is acted on");
+    let asked = page.take_asked();
+    let closes: Vec<String> = asked
+        .iter()
+        .filter_map(|invocation| match invocation {
+            tilolang_tilo::runtime::delegate::Invocation::Action {
+                app, name, target, ..
+            } if app.as_str() == tilolang_tilo::platform_apps::SESSION_APP && name == "close" => {
+                target
+                    .as_ref()
+                    .map(tilolang_tilo::runtime::ResourceRef::id_string)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closes, ["shell:place:t2"], "{asked:?}");
+    assert!(page.take_asked().is_empty(), "each ask is handed over once");
+}
+
+#[test]
 fn an_edit_that_breaks_a_file_is_reported_in_that_file() {
     let mut files = app_files();
     let scenarios = "apps/tl/tasks/scenarios.tl";
@@ -182,4 +433,47 @@ fn the_playground_runs_one_source_for_two_people() {
     assert_eq!(answer["ok"], true, "{answer}");
     assert!(answer["alice"]["tree"]["kind"].is_string());
     assert_eq!(answer["online"], true);
+}
+
+/// A page keeps a file an action makes of what it holds: a scenario's `File.of_text` stages,
+/// and the view that shows it stands in the page.
+#[test]
+fn the_page_keeps_a_file_an_action_makes() {
+    let files = serde_json::json!({
+        "apps/tl/slip/app.tl": "app so.tilo.slip \"Slip\" (icon: .file, category: .utility)\n\
+             \n\
+             type Slip {\n\
+             subject: Text\n\
+             paper: File\n\
+             }\n\
+             \n\
+             root Slip\n\
+             \n\
+             default view slip for Slip\n\
+             \n\
+             view slip(s: Slip) {\n\
+             std.page(s) {\n\
+             ui.Text(s.paper.name, role: .body)\n\
+             }\n\
+             }\n\
+             \n\
+             scenario \"a slip with its paper\" {\n\
+             let s = root Slip\n\
+             s.subject = \"The lease\"\n\
+             s.paper = File.of_text(\"Lease.md\", \"# Tenancy agreement\")\n\
+             }\n",
+    })
+    .to_string();
+    let answer = open(
+        &files,
+        "apps/tl/slip",
+        r#"{"scenario": "a slip with its paper"}"#,
+    );
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let body = answer["body"].as_str().expect("a body");
+    assert!(
+        body.contains("Lease.md"),
+        "the file a scenario made stands in the page: {body}"
+    );
+    tilolang_web::app_close(handle(&answer));
 }

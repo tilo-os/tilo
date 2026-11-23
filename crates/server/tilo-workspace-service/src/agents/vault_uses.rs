@@ -11,14 +11,15 @@
 //! takes them.
 //!
 //! No device of the person's is on, so the first use of an item somewhere
-//! asks them. The question is a step of the turn's reply ([`super::asks`]),
-//! and the tool call ends at once: nothing waits on a thread. When the person
-//! answers, writing to the agent again where it asked, the server reads the
-//! answer from the record of asks (`settle_uses`, at every look at what waits)
-//! and carries out what it kept for that question itself: `allow` once,
-//! `always` with the item's leave written first, `no` not at all. It claims the
-//! ask and closes the answer before it carries anything out, so an answer is
-//! carried out at most once, and then tells the agent how it ended.
+//! asks them. The question is Chat's own, of the kind `action`, put in the
+//! conversation the agent works in as the turn's caller, and the tool call
+//! ends at once: nothing waits on a thread. When the person answers, on any
+//! device of theirs, the server reads the answer from the workspace's document
+//! (`settle_asks`, at every look at what waits) and carries out what it kept
+//! for that question itself: `allow` once, `always` with the item's leave
+//! written first, `deny` not at all. It says `started` before it carries
+//! anything out, so an answer is carried out at most once, and then how it
+//! ended.
 //!
 //! A field of a web page is the one use whose secret leaves this server: the page is in the
 //! workspace's Browser window, and only its engine writes into it. The turn names the field and
@@ -31,39 +32,47 @@
 //! ([`person_vault::ASK`]), the one way an agent comes by one: the tool call ends at once, and
 //! this server asks the person on their own devices, in the system's protected password field
 //! and in the system's words ([`person_vault::AskForItem::words`]). What they type goes into
-//! their vault, and the agent is asked once in their name, where the turn that asked was asked,
-//! told the item's reference or that they declined ([`super::answers`]). The ask is held by this process alone: a server that stops
+//! their vault, and the agent is woken once in its conversation with them, told the item's
+//! reference or that they declined. The ask is held by this process alone: a server that stops
 //! while its person is asked asks nobody again, and the agent asks again when it is told to.
 //!
 //! Nothing here keeps a secret, and nothing here shows one. The arguments name the item by
-//! its reference, the question says only why it is wanted, and the entry answers what the person would
+//! its reference, the question shows it withheld, and the entry answers what the person would
 //! be answered: the account, the provider. A text released for a page passes through here
 //! once, on its way to be sealed to the window that fills it, in a type that prints nothing.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Map, Value, json};
+use tilo_actions::policy::MemberId;
 use tilo_actions::remote::person_vault::{FillField, FillPage};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, RemoteActionTarget, person_vault,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_resource::Resource as _;
 use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
 
-use super::asks::{Answered, AskedIn, Putting, Stands, Waits};
+use super::asks::{Answered, ChatAskKind, FoundQuestion, asked_in};
 use super::calendar_connect::{PutAsk, Typed, ask_for_password};
 use super::turn_provider::{Ending, Rows};
 use super::windows::{Release, Releasing, TurnFill};
-use super::{Reply, ServerAgents, Turn, TurnProvider, WorkspaceId};
+use super::{
+    Ask, CHAT, Reply, ServerAgents, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
+    invoke_named,
+};
+use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
 
 /// What an agent is told when its person is asked first: nothing ran, and
 /// it neither waits nor asks again.
-const ASKED: &str = "Your person is asked in your reply whether you may use this vault item \
+const ASKED: &str = "Your person is asked in the conversation whether you may use this vault item \
      here. Nothing was used yet. It is used when they allow it there: tell them it waits for their \
      answer, and do not make this call again.";
 
@@ -75,7 +84,7 @@ const ASKED_FIRST: &str = "asked_person_first";
 
 /// What an agent is told when its person is asked first about a web call:
 /// nothing was sent, and the same call goes through once they allowed it.
-const CALL_ASKED: &str = "Your person is asked in your reply whether you may make this call \
+const CALL_ASKED: &str = "Your person is asked in the conversation whether you may make this call \
      with the vault item. Nothing was sent yet. Tell them it waits for their answer. Once they \
      allowed it, make the same call again with the same arguments: it is sent once.";
 
@@ -89,14 +98,11 @@ fn asked_words(target: &RemoteActionTarget) -> &'static str {
     }
 }
 
-/// What the agent is told of an answer that let one use through and carried nothing out by
-/// itself: it is done when the agent asks for the same again.
-fn allowed_once(done: &Value) -> Option<String> {
-    (done.get("allowed").and_then(Value::as_str) == Some("once")).then(|| {
-        "Nothing was done yet: make the same call again, with the same arguments, and it goes \
-         through once."
-            .to_owned()
-    })
+/// What the question says of an answer that let one use through and carried
+/// nothing out by itself: `agent` does it when it asks for the same again.
+fn allowed_once(done: &Value, agent: &str) -> Option<String> {
+    (done.get("allowed").and_then(Value::as_str) == Some("once"))
+        .then(|| format!("Allowed once. It is done when {agent} next asks for the same."))
 }
 
 /// What the question says when the agent gave no reason of its own.
@@ -104,7 +110,7 @@ const NO_REASON: &str = "May I use this item from your vault here?";
 
 /// What an agent is told when its person is asked first about a field of a page: nothing was
 /// filled, and their allow fills nothing by itself.
-const ASKED_PAGE: &str = "Your person is asked in your reply whether you may fill this \
+const ASKED_PAGE: &str = "Your person is asked in the conversation whether you may fill this \
      vault item into this site's page. Nothing was filled yet, and their answer fills nothing by \
      itself: tell them it waits for their answer, and make this call again once they allowed it.";
 
@@ -118,8 +124,12 @@ pub(super) struct TurnUses {
     agent: Agent,
     /// The person the turn acts for, by their person id.
     person: String,
+    /// The ask the turn began with: its conversation is where a question goes.
+    ask: Ask,
     /// The uses this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
+    /// The workspace's own actions, through which the question is put.
+    service: WorkspaceActionProvider,
 }
 
 impl TurnUses {
@@ -149,7 +159,9 @@ impl TurnUses {
             workspace_id,
             agent: turn.agent.clone(),
             person: turn.person.clone(),
+            ask: turn.ask.clone(),
             offered,
+            service: reply.provider.clone(),
         })
     }
 
@@ -302,29 +314,66 @@ impl TurnUses {
         }
     }
 
-    /// Put the question about `open` to the person, in the reply of the turn `caller` acts in.
+    /// Put the question about `open` to the person, in the conversation
+    /// the turn works in, as the turn's caller.
     async fn put(&self, caller: &Caller, open: &OpenAsk) -> Result<(), String> {
+        let conversation = self.conversation().await?;
         let text = if open.reason.is_empty() {
             NO_REASON
         } else {
             open.reason.as_str()
         };
-        let mut person = [0; 32];
-        hex::decode_to_slice(&self.person, &mut person)
-            .map_err(|_| "the turn names no person".to_owned())?;
-        let asked_in = AskedIn::of(caller);
-        let always = open.takes_always();
-        self.agents
-            .put_question(Putting {
-                id: &open.ask,
-                workspace: &self.workspace,
-                agent: &self.agent,
-                person,
-                asked_in: &asked_in,
-                shown: format!("{text} {}", super::asks::how(always)),
-                told: Some(told_of(text, &open.detail, always)),
-            })
-            .await
+        let mut arguments = Map::new();
+        arguments.insert("channel".into(), json!(conversation));
+        arguments.insert("text".into(), json!(text));
+        arguments.insert("kind".into(), json!(chat::question::ACTION));
+        // "Always" is offered only for a use it may stand for.
+        let mut answers = vec![json!({"id": chat::question::ALLOW})];
+        if open.takes_always() {
+            answers.push(json!({"id": chat::question::ALWAYS}));
+        }
+        answers.push(json!({"id": chat::question::DENY}));
+        arguments.insert("answers".into(), Value::Array(answers));
+        arguments.insert("detail".into(), open.detail.clone());
+        let route = DocumentRoute {
+            app_id: CHAT.to_owned(),
+            cluster_id: self.workspace.clone(),
+            document: String::new(),
+        };
+        invoke_named(
+            &self.service,
+            caller,
+            &route,
+            &collab_types::document::chain_resource_id(&chat::parts::chain()),
+            "ask",
+            arguments,
+        )
+        .await
+        .map(drop)
+    }
+
+    /// The conversation the question goes to: the one the turn's ask was
+    /// written in, or for an issue the person's own conversation with the
+    /// agent.
+    async fn conversation(&self) -> Result<String, String> {
+        match &self.ask {
+            Ask::Message { part, message, .. } => {
+                let held = self
+                    .agents
+                    .read::<chat::parts::ChatMessages>(&self.workspace, CHAT, part)
+                    .await?
+                    .ok_or("the conversation is not held here")?;
+                held.messages
+                    .get(&tilo_resource::Id::from_raw(message.clone()))
+                    .map(|asked| asked.channel.to_string())
+                    .ok_or_else(|| "the message that asked is gone".to_owned())
+            }
+            Ask::Issue { .. } | Ask::Triggered(_) => Ok(chat::Chat::direct_id([
+                MemberId::person(self.person.clone()),
+                MemberId::agent(self.agent.id.0.clone()),
+            ])
+            .to_string()),
+        }
     }
 }
 
@@ -519,11 +568,6 @@ impl ServerAgents {
     }
 }
 
-/// Where and for which turn `caller` asks, as an ask keeps it.
-fn asked_in(caller: &Caller) -> Value {
-    AskedIn::kept(caller)
-}
-
 /// The failure of a use that was not made because its person is asked:
 /// `words` tell the agent so.
 fn asked(words: String) -> ActionFailure {
@@ -535,145 +579,196 @@ fn asked(words: String) -> ActionFailure {
     }
 }
 
-impl ServerAgents {
-    /// Carry out what the people of `workspace` answered about the uses its agents asked for:
-    /// each answer once, its ask claimed and its answer closed before it is carried out. Costs
-    /// one look at what this server keeps when nothing waits.
-    pub(super) async fn settle_uses(&self, workspace: &str) {
-        let open: Vec<OpenAsk> = self
-            .workspaces
-            .open_use_asks(workspace)
-            .into_iter()
-            // One whose answer is being carried out now is left to that.
-            .filter(|ask| !ask.started || ask.interrupted)
-            .collect();
-        if open.is_empty() {
-            return;
-        }
-        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
-            return;
-        };
-        let waits = open
-            .iter()
-            .map(|ask| Waits {
-                id: ask.ask.clone(),
-                agent: ask.agent.clone(),
-                person: ask.person.clone(),
-                asked_in: AskedIn::read(&ask.asked_in),
-                asked_at_ms: ask.asked_at_ns / 1_000_000,
-            })
-            .collect();
-        let stood = match self.answers(workspace, waits).await {
-            Ok(stood) => stood,
-            Err(error) => {
-                tracing::debug!(%workspace, %error, "the answers about vault uses were not read");
-                return;
-            }
-        };
-        let agents = self.agents(workspace).await.unwrap_or_default();
-        for (wait, stands) in stood {
-            let Some(ask) = open.iter().find(|ask| ask.ask == wait.id).cloned() else {
-                continue;
-            };
-            if ask.interrupted {
-                // This server stopped while it carried the answer out: it is not carried out a
-                // second time, and its agent is told.
-                self.workspaces.use_interrupted(&ask);
-                self.untell(workspace, &ask.person, &ask.ask);
-                let about = match &stands {
-                    Stands::Answered { by, .. } => by.clone(),
-                    _ => wait.asked_in.cause.clone(),
-                };
-                let told = super::answers::carried_out(
-                    (&ask.ask, &about),
-                    (&ask.person, &ask.agent),
-                    &used_words(&ask),
-                    ("it was being carried out", super::asks::INTERRUPTED),
-                );
-                if let Err(error) = self.wake(workspace, &told).await {
-                    tracing::warn!(%workspace, %error, "an agent was not told its use was interrupted");
-                }
-                continue;
-            }
-            let Stands::Answered {
-                answer,
-                by,
-                as_asked,
-            } = stands
-            else {
-                // It waits, or its question never reached its reply: nothing to answer.
-                continue;
-            };
-            let Some(agent) = agents.get(&ask.agent) else {
-                // The agent no longer works here: nobody acts on the answer.
-                self.workspaces.use_not_asked(&ask);
-                self.untell(workspace, &ask.person, &ask.ask);
-                continue;
-            };
-            // A yes to a question that does not stand as this server put it is carried out as a
-            // no, so nothing is used and nothing stands.
-            let changed = answer != Answered::No && !as_asked;
-            let answer = match answer {
-                _ if changed => UseAnswer::No,
-                Answered::Once => UseAnswer::Once,
-                Answered::Always => UseAnswer::Always,
-                Answered::No => UseAnswer::No,
-            };
-            // Claimed and closed before anything is done. Claimed by another look already, it
-            // is that one's.
-            let Ok(claimed) = self.workspaces.claim_use(&ask.ask) else {
-                continue;
-            };
-            let said = match answer {
-                _ if changed => super::asks::NOT_AS_ASKED,
-                UseAnswer::Once => "Allowed this once.",
-                UseAnswer::Always => "Allowed from now on.",
-                UseAnswer::No => "Not allowed, so I won't use it.",
-            };
-            if let Err(error) = self.close_answer(workspace, agent, &by, said).await {
-                // The answer was taken meanwhile: nothing is carried out, and the ask is spent.
-                tracing::warn!(%workspace, %error, "an answer about a vault use was not closed");
-                self.workspaces.use_not_asked(&claimed);
-                continue;
-            }
-            let (this, agent) = (self.clone(), agent.clone());
-            let workspace = workspace.to_owned();
-            tokio::spawn(async move {
-                this.carry_out_use(
-                    (&workspace, workspace_id),
-                    &agent,
-                    (claimed, &by),
-                    (answer, changed),
-                )
-                .await;
-            });
-        }
+/// Say on the question `message` in the part `document` what came of its
+/// answer.
+pub(super) async fn settle(
+    (service, asker): (&WorkspaceActionProvider, &Caller),
+    workspace: &str,
+    (document, message): (&str, &str),
+    outcome: &str,
+    told: Option<String>,
+) -> Result<(), String> {
+    let route = DocumentRoute {
+        app_id: CHAT.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: document.to_owned(),
+    };
+    let mut arguments = Map::new();
+    arguments.insert("message".into(), json!(message));
+    arguments.insert("outcome".into(), json!(outcome));
+    if let Some(told) = told {
+        arguments.insert("detail".into(), json!(told));
+    }
+    let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
+    // The answer was read in the conversation as the workspace's store holds it: the settle is
+    // made on that, not on what the replica it writes through held before its person answered.
+    service.landed(route.clone());
+    invoke_named(
+        service,
+        asker,
+        &route,
+        &resource,
+        "settle-question",
+        arguments,
+    )
+    .await
+    .map(drop)
+}
+
+/// An answered question about a use, and who asked it.
+struct AnsweredAsk {
+    ask: OpenAsk,
+    /// The part of the chat's messages that holds the question.
+    document: String,
+    message: String,
+    answer: UseAnswer,
+    /// The question's detail as the workspace's document holds it: what its
+    /// person was shown when they answered.
+    shown: Value,
+    /// Whether their yes was given to a question that no longer stands as
+    /// this server asked it: it is carried out as a no and ends as not done.
+    changed: bool,
+}
+
+impl ChatAskKind for OpenAsk {
+    // Secret-use asks never expire for not yet appearing in Chat: a person's
+    // later "allow" still carries out what was kept, and only an interrupted
+    // ask is forgotten when its question is absent.
+    const UNASKED_FOR: Option<Duration> = None;
+
+    fn agent(&self) -> &str {
+        &self.agent
     }
 
-    /// Let the entry carry out what it kept for `claimed`, answered `answer` by the ask `by`,
-    /// and tell the agent that asked how it ended.
+    fn asked_in(&self) -> &Value {
+        &self.asked_in
+    }
+
+    fn asked_at_ms(&self) -> u64 {
+        self.asked_at_ns / 1_000_000
+    }
+
+    fn expected_detail(&self) -> Value {
+        self.detail.clone()
+    }
+
+    fn takes_always(&self) -> bool {
+        // `TurnUses::put` only offers `ALWAYS` when `OpenAsk::takes_always()` is
+        // true (not for a web call), so an unoffered `ALWAYS` answer in Chat is
+        // refused as `No` and carries nothing out.
+        Self::takes_always(self)
+    }
+
+    fn forget(&self, workspaces: &Workspaces) {
+        workspaces.use_not_asked(self);
+    }
+
+    fn carry_out(
+        self,
+        agents: ServerAgents,
+        (workspace, workspace_id): (String, WorkspaceId),
+        agent: Agent,
+        found: FoundQuestion,
+        answer: Answered,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let answer = match answer {
+            Answered::Once => UseAnswer::Once,
+            Answered::Always => UseAnswer::Always,
+            Answered::No => UseAnswer::No,
+        };
+        // A yes to a question that was edited, or that stands beside another
+        // carrying the same ask, was not given to what this server asked: it
+        // is carried out as a no, so nothing is used and nothing stands.
+        let changed = answer != UseAnswer::No && (found.edited || !found.alone);
+        let answer = if changed { UseAnswer::No } else { answer };
+        let carrying = AnsweredAsk {
+            ask: self,
+            document: found.document,
+            message: found.message,
+            answer,
+            shown: found.shown,
+            changed,
+        };
+        Box::pin(async move {
+            agents
+                .carry_out_use((&workspace, workspace_id), &agent, carrying)
+                .await;
+        })
+    }
+}
+
+impl ServerAgents {
+    /// Every part of the chat's messages `workspace` holds, by its document.
+    pub(super) async fn chat_parts(
+        &self,
+        workspace: &str,
+    ) -> Vec<(String, chat::parts::ChatMessages)> {
+        let routes = self
+            .workspaces
+            .document_routes(workspace)
+            .await
+            .unwrap_or_default();
+        let mut parts = Vec::new();
+        for (app, document) in routes {
+            if app != CHAT
+                || collab_types::document::DocumentId::parse(&document)
+                    .is_none_or(|part| chat::parts::part_index(&part).is_none())
+            {
+                continue;
+            }
+            if let Ok(Some(part)) = self
+                .read::<chat::parts::ChatMessages>(workspace, CHAT, &document)
+                .await
+            {
+                parts.push((document, part));
+            }
+        }
+        parts
+    }
+
+    /// Carry out `answered`: say it started, let the entry carry out what it kept
+    /// for the ask, and say how it ended.
     async fn carry_out_use(
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
         agent: &Agent,
-        (claimed, by): (OpenAsk, &str),
-        (answer, changed): (UseAnswer, bool),
+        answered: AnsweredAsk,
     ) {
-        self.untell(workspace, &claimed.person, &claimed.ask);
-        let mut person = [0; 32];
-        let asker = match tilo_failure::ignored!(
-            "a person id that is not a user root names no one this server admits: the ask is forgotten below",
-            hex::decode_to_slice(&claimed.person, &mut person)
-        ) {
-            Ok(()) => self.agent_caller(workspace_id, agent, person).await.ok(),
-            Err(_) => None,
-        };
-        let Some(asker) = asker else {
+        let AnsweredAsk {
+            ask,
+            document,
+            message,
+            answer,
+            shown,
+            changed,
+        } = answered;
+        let Some((_, turn, outside)) = self
+            .asker_of(workspace_id, &ask.person, &ask.asked_in, agent)
+            .await
+        else {
             // Its person is admitted here on no device any more.
-            self.workspaces.use_not_asked(&claimed);
+            self.workspaces.use_not_asked(&ask);
             return;
         };
-        let turn = AskedIn::read(&claimed.asked_in).turn_of(asker, agent);
+        let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
+        let said = (&service, &outside);
+        let at = (document.as_str(), message.as_str());
+        // Claimed before anything is said or done: saying that it started
+        // wakes the next look, which finds the ask taken and leaves it to
+        // this one. Claimed by another look already, it is that one's.
+        let Ok(claimed) = self.workspaces.claim_use(&ask.ask) else {
+            return;
+        };
+        if answer != UseAnswer::No
+            && let Err(error) = settle(said, workspace, at, chat::question::STARTED, None).await
+        {
+            // Deliberate fail-closed refusal for vault secret uses: if saying it
+            // started fails (e.g. the question was taken back meanwhile), nothing is
+            // carried out and the ask is spent rather than released for retry.
+            tracing::warn!(%workspace, %error, "a use's question did not take that it started");
+            self.workspaces.use_not_asked(&claimed);
+            return;
+        }
         let narrowed = agent.bound_rules();
         let hosted = HostedTurn {
             workspace: workspace_id,
@@ -682,65 +777,26 @@ impl ServerAgents {
         };
         let carried = self
             .workspaces
-            .carry_out_use(&hosted, &claimed, &claimed.detail, answer)
+            .carry_out_use(&hosted, &claimed, &shown, answer)
             .await;
-        let came = match &carried {
-            _ if changed => format!("It was not done: {}", super::asks::NOT_AS_ASKED),
-            // An allow that carried nothing out by itself lets the agent's next same call
-            // through.
-            Ok(Some(done)) => allowed_once(done).unwrap_or_else(|| "It was used.".to_owned()),
-            Ok(None) => "Nothing was used.".to_owned(),
-            Err(error) => format!("It was not done: {error}"),
-        };
-        let said = match answer {
-            UseAnswer::Once => "allowed, this once",
-            UseAnswer::Always => "allowed, and from now on without asking",
-            UseAnswer::No => "not allowed",
-        };
-        let told = super::answers::carried_out(
-            (&claimed.ask, by),
-            (&claimed.person, &claimed.agent),
-            &used_words(&claimed),
-            (said, &came),
-        );
-        if let Err(error) = self.wake(workspace, &told).await {
-            tracing::warn!(%workspace, %error, "an agent was not told how its vault use ended");
-        }
-    }
-}
-
-/// What its person is told of the use `detail` keeps, below the agent's `reason`: the page's
-/// site by its name and its whole origin where a field of a page is filled, then the use as
-/// they review it, the item withheld.
-fn told_of(reason: &str, detail: &Value, always: bool) -> String {
-    let site = detail.pointer("/use/site").and_then(|site| {
-        let (name, origin) = (site.get("name")?.as_str()?, site.get("origin")?.as_str()?);
-        Some(format!("{name} ({origin})"))
-    });
-    let reason = match site {
-        Some(site) => format!("{reason}\n\nSite: {site}"),
-        None => reason.to_owned(),
-    };
-    let mut draft = detail
-        .get("draft")
-        .and_then(|draft| {
-            tilo_failure::ignored!(
-                "a draft this server cannot read is left out: the person is told the reason alone",
-                serde_json::from_value::<tilo_actions::Draft>(draft.clone())
-            )
+        // An allow that carried nothing out by itself says so on the question.
+        let once = carried
+            .as_ref()
             .ok()
-        })
-        .unwrap_or_default();
-    // The reason stands above, in the agent's words.
-    draft.fields.retain(|field| field.path != ["reason"]);
-    super::asks::told_with(&reason, &draft, always)
-}
-
-/// What the question about the use `ask` asked, as its agent is told it.
-fn used_words(ask: &OpenAsk) -> String {
-    if ask.reason.is_empty() {
-        NO_REASON.to_owned()
-    } else {
-        ask.reason.clone()
+            .and_then(Option::as_ref)
+            .and_then(|done| allowed_once(done, &agent.name));
+        let (outcome, told) = match carried {
+            _ if changed => (
+                chat::question::FAILED,
+                Some(super::asks::NOT_AS_ASKED.to_owned()),
+            ),
+            Ok(Some(_)) => (chat::question::DONE, None),
+            Ok(None) => (chat::question::DROPPED, None),
+            Err(error) => (chat::question::FAILED, Some(error.to_string())),
+        };
+        let told = told.or(once);
+        if let Err(error) = settle(said, workspace, at, outcome, told).await {
+            tracing::warn!(%workspace, %error, "a use's question did not take how it ended");
+        }
     }
 }

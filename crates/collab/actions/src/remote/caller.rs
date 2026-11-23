@@ -76,13 +76,14 @@ pub struct Caller {
     // What the person asked the agent to do, in a line (`Self::asked`): what
     // its session is labelled by, where it was asked.
     pub(super) asked: Option<String>,
-    // What the agent's own record bounds it to on its turn (`Self::on_turn`), narrowing the
-    // grants a delegated agent acts with; empty follows the default.
-    pub(super) bound: Vec<tilo_action_policy::Rule>,
     // What the agent's own record bounds an agent acting with its own key to, read by the
     // provider that runs it on its person's device (`Self::held_to`). `None` there holds it to
     // nothing: it carries no delegation at all.
     own_bound: Option<Vec<tilo_action_policy::Rule>>,
+    // The computer that admitted an agent from another of its person's devices answers the
+    // person's ask for its steps itself (`Self::steps_unasked`): the grant kept there says the
+    // person let them go. Set only by the host that read that grant.
+    steps_unasked: bool,
 }
 
 impl Caller {
@@ -103,8 +104,8 @@ impl Caller {
             turn_person: None,
             agent_name: None,
             asked: None,
-            bound: Vec::new(),
             own_bound: None,
+            steps_unasked: false,
         }
     }
 
@@ -173,26 +174,6 @@ impl Caller {
             Acting::agent(agent_id.into()).acting_for(Acting::person(hex::encode(user_public_key))),
             Some((user_public_key, device_public_key)),
         )
-    }
-
-    /// An agent acting inside a turn: `person`'s message in `turn`'s
-    /// conversation caused it, and the agent takes part there. It may do
-    /// exactly what that person may, held to the editor preset and to the
-    /// bound its own record carries, and nothing outside a turn. Every op it
-    /// makes carries the turn, so the receiving device checks the cause it
-    /// arrived with. Set only by the provider that admitted the turn.
-    #[must_use]
-    pub fn agent_turn(
-        agent_id: impl Into<String>,
-        person: impl Into<tilo_action_policy::PersonId>,
-        turn: tilo_action_policy::turn::Turn,
-    ) -> Self {
-        let acting = Acting::agent(agent_id.into()).acting_for(Acting::person(person.into()));
-        Self {
-            session_delegated: true,
-            turn: Some(turn),
-            ..Self::admitted(acting, None)
-        }
     }
 
     /// A bot device whose certificate chains to `user_public_key` (its
@@ -313,12 +294,10 @@ impl Caller {
         self
     }
 
-    /// This person's own device hands the connection to agent `agent_id`,
-    /// acting for them: an MCP client, a local assistant. The agent is the
-    /// actor (its edits, presence and history are the agent's, for the
-    /// person) and it may do only what both the person and the delegation a
-    /// device gives its agents allow. A caller that is not a person is
-    /// returned as it is. Set only by the provider that admitted the person.
+    /// This person's own device hands the connection to agent `agent_id`, acting for them: a
+    /// program in the workspace's machine its person let in, which has no key of its own yet.
+    /// The agent is the actor, and it may do only what both the person and the delegation a
+    /// device gives its agents allow. A caller that is not a person is returned as it is.
     #[must_use]
     pub fn delegated_to(mut self, agent_id: impl Into<String>) -> Self {
         let Some(person) = self.acting.person_id().map(str::to_owned) else {
@@ -396,23 +375,6 @@ impl Caller {
     #[must_use]
     pub fn agent_name(&self) -> Option<&str> {
         self.agent_name.as_deref()
-    }
-
-    /// The agent this person's own device handed its session to ([`Self::delegated_to`]) acts
-    /// inside `turn`, held to `bound`, the rules its own record narrows it to: the provider that runs
-    /// the agent for the person and admitted the turn's cause sets it, never a payload. Changes
-    /// nothing for a caller that is not such an agent.
-    #[must_use]
-    pub fn on_turn(
-        mut self,
-        turn: tilo_action_policy::turn::Turn,
-        bound: Vec<tilo_action_policy::Rule>,
-    ) -> Self {
-        if self.session_delegated && self.acting.is_agent() {
-            self.turn = Some(turn);
-            self.bound = bound;
-        }
-        self
     }
 
     /// Bind a certified agent caller to the hosted roster entry it was
@@ -503,32 +465,16 @@ impl Caller {
         self.roster_created_at
     }
 
-    /// The person whose own device handed this connection to its agent
-    /// ([`Self::delegated_to`]), as that device is admitted: the person the
-    /// agent acts for, on the same device, whose current access bounds
-    /// everything the agent may do. `None` for any other caller. Use it to
-    /// read the person's access, never to act as them.
+    /// Whether this is an agent a person's own device runs with a key of its own, outside a
+    /// roster turn: an MCP client, a local assistant. Its key's certificate names its person
+    /// ([`Self::user_public_key`]) and every invocation it makes is signed by that key, so this
+    /// reads nothing a payload says.
     #[must_use]
-    pub fn delegating_person(&self) -> Option<Self> {
-        if !self.acting.is_agent() {
-            return None;
-        }
-        let person = self
-            .acting
-            .acted_for_person()
-            .filter(|_| self.session_delegated)?
-            .to_owned();
-        self.device_public_key?;
-        Some(Self {
-            acting: Acting::person(person),
-            session_delegated: false,
-            turn: None,
-            agent_name: None,
-            asked: None,
-            bound: Vec::new(),
-            own_bound: None,
-            ..self.clone()
-        })
+    pub fn is_device_agent(&self) -> bool {
+        self.acting.is_agent()
+            && self.device_public_key.is_some()
+            && self.roster_created_at.is_none()
+            && self.acting.acted_for_person().is_some()
     }
 
     /// Whether this agent is one the person's own device handed its session to
@@ -597,15 +543,32 @@ impl Caller {
         self
     }
 
+    /// The computer that admitted this agent from another of its person's devices lets the steps
+    /// its grants ask first go unasked here, as the grant kept there says. Set only by the host
+    /// that read that grant, never a payload; changes nothing for any other caller.
+    #[must_use]
+    pub fn steps_unasked(mut self) -> Self {
+        if self.acting.is_agent() && self.acting.acted_for_person().is_some() {
+            self.steps_unasked = true;
+        }
+        self
+    }
+
+    /// Whether the person answered this agent's steps that would ask first on the computer that
+    /// admitted it ([`Self::steps_unasked`]).
+    #[must_use]
+    pub const fn lets_steps_go_unasked(&self) -> bool {
+        self.steps_unasked
+    }
+
     /// The grants made for this caller's software, the one place an agent's bound becomes
     /// grants, so every host and every receiver narrows an agent alike. An agent a person's own
-    /// device handed its session to is held to the bound its turn carries, else `kept`, the one
-    /// the workspace's list of its agents keeps for it; its delegation is its acting's own
-    /// ([`Acting::handed_preset`]). An agent acting with its own key carries, where its person's
-    /// device read its record ([`Self::held_to`]), its person's delegation narrowed by that
-    /// bound; elsewhere it carries nothing of its own, and the host that admits it bounds what
-    /// the workspace gives its approved key. An agent whose bound nobody read is never more than
-    /// its person allows.
+    /// device handed its session to is held to `kept`, the bound the workspace's list of its
+    /// agents keeps for it; its delegation is its acting's own ([`Acting::handed_preset`]). An
+    /// agent acting with its own key carries, where its person's device read its record
+    /// ([`Self::held_to`]), its person's delegation narrowed by that bound; elsewhere it carries
+    /// nothing of its own, and the host that admits it bounds what the workspace gives its
+    /// approved key. An agent whose bound nobody read is never more than its person allows.
     #[must_use]
     pub fn granted(&self, kept: &[tilo_action_policy::Rule]) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
@@ -613,21 +576,17 @@ impl Caller {
             return Vec::new();
         };
         if self.session_delegated {
-            let bound = if self.turn.is_some() {
-                &self.bound[..]
-            } else {
-                kept
-            };
-            return tilo_action_policy::roles::agent_bound(agent, person, bound);
+            return tilo_action_policy::roles::agent_bound(agent, person, kept);
         }
-        match (&self.own_bound, &self.workspace) {
-            (Some(bound), Some(workspace)) => {
-                let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
-                grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
-                grants
-            }
-            _ => Vec::new(),
-        }
+        // Asked in no workspace (its person's list of them), the agent carries the delegation at
+        // the root, as a handed agent does.
+        let Some(bound) = &self.own_bound else {
+            return Vec::new();
+        };
+        let workspace = self.workspace.as_deref().unwrap_or_default();
+        let mut grants = Acting::handed_agent(agent, person).handed_preset(workspace);
+        grants.extend(tilo_action_policy::roles::agent_bound(agent, person, bound));
+        grants
     }
 
     /// The group a session named `id` is, as this caller's provider admitted

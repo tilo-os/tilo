@@ -12,7 +12,7 @@ thin = ["dep:runtime-dylib"]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its type and its verb.
 scratchpad-model = { path = "../scratchpad-model" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 serde_json.workspace = true
 # The native diagnostic reports the note's BLAKE3 hash, never its text.
 blake3.workspace = true

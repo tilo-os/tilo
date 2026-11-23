@@ -16,7 +16,11 @@ fn write(author: &mut StatePeer, key: &SigningKey, now: SystemTime, name: &str) 
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit_edit("fixture", "fixture");
+    doc.commit_edit(
+        "fixture",
+        "fixture",
+        &certificate(author, key).user_public_key,
+    );
     author
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)

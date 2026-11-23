@@ -5,7 +5,7 @@
 //! [`EventSoundPlayer`] worker (a `pw-play` of the resolved theme file). Nothing here blocks the
 //! loop.
 
-use media::event_sound::{EventSoundPlayer, SoundCue};
+use media::event_sound::EventSoundPlayer;
 use settings_store::system_sounds::{QuietState, SystemSoundEvent, SystemSoundPrefs, should_play};
 
 /// What plays the session's event sounds.
@@ -31,21 +31,45 @@ impl SystemSounds {
         delivery_allows: bool,
     ) -> bool {
         let prefs = SystemSoundPrefs::from_document(&settings_store::load());
-        should_play(event, &prefs, quiet, delivery_allows) && self.player.play(cue(event, &prefs))
+        should_play(event, &prefs, quiet, delivery_allows)
+            && self
+                .player
+                .play(tilo_audio_service::sounds::cue(event, &prefs))
     }
 }
 
-/// The cue for `event` as the person's preferences have it.
-pub(crate) fn cue(event: SystemSoundEvent, prefs: &SystemSoundPrefs) -> SoundCue {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the preference is clamped to 0..=1; f32 holds it exactly enough for a gain"
-    )]
-    let volume = prefs.volume.clamp(0.0, 1.0) as f32;
-    SoundCue {
-        ids: event.sound_ids(),
-        description: event.description(),
-        theme: prefs.theme_name().to_string(),
-        volume,
+#[cfg(test)]
+mod tests {
+    use settings_store::system_sounds::{DEFAULT_THEME, SystemSoundEvent, SystemSoundPrefs};
+
+    #[test]
+    fn cue_carries_the_events_ids_description_theme_and_clamped_volume() {
+        let defaults = SystemSoundPrefs::default();
+        let cue = tilo_audio_service::sounds::cue(SystemSoundEvent::Notification, &defaults);
+        assert_eq!(cue.ids, SystemSoundEvent::Notification.sound_ids());
+        assert_eq!(
+            cue.description,
+            SystemSoundEvent::Notification.description()
+        );
+        assert_eq!(cue.theme, DEFAULT_THEME);
+        assert_eq!(cue.volume.to_bits(), 0.7_f32.to_bits());
+
+        let low = SystemSoundPrefs {
+            theme: Some("ocean".into()),
+            volume: -0.5,
+            ..SystemSoundPrefs::default()
+        };
+        let cue = tilo_audio_service::sounds::cue(SystemSoundEvent::Screenshot, &low);
+        assert_eq!(cue.ids, SystemSoundEvent::Screenshot.sound_ids());
+        assert_eq!(cue.description, SystemSoundEvent::Screenshot.description());
+        assert_eq!(cue.theme, "ocean");
+        assert_eq!(cue.volume.to_bits(), 0.0_f32.to_bits());
+
+        let high = SystemSoundPrefs {
+            volume: 1.75,
+            ..SystemSoundPrefs::default()
+        };
+        let cue = tilo_audio_service::sounds::cue(SystemSoundEvent::Screenshot, &high);
+        assert_eq!(cue.volume.to_bits(), 1.0_f32.to_bits());
     }
 }

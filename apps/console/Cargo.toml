@@ -25,7 +25,7 @@ samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

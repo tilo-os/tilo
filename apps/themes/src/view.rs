@@ -420,7 +420,7 @@ fn sidebar(ui: &Ui) -> Element {
     let mut list = NavList::new(Vec::new())
         .with_accessible_name(crate::locales::CATALOG.t("themes-app-title"))
         .follow(source)
-        .on_view(NAV_ID, select);
+        .on_choose(NAV_ID, select);
     if let Some(new_theme) = ui.actions.effect_binding(
         crate::effects::ThemesEffect::DUPLICATE_THEME.map(|_: String| NEW_THEME_BASE.to_owned()),
     ) {
@@ -473,12 +473,12 @@ fn preset_tile(ui: &Ui, preset: Preset) -> Element {
                 .with_enabled(!in_use);
                 let use_it = {
                     let ui = ui.clone();
-                    use_it.on_own_device_effect(move || ui.apply(preset.id().to_owned()))
+                    use_it.on_click(move || ui.apply(preset.id().to_owned()))
                 };
                 let customize = {
                     let ui = ui.clone();
                     Button::new(&format!("customize-{}", preset.id()), "themes-customize")
-                        .on_view(move || ui.start_from(preset.id()))
+                        .on_open(move || ui.start_from(preset.id()))
                 };
                 Box::new(CardActions::new(use_it).secondary(customize))
             },

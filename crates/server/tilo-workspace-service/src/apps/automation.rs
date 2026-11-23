@@ -1595,6 +1595,7 @@ mod tests {
                     actions: vec![],
                     fields: vec![],
                     by: ActorFilter::Anyone,
+                    filter: tilo_automation::ChangeFilter::default(),
                 })
                 .is_ok()
             );
@@ -1611,6 +1612,7 @@ mod tests {
                     actions: vec![],
                     fields: vec![],
                     by: ActorFilter::Anyone,
+                    filter: tilo_automation::ChangeFilter::default(),
                 })
                 .unwrap_err()
                 .contains("names the record kind")

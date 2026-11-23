@@ -209,7 +209,9 @@ impl Core {
     }
 
     /// What `text` says of a day and a time of day, read against the person's day and wall
-    /// clock at `near`, in the language they read in.
+    /// clock at `near`, in the language they read in, falling back to English when that reading
+    /// names neither a day nor a time (so English phrases written by apps or people still read,
+    /// while the person's language wins whenever both read the text).
     fn when_of(&self, text: &str, near: &str) -> HResult<tilolang::natural::When> {
         let at = Self::instant_arg_text(near)?;
         let local = self.local_wall(at);
@@ -220,7 +222,19 @@ impl Core {
             .duration_since(jiff::civil::Time::MIN)
             .as_secs();
         let lang = tilolang::natural::Language::of(&self.words.borrow().language());
-        Ok(tilolang::natural::when(text, days, second_of_day, lang))
+        let read = tilolang::natural::when(text, days, second_of_day, lang);
+        if read.day.is_none()
+            && read.minutes.is_none()
+            && lang != tilolang::natural::Language::English
+        {
+            return Ok(tilolang::natural::when(
+                text,
+                days,
+                second_of_day,
+                tilolang::natural::Language::English,
+            ));
+        }
+        Ok(read)
     }
 
     /// The day the person's week starts on, as days from Monday (Monday where the host names

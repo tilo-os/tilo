@@ -188,6 +188,37 @@
       }
     },
     {
+      "id": "tag-list",
+      "said": "The tag stands beside the tree, counting the note that carries it",
+      "ops": [
+        {
+          "must": {
+            "see": [
+              "travel"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "find-in-note",
+      "said": "Find a word in the open note, as the palette and an agent can",
+      "ops": [
+        {
+          "read": {
+            "app": "so.tilo.notes",
+            "operation": "find_text",
+            "args": {
+              "text": "passport"
+            },
+            "is": {
+              "#len": 1
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "outline",
       "said": "Open the heading outline, if the app has one",
       "ops": [

@@ -4,27 +4,15 @@
 #[cfg(feature = "service")]
 use std::io::Write;
 
-use serde::{Deserialize, Serialize};
 #[cfg(feature = "service")]
 use tilo_app_package::BlobHash;
 #[cfg(feature = "service")]
 use tilo_app_package::trust::{RevocationList, TrustFile, TrustedAttestors};
-use tilo_app_package::{DiscardBlobs, Kind, Manifest, Verification};
+use tilo_app_package::{DiscardBlobs, Kind, Verification};
 
 pub const MAX_LOCAL_BYTES: usize = 64 * 1024 * 1024;
 
-/// Process-verified identity of handed bytes; grants no trust.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LocalReview {
-    pub root: String,
-    pub archive_hash: String,
-    pub publisher: String,
-    pub attestor: String,
-    pub manifest: Manifest,
-    pub installed_version: Option<String>,
-    pub pinned: bool,
-    pub user_managed: bool,
-}
+pub use package_service_client::LocalReview;
 
 /// Structurally checked application metadata, without a trust grant or install.
 #[derive(Clone, Debug)]

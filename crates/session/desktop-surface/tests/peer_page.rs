@@ -24,7 +24,7 @@ use ui::webview::paint::stream::wire::Payload;
 use ui::webview::paint::{PageCanvas, PaintEngine};
 
 /// The engine's page: a snapshot with a header, a sidebar and a button.
-const TOP: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");
+const TOP: &str = include_str!("../../../engines/paint-stream/tests/fixtures/layers.top.json");
 
 /// The surface the publishing device names the window by.
 const SURFACE: SurfaceId = 42;
@@ -160,7 +160,7 @@ fn a_viewer_draws_the_frame_the_publisher_holds() {
 
 /// A form with every common control, its first field being edited, as an engine laid it out
 /// in a window of 1280 by 800.
-const FORM: &str = include_str!("../../../browser/paint-stream/tests/fixtures/controls.json");
+const FORM: &str = include_str!("../../../engines/paint-stream/tests/fixtures/controls.json");
 
 /// The engine's number for the element of the form whose `id` is `id`.
 fn form_node(id: &str) -> u64 {

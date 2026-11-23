@@ -12,7 +12,14 @@ type Account (origin: imap.account) {
     key: Text merge register
     address: Text
     name: Text
+    /// What the account's server said when it could not be reached, in its words: empty while
+    /// it stands well.
     trouble: Text
+    /// Of what kind that trouble is, so the window says what helps: `signed-out` (the server
+    /// refused the password), `no-password` (the account has none on this device), `withheld`
+    /// (the workspace's rules kept it back), `offline` (the device has no network), or
+    /// `unreachable` for anything else. Empty while the account stands well.
+    trouble_kind: Text = ""
     online: Bool
     /// When the account's mail was last taken in from its server, as the clock the person read
     /// it at: 1970 when it never was.
@@ -59,6 +66,10 @@ type Thread (origin: imap.thread, title: subject) {
     /// Muted: the conversation stays out of the inbox while new messages keep coming, as a
     /// busy conversation is silenced, and it is still found under Muted and All mail.
     muted: Bool = false
+    /// When mail last came to this conversation's inbox, while the people who read it have not
+    /// been told of it: the moment the announcement runs for, and nothing when there is none.
+    /// The system writes it as the mail comes and the announcement clears it.
+    arrived: Option<Time> = .none
 
     search {
         filter "Inbox" = boxes.contains("inbox")
@@ -73,10 +84,14 @@ type Thread (origin: imap.thread, title: subject) {
         filter "Junk" = boxes.contains("junk") (icon: .shield)
         filter "Trash" = boxes.contains("trash") (icon: .trash)
         filter unread "Unread" (icon: .mail)
+        // When the conversation last came: `latest:>2026-06-01`, `latest:-7d` narrow the mail a
+        // person looks through to a day or a span, as every other field a filter compares.
+        filter latest "Received" (icon: .clock)
         sort latest newest
         hide key
         hide account
         hide boxes
+        hide arrived
     }
 }
 
@@ -101,9 +116,14 @@ type Message (origin: imap.message, title: subject) {
     received: Time
     snippet: Text
     body: Text
+    /// What it says as its sender formatted it: its HTML part, the pictures it shows in place read
+    /// from this device's content. Empty for a message of plain text.
+    html: Text
     message_id: Text merge register
     references: Text merge register
-    attachments: Text
+    /// The files it came with, each kept in the workspace's content: one whose bytes are not on
+    /// this device yet is named with no content.
+    attachments: List<File>
     unread: Bool
     flagged: Bool
     mailbox: Text
@@ -130,6 +150,9 @@ type Draft (title: subject, untitled: "New message") {
     body: Text
     in_reply_to: Text
     references: Text
+    /// The conversation it answers, by its key: empty for a message that answers none. The
+    /// draft shows it beside what is written, so the person reads what they answer.
+    conversation: Text = ""
     sent: Bool = false
     /// When it goes: 1970 for a draft not sent yet.
     send_at: Time = Time("1970-01-01T00:00:00Z")
@@ -138,15 +161,18 @@ type Draft (title: subject, untitled: "New message") {
     /// The calendar invitation it carries (iCalendar), which goes beside what it says so the
     /// guest's calendar can answer it: empty for none.
     invitation: Text = ""
+    /// The files it takes along.
+    attachments: List<File>
     /// What the native Mail kept on this draft that this one has no place for (attachments,
     /// private notes), said in words: never sent with it.
     set_aside: Text
 
     search {
-        filter "Drafts" = not sent and not recalled (icon: .pencil)
-        filter sent (icon: .send)
+        filter "Drafts" = not sent (icon: .pencil)
+        filter "Outbox" = sent and not recalled (icon: .send)
         hide in_reply_to
         hide references
+        hide conversation
         hide send_at
         hide invitation
     }
@@ -234,12 +260,24 @@ action check_now(a: Account) (icon: .refresh, label: "Check now") {
 
 /// Asks the account's server for the messages older than the oldest this workspace holds in the
 /// mailbox, so a folder longer than one page can be read back to its first message. They come in
-/// as new mail does, and the mailbox stops offering them once its first message is here.
+/// as new mail does, and the mailbox stops offering them once its first message is here. A
+/// mailbox whose server holds nothing older answers nothing, as a list reads to its end asking
+/// whether a page is there.
 action older_messages(b: Mailbox) (icon: .arrow_down, label: "Show older messages") {
-    let m = root Mail
-    if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
-        outside("imap.older", (a.key, b.key))
+    if b.more {
+        let m = root Mail
+        if let a = m.accounts.find(x -> x.mailboxes.any(y -> y.id() == b.id())) {
+            outside("imap.older", (a.key, b.key))
+        }
     }
+}
+
+/// Asks the account's server to search its mail for `text`: what finds mail the workspace does
+/// not hold, and mail in folders it does not sync. What it finds comes in as the account's
+/// conversations, as a fetch's mail does, so it is read and searched here from then on.
+action search_server(a: Account, text: Text) (icon: .search, label: "Search the server") {
+    require text.trim() != "" "Say what to look for"
+    outside("imap.search", (a.key, text))
 }
 
 /// Starts a message from the account.
@@ -332,12 +370,41 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
     }
 }
 
-/// Starts a message from the first account.
+/// Starts a message. A message is written before the workspace has an account to send it from:
+/// it waits in Drafts, and goes once the person adds one.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
-    require not m.accounts.is_empty() "Add a mail account in Settings first"
-    applies not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
+}
+
+/// Writes a message for the person to read and send: to whom, its subject and what it says,
+/// answering `in_reply_to` (a Message-ID) when it names one. Every call makes a draft of its own
+/// beside the others; nothing is written over and nothing is sent. Where an agent drafts a
+/// message, the person finds it in Drafts and sends it.
+action draft_message(
+    m: Mail,
+    to: Text,
+    subject: Text = "",
+    body: Text = "",
+    cc: Text = "",
+    in_reply_to: Text = "",
+    from: Text = "",
+) -> Draft (icon: .pencil, label: "Draft a message") {
+    require to != "" "It goes to nobody yet"
+    let account = if from != "" and has_account(m, from) {
+        from
+    } else { m.accounts.first()?.key ?? "" }
+    m.drafts.insert(
+        Draft(
+            from: account,
+            to: to,
+            cc: cc,
+            subject: subject,
+            body: body,
+            in_reply_to: in_reply_to,
+            references: in_reply_to,
+        ),
+    )
 }
 
 /// Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried
@@ -374,9 +441,9 @@ action prepare_calendar_invitation(
 /// the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the
 /// content reference of the message as it was sent, less its large parts: `parts` says where
 /// each of those stands in it and which pieces of content it is in, one JSON text each
-/// (`{"at": 120, "size": 4096, "pieces": ["tilo.content:…"]}`). `attachments` names the
-/// files it carries. A message already held under its Message-ID is answered as it is, so
-/// delivering it again keeps it once.
+/// (`{"at": 120, "size": 4096, "pieces": ["tilo.content:…"]}`). `attachments` are the files it
+/// carries, each content the workspace holds. A message already held under its Message-ID is
+/// answered as it is, so delivering it again keeps it once.
 action deliver_message(
     m: Mail,
     from: Text,
@@ -391,7 +458,7 @@ action deliver_message(
     message_id: Text = "",
     original: Text = "",
     parts: List<Text> = [],
-    attachments: List<Text> = [],
+    attachments: List<File> = [],
 ) -> Message (icon: .inbox, label: "Deliver a message") {
     require from != "" "A message says who it is from"
     if message_id != "" {
@@ -440,7 +507,7 @@ action deliver_message(
             message_id: message_id,
             unread: not read,
             mailbox: folder,
-            attachments: attachments.join("\n"),
+            attachments: attachments,
             original: original,
             parts: parts.join("\n"),
         ),
@@ -514,10 +581,10 @@ fn message_markdown(m: Message) -> Text {
         if m.to == "" { "" } else { "To: {m.to}" },
         if m.cc == "" { "" } else { "Cc: {m.cc}" },
         "Date: {m.received.iso()}",
-        if m.attachments == "" {
+        if m.attachments.is_empty() {
             ""
         } else {
-            "Attached: {m.attachments.replace("\n", ", ")}"
+            "Attached: {attachment_names(m).join(", ")}"
         },
     ]
         .filter(line -> line != "")
@@ -547,7 +614,7 @@ fn message_json(m: Message) -> Text {
 
 /// The files a message carries, by name: none when it carries none.
 fn attachment_names(m: Message) -> List<Text> {
-    if m.attachments == "" { [] } else { m.attachments.split("\n") }
+    m.attachments.map(f -> f.name)
 }
 
 /// `text` as JSON writes it, quotes and escapes and all.
@@ -674,6 +741,35 @@ fn quoted(m: Message) -> Text {
     "\n\nOn {m.received}, {m.from_name} wrote:\n> {as_lines(m.body).replace("\n", "\n> ")}\n"
 }
 
+/// The key of the conversation `m` stands in, in an account or in the mail recovered from one
+/// that went: empty for a message no conversation holds.
+fn conversation_of(m: Message) -> Text {
+    let mail = root Mail
+    for a in mail.accounts {
+        if let t = a.threads.find(x -> x.messages.any(y -> y.id() == m.id())) {
+            return t.key
+        }
+    }
+    if let t = mail.recovered_mail.find(x -> x.messages.any(y -> y.id() == m.id())) {
+        return t.key
+    }
+    ""
+}
+
+/// The conversation named by `key`, in the accounts or the mail recovered from one that went:
+/// none once it is gone.
+fn thread_named(m: Mail, key: Text) -> Option<Thread> {
+    if key == "" {
+        return .none
+    }
+    for a in m.accounts {
+        if let t = a.threads.find(x -> x.key == key) {
+            return .some(t)
+        }
+    }
+    m.recovered_mail.find(t -> t.key == key)
+}
+
 /// Answers the conversation's newest message, to whoever wrote it, quoting it under what is
 /// written.
 primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
@@ -688,6 +784,7 @@ primary action reply(t: Thread) -> Draft (icon: .reply, key: "r") {
             body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+            conversation: t.key,
         ),
     )
 }
@@ -708,6 +805,7 @@ action reply_all(t: Thread) -> Draft (icon: .reply_all, label: "Reply all", key:
             body: signed(m, from, if let l = last { quoted(l) } else { "" }),
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+            conversation: t.key,
         ),
     )
 }
@@ -724,6 +822,7 @@ action reply_to(m: Message) -> Draft (icon: .reply) {
             body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
+            conversation: conversation_of(m),
         ),
     )
 }
@@ -742,11 +841,13 @@ action reply_all_to(m: Message) -> Draft (icon: .reply_all, label: "Reply all") 
             body: signed(mail, from, quoted(m)),
             in_reply_to: m.message_id,
             references: "{m.references} {m.message_id}",
+            conversation: conversation_of(m),
         ),
     )
 }
 
-/// Sends one message of the conversation on, with its sender, when and what it says.
+/// Sends one message of the conversation on, with its sender, when and what it says, and the
+/// files it came with.
 action forward_message(m: Message) -> Draft (icon: .forward) {
     let mail = root Mail
     let from = sends_from(mail, m.account)
@@ -754,24 +855,70 @@ action forward_message(m: Message) -> Draft (icon: .forward) {
         Draft(
             from: from,
             subject: "Fwd: {m.subject}",
-            body: signed(
-                mail,
-                from,
-                "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n",
-            ),
+            body: signed(mail, from, forwarded(m)),
+            attachments: m.attachments.filter(f -> on_device(f)),
         ),
     )
 }
 
-/// Sends the conversation's newest message on, with its sender and what it says.
+/// Sends the conversation's newest message on, with its sender, what it says and the files it
+/// came with.
 action forward(t: Thread) -> Draft (icon: .forward, key: "f") {
     let m = root Mail
     let last = t.messages.last()
-    let said = if let l = last {
-        "\n\nFrom {l.from_name} <{l.from}> ({l.received}):\n\n> {l.body.replace("\n", "\n> ")}\n"
-    } else { "" }
     let from = sends_from(m, t.account)
-    m.drafts.insert(Draft(from: from, subject: "Fwd: {t.subject}", body: signed(m, from, said)))
+    m.drafts.insert(
+        Draft(
+            from: from,
+            subject: "Fwd: {t.subject}",
+            body: signed(m, from, if let l = last { forwarded(l) } else { "" }),
+            attachments: if let l = last { l.attachments.filter(f -> on_device(f)) } else { [] },
+        ),
+    )
+}
+
+/// `m` as a message sent on quotes it: who wrote it and when, then its lines after `> `, and the
+/// files it came with that are not on this device, by name, since they cannot go with it.
+fn forwarded(m: Message) -> Text {
+    let left = m.attachments.filter(f -> not on_device(f)).map(f -> f.name)
+    let names = left.join(", ")
+    let note = if left.is_empty() {
+        ""
+    } else {
+        std.say("Not downloaded, so not sent on: {names}")
+    }
+    let said = "\n\nFrom {m.from_name} <{m.from}> ({m.received}):\n\n> {m.body.replace("\n", "\n> ")}\n"
+    if note == "" { said } else { "{said}\n{note}\n" }
+}
+
+/// Whether the bytes of `f` are on this device: a file a server's message named whose content
+/// did not come with it has none.
+fn on_device(f: File) -> Bool {
+    f.url != "tilo-blob://"
+}
+
+/// One file the message came with, as a file of its own: what Save puts in Files, and what an
+/// agent reads or hands another app.
+action attachment(m: Message, name: Text) -> File (icon: .download, label: "Save attachment") {
+    require m.attachments.any(f -> f.name == name) "It came with no {name}"
+    require m.attachments.any(f -> f.name == name and on_device(f)) "{name} is not downloaded yet"
+    m.attachments.find(f -> f.name == name and on_device(f)) ?? File.of_text(name, "")
+}
+
+/// Takes a file along with the message: one the person picks, or one an agent hands over. A
+/// message takes up to sixteen files of up to 32 MB each, as mail servers take them.
+action attach(d: Draft, file: File) (icon: .paperclip, label: "Attach a file") {
+    require not d.sent or d.recalled "This message went already"
+    require d.attachments.len() < 16 "A message takes up to 16 files"
+    require file.size <= 33554432 "{file.name} is larger than 32 MB"
+    d.attachments = [d.attachments, [file]].flat_map(x -> x)
+}
+
+/// Leaves a file the message was to take along behind.
+action detach(d: Draft, name: Text) (icon: .x, label: "Remove attachment") {
+    require not d.sent or d.recalled "This message went already"
+    require d.attachments.any(f -> f.name == name) "It takes no {name}"
+    d.attachments = d.attachments.filter(f -> f.name != name)
 }
 
 /// Archives the conversation: its messages leave the inbox.
@@ -832,28 +979,41 @@ destructive action delete(t: Thread) (icon: .trash, key: "#") {
 
 /// Deletes the conversation's trashed messages for good, from its server too, and the
 /// conversation with them when no message of it is left. This is the one deletion there is no
-/// trash to take back from: what is deleted for good is gone from the server, and the platform
-/// takes back this app's record of it only.
+/// trash to take back from: what is deleted for good is gone from the server, and this app's
+/// record of it leaves once the server says it is.
 destructive action purge(t: Thread) (icon: .trash, label: "Delete permanently") {
     require t.boxes.any(b -> b == "trash") "It is not in the trash"
     require t.messages.any(x -> x.mailbox == "trash") "Nothing of it is in the trash"
     let m = root Mail
     let doomed = t.messages.filter(x -> x.mailbox == "trash")
     // A conversation kept from outside an account's server has no server to be deleted from: it
-    // goes from the workspace alone.
+    // goes from the workspace alone, at once. One whose server can be asked leaves the workspace
+    // when the server says its messages are gone, so a deletion the server refused keeps it here.
     if has_account(m, t.account) {
         outside("imap.purge", (t.account, doomed.map(x -> x.key)))
-    }
-    for x in doomed {
-        t.messages.remove(x)
-    }
-    let left = t.messages.len()
-    if left == 0 {
-        if let a = m.accounts.find(x -> x.key == t.account) { a.threads.remove(t) }
-        if m.recovered_mail.any(x -> x.id() == t.id()) { m.recovered_mail.remove(t) }
     } else {
-        t.unread = t.messages.any(x -> x.unread)
-        t.boxes.remove("trash")
+        for x in doomed {
+            t.messages.remove(x)
+        }
+        let left = t.messages.len()
+        if left == 0 {
+            if m.recovered_mail.any(x -> x.id() == t.id()) { m.recovered_mail.remove(t) }
+        } else {
+            t.unread = t.messages.any(x -> x.unread)
+            t.boxes.remove("trash")
+        }
+    }
+}
+
+/// Deletes every conversation in the account's trash from the mailbox and its server for good,
+/// each as `purge` does. A view offers this behind a confirmation, as nothing undoes it.
+destructive action empty_trash(a: Account) (icon: .trash, label: "Empty trash") {
+    require not a.threads.matching("is:trash").is_empty() "The trash is empty"
+    let trashed = a.threads.matching("is:trash")
+    // The list is taken first: each purge may take its conversation out of the query as it
+    // goes, and a query read while it changes answers nothing.
+    for t in trashed {
+        purge(t)
     }
 }
 
@@ -972,6 +1132,7 @@ action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send late
             d.in_reply_to,
             d.references,
             d.invitation,
+            d.attachments,
         ),
         at: at,
     )
@@ -1059,6 +1220,78 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
     m.drafts.remove(d)
 }
 
+/// Keeps the message in the account's server Drafts folder as it is written now, so another
+/// mail client of the account sees it there too. What the server says comes back with the
+/// account's next mail, and the server's Drafts are read like its other folders.
+action save_to_drafts(m: Mail, d: Draft) (icon: .cloud, label: "Save in Drafts") {
+    require not d.sent or d.recalled "This message is on its way"
+    require has_account(m, d.from) "Add a mail account in Settings first"
+    outside(
+        "imap.save_draft",
+        (
+            d.from,
+            d.from_address,
+            d.to,
+            d.cc,
+            d.bcc,
+            d.subject,
+            d.body,
+            d.in_reply_to,
+            d.references,
+            d.invitation,
+        ),
+    )
+}
+
+/// Sends a message the account's server refused again, from where it stands: the version that
+/// failed did not leave, so it goes once. A message whose outcome nobody knows is not tried
+/// again, since it may have gone.
+action retry(d: Draft) uses time (icon: .refresh, label: "Try again") {
+    require d.sent and not d.recalled "It is not waiting to go"
+    require delivery(d)?.state == "rejected" "It did not fail, or nobody knows whether it went"
+    d.sent = false
+    send(d)
+}
+
+/// Tells everyone who reads the conversation that mail came to it: who wrote, what it is
+/// called, and which account it came to while the workspace reads several of them, opening the
+/// conversation. It is run once for each arrival, on the device that governs the workspace, so
+/// each person is told once however many of their devices are open.
+action announce(t: Thread) uses notify (icon: .bell, label: "Announce the mail that came") {
+    require t.arrived != .none "No mail came to this conversation since it was last announced"
+    // The moment is the announcement's: cleared here, whatever is done with it, so it tells
+    // nobody twice.
+    t.arrived = .none
+    if t.muted or not t.boxes.any(b -> b == "inbox") {
+        return
+    }
+    let m = root Mail
+    if let newest = t.messages.last() {
+        let title = if newest.from_name == "" { newest.from } else { newest.from_name }
+        let account = m.accounts.find(a -> a.key == t.account)
+        let body = if m.accounts.len() > 1 and account != .none {
+            "{t.subject}\n{account?.address}"
+        } else { t.subject }
+        // The mailbox is the workspace's: everyone who is in it is told, so the mail reaches
+        // each of their devices.
+        for who in workspace.members {
+            notify(to: who, title: title, body: body, opens: t)
+        }
+    }
+}
+
+/// Mail coming to a conversation's inbox is announced to the people who read it, once, at the
+/// moment it came.
+trigger new_mail(t: Thread) at t.arrived: announce(t)
+
+/// Why a message cannot go from where it stands, as the window says it: where an account is
+/// added when the workspace has none, and which account a message written before one picks.
+fn send_refusal(m: Mail) -> Text {
+    if m.accounts.is_empty() {
+        "Add a mail account in Settings first"
+    } else { "Pick the account it goes from" }
+}
+
 /// Sends the message from its account. It leaves the system, so it goes once, and waits in the
 /// outbox until the server took it; it is held back for the person's hold first, so they can
 /// take it back. The effect is an argument the action records, so the wait survives a window
@@ -1066,7 +1299,9 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" or d.bcc != "" "It goes to nobody yet"
+    require d.from != "" "Pick the account it goes from"
     require has_account(root Mail, d.from) "Add a mail account in Settings first"
+    applies has_account(root Mail, d.from) send_refusal(root Mail)
     let m = root Mail
     let at = now + Duration(m.hold)
     outside(
@@ -1082,6 +1317,7 @@ primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
             d.in_reply_to,
             d.references,
             d.invitation,
+            d.attachments,
         ),
         at: at,
     )
@@ -1118,6 +1354,7 @@ action answer(t: Thread, body: Text) -> Draft uses time (icon: .reply) {
             body: "{lead}{said}",
             in_reply_to: last?.message_id ?? "",
             references: "{last?.references ?? ""} {last?.message_id ?? ""}",
+            conversation: t.key,
         ),
     )
     send(d)
@@ -1162,17 +1399,62 @@ fn place_title(m: Mail, query: Text) -> Text {
 
 /// What the account's server says of itself, over the mail it holds: the notice in the list's
 /// own gutter, so its rounded card stands where the rows' boxes do. An account that stands well
-/// says nothing and takes no room, so the list stands at the column's edge.
+/// says nothing and takes no room, so the list stands at the column's edge. A sign-in the server
+/// refused, an account with no password on this device, and one whose password the workspace's
+/// rules keep back each say what they are and lead to the Settings that change them; a device
+/// that is offline says new mail waits for the connection.
 view account_notice(a: Account) {
     if a.trouble != "" {
-        stack(padding: .group) {
-            std.service_banner(
-                a.address,
-                a.online,
-                a.trouble,
-                retry: check_now(a),
-                fetched: fetched_clock(a),
-            )
+        stack(padding: .group, gap: .tight) {
+            if a.trouble_kind == "signed-out" {
+                ui.Banner(
+                    "Can't sign in to {a.address}",
+                    message: "Check its password in Settings, under Accounts.",
+                    kind: .warning,
+                    action: "Try again",
+                ) {
+                    on act: check_now(a)
+                }
+                ui.Link("settings://accounts", label: "Open account settings")
+            } else if a.trouble_kind == "no-password" {
+                ui.Banner(
+                    "Mail has no password for {a.address}",
+                    message: "Nothing was sent to its server. Enter its password in Settings, under Accounts.",
+                    kind: .warning,
+                    action: "Try again",
+                ) {
+                    on act: check_now(a)
+                }
+                ui.Link("settings://accounts", label: "Open account settings")
+            } else if a.trouble_kind == "withheld" {
+                ui.Banner(
+                    "Mail can't use {a.address}'s password",
+                    message: a.trouble,
+                    kind: .warning,
+                    action: "Try again",
+                ) {
+                    on act: check_now(a)
+                }
+                ui.Link("settings://accounts", label: "Open account settings")
+            } else if a.trouble_kind == "offline" {
+                ui.Banner(
+                    "You're offline",
+                    message: "New mail arrives when you're back online.",
+                    kind: .neutral,
+                    icon: .wifi_off,
+                    action: "Try again",
+                ) {
+                    on act: check_now(a)
+                }
+            } else {
+                std.service_banner(
+                    a.address,
+                    a.online,
+                    a.trouble,
+                    retry: check_now(a),
+                    fetched: fetched_clock(a),
+                )
+            }
         }
     }
 }
@@ -1181,42 +1463,56 @@ view account_notice(a: Account) {
 /// list, a conversation in any account opening beside it; one account's window is its
 /// mailboxes as its places.
 view mail(m: Mail) {
-    state account: Text = ""
     if m.accounts.is_empty() {
-        if m.recovered_mail.is_empty() {
-            std.page(m) {
-                ui.EmptyState("Add a mail account in Settings", icon: .mail)
-            }
-        } else {
-            // The conversations read from the last account stand in the window's overview, so
-            // one a person opens stands in the window's content beside it rather than over a
-            // page with nothing left to show. There is no account, so there is no sidebar.
-            ui.NavShell(
-                content_kind: .document,
-                title: "Recovered mail",
-                sidebar_title: "Mail",
-                overview_title: "Recovered mail",
-                overview_count: m.recovered_mail.len(),
-                actions: [new_draft],
-            ) {
-                // The bar holds what a person does here; the mailbox's settings and what scripts
-                // and moves bring in stand behind its "More".
-                sidebar: {
-                    ui.NavList(selected: "recovered") {
-                        ui.NavItem("recovered", "Recovered mail", icon: .archive) {
-                            on select: set(account, "")
-                        }
-                    }
+        without_accounts(m)
+    } else {
+        unified(m)
+    }
+}
+
+/// The mail window with no account to read from: the drafts a person wrote, which need no
+/// account, and the mail kept from the last account before it went. What sends a message is an
+/// account, so the window says where one is added.
+view without_accounts(m: Mail) {
+    state place: Text = "drafts"
+    let drafts = m.drafts.matching("is:drafts")
+    let recovered = place == "recovered"
+    ui.NavShell(
+        content_kind: .document,
+        title: if recovered { "Recovered mail" } else { "Drafts" },
+        sidebar_title: "Mail",
+        overview_title: if recovered { "Recovered mail" } else { "Drafts" },
+        overview_count: if recovered { m.recovered_mail.len() } else { drafts.len() },
+        actions: [new_draft],
+    ) {
+        sidebar: {
+            ui.NavList(selected: place) {
+                ui.NavItem("drafts", "Drafts", icon: .pencil, count: drafts.len()) {
+                    on select: set(place, "drafts")
                 }
-                overview: {
-                    recovered_mail(m)
+                if not m.recovered_mail.is_empty() {
+                    ui.NavItem("recovered", "Recovered mail", icon: .archive) {
+                        on select: set(place, "recovered")
+                    }
                 }
             }
         }
-    } else if let a = m.accounts.find(x -> x.key == account) {
-        mailboxes(a)
-    } else {
-        unified(m)
+        overview: {
+            // A conversation recovered from the last account stands in the window's overview,
+            // so one a person opens stands in the content beside it rather than over a page
+            // with nothing left to show.
+            if recovered {
+                recovered_mail(m)
+            } else {
+                draft_list(drafts)
+            }
+        }
+        content: {
+            stack(gap: .group) {
+                ui.EmptyState("Add a mail account in Settings", icon: .mail)
+                ui.Link("settings://external_accounts", label: "Add an account in Settings")
+            }
+        }
     }
 }
 
@@ -1225,14 +1521,28 @@ view mail(m: Mail) {
 view unified(m: Mail) {
     state query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
-    let title = place_title(m, query)
-    let shown = everywhere(m, query)
+    let drafts = m.drafts.matching("is:drafts")
+    let title = if query == "is:drafts" { "Drafts" } else { place_title(m, query) }
+    let shown: List<Thread> = if query == "is:drafts" or query == "recovered" {
+        []
+    } else { everywhere(m, query) }
+    let waiting = waiting_to_go(m)
     ui.NavShell(
         content_kind: .document,
-        title: if query == "recovered" { "Recovered mail" } else { title },
+        title: if query == "recovered" {
+            "Recovered mail"
+        } else if query == "outbox" { "Outbox" } else { title },
         sidebar_title: "All accounts",
-        overview_title: if query == "recovered" { "Recovered mail" } else { title },
-        overview_count: if query == "recovered" { m.recovered_mail.len() } else { shown.len() },
+        overview_title: if query == "recovered" {
+            "Recovered mail"
+        } else if query == "is:drafts" {
+            "Drafts"
+        } else if query == "outbox" { "Outbox" } else { title },
+        overview_count: if query == "is:drafts" {
+            drafts.len()
+        } else if query == "recovered" {
+            m.recovered_mail.len()
+        } else if query == "outbox" { waiting.len() } else { shown.len() },
         actions: [new_draft],
     ) {
         sidebar_actions: {
@@ -1250,9 +1560,17 @@ view unified(m: Mail) {
                 ui.NavItem("all", "All mail", icon: .mail) {
                     on select: set(query, "")
                 }
+                ui.NavItem("is:drafts", "Drafts", icon: .pencil, count: drafts.len()) {
+                    on select: set(query, "is:drafts")
+                }
                 if not m.recovered_mail.is_empty() {
                     ui.NavItem("recovered", "Recovered mail", icon: .archive) {
                         on select: set(query, "recovered")
+                    }
+                }
+                if not waiting.is_empty() {
+                    ui.NavItem("outbox", "Outbox", icon: .send, count: waiting.len()) {
+                        on select: set(query, "outbox")
                     }
                 }
                 if not m.labels.is_empty() {
@@ -1282,9 +1600,21 @@ view unified(m: Mail) {
         }
         overview: {
             // Every account's mail of the place is one list, so a conversation of any of them
-            // stands in it, and what each account's server says of itself is said over it.
-            if query == "recovered" {
+            // stands in it, and what each account's server says of itself is said over it. The
+            // drafts need no account, so they stand in the same window.
+            if query == "is:drafts" {
+                draft_list(drafts)
+            } else if query == "recovered" {
                 recovered_mail(m)
+            } else if query == "outbox" {
+                outbox(m)
+            } else if query == "is:trash" {
+                stack(fill, gap: .none) {
+                    for acct in m.accounts {
+                        trash_bar(acct)
+                    }
+                    accounts_threads(m, shown, query)
+                }
             } else {
                 accounts_threads(m, shown, query)
             }
@@ -1293,7 +1623,61 @@ view unified(m: Mail) {
 }
 
 view recovered_mail(m: Mail) {
-    thread_list(m.recovered_mail.matching(""))
+    thread_list(m.recovered_mail.matching(""), more: .none)
+}
+
+/// What waits in the outbox: the messages that were sent and nothing carried them out yet, and
+/// the ones the account's server refused, whichever account they go from.
+fn waiting_to_go(m: Mail) -> List<Draft> {
+    m.drafts.matching("is:outbox").filter(d -> delivery(d)?.state != "sent")
+}
+
+/// The outbox as a place of its own: every message that waits to go, how it stands, and the
+/// presses that take one back or try a refused one again.
+view outbox(m: Mail) {
+    outbox_list(waiting_to_go(m))
+}
+
+view outbox_list(waiting: List<Draft>) {
+    if waiting.is_empty() {
+        ui.EmptyState("Nothing is waiting to be sent", icon: .send)
+    } else {
+        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+            on select(x: Draft): open(x, front: false)
+            on activate(x: Draft): open(x)
+            for d in waiting {
+                ui.ListItem(item: d) {
+                    draft_row(d)
+                }
+            }
+        }
+    }
+}
+
+/// Emptying the trash, behind a confirmation: nothing undoes it, so the first press says what
+/// it would do and the second does it.
+view trash_bar(a: Account) {
+    state confirming: Bool
+    let trashed = a.threads.matching("is:trash")
+    if not trashed.is_empty() {
+        stack(padding: .group) {
+            ui.Banner(
+                if confirming {
+                    "Delete {trashed.len()} conversations permanently?"
+                } else { "Empty the trash" },
+                message: if confirming {
+                    "This can't be undone."
+                } else {
+                    "Every conversation in it is deleted from this mailbox and the server."
+                },
+                kind: if confirming { .error } else { .neutral },
+                icon: .trash,
+                action: if confirming { "Delete permanently" } else { "Empty trash" },
+            ) {
+                on act: if confirming { empty_trash(a) } else { set(confirming, true) }
+            }
+        }
+    }
 }
 
 /// The workspace's mail, with every account's inbox in one
@@ -1319,14 +1703,24 @@ fn everywhere(m: Mail, query: Text) -> List<Thread> {
 
 /// Every account's conversations of the place `query` as one list, newest first: what a window
 /// over all the accounts lists, so a conversation of any of them stands in it and counts with
-/// the rest. Under the list, each account whose mailbox holds more on its server says so, and the
-/// page before what is here is read from it.
+/// the rest. The list reads the page before it from the server of the first account whose
+/// mailbox holds more as the person reaches its end, and under it each such account still says
+/// so with a button.
 view accounts_threads(m: Mail, shown: List<Thread>, query: Text) {
+    // The account whose page the list reads as the person reaches its end: the first whose
+    // server holds more, or, once all of them are read, the first whose mailboxes hold the
+    // place, so the list stands as the person left it rather than being built again.
+    let held = m.accounts.find(a -> a.mailboxes.any(b -> "is:{b.key}" == query))
+    let next = m.accounts.find(a -> a.mailboxes.any(b -> "is:{b.key}" == query and b.more)) ?? held
     stack(fill, gap: .none) {
         for a in m.accounts {
             account_notice(a)
         }
-        thread_list(shown, fill)
+        if let a = next, b = mailbox_place(a, query) {
+            thread_list(shown, fill: true, more: .some(older_messages(b)))
+        } else {
+            thread_list(shown, fill: true, more: .none)
+        }
         for a in m.accounts {
             if let b = mailbox_place(a, query) {
                 if b.more {
@@ -1349,13 +1743,19 @@ fn mailbox_place(a: Account, query: Text) -> Option<Mailbox> {
 
 /// Conversations of the account `a` as a list, under what its server says of itself, and
 /// `Try again` asks the server that account reads from. The notice keeps its own gutter, so the
-/// list stands under it with none between. When the mailbox `a`'s place shows holds more on the
-/// server than here, the list's foot reads the page before what it shows.
+/// list stands under it with none between. When the place `query` is one of its mailboxes, the
+/// list reads the page before it as the person reaches its end, and the button under it does
+/// the same for a person who reaches its end with the keyboard.
 view account_threads(a: Account, shown: List<Thread>, query: Text) {
+    let place = mailbox_place(a, query)
     stack(fill, gap: .none) {
         account_notice(a)
-        thread_list(shown, fill)
-        if let b = mailbox_place(a, query) {
+        if let b = place {
+            thread_list(shown, fill: true, more: .some(older_messages(b)))
+        } else {
+            thread_list(shown, fill: true, more: .none)
+        }
+        if let b = place {
             if b.more {
                 row {
                     spacer()
@@ -1421,7 +1821,14 @@ view mailboxes(a: Account) {
             }
         }
         overview: {
-            account_threads(a, shown, query)
+            if query == "is:trash" {
+                stack(fill, gap: .none) {
+                    trash_bar(a)
+                    account_threads(a, shown, query)
+                }
+            } else {
+                account_threads(a, shown, query)
+            }
         }
     }
 }
@@ -1453,17 +1860,31 @@ fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
 /// opens, its actions on its menu and the destructive one on its swipe; "Nothing here" when
 /// there are none. More than one row is chosen at a time — Ctrl+A chooses the whole list — and
 /// the window's bar runs what the chosen ones' menus offer as one command over all of them, so
-/// archiving, trashing, reading or deleting for good takes one press and one undo.
-view thread_list(shown: List<Thread>) {
+/// archiving, trashing, reading or deleting for good takes one press and one undo. A place whose
+/// server holds more reads the page before the rows as the person reaches the list's end
+/// (`more`); the button the place puts under the list asks the same, for a person who reaches
+/// the end with the keyboard or a reader.
+view thread_list(shown: List<Thread>, more: Option<Action>) {
     if shown.is_empty() {
         ui.EmptyState("Nothing here", icon: .inbox)
+    } else if let next = more {
+        ui.VirtualList(selection_follows_focus: true, multi_select: true, in_column: true) {
+            on select(x: Thread): open(x, front: false)
+            on activate(x: Thread): open(x)
+            on end: next
+            for x in shown {
+                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
+                    thread_row(x)
+                }
+            }
+        }
     } else {
         ui.VirtualList(selection_follows_focus: true, multi_select: true, in_column: true) {
             on select(x: Thread): open(x, front: false)
             on activate(x: Thread): open(x)
             for x in shown {
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                    thread_row(x)
+                    thread_item(x)
                 }
             }
         }
@@ -1471,14 +1892,55 @@ view thread_list(shown: List<Thread>) {
 }
 
 /// One conversation in a list: who wrote, the subject, the start of the newest message and
-/// when it came.
+/// when it came; flagged, unread, or carrying files.
 view thread_row(t: Thread) {
     row(
         t.senders,
-        secondary: t.subject,
+        secondary: if t.snippet == "" { t.subject } else { "{t.subject} – {t.snippet}" },
         meta: t.latest,
-        mark: if t.flagged { .flag } else if t.unread { .mail },
+        mark: if t.flagged {
+            .flag
+        } else if t.unread {
+            .mail
+        } else if t.messages.any(m -> not m.attachments.is_empty()) { .paperclip },
     )
+}
+
+/// A conversation's item in the list: its row, and the preview of its newest message, which
+/// shows what it says without opening the conversation, so reading it marks nothing read.
+view thread_item(t: Thread) {
+    thread_row(t)
+    if let m = t.messages.last() {
+        ui.HoverToolbar {
+            ui.Button("Preview", icon: .eye, icon_only: true) {
+                on press: open(m, view: inspect)
+            }
+        }
+        ui.ContextMenu {
+            ui.MenuItem("Preview", icon: .eye) {
+                on choose: open(m, view: inspect)
+            }
+        }
+    }
+}
+
+/// The messages being written, as the Drafts place lists them: each a row that opens the draft
+/// beside it. The list asks for the rows in view, so a workspace with years of drafts opens as
+/// fast as one with a few.
+view draft_list(shown: List<Draft>) {
+    if shown.is_empty() {
+        ui.EmptyState("No drafts", icon: .pencil)
+    } else {
+        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+            on select(x: Draft): open(x, front: false)
+            on activate(x: Draft): open(x)
+            for x in shown {
+                ui.ListItem(item: x) {
+                    draft_row(x)
+                }
+            }
+        }
+    }
 }
 
 /// One message being written in a list: its subject and who it goes to.
@@ -1520,30 +1982,72 @@ fn can_undo(d: Draft) -> Bool {
 }
 
 /// A conversation's window: its subject, then every message in order with who wrote it, to
-/// whom and when, what it says and what came with it, and a reply at the foot.
+/// whom and when, what it says and what came with it, and a reply at the foot. A conversation
+/// in the trash offers to delete it permanently, behind a confirmation, since nothing undoes it.
 view conversation(t: Thread) {
     state draft: Text
+    state confirming: Bool
+    // A conversation no account of this workspace sent has nothing to reply from, so its window
+    // keeps no reply bar rather than an empty one.
+    let answered = can_answer(t)
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
-            // A conversation no account of this workspace sent has nothing to reply from, so
-            // its window keeps no reply bar rather than an empty one.
-            if can_answer(t) {
+            if answered {
                 ui.Docked {
+                    // The offer to delete it for good stays above the reply bar, at the window's
+                    // foot, so the messages keep the room they need.
                     foot: {
-                        row {
-                            ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
-                                on submit: answer(t, draft).then(set(draft, ""))
+                        stack(gap: .none) {
+                            if t.boxes.any(b -> b == "trash") {
+                                trash_offer(t, confirming)
                             }
-                            ui.Button("Reply", icon: .send, icon_only: true) {
-                                on press: answer(t, draft).then(set(draft, ""))
-                            }
+                            reply_bar(t, draft)
                         }
                     }
                     conversation_messages(t)
                 }
             } else {
-                conversation_messages(t)
+                stack(fill, gap: .none) {
+                    if t.boxes.any(b -> b == "trash") {
+                        trash_offer(t, confirming)
+                    }
+                    conversation_messages(t)
+                }
             }
+        }
+    }
+}
+
+/// The offer to delete a trashed conversation for good, behind a confirmation: nothing undoes
+/// it, so the first press says what it would do and the second does it.
+template view trash_offer(t: Thread, confirming: State<Bool>) {
+    stack(padding: .group) {
+        ui.Banner(
+            if confirming {
+                "Delete this conversation permanently?"
+            } else { "It is in the trash" },
+            message: if confirming {
+                "This can't be undone."
+            } else {
+                "It stays here until you delete it permanently."
+            },
+            kind: if confirming { .error } else { .neutral },
+            icon: .trash,
+            action: "Delete permanently",
+        ) {
+            on act: if confirming { purge(t) } else { set(confirming, true) }
+        }
+    }
+}
+
+/// The bar a conversation is answered from: what is typed, and the press that sends it.
+template view reply_bar(t: Thread, draft: State<Text>) {
+    row {
+        ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
+            on submit: answer(t, draft).then(set(draft, ""))
+        }
+        ui.Button("Reply", icon: .send, icon_only: true) {
+            on press: answer(t, draft).then(set(draft, ""))
         }
     }
 }
@@ -1573,6 +2077,7 @@ view message(m: Message) {
     // it: close enough to belong to it, far enough to be a card of its own.
     stack(gap: .section) {
         row(gap: .related, align: .center) {
+            ui.Avatar(name: if m.from_name == "" { m.from } else { m.from_name })
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
             ui.Time(m.received, role: .caption, past: true, secondary: true)
             spacer()
@@ -1613,8 +2118,66 @@ view message(m: Message) {
                     }
                 }
             }
-            if m.attachments != "" {
-                ui.Text("Attached: {m.attachments}", role: .label)
+            if not m.attachments.is_empty() {
+                row(gap: .tight, wrap: true) {
+                    for f in m.attachments {
+                        attachment_chip(m, f)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A file a message came with: its name, which saves it to Files when pressed, or says it is not
+/// downloaded yet.
+view attachment_chip(m: Message, f: File) {
+    if on_device(f) {
+        ui.Chip(f.name, icon: .paperclip) {
+            on press: file.save(attachment(m, f.name), name: f.name)
+        }
+    } else {
+        ui.Chip(std.say("{f.name}, not downloaded"), icon: .paperclip)
+    }
+}
+
+/// One message as it came, shown without its conversation opening: what a person reads before
+/// deciding to answer. Nothing is marked read here, and the sender is told nothing; opening the
+/// conversation is what reads it.
+view inspect(m: Message) {
+    let subject = if m.subject.trim() == "" { "No subject" } else { m.subject }
+    ui.NavShell(content_kind: .page, title: subject) {
+        content: {
+            ui.Scroll {
+                page {
+                    stack(gap: .section) {
+                        if m.unread {
+                            ui.Banner(
+                                "Unread",
+                                message: "It stays unread until its conversation is opened.",
+                                kind: .info,
+                            )
+                        }
+                        row(gap: .related, align: .center) {
+                            ui.Text(
+                                if m.from_name == "" { m.from } else { m.from_name },
+                                role: .subheading,
+                            )
+                            ui.Time(m.received, role: .caption, past: true, secondary: true)
+                        }
+                        ui.Text("to {m.to}", role: .caption, secondary: true)
+                        ui.Card {
+                            ui.Text(as_lines(m.body), role: .body)
+                            if not m.attachments.is_empty() {
+                                row(gap: .tight) {
+                                    for f in m.attachments {
+                                        attachment_chip(m, f)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1655,7 +2218,7 @@ view editor(d: Draft) {
             if mail.accounts.is_empty() {
                 stack(gap: .tight) {
                     text("No mail account to send from")
-                    ui.Link("settings://accounts", label: "Add an account in Settings")
+                    ui.Link("settings://external_accounts", label: "Add an account in Settings")
                 }
             } else if mail.accounts.len() == 1 and sender != .none {
                 if identities_of(sender).is_empty() {
@@ -1743,13 +2306,59 @@ view editor(d: Draft) {
             }
         }
         ui.BlockEditor(bind: d.body, placeholder: "Write your message", format: format_ask)
+        if not d.attachments.is_empty() {
+            row(gap: .tight, wrap: true) {
+                for f in d.attachments {
+                    ui.Chip(f.name, icon: .paperclip) {
+                        on remove: detach(d, f.name)
+                    }
+                }
+            }
+        }
         // The message's own Send: a composer sends from where it is written, and the window's
-        // bar keeps it once for the draft it shows. While `send` would refuse, it stands dimmed
-        // where a person looks for it, saying why in the words of its `require`.
+        // bar keeps it once for the draft it shows. With no account to go from, the way to add
+        // one stands where Send does: pressing it opens the Settings page that adds an account,
+        // and the draft stays as it is. With one, the draft can also be kept in the account's
+        // server Drafts folder for its other mail clients.
         row {
+            ui.Button("Attach", icon: .paperclip) {
+                on press: file.choose(attach(d))
+            }
             spacer()
-            ui.Button("Send", icon: .send) {
-                on press: send(d)
+            if mail.accounts.is_empty() {
+                ui.Link(
+                    "settings://external_accounts",
+                    label: "Add an account to send",
+                    role: .label,
+                )
+            } else {
+                ui.Button("Save in Drafts", icon: .cloud) {
+                    on press: save_to_drafts(mail, d)
+                }
+                ui.Button("Send", icon: .send) {
+                    on press: send(d)
+                }
+            }
+        }
+        // An answer shows the conversation it answers under it, so the person reads what their
+        // message goes into without leaving the draft.
+        if let t = thread_named(mail, d.conversation) {
+            std.after_body {
+                stack(gap: .group) {
+                    ui.Text("This answers {t.subject}", role: .heading)
+                    for m in t.messages {
+                        stack(gap: .tight) {
+                            row(gap: .related, align: .center) {
+                                ui.Text(
+                                    if m.from_name == "" { m.from } else { m.from_name },
+                                    role: .subheading,
+                                )
+                                ui.Time(m.received, role: .caption, past: true, secondary: true)
+                            }
+                            ui.Text(as_lines(m.body), role: .body, secondary: true)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1861,7 +2470,6 @@ scenario "a busy inbox" -> Thread {
             snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
             message_id: "lease@lettings.example",
-            attachments: "Lease 2026.pdf",
             unread: true,
             flagged: true,
             mailbox: "inbox",
@@ -1974,7 +2582,6 @@ scenario "a busy inbox" -> Thread {
             snippet: "The sunset ones came out best.",
             body: "The sunset ones came out best. I put the rest in the shared album.\n\nMia",
             message_id: "photos@mia.example",
-            attachments: "lake-1.jpg\nlake-2.jpg",
             mailbox: "inbox",
         ),
     )
@@ -2002,7 +2609,6 @@ scenario "a busy inbox" -> Thread {
             snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             message_id: "invoice@studio.example",
-            attachments: "Invoice 0612.pdf",
             mailbox: "archive",
         ),
     )
@@ -2087,6 +2693,7 @@ scenario "a reply being written" -> Draft {
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
             in_reply_to: "launch@rivera.example",
             references: "launch@rivera.example",
+            conversation: launch.key,
         ),
     )
 }
@@ -2107,6 +2714,85 @@ scenario "a reply with no account to send it" -> Draft {
 
 /// No account yet: what a first start shows.
 scenario "no account yet" {
+    root Mail
+}
+
+/// A conversation in the trash, and its window: the offer to delete it for good stands over it.
+scenario "a conversation in the trash" -> Account {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox"))
+    a.mailboxes.insert(Mailbox(key: "trash", name: "Trash", role: "trash", total: 1))
+    let t = a.threads.insert(
+        Thread(
+            key: "offer@deals.example",
+            account: a.key,
+            subject: "You have won a cruise",
+            latest: 2026-06-26T03:12,
+            snippet: "Claim your prize within 24 hours.",
+            senders: "Prize Draw",
+            count: 1,
+        ),
+    )
+    t.boxes.add("trash")
+    t.messages.insert(
+        Message(
+            key: "offer@deals.example",
+            account: a.key,
+            subject: "You have won a cruise",
+            from: "win@deals.example",
+            from_name: "Prize Draw",
+            to: "sam@rivera.example",
+            received: 2026-06-26T03:12,
+            snippet: "Claim your prize.",
+            body: "Claim your prize within 24 hours of confirming your card details.",
+            message_id: "offer@deals.example",
+            mailbox: "trash",
+        ),
+    )
+    a
+}
+
+/// Messages waiting to go, and the window's Outbox place over them.
+scenario "messages waiting to go" {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox"))
+    a.mailboxes.insert(Mailbox(key: "sent", name: "Sent", role: "sent"))
+    m.drafts.insert(
+        Draft(
+            from: a.key,
+            to: "grace@hopper.example",
+            subject: "Launch plan",
+            body: "Here is where it stands.",
+            sent: true,
+            send_at: 2026-06-30T18:00,
+        ),
+    )
+    m.drafts.insert(
+        Draft(
+            from: a.key,
+            to: "ada@analytical.example",
+            subject: "Engine notes",
+            body: "Look at the timing.",
+            sent: true,
+            send_at: 2026-06-30T18:00,
+        ),
+    )
     root Mail
 }
 
@@ -2187,7 +2873,6 @@ scenario "an account that cannot be reached" -> Account {
             snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
             message_id: "lease@lettings.example",
-            attachments: "Lease 2026.pdf",
             unread: true,
             flagged: true,
             mailbox: "inbox",
@@ -2296,7 +2981,6 @@ scenario "a mailbox on its own" -> Mailbox {
             snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             message_id: "invoice@studio.example",
-            attachments: "Invoice 0612.pdf",
             mailbox: "archive",
         ),
     )

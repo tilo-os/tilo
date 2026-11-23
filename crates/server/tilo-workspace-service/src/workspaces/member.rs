@@ -38,7 +38,11 @@ use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCo
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
+use super::actions::NAME;
 use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
+
+/// How long naming the person in a workspace they just joined may take.
+const NAMING_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 use crate::workspace_documents::HostCommit;
 
 /// The member copies a device holds: the links of the workspaces it joined,
@@ -481,6 +485,38 @@ impl Workspaces {
         self.inner.member.set_device(device);
     }
 
+    /// Save `change` to the shortcuts of `workspace` as this device's person: a shortcut it
+    /// saves is signed by the device this service signs its own writes as
+    /// ([`Self::signing_device`]), so its triggers fire for that person as one they saved.
+    ///
+    /// # Errors
+    /// The shortcut could not be signed, or the workspace did not take the change.
+    pub async fn change_own_shortcuts(
+        &self,
+        workspace: &str,
+        mut change: tilo_automation::ShortcutChange,
+    ) -> Result<(), String> {
+        if let tilo_automation::ShortcutChange::Save(shortcut) = &mut change {
+            let device = self.signing_device();
+            tilo_peer_state::workspace::sign_saved_shortcut(
+                workspace,
+                shortcut,
+                &device.cert,
+                device.signer.as_ref(),
+            )?;
+        }
+        self.commit_own_membership(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                tilo_peer_state::workspace_membership::SettingsChange::Shortcuts(change),
+            ),
+            None,
+        )
+        .await
+        .map(drop)
+        .map_err(|error| error.to_string())
+    }
+
     /// The device a member copy acts as, when this service serves one.
     pub(super) fn member_identity(&self) -> Result<Arc<MemberDevice>, String> {
         self.inner
@@ -512,6 +548,23 @@ impl Workspaces {
     /// The invitation is not for this device, that device refuses or cannot be
     /// reached, or the copy could not be kept.
     pub async fn join_member(&self, invitation: &str) -> Result<WorkspaceId, String> {
+        self.join_member_as(invitation, None).await
+    }
+
+    /// [`Self::join_member`], and then name the person `name` among the workspace's people
+    /// (else the name the invitation gave them): what its member list and everyone's lists of
+    /// people show for them, rather than this device's label. Asked of the device that let them
+    /// in as the workspace's governance operation, over the device action service, signed as
+    /// this device; a workspace that does not answer keeps the name it admitted them with.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::join_member`].
+    pub async fn join_member_as(
+        &self,
+        invitation: &str,
+        name: Option<&str>,
+    ) -> Result<WorkspaceId, String> {
         let device = self.member_identity()?;
         let now_ns = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
@@ -524,15 +577,24 @@ impl Workspaces {
         if workspace.is_nil() {
             return Err("invitation names no valid workspace".into());
         }
-        let hint = join
+        // A device that holds the workspace's keys, where the invitation names one: only such a
+        // device lets a new member in.
+        let routes: Vec<_> = join
             .grant()
             .transport
             .iter()
-            .find(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1)
+            .filter(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1)
+            .filter_map(|hint| {
+                let (address, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(hint).ok()?;
+                Some((hint.clone(), address))
+            })
+            .collect();
+        let (hint, address) = routes
+            .iter()
+            .find(|(_, address)| address.holds_keys)
+            .or_else(|| routes.first())
             .cloned()
             .ok_or("invitation has no authenticated native Iroh route")?;
-        let (address, _) =
-            WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
         address
             .validate_invitation(join.grant())
             .map_err(|e| e.to_string())?;
@@ -574,7 +636,60 @@ impl Workspaces {
         if bootstrap.workspace_id != workspace {
             return Err("the device admitted this to another workspace".into());
         }
-        self.hold_member(&device, &bootstrap, &hint).await
+        let joined = self.hold_member(&device, &bootstrap, &hint).await?;
+        let name = name
+            .or_else(|| join.grant().invitee_name.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        if let Some(name) = name
+            && let Err(why) = self.name_at(&address.endpoint_addr, joined, name).await
+        {
+            tracing::debug!(%why, "the person is not named in the workspace they joined");
+        }
+        Ok(joined)
+    }
+
+    /// Ask the device at `addr` to name this device's person `name` in `workspace`.
+    async fn name_at(
+        &self,
+        addr: &iroh::EndpointAddr,
+        workspace: WorkspaceId,
+        name: &str,
+    ) -> Result<(), String> {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+        let named = workspace.to_string();
+        let remote = Arc::new(self.action_service().remote(
+            &self.inner.host.endpoint,
+            addr,
+            &named,
+        ));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "name".to_owned(),
+            serde_json::Value::String(name.to_owned()),
+        );
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: tilo_actions::remote::workspace_governance_address(&named, NAME),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        match remote.invoke_until_settled(request, NAMING_WITHIN).await {
+            Some(Ok(tilo_actions::InvocationUpdate::Succeeded { .. })) => Ok(()),
+            Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(error.message),
+            Some(Ok(_)) => Err("no answer in time".to_owned()),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("the device is not reached".to_owned()),
+        }
     }
 
     /// Hold the workspace `bootstrap` answers as a member copy, synced with the device `hint`
@@ -1681,16 +1796,14 @@ impl Workspaces {
     pub(super) async fn bind_member(&self, governed: &GovernedWorkspace) -> Result<(), String> {
         let services = &self.inner.host;
         let workspace_id = governed.workspace_id();
-        let runtime_state = crate::workspace_io::get_or_initialize(
+        crate::workspace_io::get_or_initialize(
             &services.workspaces,
             services.access.state_root().to_path_buf(),
             workspace_id,
-            crate::workspace_access::AdmissionMode::Governed,
             crate::peer::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
-        runtime_state.lock().await.governs_here = false;
         Ok(())
     }
 

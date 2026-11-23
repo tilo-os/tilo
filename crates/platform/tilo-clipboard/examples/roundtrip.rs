@@ -10,7 +10,7 @@ fn main() {
     let text = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "tilo-clipboard round trip".into());
-    let clipboard = tilo_clipboard::system();
+    let clipboard = tilo_clipboard::os();
     println!("backend: {}", clipboard.name());
     println!(
         "set: {}",

@@ -1512,9 +1512,7 @@ impl ResourceOperations for PeerView {
         if let Some(started) = ui::host_operation::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
+        let request = op.request();
         if request.type_id != PeerEffect::OPERATION {
             return Ok(None);
         }

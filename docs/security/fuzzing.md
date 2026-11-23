@@ -6,7 +6,7 @@ libFuzzer's sanitizer instrumentation:
 
 - `tapp_ingress`: signed tapp roots plus manifest syntax and semantic policy;
 - `workspace_invitation`: signed workspace invitations, in bytes and as text;
-- `identity_wire`: device certificates, revocations and enrollment tokens.
+- `identity_wire`: device certificates and revocations.
 
 Run one locally with:
 

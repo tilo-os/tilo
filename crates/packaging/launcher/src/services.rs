@@ -30,7 +30,7 @@ pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 /// The session shell's authenticated file chooser (`tilo_dialogs::shell`), served alongside any desktop
 /// portal.
 pub const CHOOSER_SERVICE: &str = "chooser";
-/// The person's clipboard, served by the session to the tilolang app instances it starts: they
+/// The person's clipboard, served by the session to the apps it starts, in either language: they
 /// run with no display of their own, so the selection is not theirs to offer or read.
 pub const CLIPBOARD_SERVICE: &str = "clipboard";
 const CHOOSER_PROTOCOL: u16 = 1;
@@ -75,6 +75,8 @@ const BLOB_CHILD_FD: i32 = 30;
 const IDENTITY_CHILD_FD: i32 = 31;
 /// Slot of the automatic chooser service.
 const CHOOSER_CHILD_FD: i32 = 32;
+/// Slot of the automatic clipboard service.
+const CLIPBOARD_CHILD_FD: i32 = 38;
 /// Where the shell-UI connection every window gets lands in the sandbox.
 const SHELL_UI_CHILD_FD: i32 = 35;
 /// Slot of the automatic render broker connection (`tilo_render_protocol::broker`).
@@ -89,6 +91,7 @@ pub const HANDED_SERVICES: &[&str] = &[
     IDENTITY_SERVICE,
     SHELL_UI_SERVICE,
     CHOOSER_SERVICE,
+    CLIPBOARD_SERVICE,
     COMPAT_SERVICE,
     SYSTEM_SERVICE,
     MODEL_GATEWAY_SERVICE,
@@ -116,6 +119,7 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
+    CLIPBOARD_CHILD_FD,
     SHELL_UI_CHILD_FD,
     RENDER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
@@ -457,6 +461,61 @@ fn resolve_chooser_bind_at(
     }))
 }
 
+/// Connect the clipboard on the app's behalf: the one service a Rust app and a tilolang instance
+/// both reach their copy and paste through.
+///
+/// Inside a Tilo session the session's clipboard answers, so a copy is the person's copy on their
+/// other devices too. Where no session serves one — the person's own macOS, Windows or Linux
+/// desktop, or a dev run outside a session — this process serves the same wire from the operating
+/// system's clipboard ([`tilo_clipboard::os`]) on a thread that lives as long as the app. None
+/// when the launch runs without services, and the app's copies and pastes are then refused.
+pub fn resolve_clipboard_bind(no_services: bool) -> Option<ResolvedService> {
+    if no_services {
+        return None;
+    }
+    let path = socket_for(CLIPBOARD_SERVICE);
+    if path.exists() {
+        return resolve_clipboard_bind_at(&path, false);
+    }
+    serve_os_clipboard()
+}
+
+/// The clipboard this process serves where no session does: the app's end of a socket pair whose
+/// other end answers from the operating system's clipboard.
+fn serve_os_clipboard() -> Option<ResolvedService> {
+    let (app, serving) = UnixStream::pair().ok()?;
+    std::thread::Builder::new()
+        .name("tilo-clipboard-os".into())
+        .spawn(move || {
+            let side = tilo_clipboard::service::BackendSide::new(tilo_clipboard::os());
+            tilo_clipboard::service::serve(serving, &side);
+        })
+        .ok()?;
+    Some(ResolvedService {
+        name: CLIPBOARD_SERVICE.to_string(),
+        host: OwnedFd::from(app),
+        child_fd: CLIPBOARD_CHILD_FD,
+    })
+}
+
+fn resolve_clipboard_bind_at(path: &Path, no_services: bool) -> Option<ResolvedService> {
+    if no_services || !path.exists() {
+        return None;
+    }
+    let stream = match tilo_files::native::socket::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "clipboard service refused connection");
+            return None;
+        }
+    };
+    Some(ResolvedService {
+        name: CLIPBOARD_SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        child_fd: CLIPBOARD_CHILD_FD,
+    })
+}
+
 /// Connect the session's render broker on the app's behalf and name the app and its workspace before
 /// the sandboxed app can write to it: the broker picks the render service that draws the app from this,
 /// never from the app (`tilo_render_protocol::broker`).
@@ -603,17 +662,12 @@ fn write_blob_handoff(
     stream.flush()
 }
 
-/// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
+/// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist: it and every directory made
+/// for it, `tilo` included, this account's alone from the start, as each service of the account
+/// that binds there makes it.
 pub fn ensure_services_root() -> std::io::Result<PathBuf> {
     let root = services_root();
-    std::fs::create_dir_all(&root)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Best-effort tighten: an inherited 0755 from an earlier umask would widen who can reach the
-        // session's services.
-        let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
-    }
+    tilo_files::native::private::directory(&root)?;
     Ok(root)
 }
 
@@ -1365,6 +1419,42 @@ mod tests {
                     )
                     .expect("an absent chooser service gives no connection")
                     .is_none()
+                );
+            }
+            {
+                let dir = tempfile::tempdir().expect("socket dir");
+                let path = dir.path().join("clipboard.sock");
+                assert!(
+                    resolve_clipboard_bind_at(&path, false).is_none(),
+                    "an absent clipboard service degrades"
+                );
+                let listener =
+                    std::os::unix::net::UnixListener::bind(&path).expect("listen");
+                let bind = resolve_clipboard_bind_at(&path, false).expect("clipboard bind");
+                assert_eq!(bind.name, CLIPBOARD_SERVICE);
+                assert_eq!(bind.child_fd, CLIPBOARD_CHILD_FD);
+                assert_eq!(
+                    crate::sandbox::svc_env_var(&bind.name),
+                    "TILO_SVC_CLIPBOARD_FD"
+                );
+                assert!(
+                    resolve_clipboard_bind_at(&path, true).is_none(),
+                    "--no-services refuses the clipboard"
+                );
+                drop(listener);
+            }
+            {
+                // No Tilo session serves the clipboard here: the launcher serves the same wire
+                // from the OS clipboard instead of leaving the app without one.
+                let dir = tempfile::tempdir().expect("runtime");
+                let _env = runtime_dir_env(dir.path());
+                assert!(
+                    resolve_clipboard_bind(false).is_some(),
+                    "without a session the launcher serves the OS clipboard"
+                );
+                assert!(
+                    resolve_clipboard_bind(true).is_none(),
+                    "--no-services still refuses the clipboard"
                 );
             }
             {

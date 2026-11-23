@@ -42,7 +42,6 @@ use tilo_actions::{
 use tilo_resource::{Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
-use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
 use ui_core::portal::PickedContents;
 
 use super::dispatch::Dispatcher;
@@ -173,7 +172,6 @@ pub struct Progress {
     events: Sender<JobEvent>,
     cancelled: Arc<AtomicBool>,
     wake: WakeHandle,
-    ownership: Option<ResourceEffectScope>,
 }
 
 // Written out rather than derived: a derived `clone` is inlined into every
@@ -185,7 +183,6 @@ impl Clone for Progress {
             events: self.events.clone(),
             cancelled: Arc::clone(&self.cancelled),
             wake: self.wake.clone(),
-            ownership: self.ownership.clone(),
         }
     }
 }
@@ -208,47 +205,31 @@ impl Progress {
 
     /// Whether the caller cancelled the job (an effect declared
     /// `cancellable`). A worker checks between units of work and stops; its
-    /// result is discarded. For caller-scoped work this also performs a fresh,
-    /// potentially blocking authority check. Do not call while holding an owner
-    /// store guard that the authority check may need.
+    /// result is discarded.
     pub fn is_cancelled(&self) -> bool {
         self.with_effect(|| Ok(())).is_err()
     }
 
     /// Share the actual job's cancellation flag with blocking native I/O.
-    /// This is explicit cancellation, not authority: callers still use
-    /// [`Self::with_effect`] at work boundaries to recheck current ownership.
     /// Treat the returned flag as read-only.
     #[must_use]
     pub fn cancellation_signal(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancelled)
     }
 
-    /// Recheck the original caller immediately before a unit of external work.
-    /// Blocking workers should use this between units as well as checking
-    /// cancellation. It grants no access to the canonical document.
-    /// The authority check may block; release owner store guards before calling.
+    /// Run a unit of external work unless the job was cancelled. Blocking
+    /// workers use this between units. It grants no access to the canonical
+    /// document.
     ///
     /// # Errors
     ///
-    /// Returns an error if the job was cancelled, the original caller's authority
-    /// lapsed, or the unit of work returned an error.
+    /// Returns an error if the job was cancelled or the unit of work returned
+    /// an error.
     pub fn with_effect<T>(&self, effect: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err("the effect was cancelled".into());
         }
-        let admitted = || {
-            // Authority checks may block while cancellation arrives. Recheck at
-            // the actual work boundary, not only before acquiring authority.
-            if self.cancelled.load(Ordering::Acquire) {
-                return Err("the effect was cancelled".into());
-            }
-            effect()
-        };
-        match &self.ownership {
-            Some(ownership) => ownership.with_effect(admitted),
-            None => admitted(),
-        }
+        effect()
     }
 
     fn fail(&self, error: String) {
@@ -325,7 +306,7 @@ use job::{JobCore, Tracking, track_for};
 /// What [`JobCore::next`] found.
 enum Next {
     Progress(Polled),
-    /// The job failed or lost its ownership: it is over.
+    /// The job failed: it is over.
     Failed(ActionFailure),
     Finished(Box<dyn Any + Send>),
 }
@@ -370,41 +351,12 @@ impl Job {
     }
 }
 
-/// The ownership a job runs under: its worker's, and the invocation's its
-/// completion is checked against.
-struct JobOwnership {
-    worker: Option<ResourceEffectScope>,
-    ownership: Option<ResourceInvocationScope>,
-}
-
-impl JobOwnership {
-    /// The ownership of a job an effect running under `worker` and `ownership`
-    /// starts.
-    #[inline(never)]
-    fn of(
-        worker: Option<&ResourceEffectScope>,
-        ownership: Option<&ResourceInvocationScope>,
-    ) -> Self {
-        Self {
-            worker: worker.cloned(),
-            ownership: ownership.cloned(),
-        }
-    }
-}
-
-/// `ownership` owned, for an effect context to keep.
-#[inline(never)]
-fn owned_scope(ownership: Option<&ResourceInvocationScope>) -> Option<ResourceInvocationScope> {
-    ownership.cloned()
-}
-
 /// Start tracking a job in `started` for `owner`, with the completion
 /// `then`; the [`Progress`] its work reports through. A job already
 /// started there is stopped: an effect runs one job at a time.
 fn track_job(
     started: &mut Option<Job>,
     wake: &WakeHandle,
-    ownership: JobOwnership,
     then: Option<Box<dyn Any>>,
     owner: std::any::TypeId,
     cancel_by: Option<Arc<AtomicBool>>,
@@ -415,7 +367,6 @@ fn track_job(
         events,
         cancelled: Arc::clone(&signals.cancelled),
         wake: wake.clone(),
-        ownership: ownership.worker,
     };
     if let Some(previous) = started.replace(Job {
         core: JobCore::of(
@@ -424,7 +375,6 @@ fn track_job(
                 cancel_by,
                 ..signals
             },
-            ownership.ownership,
         ),
         then,
         owner,
@@ -436,21 +386,18 @@ fn track_job(
 }
 
 /// How an outbox entry, or work a chain owes, starts: `work` given the value
-/// in an effect context of its invocation, under its ownership.
+/// in an effect context of its invocation.
 fn start_entry<R: Resource + 'static, T: 'static>(
     starting: EffectEnv<R>,
     mut work: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
 ) -> StartEntry {
-    Box::new(move |id, value, invocation, ownership| {
+    Box::new(move |id, value, invocation| {
         let Ok(value) = value.downcast::<T>() else {
             return Err("an outbox entry is of another type".into());
         };
-        let mut cx = EffectCx::invoked(
-            starting.clone(),
-            ownership_parts(invocation, owned_scope(ownership))?,
-        );
+        let mut cx = EffectCx::invoked(starting.clone(), Answering::of(invocation));
         let mut value = Some(*value);
-        let answer = run_under(invocation, ownership, &mut || match value.take() {
+        let answer = run_under(invocation, &mut || match value.take() {
             Some(value) => work(id, value, &mut cx),
             None => Err("an outbox entry ran twice".into()),
         });
@@ -458,29 +405,21 @@ fn start_entry<R: Resource + 'static, T: 'static>(
     })
 }
 
-/// Run `run`, a handler or a completion, for `invocation` and under
-/// `ownership` when it has one: it fails once the ownership is gone.
+/// Run `run`, a handler or a completion, for `invocation`.
 fn run_under(
     invocation: Option<InvocationId>,
-    ownership: Option<&ResourceInvocationScope>,
     run: &mut dyn FnMut() -> EffectAnswer,
 ) -> EffectAnswer {
     let _acting = ActingFor::enter(invocation);
-    match ownership {
-        Some(ownership) => ownership
-            .with_effect(run)
-            .and_then(|answer| ownership.check().map(|()| answer)),
-        None => run(),
-    }
+    run()
 }
 
-/// A job's completion run: the completion, what the job finished with, its
-/// ownership and the invocation it answers; what it answered and the job it
+/// A job's completion run: the completion, what the job finished with and
+/// the invocation it answers; what it answered and the job it
 /// chained, if any.
 type Complete<'a> = dyn FnMut(
         Box<dyn Any>,
         Box<dyn Any + Send>,
-        Option<ResourceInvocationScope>,
         Option<InvocationId>,
     ) -> Result<(EffectAnswer, Option<Job>), String>
     + 'a;
@@ -492,24 +431,18 @@ fn complete<R: Resource, H: 'static>(
     host: &mut H,
     then: Box<dyn Any>,
     value: Box<dyn Any + Send>,
-    ownership: Option<ResourceInvocationScope>,
     invocation: Option<InvocationId>,
 ) -> Result<(EffectAnswer, Option<Job>), String> {
     let Ok(then) = then.downcast::<Then<R, H>>() else {
         return Err("a job's completion is of another type".into());
     };
-    let scope = owned_scope(ownership.as_ref());
-    let mut cx = EffectCx::<R, H>::invoked(env.clone(), ownership_parts(invocation, ownership)?);
+    let mut cx = EffectCx::<R, H>::invoked(env.clone(), Answering::of(invocation));
     let mut then = Some(*then);
     let mut value = Some(value);
-    let answer = run_under(
-        invocation,
-        scope.as_ref(),
-        &mut || match (then.take(), value.take()) {
-            (Some(then), Some(value)) => then(host, value, &mut cx),
-            _ => Err("a job's completion ran twice".into()),
-        },
-    );
+    let answer = run_under(invocation, &mut || match (then.take(), value.take()) {
+        (Some(then), Some(value)) => then(host, value, &mut cx),
+        _ => Err("a job's completion ran twice".into()),
+    });
     Ok((answer, cx.inv.started.take()))
 }
 
@@ -590,8 +523,6 @@ struct Answering {
     document: Option<Rc<RefCell<tilo_resource::Doc>>>,
     /// The lent document's heads, taken when it was lent.
     heads: Vec<ui_core::automerge::ChangeHash>,
-    ownership: Option<ResourceInvocationScope>,
-    worker_ownership: Option<ResourceEffectScope>,
     /// The invocation the host delivered for someone that this answers:
     /// what another resource's action this effect calls continues
     /// ([`EffectCx::call`]). `None` for the person at this device acting
@@ -615,8 +546,6 @@ impl Answering {
             started: None,
             document: None,
             heads: Vec::new(),
-            ownership: None,
-            worker_ownership: None,
             delivered: None,
             target: None,
             place: None,
@@ -690,7 +619,7 @@ type BoxedFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Box<dyn An
 /// An effect's blocking work, its output boxed.
 type BoxedWork = Box<dyn FnOnce(Progress) -> Box<dyn Any + Send> + Send>;
 
-/// Run an effect's future on the app runtime, polled under its ownership, and
+/// Run an effect's future on the app runtime, stopped once cancelled, and
 /// deliver what it finished with. Every effect's future runs through this
 /// one function and task type.
 fn spawn_future(progress: Progress, future: BoxedFuture) -> ui_core::rt::JoinHandle<()> {
@@ -712,7 +641,7 @@ fn spawn_future(progress: Progress, future: BoxedFuture) -> ui_core::rt::JoinHan
 }
 
 /// Run an effect's blocking work on the app runtime's blocking threads,
-/// under its ownership, and deliver what it finished with ([`spawn_future`]).
+/// unless cancelled, and deliver what it finished with ([`spawn_future`]).
 fn spawn_work(progress: Progress, work: BoxedWork) -> ui_core::rt::JoinHandle<()> {
     ui_core::rt::app().spawn_blocking(move || {
         match progress.with_effect(|| Ok(work(progress.clone()))) {
@@ -731,12 +660,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         }
     }
 
-    /// The context of the invocation `parts` describe.
-    fn invoked(mut env: EffectEnv<R>, parts: InvocationParts) -> Self {
-        let InvocationParts { inv, lent } = parts;
-        if let Some(scope) = lent {
-            env.dispatch = env.dispatch.for_ownership(scope);
-        }
+    /// The context of the invocation `inv` describes.
+    fn invoked(env: EffectEnv<R>, inv: Answering) -> Self {
         Self {
             env,
             inv,
@@ -810,7 +735,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// window when it is not that person: what a change it makes elsewhere names as its author.
     /// `None` for work no invocation started.
     pub fn invoker(&self) -> Option<tilo_actions::ActionInvoker> {
-        let invoker = self.inv.ownership.as_ref()?.invoker();
+        let invoker = ui_core::invocation_scope::current_invoker()?;
         if invoker.acting.is_person() || !invoker.acting.acted_for.is_empty() {
             return Some(invoker);
         }
@@ -853,9 +778,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         operation: registry_types::ExternalModerationOperation,
     ) -> Result<ui_core::invocation_scope::ExternalModerationFuture, String> {
-        if let Some(ownership) = &self.inv.ownership {
-            return ownership.external_moderation(operation);
-        }
         let target = self
             .inv
             .target
@@ -879,9 +801,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         check_id: &str,
     ) -> Result<ui_core::invocation_scope::ApprovedCheckFuture, String> {
-        if let Some(ownership) = &self.inv.ownership {
-            return ownership.approved_check(check_id);
-        }
         let target = self
             .inv
             .target
@@ -910,24 +829,20 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         + use<R, H>,
         String,
     > {
-        let checked = if let Some(ownership) = &self.inv.ownership {
-            ownership.approved_check_reported(check_id)?
-        } else {
-            let target = self
-                .inv
-                .target
-                .as_ref()
-                .ok_or("approved checks require an exact dispatched record target")?;
-            if target.route().app_id != self.env.dispatch.app_id() {
-                return Err("approved check dispatch app changed".into());
-            }
-            target.approved_check_reported(
-                self.inv
-                    .invocation
-                    .ok_or("approved checks require a dispatched invocation")?,
-                check_id,
-            )?
-        };
+        let target = self
+            .inv
+            .target
+            .as_ref()
+            .ok_or("approved checks require an exact dispatched record target")?;
+        if target.route().app_id != self.env.dispatch.app_id() {
+            return Err("approved check dispatch app changed".into());
+        }
+        let checked = target.approved_check_reported(
+            self.inv
+                .invocation
+                .ok_or("approved checks require a dispatched invocation")?,
+            check_id,
+        )?;
         Ok(move |progress: Progress| attach_approved_check_reporter(checked, progress))
     }
 
@@ -941,8 +856,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             &mut Tracking {
                 started: &mut self.inv.started,
                 wake: &self.env.wake,
-                worker: self.inv.worker_ownership.as_ref(),
-                ownership: self.inv.ownership.as_ref(),
                 scope: self.env.scope.as_ref(),
                 cancel_by: self.inv.cancel_by.as_ref(),
                 owner: std::any::TypeId::of::<Then<R, H>>(),
@@ -1039,8 +952,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Answer later, then settle the successful receipt on the UI thread
     /// under this effect's retained invocation. Refusal skips the completion
-    /// and preserves its structured failure. Cancellation and current ownership
-    /// are checked by the same job path as [`Self::spawn`].
+    /// and preserves its structured failure. Cancellation is checked by the same job path as [`Self::spawn`].
     pub fn reply_then(
         &mut self,
         then: impl FnOnce(&mut H, ActionOutput, &mut Self) -> EffectAnswer + 'static,
@@ -1285,9 +1197,7 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
             &self.jobs.queue,
             &mut self.running,
             std::any::TypeId::of::<Then<R, H>>(),
-            &mut |then, value, ownership, invocation| {
-                complete::<R, H>(&env, host, then, value, ownership, invocation)
-            },
+            &mut |then, value, invocation| complete::<R, H>(&env, host, then, value, invocation),
         );
     }
 }
@@ -1584,7 +1494,7 @@ impl<K: JobKey> Running<K> {
         let Some(then) = job.then else {
             return Some(answered(value));
         };
-        let (answer, next) = match complete(then, value, job.core.ownership, invocation) {
+        let (answer, next) = match complete(then, value, invocation) {
             Ok(completed) => completed,
             Err(error) => return Some(Polled::Finished(Some(Err(failure(error))))),
         };
@@ -1667,11 +1577,10 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         doc: Option<&tilo_resource::Doc>,
         handle: impl FnOnce(&mut H, E, &mut EffectCx<R, H>) -> EffectAnswer,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let (request, ownership) = op.with_ownership();
+        let request = op.request();
         if request.type_id != E::OPERATION {
             return Ok(None);
         }
-        op.check()?;
         let effect = E::from_payload(request.payload).map_err(|error| error.to_string())?;
         let id = effect.id();
         let declaration = E::declaration(id);
@@ -1690,17 +1599,12 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 tilo_actions::ActionOutput::default(),
             )));
         }
-        let parts = invocation_parts(op, doc, place.clone())?;
-        let mut cx = EffectCx::invoked(self.env.clone(), parts);
+        let mut cx = EffectCx::invoked(self.env.clone(), invocation_parts(op, doc, place.clone()));
         let mut handling = Some((handle, effect));
-        let answer = run_under(
-            Some(request.invocation),
-            ownership,
-            &mut || match handling.take() {
-                Some((handle, effect)) => handle(host, effect, &mut cx),
-                None => Err("an effect's handler ran twice".into()),
-            },
-        );
+        let answer = run_under(Some(request.invocation), &mut || match handling.take() {
+            Some((handle, effect)) => handle(host, effect, &mut cx),
+            None => Err("an effect's handler ran twice".into()),
+        });
         cx.inv.document = None;
         let live = &self.env.live;
         finish_start(
@@ -1715,8 +1619,6 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             Tracking {
                 started: &mut cx.inv.started,
                 wake: &cx.env.wake,
-                worker: cx.inv.worker_ownership.as_ref(),
-                ownership: cx.inv.ownership.as_ref(),
                 scope: cx.env.scope.as_ref(),
                 cancel_by: cx.inv.cancel_by.as_ref(),
                 owner: std::any::TypeId::of::<Then<R, H>>(),
@@ -1739,22 +1641,9 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             &mut self.jobs,
             invocation,
             cancel,
-            &mut |then, value, ownership, invocation| {
-                complete::<R, H>(env, host, then, value, ownership, invocation)
-            },
+            &mut |then, value, invocation| complete::<R, H>(env, host, then, value, invocation),
         )
     }
-}
-
-/// The scope a worker runs under for `ownership`, and the ownership the
-/// effect's dispatcher keeps.
-fn ownership_scopes(
-    ownership: Option<&ResourceInvocationScope>,
-) -> Result<(Option<ResourceEffectScope>, Option<ResourceInvocationScope>), String> {
-    let Some(ownership) = ownership else {
-        return Ok((None, None));
-    };
-    Ok((Some(ownership.effect_scope()?), Some(ownership.clone())))
 }
 
 /// A snapshot of `doc` to lend an effect's handler, and its heads.
@@ -1862,63 +1751,32 @@ fn settle_start(
     }
 }
 
-/// What an invoked effect's context holds besides its resource, made
-/// outside the generic code so it is compiled once.
-struct InvocationParts {
-    inv: Answering,
-    /// The ownership the effect's dispatcher keeps, when it has one.
-    lent: Option<ResourceInvocationScope>,
-}
-
-/// The parts of the context of an effect invoked by `op`, told to act at
-/// `place`, reading `doc`.
+/// What the context of an effect invoked by `op`, told to act at `place`,
+/// reading `doc`, holds besides its resource; made outside the generic code
+/// so it is compiled once.
 #[inline(never)]
 fn invocation_parts(
     op: &ResourceOperation<'_>,
     doc: Option<&tilo_resource::Doc>,
     place: Option<tilo_resource::Place>,
-) -> Result<InvocationParts, String> {
-    let (request, ownership) = op.with_ownership();
-    let ownership = owned_scope(ownership);
-    let (worker_ownership, lent) = ownership_scopes(ownership.as_ref())?;
-    let delivered = ownership
-        .as_ref()
-        .map(ResourceInvocationScope::invocation)
-        .or_else(ui_core::invocation_scope::delivered_invocation)
+) -> Answering {
+    let request = op.request();
+    let delivered = ui_core::invocation_scope::delivered_invocation()
         .filter(|delivered| *delivered == request.invocation);
     // Keep an immutable snapshot for this effect invocation, including any
     // pending edits. The effect may also read a historical version; neither
     // read borrows the author's document mutably.
     let (document, heads) = lend(doc);
-    Ok(InvocationParts {
-        inv: Answering {
-            invocation: Some(request.invocation),
-            started: None,
-            document,
-            heads,
-            ownership,
-            worker_ownership,
-            delivered,
-            target: op.target().cloned(),
-            place,
-            cancel_by: None,
-        },
-        lent,
-    })
-}
-
-/// The parts of the context of a completion or an outbox entry run for
-/// `invocation`, under `ownership`: no document, target or place.
-#[inline(never)]
-fn ownership_parts(
-    invocation: Option<InvocationId>,
-    ownership: Option<ResourceInvocationScope>,
-) -> Result<InvocationParts, String> {
-    let (worker_ownership, lent) = ownership_scopes(ownership.as_ref())?;
-    let mut inv = Answering::of(invocation);
-    inv.ownership = ownership;
-    inv.worker_ownership = worker_ownership;
-    Ok(InvocationParts { inv, lent })
+    Answering {
+        invocation: Some(request.invocation),
+        started: None,
+        document,
+        heads,
+        delivered,
+        target: op.target().cloned(),
+        place,
+        cancel_by: None,
+    }
 }
 
 /// Start in `jobs` what an effect's handler answered ([`settle_start`]),
@@ -1938,8 +1796,6 @@ fn finish_start(
     let Tracking {
         started,
         wake,
-        worker,
-        ownership,
         scope,
         cancel_by,
         owner,
@@ -1952,8 +1808,6 @@ fn finish_start(
                 &mut Tracking {
                     started: &mut *started,
                     wake,
-                    worker,
-                    ownership,
                     scope,
                     cancel_by,
                     owner,
@@ -2122,14 +1976,13 @@ trait Drainer {
 /// The pending entries a resource state (as `&dyn Any`) holds that this
 /// device owns, each boxed; `None` for the state of another resource.
 type OwnedEntries = Box<dyn Fn(&dyn Any) -> Option<Vec<(Id, Box<dyn Any>)>>>;
-/// Run one entry (boxed) as an invocation under an ownership: what it answered
-/// and the job it started.
+/// Run one entry (boxed) as an invocation: what it answered and the job it
+/// started.
 type StartEntry = Box<
     dyn FnMut(
         &Id,
         Box<dyn Any>,
         Option<InvocationId>,
-        Option<&ResourceInvocationScope>,
     ) -> Result<(EffectAnswer, Option<Job>), String>,
 >;
 /// How an entry's handler answer settles it: the settle edit and what to
@@ -2271,16 +2124,15 @@ impl OutboxDrain {
         (self.owned)(state)
     }
 
-    /// Run `value` (the entry `id`) as `invocation`, under its ownership when
-    /// it has one. Whether it finished at once.
+    /// Run `value` (the entry `id`) as `invocation`. Whether it finished at
+    /// once.
     fn start_entry(
         &mut self,
         id: Id,
         value: Box<dyn Any>,
         invocation: Option<InvocationId>,
-        ownership: Option<&ResourceInvocationScope>,
     ) -> Result<(), String> {
-        let (answer, started) = (self.start)(&id, value, invocation, ownership)?;
+        let (answer, started) = (self.start)(&id, value, invocation)?;
         match (answer, started) {
             (Ok(Effected::Pending), Some(started)) => self.jobs.insert(id, started),
             (answer, started) => {
@@ -2317,7 +2169,7 @@ impl Drainer for OutboxDrain {
             {
                 continue;
             }
-            if let Err(error) = self.start_entry(id, value, None, None) {
+            if let Err(error) = self.start_entry(id, value, None) {
                 tracing::warn!(%error, kind = self.kind, "an outbox entry did not start");
             }
         }
@@ -2589,10 +2441,9 @@ impl<R: Resource> Effects<R> {
             Ok(Some((apply, told)))
         });
         let completing = env;
-        let complete: Box<Complete<'static>> =
-            Box::new(move |then, value, ownership, invocation| {
-                complete::<R, ()>(&completing, &mut (), then, value, ownership, invocation)
-            });
+        let complete: Box<Complete<'static>> = Box::new(move |then, value, invocation| {
+            complete::<R, ()>(&completing, &mut (), then, value, invocation)
+        });
         let drain = Rc::new(RefCell::new(OutboxDrain {
             kind: R::KIND,
             owned,
@@ -2697,10 +2548,9 @@ impl<R: Resource> Effects<R> {
             None => Ok(None),
         });
         let completing = env;
-        let complete: Box<Complete<'static>> =
-            Box::new(move |then, value, ownership, invocation| {
-                complete::<R, ()>(&completing, &mut (), then, value, ownership, invocation)
-            });
+        let complete: Box<Complete<'static>> = Box::new(move |then, value, invocation| {
+            complete::<R, ()>(&completing, &mut (), then, value, invocation)
+        });
         let drain = Rc::new(RefCell::new(OutboxDrain {
             kind: P::KIND,
             owned: pending_of,
@@ -2755,7 +2605,7 @@ impl<R: Resource> Effects<R> {
         doc: &tilo_resource::Doc,
         view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        let operation = op.with_ownership().0.type_id;
+        let operation = op.request().type_id;
         self.with_handlers(|handlers| {
             for entry in handlers {
                 if operation == entry.operation

@@ -37,14 +37,15 @@ impl DesktopHandle {
     }
 
     /// Whether a window the shell draws shows `item` of `app` in the tab in front, as of the last
-    /// layout: the window it opened on ([`tilo_desktop_model::Tab::view`]) stands on screen, so
+    /// layout: the window it opened on ([`DesktopHandle::set_window_items`]) stands on screen, so
     /// what lands in the item is before the person.
     #[must_use]
     pub fn shows_item(&self, app: &str, item: &str) -> bool {
         let shown = self.shown_tabs();
+        let items = self.shared.borrow().items.clone();
         self.read(|tree| {
             tree.tabs().any(|tab| {
-                tab.view == item
+                items.get(&tab.id).is_some_and(|opened| opened == item)
                     && shown.iter().any(|(id, _)| *id == tab.id)
                     && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
                         .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))

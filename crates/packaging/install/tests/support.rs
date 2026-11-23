@@ -39,12 +39,19 @@ pub fn build_tapp(
 /// environment, the XDG dirs or `HOME` gets in.
 pub fn cmd(home: &Path) -> Command {
     let mut cmd = Command::new(install_bin());
+    offline(&mut cmd, &home.join("data"));
     cmd.env_clear();
     cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
     cmd.env("XDG_CONFIG_HOME", home.join("config"));
     cmd.env("XDG_DATA_HOME", home.join("data"));
     cmd.env("HOME", home);
     cmd
+}
+
+/// Changes `cmd` makes go to the store under `data_home` in its own process, the way an image build
+/// makes them: the package service runs the same change, and its own tests drive it there.
+pub fn offline(cmd: &mut Command, data_home: &Path) {
+    cmd.arg("--offline-store").arg(data_home.join("tilo-apps"));
 }
 
 pub fn run(mut cmd: Command) -> (bool, String, String) {

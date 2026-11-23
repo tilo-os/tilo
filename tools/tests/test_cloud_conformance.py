@@ -55,7 +55,7 @@ class CloudConformance(unittest.TestCase):
         result, record = self.run_live("2", LIVE)
         self.assertEqual(result.returncode, 0, result.stderr)
         cwd, *args = record.read_text().splitlines()
-        self.assertEqual(Path(cwd).resolve(), (ROOT / "crates/system/cloud-source-dav").resolve())
+        self.assertEqual(Path(cwd).resolve(), (ROOT / "crates/integrations/cloud-source-dav").resolve())
         self.assertEqual(args, ["live_", "--nocapture", "--test-threads=1"])
 
     def test_live_fails_on_each_missing_or_empty_secret(self) -> None:

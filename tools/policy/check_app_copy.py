@@ -349,7 +349,7 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
     return readers
 
 
-TOOLKIT = "crates/sdk/ui-core"
+TOOLKIT = "crates/ui/ui-core"
 # Crates whose copy keys also travel through conditionals and tables, by the
 # namespaces their code picks keys in (`None`: every namespace of their own
 # catalogue). Settings picks across its whole catalogue; the desktop surface
@@ -362,7 +362,7 @@ INDIRECT = {
 # Catalogues a crate's resolver falls back to after its own: Settings' `t`
 # resolves the shared provider administration copy it embeds
 # (apps/settings/src/i18n.rs).
-FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
+FALLBACK = {"apps/settings": ["crates/integrations/provider-settings-ui"]}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:

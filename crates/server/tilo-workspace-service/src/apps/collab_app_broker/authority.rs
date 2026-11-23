@@ -13,9 +13,6 @@ pub(crate) struct VerifiedActionCaller {
     pub(super) presentation: Vec<u8>,
     pub(super) policy_time: Option<crate::apps::policy_clock::PolicyTime>,
     pub(super) admitted: AdmittedJoinIdentity,
-    /// The agent this person's own device handed the session to, kept
-    /// across every re-verification of the person's admission.
-    pub(super) delegated: Option<String>,
     /// A keyless native projection verified against protected device identity.
     /// Only `certified_native_action_provider` sets this; signed/network evidence
     /// alone never establishes physical intent.
@@ -23,29 +20,10 @@ pub(crate) struct VerifiedActionCaller {
 }
 
 impl VerifiedActionCaller {
-    /// The same admission, handed by the person's own device to agent
-    /// `agent`: it acts for the person with the delegation a device gives
-    /// its agents.
-    pub(super) fn delegated_to(mut self, agent: &str) -> Self {
-        self.delegated = Some(delegated_agent_name(agent).to_owned());
-        self.native_projection_verified = false;
-        self.admitted = self.admitted.delegated_to(self.delegated.as_deref());
-        self
-    }
-
-    /// Who durably owns what this caller invokes.
-    ///
-    /// A plain certified person is owned as [`InvocationOwner::Certified`].
-    /// A session the person's own device handed to an agent (an MCP client,
-    /// [`Self::delegated_to`]) is owned exactly as the local api owns the
-    /// same admitted identity ([`durable_local_invocation::LocalCaller::owner_of`]):
-    /// [`InvocationOwner::AuthenticatedLocal`] naming that agent, so the
-    /// durable owner, the receipt actor and every later validation agree on
-    /// who acted. Keeping only `Certified` here dropped the delegation, and
-    /// the agent's own terminal update then looked like a stranger's.
+    /// Who durably owns what this caller invokes: the certified person, as
+    /// [`InvocationOwner::Certified`].
     pub(super) fn owner(&self) -> Result<InvocationOwner, String> {
-        self.admitted
-            .delegated_invocation_owner(self.delegated.as_deref())
+        self.admitted.certified_owner()
     }
 
     /// What a fresh verification of this caller proves: `current` (the
@@ -184,7 +162,6 @@ impl AppBrokerState {
             native_projection_verified: false,
             policy_time: self.registered_policy_time()?,
             admitted,
-            delegated: None,
         })
     }
     /// Whether `cert`'s device is held to the foreign-device cap in `workspace`.
@@ -258,7 +235,7 @@ impl AppBrokerState {
         // refused rather than downgraded, while its own recheck passes.
         caller.reverified(&current)?;
         caller.owner()?;
-        Ok(current.admitted.delegated_to(caller.delegated.as_deref()))
+        Ok(current.admitted)
     }
     #[expect(
         private_interfaces,
@@ -326,23 +303,7 @@ impl AppBrokerState {
                 current
                     .worker_registration
                     .clone_from(&admitted.worker_registration);
-                if let Some(agent_cert) = &admitted.agent_cert {
-                    // The chain again, now: the device still certified and in
-                    // the workspace's device list (checked above), the agent
-                    // certificate inside its window.
-                    let cert = admitted
-                        .certificate
-                        .as_ref()
-                        .ok_or("agent session lost its device certificate")?;
-                    verify_agent_cert(
-                        agent_cert,
-                        cert,
-                        collab_types::WorkspaceId::parse(&route.cluster_id)
-                            .ok_or("the agent's workspace is not a workspace id")?,
-                        now,
-                    )?;
-                    admit_agent_cert(&mut current, (**agent_cert).clone());
-                } else if let Some(agent_id) = &admitted.agent_id {
+                if let Some(agent_id) = &admitted.agent_id {
                     let roster = agents.ok_or("this host reads no workspace's agents")?;
                     admit_listed_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
                         |error| format!("certified agent session is no longer admitted: {error}"),
@@ -353,12 +314,6 @@ impl AppBrokerState {
                 Ok::<_, String>(current)
             })
             .and_then(std::convert::identity)
-            .and_then(|current| {
-                if let Some(cert) = &current.agent_cert {
-                    self.agent_session_goes(&route.cluster_id, cert)?;
-                }
-                Ok(current)
-            })
             .map_err(BrokerError::failed)
     }
     /// Bind a certified operation to the route, typed document protocol and

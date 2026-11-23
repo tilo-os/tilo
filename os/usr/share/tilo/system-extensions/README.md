@@ -147,7 +147,7 @@ mounted with its fs-verity digest. A layer is immutable once merged and is
 removed only when no mount reads it any more
 (docs/architecture/compatibility.md).
 
-`/usr/libexec/tilo-extension` (built from `crates/system/extension-helper`)
+`/usr/libexec/tilo-extension` (built from `crates/os/extension-helper`)
 is the only consumer. It takes exactly one
 argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), `activate`,
 or `refresh:all`, and accepts only ids that have a catalogue entry.
@@ -293,7 +293,7 @@ stops the next boot in `systemd-tmpfiles-setup`. So before linking it,
 activation mounts the image read-only in a private mount namespace and refuses
 it unless every entry is owned by root, writable by its owner alone, without
 set-id bits and labelled (on a system with SELinux), and every directory the
-base has keeps the base's type, mode and label (`crates/system/extension-helper/src/image.rs`).
+base has keeps the base's type, mode and label (`crates/os/extension-helper/src/image.rs`).
 The build makes every entry root's, labels each from the base's file contexts
 and refuses an image breaking the same rules (`os/dev/sysext-image.py`).
 systemd-sysext still refuses it on another OS release or architecture through

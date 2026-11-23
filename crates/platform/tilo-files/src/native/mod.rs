@@ -36,6 +36,8 @@ pub mod mapped;
 pub mod migration;
 pub mod nofollow;
 pub mod private;
+pub(crate) mod rename;
+pub use rename::{FileRename, rename_file_noreplace};
 pub mod retained_home;
 // The browser's origin-private file system has no path-named socket; every
 // other host has the module, and Windows answers Unsupported in it.

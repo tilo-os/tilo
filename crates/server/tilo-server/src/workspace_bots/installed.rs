@@ -143,7 +143,7 @@ impl tilo_workspace_service::agents::events::Runner for EventRunner {
         let runner = BotRunner::new(
             workspaces.clone(),
             workspace.to_owned(),
-            workspaces.governor().clone(),
+            workspaces.device_cert().clone(),
             key,
             bot,
             BTreeMap::new(),
@@ -1457,6 +1457,7 @@ pub fn governance_events(
             before: None,
             after: None,
             caused_by: None,
+            origin: None,
             incoming_message: false,
             housekeeping: false,
             shortcut: None,

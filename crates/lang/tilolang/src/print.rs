@@ -100,10 +100,6 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
     p.out
 }
 
-pub fn print_expr(e: &Expr) -> String {
-    expr_text(e, 0, 0)
-}
-
 fn indent(level: usize) -> String {
     "    ".repeat(level)
 }
@@ -993,7 +989,7 @@ impl Printer<'_> {
                     options.push(format!("untitled: {}", quote(&untitled.words)));
                 }
                 if let Some(readers) = &t.readers {
-                    options.push(format!("readers: {}", readers.field.name));
+                    options.push(format!("readers: {}", readers.rule));
                 }
                 let options = if options.is_empty() {
                     String::new()
@@ -1206,8 +1202,6 @@ impl Printer<'_> {
                     format!("sort {} {}", field.name, order.name)
                 }
                 SearchEntryKind::Hide { field } => format!("hide {}", field.name),
-                SearchEntryKind::Kind { kind } => format!("kind {}", kind.name),
-                SearchEntryKind::People { field } => format!("people {}", field.name),
             };
             self.line(&text);
         }

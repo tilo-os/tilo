@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use ed25519_dalek::SigningKey;
@@ -8,14 +7,12 @@ use tilo_user_identity::{
 };
 
 use super::*;
-use crate::workspace::Membership;
 use tilo_server_protocol::WorkspaceId;
 
 const WORKSPACE: &str = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
 const OTHER_WORKSPACE: &str = "0b9e8f6c-2a1d-4e3b-8c7f-5d4a3b2c1e0f";
 const NOW: u64 = 1_000_000_000_000;
 
-const MODES: [AdmissionMode; 2] = [AdmissionMode::Explicit, AdmissionMode::Governed];
 const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::Subscribe,
     WorkspaceOperation::State,
@@ -63,8 +60,8 @@ impl Server {
         let owner_root = SigningKey::from_bytes(&[1; 32]);
         let owner = owner_root.verifying_key().to_bytes();
         let bob = SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes();
-        // The live handshake policy: the owner and Bob, whose roots a governed
-        // workspace on this server admits. Carol is trusted by nothing.
+        // The live handshake policy: the owner and Bob, whose roots a
+        // workspace on this server has as members. Carol is trusted by nothing.
         let policy = TrustPolicy::AllowList {
             users: vec![hex::encode(owner), hex::encode(bob)],
         };
@@ -170,26 +167,45 @@ fn one(workspace: &str) -> AgentScope {
 /// member of the workspace.
 fn member_grant(device: [u8; 32], user: [u8; 32]) -> Setup {
     Box::new(move |runtime, _| {
-        runtime.membership.devices.push(device);
-        runtime.governed_user_roots.insert(user);
+        list_device(runtime, device);
+        list_person(runtime, user);
     })
+}
+
+/// Put `device` on the workspace's member list.
+fn list_device(runtime: &mut WorkspaceRuntime, device: [u8; 32]) {
+    let members = Arc::make_mut(&mut runtime.members);
+    members.member_devices.push(device);
+    members.member_devices.sort_unstable();
+}
+
+/// Put the person whose root is `user` on the workspace's member list.
+fn list_person(runtime: &mut WorkspaceRuntime, user: [u8; 32]) {
+    let members = Arc::make_mut(&mut runtime.members);
+    members.member_user_roots.push(user);
+    members.member_user_roots.sort_unstable();
+}
+
+/// The workspace served here, as its binding names it.
+fn served() -> crate::workspaces::WorkspaceAuthority {
+    crate::workspaces::WorkspaceAuthority::unattached(WORKSPACE)
 }
 
 fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
     let id = WorkspaceId::parse(WORKSPACE).unwrap();
-    WorkspaceRuntime::open(root, id, Membership::default()).unwrap()
+    WorkspaceRuntime::open(root, id).unwrap()
 }
 
 /// How a case puts its actor into the workspace and the server.
 type Setup = Box<dyn Fn(&mut WorkspaceRuntime, &Server)>;
 
 /// One actor: how the workspace and the server know it, and the expected
-/// letters per mode (`Explicit`, `Governed`) over [`OPS`].
+/// letters over [`OPS`].
 struct Case {
     name: &'static str,
     peer: AuthenticatedPeer,
     setup: Setup,
-    expected: [&'static str; 2],
+    expected: &'static str,
 }
 
 #[test]
@@ -200,9 +216,8 @@ struct Case {
 fn decide_matrix() {
     let server = Server::new();
     let (owner, bob, carol) = (server.owner, server.bob, [3; 32]);
-    let listed = |device: [u8; 32]| -> Setup {
-        Box::new(move |runtime, _| runtime.membership.devices.push(device))
-    };
+    let listed =
+        |device: [u8; 32]| -> Setup { Box::new(move |runtime, _| list_device(runtime, device)) };
     let none = || -> Setup { Box::new(|_, _| {}) };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
     // DelegateMembership, Publish, KeyAccess
@@ -211,13 +226,13 @@ fn decide_matrix() {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: "AAAAAAAAdAA",
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: "NNNNNNNNdNN",
         },
         // An agent's grant: its person's agent where its scope reaches, it
         // redeemed its person's invitation and its person is a member, on an
@@ -226,39 +241,39 @@ fn decide_matrix() {
             name: "a grant for all its person's workspaces, a member device of a member",
             peer: grant(owner, [13; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: member_grant([13; 32], owner),
-            expected: ["AAAAANNANAA", "AAAAANNANAA"],
+            expected: "AAAAANNANAA",
         },
         Case {
-            name: "a grant listed in a governed workspace its person is no member of",
+            name: "a grant listed in a workspace its person is no member of",
             peer: grant(owner, [14; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: listed([14; 32]),
-            expected: ["AAAAANNANAA", "NNNNNNNNNNN"],
+            expected: "NNNNNNNNNNN",
         },
         Case {
             name: "a grant for exactly this workspace",
             peer: grant(owner, [15; 32], one(WORKSPACE), Some(NOW + 1)),
             setup: member_grant([15; 32], owner),
-            expected: ["AAAAANNANAA", "AAAAANNANAA"],
+            expected: "AAAAANNANAA",
         },
         Case {
             name: "a grant for another workspace, even listed here",
             peer: grant(owner, [16; 32], one(OTHER_WORKSPACE), Some(NOW + 1)),
             setup: member_grant([16; 32], owner),
-            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN"],
+            expected: "NNNNNNNNNNN",
         },
         Case {
             name: "a grant that never redeemed an invitation here, on its person's own host",
             peer: grant(owner, [17; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
             setup: Box::new(move |runtime, _| {
-                runtime.governed_user_roots.insert(owner);
+                list_person(runtime, owner);
             }),
-            expected: ["NNNNNNNNNNN", "NNNNNNNNNNN"],
+            expected: "NNNNNNNNNNN",
         },
         Case {
             name: "a grant past its certificate's expiry",
             peer: grant(owner, [18; 32], AgentScope::AllWorkspaces, Some(NOW)),
             setup: member_grant([18; 32], owner),
-            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx"],
+            expected: "xxxxxxxxxxx",
         },
         Case {
             name: "a grant its person revoked",
@@ -267,7 +282,7 @@ fn decide_matrix() {
                 member_grant([19; 32], owner)(runtime, server);
                 server.revoke([19; 32]);
             }),
-            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr"],
+            expected: "rrrrrrrrrrr",
         },
         Case {
             name: "a grant minted for this workspace by a grant its person revoked",
@@ -281,16 +296,7 @@ fn decide_matrix() {
                 member_grant([63; 32], owner)(runtime, server);
                 server.revoke([62; 32]);
             }),
-            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr"],
-        },
-        Case {
-            name: "owner's device a pending replacement removed",
-            peer: peer(owner, [12; 32], false, None),
-            setup: Box::new(|runtime, _| {
-                runtime.membership.devices.push([12; 32]);
-                runtime.membership_ceiling = Some(HashSet::new());
-            }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: "rrrrrrrrrrr",
         },
         Case {
             // Failure scenario 1: trusted server-wide because another workspace's
@@ -298,15 +304,15 @@ fn decide_matrix() {
             name: "cross-user device whose root only another workspace governs",
             peer: peer(bob, [21; 32], false, None),
             setup: Box::new(move |runtime, _| {
-                runtime.governed_user_roots.insert(bob);
+                list_person(runtime, bob);
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: "NNNNNNNNdNN",
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: "AAAAAAAAdAA",
         },
         Case {
             name: "same-user host this workspace is attached to",
@@ -314,153 +320,141 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.attached_hosts.insert([30; 32]);
             }),
-            expected: ["AAANNNNNdAA", "AAANNNNNdAA"],
+            expected: "AAANNNNNdAA",
         },
         Case {
             name: "same-user host this workspace is not attached to",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: "NNNNNNNNdNN",
         },
         Case {
             name: "cross-user host certificate, listed as a member",
             peer: peer(bob, [32; 32], true, None),
             setup: listed([32; 32]),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: "AAAAAAAAdAA",
         },
         Case {
             name: "agent delegated this workspace",
             peer: peer(owner, [40; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.membership.devices.push([40; 32]);
+                list_device(runtime, [40; 32]);
                 server.delegate(server.owner, [40; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: "AAAAAAAAdAA",
         },
         Case {
             name: "agent whose delegation expired",
             peer: peer(owner, [41; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.membership.devices.push([41; 32]);
+                list_device(runtime, [41; 32]);
                 server.delegate(server.owner, [41; 32], Some((NOW, WORKSPACE)));
             }),
-            expected: ["eeeeeeeeeee", "eeeeeeeeeee"],
+            expected: "eeeeeeeeeee",
         },
         Case {
             name: "withdrawn agent",
             peer: peer(owner, [42; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.membership.devices.push([42; 32]);
+                list_device(runtime, [42; 32]);
                 server.delegate(server.owner, [42; 32], None);
             }),
-            expected: ["wwwwwwwwwww", "wwwwwwwwwww"],
+            expected: "wwwwwwwwwww",
         },
         Case {
             name: "agent delegated another workspace",
             peer: peer(owner, [43; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.membership.devices.push([43; 32]);
+                list_device(runtime, [43; 32]);
                 server.delegate(server.owner, [43; 32], Some((NOW + 1, OTHER_WORKSPACE)));
             }),
-            expected: ["ooooooooooo", "ooooooooooo"],
+            expected: "ooooooooooo",
         },
         Case {
-            name: "the device governing this workspace on this server",
+            name: "this server's own device, in a workspace served here",
             peer: peer(owner, [70; 32], true, None),
             setup: Box::new(|runtime, _| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
-                );
+                runtime.workspace_authority = Some(served());
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNdNN"],
+            expected: "NNNNNNNNdNN",
         },
         Case {
-            name: "another listed device of the owner, while this server governs",
+            name: "another listed device of the owner, in a workspace served here",
             peer: peer(owner, [71; 32], false, None),
             setup: Box::new(|runtime, _| {
-                runtime.membership.devices.push([71; 32]);
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
-                );
+                list_device(runtime, [71; 32]);
+                runtime.workspace_authority = Some(served());
             }),
-            expected: ["AAAAAAAAdAA", "AAAAAAAAdAA"],
+            expected: "AAAAAAAAdAA",
         },
         Case {
-            name: "agent delegated this workspace, in a workspace this server governs",
+            name: "agent delegated this workspace, in a workspace served here",
             peer: peer(owner, [44; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
-                );
+                runtime.workspace_authority = Some(served());
                 server.delegate(server.owner, [44; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNANN"],
+            expected: "NNNNNNNNANN",
         },
         Case {
             // The agent's approver is a device of the person it acts for, Bob
             // here, and the host's own person is no special case.
-            name: "another person's agent, in a workspace this server governs",
+            name: "another person's agent, in a workspace served here",
             peer: peer(bob, [45; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.workspace_authority = Some(
-                    crate::workspaces::WorkspaceAuthority::governed_by(WORKSPACE),
-                );
+                runtime.workspace_authority = Some(served());
                 server.delegate(server.bob, [45; 32], Some((NOW + 1, WORKSPACE)));
             }),
-            expected: ["NNNNNNNNdNN", "NNNNNNNNANN"],
+            expected: "NNNNNNNNANN",
+        },
+        Case {
+            name: "a further device of a member, in a workspace served here",
+            peer: peer(bob, [46; 32], false, None),
+            setup: Box::new(move |runtime, _| {
+                list_person(runtime, bob);
+                runtime.workspace_authority = Some(served());
+            }),
+            expected: "ENNNNNNNdNN",
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxxxxx", "xxxxxxxxxxx"],
+            expected: "xxxxxxxxxxx",
         },
         Case {
             name: "revoked member device",
             peer: peer(owner, [51; 32], false, None),
             setup: Box::new(|runtime, server| {
-                runtime.membership.devices.push([51; 32]);
+                list_device(runtime, [51; 32]);
                 server.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrrrrr", "rrrrrrrrrrr"],
+            expected: "rrrrrrrrrrr",
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["ttttttttttt", "ttttttttttt"],
+            expected: "ttttttttttt",
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = workspace(tmp.path());
     let mut failures = Vec::new();
     for case in &cases {
-        for (mode, expected) in MODES.iter().zip(case.expected) {
-            runtime.membership = Membership::default();
-            runtime.membership_ceiling = None;
-            runtime.governed_user_roots.clear();
-            runtime.attached_hosts.clear();
-            runtime.workspace_authority = None;
-            runtime.admission = *mode;
-            (case.setup)(&mut runtime, &server);
-            let actual: String = OPS
-                .iter()
-                .map(|op| {
-                    letter(decide_in(
-                        WorkspaceFacts::current(&runtime),
-                        &server.trust(),
-                        &case.peer,
-                        *op,
-                        NOW,
-                    ))
-                })
-                .collect();
-            if actual != expected {
-                failures.push(format!(
-                    "{} in {mode:?}: expected {expected}, decided {actual}",
-                    case.name
-                ));
-            }
+        runtime.members = Arc::default();
+        runtime.attached_hosts.clear();
+        runtime.workspace_authority = None;
+        (case.setup)(&mut runtime, &server);
+        let actual: String = OPS
+            .iter()
+            .map(|op| letter(decide_in(&runtime, &server.trust(), &case.peer, *op, NOW)))
+            .collect();
+        if actual != case.expected {
+            failures.push(format!(
+                "{}: expected {}, decided {actual}",
+                case.name, case.expected
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -480,7 +474,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     let environment = peer(server.owner, device, false, Some(until));
     // The workspace lists it as a member device of the person, as it does
     // while the session runs: what it reaches is the register's to say.
-    runtime.membership.devices.push(device);
+    list_device(&mut runtime, device);
     let scope = crate::environment::EnvironmentScope::for_resource(
         WorkspaceId::parse(WORKSPACE).unwrap(),
         "so.tilo.browser",
@@ -488,15 +482,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     );
     let letters = |runtime: &WorkspaceRuntime| -> String {
         OPS.iter()
-            .map(|op| {
-                letter(decide_in(
-                    WorkspaceFacts::current(runtime),
-                    &server.trust(),
-                    &environment,
-                    *op,
-                    now,
-                ))
-            })
+            .map(|op| letter(decide_in(runtime, &server.trust(), &environment, *op, now)))
             .collect()
     };
     server.environments.place(device, scope, until).unwrap();
@@ -517,7 +503,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     // register need not keep the entry.
     assert_eq!(
         decide_in(
-            WorkspaceFacts::current(&runtime),
+            &runtime,
             &server.trust(),
             &environment,
             WorkspaceOperation::State,
@@ -528,49 +514,15 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
 }
 
 #[test]
-fn replay_reads_listed_devices_within_the_ceiling() {
+fn an_agent_joins_the_member_list_only_inside_its_live_delegation() {
     let server = Server::new();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = workspace(tmp.path());
-    let device = peer(server.owner, [60; 32], false, None);
-    let decide = |runtime: &WorkspaceRuntime, listed: &[[u8; 32]]| {
-        decide_in(
-            WorkspaceFacts::with_listed(runtime, listed),
-            &server.trust(),
-            &device,
-            WorkspaceOperation::Replay,
-            NOW,
-        )
-    };
-    // The file lists the device before the runtime has reloaded it.
-    assert_eq!(decide(&runtime, &[[60; 32]]), Decision::Admit);
-    // The file no longer lists it, though the runtime still does.
-    runtime.membership.devices.push([60; 32]);
-    assert_eq!(
-        decide(&runtime, &[]),
-        Decision::Deny(DenyReason::NotAMember)
-    );
-    // A pending replacement removed it: the old file cannot grant it.
-    runtime.membership_ceiling = Some(HashSet::new());
-    assert_eq!(
-        decide(&runtime, &[[60; 32]]),
-        Decision::Deny(DenyReason::NotAMember)
-    );
-}
-
-#[test]
-fn an_agent_joins_governance_only_inside_its_live_delegation() {
-    let server = Server::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    runtime.admission = AdmissionMode::Governed;
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        WORKSPACE,
-    ));
+    runtime.workspace_authority = Some(served());
     let agent = peer(server.owner, [90; 32], false, None);
     let decide = |runtime: &WorkspaceRuntime, now: u64| {
         decide_in(
-            WorkspaceFacts::current(runtime),
+            runtime,
             &server.trust(),
             &agent,
             WorkspaceOperation::DelegateMembership,
@@ -594,7 +546,7 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         decide(&runtime, NOW),
         Decision::Deny(DenyReason::AgentWithdrawn)
     );
-    // A workspace no authority of this server governs takes no agent in.
+    // A workspace not served here takes no agent in.
     server.delegate(server.owner, [90; 32], Some((NOW + 1, WORKSPACE)));
     runtime.workspace_authority = None;
     assert_eq!(
@@ -602,22 +554,9 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
         Decision::Deny(DenyReason::NotADelegatedAgent)
     );
     // Its certificate must still be current.
-    runtime.workspace_authority = Some(crate::workspaces::WorkspaceAuthority::governed_by(
-        WORKSPACE,
-    ));
+    runtime.workspace_authority = Some(served());
     server.revoke([90; 32]);
     assert_eq!(decide(&runtime, NOW), Decision::Deny(DenyReason::Revoked));
-}
-
-#[test]
-fn governance_is_never_relaxed_by_a_later_binding() {
-    for requested in MODES {
-        assert_eq!(
-            AdmissionMode::Governed.rebind(requested),
-            AdmissionMode::Governed
-        );
-        assert_eq!(AdmissionMode::Explicit.rebind(requested), requested);
-    }
 }
 
 #[test]
@@ -634,12 +573,6 @@ fn owners_moderators_and_editors_write() {
     .filter(|role| role_writes(*role))
     .collect();
     assert_eq!(writers, vec![Role::Owner, Role::Moderator, Role::Editor]);
-}
-
-/// A device with an unsigned certificate for protocols that read admission
-/// only; signatures are the handshake's business, not [`decide`]'s.
-pub(crate) fn unsigned_peer(user: [u8; 32], device: [u8; 32]) -> AuthenticatedPeer {
-    peer(user, device, false, None)
 }
 
 /// A signed certificate of `root` for `device`, issued at `issued_at_ns`,

@@ -146,7 +146,7 @@ impl Fixture {
             runner: SystemRunner { cwd: None },
             receipt: Receipt::new(dir.path(), vec![]),
             warnings: Vec::new(),
-            peer: None,
+            machine: None,
         };
         let image = dir.path().join("tilo-vm.qcow2");
         std::fs::write(&image, QCOW2).unwrap();
@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
                 dev_key,
                 "the guest has dev's authorized_keys"
             );
-            assert!(!Path::new(&remote::known_hosts_path(key)).exists());
+            assert!(!Path::new(&sshkey::known_hosts_path(key)).exists());
             let uuid = entry.uuid.clone().unwrap();
             let mac = entry.nic_mac.clone().unwrap();
             assert!(uuid::Uuid::parse_str(&uuid).is_ok(), "{uuid}");
@@ -1129,16 +1129,14 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_machine_record_is_read_by_one_shell_line_that_runs_the_whole_script;
+    phase the_machine_record_is_read_where_it_is_kept;
     {
         use tilo_test_env::SpawnUnderEnvLock as _;
-        let line = branch_admit::machine_line();
-        assert_eq!(line.len(), 1, "{line:?}");
         let dir = tempfile::tempdir().unwrap();
         let private = dir.path().join("var/lib/tilo/device-private");
         std::fs::create_dir_all(&private).unwrap();
         std::fs::write(private.join("keypair.bin"), b"key").unwrap();
-        let joined = line.join(" ").replace(
+        let joined = branch_admit::MACHINE.replace(
             "/var/lib/tilo/device-private",
             &private.display().to_string(),
         );
@@ -1490,11 +1488,10 @@ tilo_test_env::scenario! {
 /// own address on tilolan0, and whether the source's answers.
 #[cfg(unix)]
 #[test]
-fn the_reach_check_is_one_shell_line_that_runs_whole() {
+fn the_reach_check_reads_the_branch_address_and_pings_the_target() {
     use std::os::unix::fs::PermissionsExt as _;
     use tilo_test_env::SpawnUnderEnvLock as _;
-    let line = branch_admit::reach_line(std::net::Ipv4Addr::new(198, 18, 0, 1));
-    assert_eq!(line.len(), 1, "{line:?}");
+    let script = branch_admit::reach_script(std::net::Ipv4Addr::new(198, 18, 0, 1));
     let dir = tempfile::tempdir().unwrap();
     let asked = dir.path().join("ping-args");
     for (name, script) in [
@@ -1511,7 +1508,7 @@ fn the_reach_check_is_one_shell_line_that_runs_whole() {
         std::env::var("PATH").unwrap_or_default()
     );
     let out = std::process::Command::new("sh")
-        .args(["-c", &line.join(" ")])
+        .args(["-c", &script])
         .env("PATH", path)
         .output_locked()
         .unwrap();

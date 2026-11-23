@@ -264,9 +264,7 @@ pub struct GovernedAgentIdentityV2 {
 impl GovernedAgentIdentityV2 {
     fn validate(&self, certificate: &DeviceCert) -> Result<(), TrustedIdentityProjectionError> {
         let capabilities = &certificate.capabilities;
-        let holds_power = capabilities.can_own_workspaces
-            || capabilities.can_admit_devices
-            || capabilities.can_administer_devices;
+        let holds_power = capabilities.can_own_workspaces || capabilities.can_admit_devices;
         if holds_power
             || validate_name(&self.agent_id).is_err()
             || validate_name(&self.label).is_err()

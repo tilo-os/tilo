@@ -17,8 +17,6 @@ homepage.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
-# A process's id and kernel start time, the lease's identity.
-tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
@@ -45,7 +43,7 @@ neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 # Agent and bot delegations and workspace shard ids, re-exported unchanged.
 tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 # How the boot opened its system volume, which the status reports.
-tilo-unlock-protocol = { version = "0.1.0", path = "../../collab/tilo-unlock-protocol" }
+tilo-unlock-protocol = { version = "0.1.0", path = "../../os/tilo-unlock-protocol" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true

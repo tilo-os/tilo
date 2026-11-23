@@ -21,7 +21,7 @@ pub(crate) fn two_documents() -> (StatePeer, SigningKey, SystemTime) {
     let document = |value: String| {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "value", value).unwrap();
-        doc.commit_edit("fixture", "value");
+        doc.commit_edit("fixture", "value", &ac.user_public_key);
         doc.save()
     };
     let seed = |record: &str, bytes| SeedDocument {
@@ -58,11 +58,22 @@ pub(crate) fn incremental(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, "typed", "a").unwrap();
-    doc.commit_edit("fixture", "typed");
+    doc.commit_edit("fixture", "typed", &person(author, key));
     author
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
+}
+
+/// The person whose certified device `key` is in `peer`'s workspace: the root
+/// key that signs the writes its devices publish.
+fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+        .user_public_key
 }
 
 tilo_test_env::scenario! {

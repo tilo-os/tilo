@@ -174,7 +174,7 @@ budgets=${T_INPUT_BUDGETS:-report}
 echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl; budgets: $budgets"
 
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$work/test-assets}
-install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
+install -m 0755 -t /usr/local/bin "$tilo_vm" "${tilo_vm%/*}/tilo" "${tilo_vm%/*}/tilo-runtime"
 
 # The swaps build as the session user, in a copy of the tree it owns, with the
 # builder's toolchain (rust-toolchain.toml's) and a download cache of its own.

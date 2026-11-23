@@ -192,8 +192,6 @@ def live_apps(ctx, res):
 def new_note(ctx, res):
     t = _session(ctx)
     title = t["title"]
-    # The action a tilolang app publishes is named as its declaration is (`new_note`), where the
-    # native app it replaced published `new-note`.
     expect("#new_note" in text_of(t.get("notes_listing")),
            f"Notes never listed its new_note action on the MCP server: {str(t.get('notes_listing'))[:300]}")
     params = text_of(t.get("new_note_params"))
@@ -211,7 +209,7 @@ def new_note(ctx, res):
     # action that mentions the word, not with Notes' records. The listing answers a title
     # with the page's own actions (Copy note link, Delete note), which name the page they
     # act on (semantic_identity) rather than repeat its title: a row of Notes for the page
-    # new-note made, found by its title, is the note read back.
+    # The note just made, found by its title, is the note read back.
     page = created_resource(text_of(reply))
 
     def listed():

@@ -84,7 +84,7 @@ pub struct Spec {
 pub struct Asked {
     /// The resource the view invoked: the part's.
     pub resource: String,
-    /// The action, by the id the session publishes.
+    /// The action, by the verb the session publishes (`move-tab`).
     pub action: String,
     /// Its arguments, by their names. The resource the view acts on is the address's, not an
     /// argument.
@@ -164,7 +164,8 @@ impl Invoker for PartInvoker {
         };
         self.asked.borrow_mut().push(Asked {
             resource: self.target.id_string(),
-            action: action.clone(),
+            // As the session publishes it: the verb, not the id the package names it by.
+            action: name.clone(),
             arguments,
         });
         // Taken by the session's next pass: what it made reaches the view as its reading.
@@ -378,6 +379,9 @@ impl PartView {
                 store: store.clone(),
                 sink: None,
                 root: tilolang_tilo::host::RootView::default(),
+                // The session's shell draws no links of its own: a resource's is minted where
+                // its workspace's page is known.
+                link_home: None,
             },
             Rc::new(OnSession {
                 loads: PartPlatform {

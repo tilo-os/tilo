@@ -712,7 +712,7 @@ fn create_button(
     let invite = invite.clone();
     Button::new("invite-create", label)
         .role(role)
-        .on_view(move || {
+        .on_open(move || {
             let (role, recipient) = choosing.get().asking(&invite);
             making(InviteEffect::Create { role, recipient });
         })
@@ -732,7 +732,7 @@ fn roles(invite: &Invite, choosing: &LocalState<Choosing>, at: usize) -> Element
         )
         .with_id("invite-role")
         .with_accessible_name(invite.role_label.clone())
-        .on_view("invite-role", move |index| {
+        .on_choose("invite-role", move |index| {
             choosing.update(|choosing| choosing.role = Some(index));
         }),
     )
@@ -752,7 +752,7 @@ fn whose(invite: &Invite, choosing: &LocalState<Choosing>, at: usize) -> Element
         ToggleGroup::new(segments, at)
             .with_id("invite-for")
             .with_accessible_name(invite.for_label.clone())
-            .on_view("invite-for", move |index| {
+            .on_choose("invite-for", move |index| {
                 choosing.update(|choosing| choosing.whose = Some(index));
             }),
     )
@@ -793,14 +793,14 @@ fn handover(
                     Button::new("invite-copy-link", &created.copy)
                         .with_icon(Icon::Copy)
                         .role(ButtonRole::Primary)
-                        .on_view(move || {
+                        .on_open(move || {
                             copying(InviteEffect::Copy {
                                 link: copied.clone(),
                             });
                         }),
                 ))
                 .push(Box::new(
-                    Button::new("invite-revoke-made", &created.revoke).on_view(move || {
+                    Button::new("invite-revoke-made", &created.revoke).on_open(move || {
                         revoking(InviteEffect::Revoke {
                             invite: invite_id.clone(),
                         });
@@ -843,7 +843,7 @@ fn pending_rows(invite: &Invite, shown: Option<&Created>, ask: &Ask) -> Option<E
             .trailing(Box::new(
                 Button::new(&revoke_id, &waiting.revoke)
                     .control_size(ControlSize::Small)
-                    .on_view(move || {
+                    .on_open(move || {
                         revoking(InviteEffect::Revoke {
                             invite: invite_id.clone(),
                         });

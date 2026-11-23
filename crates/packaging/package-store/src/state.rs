@@ -16,8 +16,7 @@ pub struct WorkspaceState {
     pub files: usize,
 }
 
-/// The directory every workspace is under. Mirrors `launcher::appdir::WORKSPACES_DIR`, which the
-/// installer cannot link.
+/// The directory every workspace is under, shared with `launcher::appdir`.
 pub const WORKSPACES_DIR: &str = "tilo-workspaces";
 
 /// Every workspace in which `package_id` has data, sorted by workspace name. A package that was
@@ -72,34 +71,40 @@ pub fn total_bytes(states: &[WorkspaceState]) -> u64 {
     states.iter().map(|s| s.bytes).sum()
 }
 
-/// `1.4 MB`, for a prompt.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "display only, rounded to one decimal place; precision beyond f64's 52-bit \
-              mantissa is unobservable at that rounding and would only matter for byte counts \
-              in the exabyte range"
-)]
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [(&str, u64); 4] = [
-        ("GB", 1_000_000_000),
-        ("MB", 1_000_000),
-        ("kB", 1_000),
-        ("B", 1),
-    ];
-    for (label, scale) in UNITS {
-        if bytes >= scale {
-            if scale == 1 {
-                return format!("{bytes} B");
-            }
-            return format!("{:.1} {label}", bytes as f64 / scale as f64);
-        }
+/// The saved data `states` lists, as an uninstall's plan and its question show it.
+#[must_use]
+pub fn summary(states: &[WorkspaceState]) -> Vec<String> {
+    if states.is_empty() {
+        return vec!["  saved data: none".to_owned()];
     }
-    "0 B".to_string()
+    let mut lines = vec![format!(
+        "  saved data: {} workspace(s), {} total",
+        states.len(),
+        human_bytes(total_bytes(states))
+    )];
+    lines.extend(states.iter().map(|saved| {
+        format!(
+            "              {:<24} {:>10}  {} file(s)",
+            saved.workspace,
+            human_bytes(saved.bytes),
+            saved.files
+        )
+    }));
+    lines
 }
 
-/// Matches `launcher::appdir`'s component sanitiser: the installer would otherwise look for data
-/// under a name the launcher never wrote.
-fn sanitise(raw: &str) -> String {
+/// `1.4 MB`, for a prompt.
+#[must_use]
+pub fn human_bytes(bytes: u64) -> String {
+    tilo_formats::decimal_bytes(bytes)
+}
+
+/// Turn a package id into a single path component that cannot escape its parent.
+///
+/// Shared with `launcher::appdir` so the installer looks for data under the exact name the
+/// launcher wrote.
+#[must_use]
+pub fn sanitise(raw: &str) -> String {
     let mapped: String = raw
         .trim()
         .chars()
@@ -117,8 +122,9 @@ fn sanitise(raw: &str) -> String {
     mapped
 }
 
-/// The same FNV-1a the launcher uses for the same purpose.
-fn fnv1a(raw: &str) -> String {
+/// Short, stable FNV-1a hex digest for an id refused verbatim, shared with `launcher::appdir`.
+#[must_use]
+pub fn fnv1a(raw: &str) -> String {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, raw.as_bytes());
     format!("{:016x}", std::hash::Hasher::finish(&hasher))
@@ -219,10 +225,41 @@ mod tests {
         phase state_paths_read_like_the_launchers;
         {
             // The installer and the launcher have to agree on the directory name, or "remove this app's
-            // data" would silently miss it.
-            assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
+            // data" would silently miss it. These literals pin the on-disk names.
+            for (package_id, expected) in [
+                ("so.tilo.notes", "so.tilo.notes"),
+                ("dev/tilo notes", "dev_tilo_notes"),
+                ("", "pkg_cbf29ce484222325"),
+                ("..", "pkg_07da1a07b4a03f2d"),
+                ("...", "pkg_f7d93e17ec4b1219"),
+                ("so.tilo.büro", "so.tilo.b_ro"),
+            ] {
+                assert_eq!(sanitise(package_id), expected, "package_id={package_id:?}");
+            }
             assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
-            assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
+        }
+    }
+
+    #[test]
+    fn human_bytes_formats_table() {
+        let cases = [
+            (0, "0 B"),
+            (1, "1 B"),
+            (999, "999 B"),
+            (1_000, "1.0 kB"),
+            (1_023, "1.0 kB"),
+            (1_024, "1.0 kB"),
+            (1_500, "1.5 kB"),
+            (999_999, "1000.0 kB"),
+            (1_000_000, "1.0 MB"),
+            (1_048_576, "1.0 MB"),
+            (1_500_000, "1.5 MB"),
+            (1_073_741_824, "1.1 GB"),
+            (5_000_000_000, "5.0 GB"),
+            (u64::MAX, "18446744073.7 GB"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(human_bytes(input), expected, "input={input}");
         }
     }
 }

@@ -179,11 +179,11 @@ view comment_page(c: Comment) {
     }
 }
 
-/// One comment as a row: the title of what it is about, and what was said about it.
+/// One comment as a row: what was said, under the thread it answers.
 view remark(c: Comment) {
     ui.ListRow(
-        if let about = created(c)?.from { meta(about).title } else { meta(c).title },
-        secondary: meta(c).title,
+        meta(c).title,
+        secondary: if let about = created(c)?.from { meta(about).title } else { "" },
     )
 }
 

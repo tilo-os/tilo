@@ -607,4 +607,57 @@ mod tests {
         let retained = crate::owner::open_file(&retained).unwrap();
         assert!(agent_caps(&retained, &fixture).is_empty());
     }
+
+    #[tokio::test]
+    async fn a_shortcut_with_a_step_is_committed_and_read_back() {
+        use crate::workspace_membership::SettingsChange;
+        use tilo_automation::ShortcutChange;
+
+        let fixture = fixture();
+        let workspace = crate::owner::testing::WORKSPACE;
+        // What the Shortcuts app saves: a shortcut whose step carries its kind
+        // flattened into the step's own map.
+        let mut shortcut: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
+            "id": "tidy",
+            "name": "Tidy",
+            "steps": [{
+                "id": "list",
+                "step": "invoke",
+                "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                "resource": {"fixed": "notes.folder:inbox"},
+            }],
+        }))
+        .expect("a shortcut with a step");
+        crate::workspace::sign_saved_shortcut(
+            workspace,
+            &mut shortcut,
+            &fixture.certificate,
+            &fixture.key,
+        )
+        .unwrap();
+        let save = request(
+            &fixture,
+            WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(ShortcutChange::Save(
+                Box::new(shortcut.clone()),
+            ))),
+        );
+        let receipt = fixture
+            .owner
+            .commit_workspace_membership_command(save.clone(), &fixture.key, fixture.now)
+            .await
+            .expect("the host binds a shortcut whose step has its kind flattened");
+        receipt.validate_for(&save).unwrap();
+        let held = fixture
+            .owner
+            .with_current(
+                WorkspaceId::parse(workspace).expect("a workspace id"),
+                |view| Ok(view.peer().workspace().workspace_shortcuts()),
+            )
+            .unwrap();
+        assert_eq!(
+            held,
+            vec![tilo_automation::SavedShortcut::encode(&shortcut)],
+            "the workspace holds the step the person saved"
+        );
+    }
 }

@@ -48,6 +48,17 @@ SAMPLES = ("templates", "examples")
 # The session's own surfaces: their records are the session process's, and no
 # record path names one.
 UNREAD = ("crates/session",)
+# Crates of the same kind that live in other groups.
+UNREAD += (
+    "crates/os/console-control",
+    "crates/os/greetd-client",
+    "crates/os/greeter",
+    "crates/os/install-plan",
+    "crates/os/install-profile-model",
+    "crates/integrations/messaging-service",
+    "crates/os/tilo-ntfs-helper",
+    "crates/os/tilo-ntfs-protocol",
+)
 
 DECLARATION = re.compile(r"#\[resource\(")
 KIND = re.compile(r'\bkind\s*=\s*"([^"]*)"')

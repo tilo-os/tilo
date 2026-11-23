@@ -23,7 +23,7 @@ qualification, and a status note never claims one unless it names the receipt.
 
 ## P0-1 — The identity ceremony persists a key that cannot sign
 
-`crates/sdk/ui-core/src/widget/identity_flow/mod.rs:180-191`
+`crates/ui/ui-core/src/widget/identity_flow/mod.rs:180-191`
 
 `SerializableIdentity::from_identity` cannot reach into `frost_ed25519`'s `SigningKey`, so it
 persists `SHA-512("tilo-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
@@ -43,17 +43,14 @@ ceremony-minted identities are not, with the same on-disk format and no way to t
 **Fix direction:** add the key-extraction helper to `threshold-identity`, delete the placeholder
 branch, and make the mismatch fatal in the identity store rather than advisory.
 
-**Resolved.** `ThresholdIdentity` holds the single-device key in dalek form and exports its seed;
-the identity store persists that seed, and its record loader refuses a record whose secret does
-not derive its recorded public key. The mismatch is fatal in the identity store in every build
-profile. Firstboot goes through the same encoder, so there is one writer of the format. Held by
-`crates/runtime/tilo-identity/src/store/unix.rs::tests::the_record_of_a_minted_identity_round_trips_and_signs_for_itself`
-(phase `the_recorded_secret_signs_for_the_recorded_public_key`)
-and
+**Resolved.** A person's root is a plain ed25519 key; the identity store persists its seed, and
+its record loader refuses a record whose secret does not derive its recorded public key, in every
+build profile. Every writer goes through one encoder (`IdentityRecord::from_root` in
+`crates/runtime/tilo-identity/src/store/unix.rs`). Held by
+`crates/runtime/tilo-identity/src/store/unix.rs::tests::a_minted_identity_round_trips_and_signs_for_itself`
+(phase `the_recorded_secret_signs_for_the_recorded_public_key`) and
 `crates/runtime/tilo-identity/src/store/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
 (phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
-The `identity_flow` widget cited above no longer exists; the record encoder is
-`crates/runtime/tilo-identity/src/store/unix.rs` (`IdentityRecord::from_threshold_identity`).
 
 ---
 
@@ -527,7 +524,7 @@ empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
 `RoleAttestation`. `CollaborationManager::set_identity` / `with_identity` likewise have no callers
-in `crates/session/session/`, `crates/sdk/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
+in `crates/session/session/`, `crates/ui/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
 tests. A channel-browser widget with no shell call site has since been removed.
@@ -554,16 +551,16 @@ and `crates/session/session/src/app_wire.rs`, plus
 
 ## P1-5 — No lock on suspend; idle auto-lock off by default
 
-`crates/system/power/src/service.rs:255-265` handles `PrepareForSleep`: the `true` branch only logs.
+`crates/os/power/src/service.rs:255-265` handles `PrepareForSleep`: the `true` branch only logs.
 Nothing locks the session before sleep or on resume, so suspend-then-open-lid lands in an unlocked
-session. `crates/system/power/src/logind.rs:19-20` documents this as working — *"so the compositor
+session. `crates/os/power/src/logind.rs:19-20` documents this as working — *"so the compositor
 can lock before the machine sleeps"* — which is not implemented.
 
 `crates/session/compositor/src/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `TILO_IDLE_LOCK_SECS`.
 
 **Resolved.** The power service maps `PrepareForSleep(true)` to
-`PowerSignal::PreparingForSleep` (`crates/system/power/src/service.rs`), and the compositor
+`PowerSignal::PreparingForSleep` (`crates/os/power/src/service.rs`), and the compositor
 answers it with a mandatory lock before sleep (`IdleState::prepare_for_sleep` in
 `crates/session/compositor/src/idle.rs`); the resume edge resets idle state. The compositor
 defaults both blanking and locking to five minutes; an explicit `TILO_IDLE_LOCK_SECS=0` remains the
@@ -696,7 +693,7 @@ Two adjacent holes in the same guarantee were found alongside it:
 
 ## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
 
-`crates/sdk/ui-core/src/warmup.rs:191`, `crates/session/session/src/run.rs:707`,
+`crates/ui/ui-core/src/warmup.rs:191`, `crates/session/session/src/run.rs:707`,
 `crates/session/compositor/src/backend/headless.rs:77` (line numbers as found; now fixed)
 
 Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
@@ -721,7 +718,7 @@ panic strategy the release profile actually sets.
 **Fix direction (applied):** `OffscreenRenderer::try_new` returns `OffscreenError` instead of
 panicking; `new` is retained for its many test/example callers and panics through it. All three
 sites take the `Result`. `panic = "abort"` is unchanged. Pinned by
-`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`crates/sdk/ui-core/tests/warmup_no_adapter.rs`), which
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`crates/ui/ui-core/tests/warmup_no_adapter.rs`), which
 re-executes itself as a child with an empty wgpu backend set and an aborting panic hook — cargo
 ignores `panic` on the test profile, so the strategy has to be emulated — and fails if the child
 dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
@@ -738,7 +735,7 @@ since changed to `panic = "unwind"` so the compositor can restart its collaborat
 `tilo_rt::panic_boundary::isolate` (`crates/platform/tilo-rt/src/panic_boundary.rs`), so a bare
 `catch_unwind` is still not a recovery path and `try_new` remains the fix.
 
-**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/sdk/ui-core/src/offscreen.rs`, the
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/ui/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
 build. The `catch_unwind` pair in `crates/collab/key-group/src/group.rs:237,379` (now `:523`,
@@ -1169,7 +1166,7 @@ and `crates/runtime/tilo-identity/src/broker.rs::tests::broker_answers_metadata_
 ## P1-13 — The boot sign-in screen has no screen reader and no touch
 
 `os/usr/share/plymouth/themes/tilo/tilo.script` ("Sign-in"), driven by
-`crates/system/boot-signin`. On a machine whose system volume does not open by
+`crates/os/boot-signin`. On a machine whose system volume does not open by
 itself, the first screen is the sign-in screen in the initramfs
 ([sign-in.md](sign-in.md) §3.2). Plymouth draws it: it lays out the person's name, the field
 for their secret, the message line and the other ways in like the login screen, but
@@ -1192,8 +1189,8 @@ to first frame are guarded.
 
 **Status in source:** the Plymouth sign-in layout this describes is removed. The
 sign-in screen in the initramfs is the greeter in boot mode
-(`crates/system/boot-signin/src/greeter.rs`, `os/usr/lib/dracut/modules.d/94tilo-greeter`).
-When it can't start, `crates/system/boot-signin/src/screen.rs` ends Plymouth and
+(`crates/os/boot-signin/src/greeter.rs`, `os/usr/lib/dracut/modules.d/94tilo-greeter`).
+When it can't start, `crates/os/boot-signin/src/screen.rs` ends Plymouth and
 asks through systemd's console password agent.
 
 ---

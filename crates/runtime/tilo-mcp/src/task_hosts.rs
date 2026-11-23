@@ -124,11 +124,9 @@ fn program() -> io::Result<std::path::PathBuf> {
 /// this returns and nothing else of this process. It ends with this process, and with its last
 /// task.
 ///
-/// It is handed its link as every tilolang host is ([`runtime_portal::process_link::spawn`]), but
-/// started straight from its program rather than through the device's launcher: it runs in
-/// whatever serves a task's programs (an API server, `tilo mcp`, a session), where no launcher or
-/// runtime bundle need be installed, holds no storage and no connection but the program's, and
-/// lives for one task, ending with the thread that started it.
+/// Started from its program, not the device's launcher: it runs wherever a task's programs are
+/// served (an API server too, with no launcher installed), holds only the program's connection,
+/// and lives for one task.
 #[cfg(target_os = "linux")]
 fn start_program() -> io::Result<OwnedFd> {
     use std::os::unix::process::CommandExt as _;

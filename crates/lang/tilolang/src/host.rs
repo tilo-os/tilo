@@ -297,16 +297,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Map<Map<Text>>",
                 "Each field that maps keys to words, by its name: what each key holds, as words (a native app's watch times, by video). Its keys are in `lists` too.",
             ),
-            (
-                "members",
-                "Map<List<Actor>>",
-                "Each field whose words name members of the workspace, by its name: the members they name (a native app's author, or the people of a direct conversation its id names).",
-            ),
-            (
-                "records",
-                "Map<List<Map<Text>>>",
-                "Each field that keeps records of its own in a collection, by its name: the records in the order they stood, each record's fields as words.",
-            ),
         ],
     },
     ValueType {
@@ -474,32 +464,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
-        name: "CallMember",
-        id: "host-call-member",
-        doc: "Someone in the system's call held on a resource: who is in a voice channel.",
-        fields: &[
-            ("who", "Actor", "Who it is."),
-            (
-                "mine",
-                "Bool",
-                "Whether it is the person looking, from this device.",
-            ),
-            ("speaking", "Bool", "Whether they are heard talking now."),
-            ("muted", "Bool", "Whether their microphone is off."),
-            (
-                "deafened",
-                "Bool",
-                "Whether they hear nothing of the call, which mutes them too.",
-            ),
-            ("camera", "Bool", "Whether their camera shows in the call."),
-            (
-                "screen",
-                "Bool",
-                "Whether they share their screen in the call.",
-            ),
-        ],
-    },
-    ValueType {
         name: "Meta",
         id: "host-meta",
         doc: "What the platform shows of a resource or of its type.",
@@ -613,6 +577,35 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
         ],
     },
+    ValueType {
+        name: "ImageInfo",
+        id: "host-image-info",
+        doc: "What an image's own container says, as `File.image_info()` reads it: its upright size, when it was taken, which way it is turned, and where it was taken.",
+        fields: &[
+            (
+                "width",
+                "Int",
+                "Its upright width: the stored width, swapped with the height when the orientation turns the picture on its side.",
+            ),
+            ("height", "Int", "Its upright height."),
+            (
+                "captured_at",
+                "Option<Text>",
+                "When the camera says it took the picture, as EXIF stores it (`2026:07:12 18:16:00`).",
+            ),
+            (
+                "orientation",
+                "Option<Int>",
+                "Its EXIF orientation, 1 to 8, when the container states a valid one.",
+            ),
+            (
+                "latitude",
+                "Option<Float>",
+                "Where the camera says it took it, in WGS-84 degrees.",
+            ),
+            ("longitude", "Option<Float>", "The longitude of that place."),
+        ],
+    },
 ];
 
 /// The type that stands for any resource, of whatever app: what `find` and `grep` answer when they read
@@ -711,22 +704,14 @@ pub fn host_meta() -> PackageMeta {
                     "Whether a person proposed the action, to accept or dismiss, rather than the authority asking about one as it was applied.",
                 ),
             ],
-            search: crate::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
-            readers: None,
+            ..TypeMeta::default()
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
             name: RESOURCE_TYPE_NAME.to_owned(),
             doc: "Any resource of the workspace, of whichever app: what `find` and `grep` answer across apps. `.of(T)` keeps those of one type.".to_owned(),
             fields: Vec::new(),
-            search: crate::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
-            readers: None,
+            ..TypeMeta::default()
         }))
         .chain(std::iter::once(TypeMeta {
             id: NOTICE_TYPE.to_string(),
@@ -739,11 +724,7 @@ pub fn host_meta() -> PackageMeta {
                 notice_field(NOTICE_OPENS, "opens", "Resource", MergeKind::Register, "The resource choosing the notification opens."),
                 notice_field(NOTICE_SEEN, "seen", "Bool", MergeKind::Register, "Whether the person has opened or dismissed it."),
             ],
-            search: crate::meta::SearchMeta::default(),
-            origin: None,
-            title: None,
-            untitled: None,
-            readers: None,
+            ..TypeMeta::default()
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -762,11 +743,7 @@ pub fn host_meta() -> PackageMeta {
                         default: None,
                     })
                     .collect(),
-                search: crate::meta::SearchMeta::default(),
-                origin: None,
-                title: None,
-                untitled: None,
-                readers: None,
+                ..TypeMeta::default()
             }
         }))
         .collect(),

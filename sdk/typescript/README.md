@@ -55,7 +55,10 @@ for await (const event of ws.watch("pdf-viewer/visa-form.pdf")) {
 - **A refusal throws.** `Refused(code, message, nextSteps)` says what the host
   said and which calls would work; a call that waits for the person throws
   `AskPending(url, invocationId)` and `await ask.wait()` answers once they
-  decide. A key that was revoked or expired throws `KeyRevoked`/`KeyExpired`.
+  decide. A key the host turns away throws `KeyRevoked`, `KeyExpired` or
+  `KeyRefused`; a server on another API major version throws
+  `UnsupportedVersion`, an unreachable server throws `Unreachable`, and any
+  other wire failure throws `ProtocolError`.
 - **Every change is idempotent.** Each POST, PUT or DELETE carries an
   `Idempotency-Key`, and a retry carries the same one: a call the server says
   it cannot take just now, or one that never arrived, is asked again until the

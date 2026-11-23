@@ -1195,7 +1195,7 @@ impl TreeBrowser {
         if is_folder {
             let folder = self.folder.clone();
             let into = id.to_owned();
-            return Box::new(row.on_view(move || {
+            return Box::new(row.on_open(move || {
                 folder.set_if_changed(into.clone());
             }));
         }
@@ -1205,7 +1205,7 @@ impl TreeBrowser {
         let asked = Rc::clone(&self.asked);
         let read = self.read.clone();
         let node_id = id.to_owned();
-        Box::new(row.on_view(move || {
+        Box::new(row.on_open(move || {
             if let Some(read) = &read {
                 // Reading content the page lacks asks the workspace for it;
                 // the file opens once its bytes are here.
@@ -1679,7 +1679,7 @@ mod tests {
         let catalogue = [
             ("so.tilo.notes", "md,markdown,txt", tilo),
             ("so.tilo.pdf-viewer", "pdf", tilo),
-            ("so.tilo.lang.photos", "png", tilo),
+            ("so.tilo.photos", "png", tilo),
         ];
         let apps = advertised(&catalogue);
         assert_eq!(
@@ -1696,7 +1696,7 @@ mod tests {
         );
         assert_eq!(
             opening_app(b"\x89PNG\r\n\x1a\n....", "shot.txt", &apps).as_deref(),
-            Some("so.tilo.lang.photos"),
+            Some("so.tilo.photos"),
             "a picture called `.txt` is a picture"
         );
         assert_eq!(opening_app(&[0_u8, 1, 2, 3], "blob.bin", &apps), None);

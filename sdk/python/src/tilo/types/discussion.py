@@ -33,7 +33,7 @@ DeleteArgs = TypedDict("DeleteArgs", {
 
 class Comment(Resource):
     """Comment — `tl.so.tilo.lang.discussion.Comment`."""
-    __surface__ = "so.tilo.lang.discussion@503428e29e874aab"
+    __surface__ = "so.tilo.lang.discussion@3dc800efbd65ec71"
     @property
     def _5q4mbecw(self) -> str:
         """text (`5q4mbecw` on the wire)."""
@@ -47,7 +47,7 @@ class Comment(Resource):
 
 class Comments(Resource):
     """Comments — `tl.so.tilo.lang.discussion.Comments`."""
-    __surface__ = "so.tilo.lang.discussion@503428e29e874aab"
+    __surface__ = "so.tilo.lang.discussion@3dc800efbd65ec71"
     @property
     def _3g3duquj(self) -> list[Entry[Comment]]:
         """items (`3g3duquj` on the wire)."""
@@ -76,5 +76,5 @@ class Comments(Resource):
 
 class Discussion(Resource):
     """Discussion — `tl.so.tilo.lang.discussion`."""
-    __surface__ = "so.tilo.lang.discussion@503428e29e874aab"
+    __surface__ = "so.tilo.lang.discussion@3dc800efbd65ec71"
 

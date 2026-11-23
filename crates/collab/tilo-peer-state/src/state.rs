@@ -90,6 +90,8 @@ mod native_publication;
 mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
+mod imported_history;
+pub use imported_history::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
 mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,

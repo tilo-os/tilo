@@ -84,6 +84,10 @@ impl Input {
 
 crate::area::pane_area! {
     InputArea;
+    fn rows_published(&self) -> bool {
+        true
+    }
+    crate::area::serves!(Keyboard, Pointing, Spelling);
     fn warm(&self) {
         self.prefetch_catalog();
     }

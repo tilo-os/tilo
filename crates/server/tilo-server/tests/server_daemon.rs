@@ -230,12 +230,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         ));
         wait_for_ready_with_pending(&b_again, &server.handle().metrics).await;
 
-        // Both devices the host enrolled are members of the workspace's one
-        // record, so a restart admits them without any second list.
-        let members = tilo_server::workspace_files::WorkspaceFiles::open(state.path(), WORKSPACE)
-            .unwrap()
-            .load_membership()
-            .unwrap();
+        // Both devices are on the workspace's signed member list, the one
+        // record that admits them, so a restart admits them from it alone.
+        let members = crate::common::member_devices(&server, WORKSPACE).await;
         assert!(
             members.contains(&a_key) && members.contains(&b_key),
             "both devices persist as members"

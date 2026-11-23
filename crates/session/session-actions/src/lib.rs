@@ -249,12 +249,6 @@ fn giving<P: Send + 'static>(asked: Asked<P>, answer: P) -> Give {
     Box::new(move || asked.answer.complete(answer))
 }
 
-fn unavailable(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::Unavailable {
-        reason: reason.into(),
-    }
-}
-
 /// What a caller is answered for a request the host would not carry: typed
 /// where the caller can act on it (ask again once the workspace is ready, or
 /// ask for access), the host's words otherwise.
@@ -271,7 +265,7 @@ fn refused(refusal: &Refusal) -> ActionCallError {
         Refusal::NotAMember(_) | Refusal::NotAdmitted | Refusal::NotGranted(_) => {
             ActionCallError::NotPermitted
         }
-        other => unavailable(other.to_string()),
+        other => ActionCallError::unavailable(other.to_string()),
     }
 }
 
@@ -1067,7 +1061,9 @@ impl Inner {
         })?;
         self.session
             .send_remote_action(self.workspace_id, self.device, frame)
-            .map_err(|error| unavailable(format!("the session is closed: {error}")))
+            .map_err(|error| {
+                ActionCallError::unavailable(format!("the session is closed: {error}"))
+            })
     }
 
     /// Ask the device `message`, `asked` waiting for its answer. A session that

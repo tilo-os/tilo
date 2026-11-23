@@ -103,37 +103,18 @@ async fn rig() -> Rig {
     let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
     // The person's workspaces are theirs: the server keeps them for them, and every device of
-    // theirs enters each through its entry, as a device opening a workspace does.
+    // theirs takes part in each as a device of the person whose workspace it is.
     let work = workspaces.create("Work").await.unwrap().workspace;
     let home = workspaces.create("Home").await.unwrap().workspace;
-    let person_workspace = person_workspace_id(&person);
-    if workspaces.summary(&person_workspace).await.is_err() {
-        workspaces
-            .create_workspace("Servers", Some(&person_workspace))
-            .await
-            .unwrap();
-    }
-    // Every workspace takes a device that opens it through its entry, as a listed workspace
-    // does.
-    for workspace in [&work, &home, &person_workspace] {
-        workspaces
-            .publish(
-                workspace,
-                &server_device.cert,
-                tilo_server_protocol::directory::Listing {
-                    description: "Ada's workspace".into(),
-                    default_role: tilo_server_protocol::workspaces::Role::Editor,
-                },
-            )
-            .await
-            .unwrap();
-    }
+    // The person's own workspace, founded on their server as a server founds it.
+    let person_workspace = tilo_server::servers::found(workspaces).await.unwrap();
+    assert_eq!(person_workspace, person_workspace_id(&person));
     let laptop_session = flow::session(&host, &laptop, &server_device.cert);
     let phone_session = flow::session(&host, &phone, &server_device.cert);
     for session in [&laptop_session, &phone_session] {
         flow::join(session, &work, "Work").await;
         flow::join(session, &home, "Home").await;
-        flow::join(session, &person_workspace, "Servers").await;
+        flow::join(session, &person_workspace, "Ada").await;
     }
     let laptop_person = laptop_session.clone();
     let phone_person = phone_session.clone();
@@ -382,7 +363,7 @@ async fn flow_phone_joins_like_any_other_device() {
         put.is_ok(),
         "the laptop's file is one of the person's workspace's folder, read by the phone: {put:?}"
     );
-    flow::open(&session, &flow::tree_route(&f.work, 0));
+    flow::folder_index(&session, &f.work, "the folder's index at the phone").await;
     let files = crate::support::wait_for("the folder's file at the phone", || async {
         let count = flow::file_count(&session, &f.work);
         (count > 0).then_some(count)

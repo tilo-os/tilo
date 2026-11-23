@@ -198,7 +198,7 @@ impl TurnElsewhere {
     async fn device_there(&self, there: WorkspaceId, person: [u8; 32]) -> Option<[u8; 32]> {
         let placed = self.placed.as_ref()?;
         let device = self.workspaces.persons_own_device(there, person).await?;
-        let theirs = device != self.workspaces.governor().device_public_key
+        let theirs = device != self.workspaces.device_cert().device_public_key
             && placed.of(&device, tilo_clock::unix_now_ns()).is_none();
         theirs.then_some(device)
     }

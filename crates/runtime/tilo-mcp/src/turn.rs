@@ -5,22 +5,19 @@ use tilo_actions::remote::{ActionProvider, Caller};
 use crate::McpServer;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// One session of an agent the host admitted itself, for a person: `caller` is that person's
-    /// device handing the session to the agent ([`Caller::delegated_to`]), as the host that
-    /// admitted it built it. Every call is the agent's, held to the person's access and the
-    /// agent's own bound, as an agent's session on the person's own device is. Its own fresh
-    /// execution, retired when the server drops.
+    /// One session of an agent the host admitted itself, for a person: `caller` is the agent,
+    /// under its own key or as its workspace lists it, as the host that admitted it built it.
+    /// Every call is the agent's, held to the person's access and the agent's own bound. Its own
+    /// fresh execution, retired when the server drops.
     ///
     /// # Errors
     /// `caller` is not an agent acting for a person in a workspace.
     pub fn for_delegated(host: H, caller: Caller) -> std::io::Result<Self> {
-        let (Some(_), Some(person)) = (caller.acting().agent_id(), caller.acting_for_person())
-        else {
+        if caller.acting().agent_id().is_none() || caller.acting_for_person().is_none() {
             return Err(std::io::Error::other(
                 "a delegated server is an agent's acting for a person",
             ));
-        };
-        let person = person.to_owned();
+        }
         let workspace = caller
             .workspace()
             .ok_or_else(|| std::io::Error::other("a delegated agent names its workspace"))?
@@ -28,14 +25,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(Self::from_caller(
             host,
             workspace,
-            person,
             caller.in_new_execution(),
         ))
     }
 
     /// One turn of an agent the host runs itself, for the person whose ask it answers: `caller` is
-    /// that person's device handing the session to the agent on the turn
-    /// ([`Caller::delegated_to`], [`Caller::on_turn`]), as the host that admitted the ask built
+    /// the agent on the turn ([`Caller::on_roster_turn`]), as the host that admitted the ask built
     /// it ([`Self::for_delegated`]).
     ///
     /// A turn's call waits for its tool until the tool has ended: nobody asked for a slow one to

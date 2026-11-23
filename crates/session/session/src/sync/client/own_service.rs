@@ -91,7 +91,6 @@ pub(crate) async fn open_with_groups(
         },
         endpoint.clone(),
         groups,
-        true,
         |config| workspace_service::ServiceConfig {
             // The desktop's first frame waits on this service, and its endpoint holds its relays
             // back until something needs the device reachable: the service names its address
@@ -322,7 +321,7 @@ impl tilo_session_client::engine::Founder for Founding {
             super::adopt::redeem(
                 self.endpoint.clone(),
                 self.identity.clone(),
-                engine,
+                Arc::clone(&engine),
                 self.network
                     .as_ref()
                     .map(|(network, events)| super::adopt::Carrier { network, events }),
@@ -335,19 +334,25 @@ impl tilo_session_client::engine::Founder for Founding {
                 Some(&self.service),
             )
             .await
-            .map_err(|failure| failure.to_string())
+            .map_err(|failure| failure.to_string())?;
+            // This device created the workspace, so its key service creates the group the
+            // workspace's records are sealed with: the founding hands it the group before
+            // anything is kept there. Nothing else asks for a group nothing asked of yet, and
+            // a first write refused for its keys would wait on a change no pass makes.
+            hand_the_group(&engine, workspace).await;
+            Ok(())
         })
     }
 
     fn ask(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
-        action: &str,
+        target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
         let named = workspace.to_string();
-        let request = governance_request(&named, action, arguments);
+        let request = holder_request(target, arguments);
         // The service holds a workspace this device is the holder of: it shares this device's key,
         // and answers it here as it answers every other member's device.
         if engine.is_holder(&named) {
@@ -407,18 +412,49 @@ impl tilo_session_client::engine::Founder for Founding {
     }
 }
 
+/// Hand this device's key service the group of `workspace`, a workspace this device founded: it
+/// creates the group and holds its keys, and what is kept in the workspace next finds them.
+///
+/// A group starts when an endpoint asks for its keys, which is what
+/// [`KeyProvider::group_keys`](tilo_workspace_keys::KeyProvider::group_keys) does with `create`:
+/// the founder creates it on the key service's next pass, once the workspace's governance names
+/// this device, which is after its enrollment. Nothing else asks before the first record is
+/// kept, so a founding that left the group to a later ask could leave a first write waiting for
+/// keys that no pass brings. A workspace another device founded is not created here: the group
+/// arrives as that device admits this one.
+async fn hand_the_group(engine: &Engine, workspace: tilo_desktop_model::WorkspaceId) {
+    let founded = engine
+        .owner()
+        .with_current(workspace, |view| Ok(view.founded_here()))
+        .unwrap_or(false);
+    if !founded {
+        return;
+    }
+    if let Some(Err(error)) = engine
+        .keys()
+        .group_keys(
+            &workspace.to_string(),
+            collab_types::EVERY_MEMBER,
+            true,
+            tilo_workspace_service::own_device::OPEN_WAIT,
+        )
+        .await
+    {
+        tracing::debug!(%workspace, %error, "a founded workspace's group keys are not here yet");
+    }
+}
+
 /// What a request no holder answered says.
 const UNANSWERED: &str = "the workspace's holder dropped the request";
 
-/// `workspace`'s governance action `action` with `arguments`, as an invocation of it.
-fn governance_request(
-    workspace: &str,
-    action: &str,
+/// The action `target` with `arguments`, as an invocation of it.
+fn holder_request(
+    target: RemoteActionTarget,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(workspace, action),
+        target,
         argument: InvokeArgument::Json(arguments),
 
         context: None,

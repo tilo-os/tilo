@@ -4,15 +4,25 @@ use test_http::{Reply, Responder};
 
 use super::*;
 
-/// Records the pages the pane asks the system to open, like the portal would.
+/// Records the pages the pane asks the system to open, like the portal would; following one goes
+/// where a browser would, so an `OAuth` sign-in finishes.
 struct FakeBrowser {
     opened: Mutex<Vec<String>>,
+    follow: bool,
 }
 
 impl FakeBrowser {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             opened: Mutex::new(Vec::new()),
+            follow: false,
+        })
+    }
+
+    fn following() -> Arc<Self> {
+        Arc::new(Self {
+            opened: Mutex::new(Vec::new()),
+            follow: true,
         })
     }
 }
@@ -20,6 +30,12 @@ impl FakeBrowser {
 impl BrowserOpener for FakeBrowser {
     fn open(&self, url: &str) -> ui::portal::LaunchChannel {
         self.opened.lock().unwrap().push(url.to_string());
+        if self.follow {
+            let url = url.to_string();
+            std::thread::spawn(move || {
+                let _ = tilo_oauth::fake::browse(&url);
+            });
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         let _ = sender.send(ui::portal::LaunchOutcome::Opened);
         receiver
@@ -154,6 +170,87 @@ fn only_account(root: &AccountRoot, type_id: &str) -> accounts::Account {
     let list = store.of_type(accounts::AccountTypeId::from(type_id).as_str());
     assert_eq!(list.len(), 1, "exactly one {type_id} account");
     list[0].clone()
+}
+
+#[test]
+fn a_cloud_drive_is_added_by_its_provider_page_with_the_files_mode_chosen() {
+    let (_dir, root) = scratch_root();
+    let server = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let credential_store = root.credential_store().with_provider(
+        account_credentials::OAuthCloud::GoogleDrive,
+        server.provider(),
+        "drive-client",
+    );
+    let browser = FakeBrowser::following();
+    let mut pane = pane(&root, credential_store, Arc::clone(&browser));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    assert!(pane.sign_in_open());
+    pane.select_files_mode("import").unwrap();
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+    let opened = browser.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    assert!(opened[0].starts_with(&format!("{}/authorize?", server.url())));
+    let account = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&account),
+        Some(accounts::cloud_types::FilesMode::Import)
+    );
+    assert_eq!(account.config["provider"], "google-drive");
+    let secret = root.vault().get(&account.id).expect("sealed grant");
+    assert!(secret.password.is_empty(), "no token in the account");
+    assert!(secret.token.is_some_and(|grant| grant.contains("refresh-")));
+    assert_eq!(pane.directory().views_of(AccountKind::GoogleDrive).len(), 1);
+}
+
+#[test]
+fn a_cloud_drives_files_mode_changes_without_another_consent() {
+    let (_dir, root) = scratch_root();
+    let server = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let credential_store = root.credential_store().with_provider(
+        account_credentials::OAuthCloud::GoogleDrive,
+        server.provider(),
+        "drive-client",
+    );
+    let browser = FakeBrowser::following();
+    let mut pane = pane(&root, credential_store, Arc::clone(&browser));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    pane.select_files_mode("import").unwrap();
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+    let account = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&account),
+        Some(accounts::cloud_types::FilesMode::Import)
+    );
+    let opened = browser.opened.lock().unwrap().len();
+    command(
+        &mut pane,
+        AccountViewCommand::Reauthenticate(account.id.to_string()),
+    );
+    assert!(pane.sign_in_open());
+    pane.select_files_mode("sync").unwrap();
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+    assert_eq!(
+        browser.opened.lock().unwrap().len(),
+        opened,
+        "changing the mode asks for no new consent"
+    );
+    let kept = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(kept.id, account.id);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&kept),
+        Some(accounts::cloud_types::FilesMode::Sync)
+    );
 }
 
 fn fake_nextcloud() -> Responder {

@@ -207,7 +207,7 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
     NavList::new(vec![NavSection::untitled("zones", zones)])
         .selected(&zone_id(selected))
         .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-zones"))
-        .on_view("firewall.zones", move |id| {
+        .on_choose("firewall.zones", move |id| {
             if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
                 intents.push(Intent::SelectZone(zone));
             }
@@ -300,7 +300,7 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
             .with_icon(Icon::Shield)
             .with_action("Try again")
             .with_action_id("firewall.retry")
-            .on_effect(intents.sender(Intent::Retry)),
+            .on_click(intents.sender(Intent::Retry)),
     )
 }
 
@@ -425,7 +425,7 @@ fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
         column = column.push(Box::new(
             Row::new().push(Box::new(
                 Button::new("firewall-make-active", &CATALOG.t("firewall-make-active"))
-                    .on_effect(move || intents.push(Intent::MakeActive)),
+                    .on_click(move || intents.push(Intent::MakeActive)),
             )),
         ));
     }
@@ -603,7 +603,7 @@ fn rule_table(
                         &[("rule", ui::i18n::ArgValue::Text(row.title.clone()))],
                     ),
                 )
-                .on_view(move || intents.push(Intent::EditRule(id))),
+                .on_open(move || intents.push(Intent::EditRule(id))),
             )
         }),
         ColumnDef::new("delete", "", ColumnWidth::Auto).with_widget(move |row: &RuleRow, _| {
@@ -618,7 +618,7 @@ fn rule_table(
                         &[("rule", ui::i18n::ArgValue::Text(row.title.clone()))],
                     ),
                 )
-                .on_view(move || intents.push(Intent::AskDelete(id))),
+                .on_open(move || intents.push(Intent::AskDelete(id))),
             )
         }),
     ])
@@ -632,7 +632,7 @@ fn rule_table(
         table.select_row(index);
     }
     let select = intents.clone();
-    table.on_view("firewall-rules", move |index| {
+    table.on_choose("firewall-rules", move |index| {
         if let Some(id) = ids.get(index) {
             select.push(Intent::SelectRule(*id));
         }
@@ -697,7 +697,7 @@ fn choice<T: Copy + PartialEq + 'static>(
                 .collect(),
             index,
         )
-        .on_view(id, move |i| {
+        .on_choose(id, move |i| {
             if let Some(value) = values.get(i) {
                 intents.push(intent(*value));
             }
@@ -837,7 +837,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
                     .with_icon(Icon::Shield)
                     .with_action("Try again")
                     .with_action_id("firewall.blocked-retry")
-                    .on_effect(move || retry.push(Intent::RefreshBlocked)),
+                    .on_click(move || retry.push(Intent::RefreshBlocked)),
             );
         }
         BlockedRead::Unread => {
@@ -907,7 +907,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
     page = page.push(Box::new(blocked_table(report))).push(Box::new(
         Button::new("firewall-blocked-refresh", &CATALOG.t("firewall-refresh"))
             .with_icon(Icon::Refresh)
-            .on_view(move || retry.push(Intent::RefreshBlocked)),
+            .on_open(move || retry.push(Intent::RefreshBlocked)),
     ));
     Box::new(page)
 }

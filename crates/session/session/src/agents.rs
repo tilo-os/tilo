@@ -18,10 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_app::framework::WorkspaceResource;
-use tilo_app::tilo_workspace_agent::{
-    KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
-};
-use tilo_resource::Id;
+use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record};
 use ui::permissions::{LivePermissions, PermissionContext};
 use ui::resource::workspace::WorkspaceResources;
 
@@ -232,37 +229,6 @@ impl Agents {
         (kept, every)
     }
 
-    /// Charge what the runs' agents spent to their day, on each workspace's record of its agents,
-    /// as the person sitting here: a person's device counts what the agents it runs spend.
-    pub(crate) fn charge(
-        &self,
-        workspaces: &[(String, WorkspacePolicy)],
-        person: &str,
-        spent: &[(String, String, u64)],
-    ) {
-        if spent.is_empty() {
-            return;
-        }
-        let day = ui::clock::today().to_string();
-        for (workspace, agent, cost_micros) in spent {
-            let Some((_, policy)) = workspaces.iter().find(|(held, _)| held == workspace) else {
-                continue;
-            };
-            let Held::Open(record) = self.record(workspace, policy, person) else {
-                continue;
-            };
-            let counted =
-                record.invoke(&Record::RECORD_AGENT_SPEND.with(actions::RecordAgentSpend {
-                    agent: Id::from_raw(agent.clone()),
-                    day: day.clone(),
-                    cost_micros: *cost_micros,
-                }));
-            if let Err(error) = counted {
-                tracing::warn!(%error, %workspace, %agent, "an agent's spend is not counted");
-            }
-        }
-    }
-
     /// The workspace's own agent in `workspace`, as `(id, name)`, read as `person`: the one no MCP
     /// client connects as that the record lists first, by its own order — the agent the canvas
     /// asks (shell.md §8.1). `None` where the workspace has none.
@@ -332,10 +298,9 @@ impl Agents {
 
 impl crate::Shared {
     /// Feed the agents every pass what their work is decided against: every workspace with the
-    /// grants its people gave, and the turns the conversations of each give its agents. Who keeps
-    /// each workspace's agents is read from the workspace's own record of them, as the broker
-    /// admits an agent's session on: an agent works in the turns of the conversations it takes part
-    /// in, and its actions are admitted as its person's grants say.
+    /// grants its people gave, and its conversations opened here. Who keeps each workspace's agents
+    /// is read from the workspace's own record of them, as the broker admits an agent's session on,
+    /// and its actions are admitted as the grants of the person it acts for say.
     pub(crate) fn feed_agents(&self) {
         // What moved in the workspaces' records, and what this session wrote into them, before
         // anything here reads them.
@@ -347,21 +312,54 @@ impl crate::Shared {
                     .map(|held| (held.id().to_string(), held.policy.clone()))
                     .collect()
             });
-        self.agents
-            .charge(&workspaces, &self.person, &self.agent_sessions.take_spent());
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
-        // Agents on this device answer no turn of their own here: a workspace held here gives
-        // them none, so the broker admits their sessions to nothing beyond what an MCP client
-        // was admitted to. Every workspace is named, so none of them is left unlimited.
-        let turns = workspaces
+        let facts: Vec<_> = workspaces
             .into_iter()
-            .map(|(workspace, _)| (workspace, Vec::new()))
+            .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
+                members: self.member_names(&workspace, &listed),
+                workspace,
+                policy,
+            })
             .collect();
-        if self.agent_sessions.asked(turns) {
-            tilo_identity::policy_change::announce();
+        self.conversations.feed(&self.person, &facts);
+        // A turn the person asked on the canvas stands where they asked once Chat said which
+        // message it posted for the ask and its record holds it (canvas.md §3).
+        let mut layout = self.layout.borrow_mut();
+        if layout.awaits_turns() {
+            // What Chat answered the asks' sends, once they settled.
+            self.search.poll_answers();
+            layout.stand_asked(
+                &|sent| {
+                    let message = self.sends.posted(sent)?;
+                    self.conversations.asked_turn(&message)
+                },
+                tilo_session_core::layout::Busy::default(),
+            );
         }
+    }
+
+    /// What `workspace`'s member list calls its people and agents, as apps are told it: its people
+    /// as its governance names them, its agents as its record of them does (`listed`).
+    fn member_names(&self, workspace: &str, listed: &[Listed]) -> chat::projection::PeopleNames {
+        let people = self
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.people(workspace).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|member| (member.id, member.name));
+        let agents = listed
+            .iter()
+            .filter(|agent| agent.workspace == workspace)
+            .map(|agent| {
+                (
+                    ui::permissions::MemberId::agent(&agent.id),
+                    agent.name.clone(),
+                )
+            });
+        people.chain(agents).collect()
     }
 
     /// The person's agent member for the MCP client `client` in `workspace`, by id and by the name

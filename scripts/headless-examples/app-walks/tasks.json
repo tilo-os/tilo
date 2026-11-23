@@ -545,8 +545,9 @@
           },
           {
             "must": [
-              "Find the number",
-              "Call the landlord"
+              {
+                "prefix": "Find the number, in Call the landlord"
+              }
             ]
           }
         ]

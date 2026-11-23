@@ -473,7 +473,7 @@ def lan_of(run: Run, name: str) -> str:
 
 
 BOOT_JOURNAL = ("journalctl -b --no-pager -o short-monotonic -u tilo-device-branch "
-                "-u tilo-device-key-init -u tilo-vmd -u tilo-vm-restore 2>&1 | tail -n 200; "
+                "-u tilo-device-key-init -u tilo-vm-restore 2>&1 | tail -n 200; "
                 "journalctl -b -k --no-pager 2>&1 | grep -i 'type=1326\\|seccomp' | tail -n 5; "
                 "systemctl show tilo-device-branch -p ActiveState -p Result -p ExecMainStatus; "
                 "ls -la /var/lib/tilo /var/lib/tilo/device-private /var/lib/tilo/device "

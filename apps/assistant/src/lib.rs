@@ -40,6 +40,13 @@ use sources::{Assistant, Read, Reads};
 const SETTINGS_PAGE: &str = "settings.section";
 const SETTINGS_MODELS: &str = "settings.section:agent_models";
 
+/// The agent's transforms, answered by this device's engine under the host's own provider
+/// (`tilo_workspace_service::agents::assistant::transforms::PROVIDER`), and the action that takes
+/// a request: an answer in place, or the work it names.
+const TRANSFORMS: &str = "tilo.agent.transforms";
+const TRANSFORM_RESOURCE: &str = "agent.transform:default";
+const TRANSFORM_RESPOND: &str = "respond";
+
 /// What the window shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
@@ -88,6 +95,8 @@ pub(crate) struct Nav {
     pub(crate) asking: LocalState<bool>,
     /// The job as typed so far.
     pub(crate) job: LocalState<String>,
+    /// What the agent answered the person's request with, where it answered it in place.
+    pub(crate) answer: LocalState<String>,
     /// Moves when this window changed a resource it reads, so its parts read it again.
     pub(crate) changed: LocalState<u64>,
 }
@@ -308,6 +317,7 @@ impl ResourceApp for App {
             tab: cx.local(panel::Tab::Active),
             asking: cx.local(false),
             job: cx.local(String::new()),
+            answer: cx.local(String::new()),
             changed: cx.local(0),
         };
         #[cfg(feature = "samples")]
@@ -354,19 +364,91 @@ fn answer(
         }
         AssistantEffect::ViewSupervision => nav.show(&Place::Supervision),
         AssistantEffect::StartSubAgent { job } => {
-            let send = hands.job_for_main_agent(&job)?;
+            // The agent decides what the request is before a sub-agent is made for it: a
+            // question it can answer it answers here, in the composer, and work it names starts
+            // a sub-agent, as before. When it cannot be asked at all, the request goes as it
+            // stands and the run decides.
+            let ask = respond_to(&job)?;
             let nav = nav.clone();
-            // The job is handed over once Chat took the message: the main chat is where it
-            // stands.
-            return Ok(cx.call(&send, move |(), sent, _cx| {
-                sent?;
-                nav.show(&Place::MainChat);
-                Ok(Effected::done())
+            let hands = hands.clone();
+            return Ok(cx.call(&ask, move |(), decided, cx| {
+                let decision = decided
+                    .ok()
+                    .and_then(|output| Decision::of(output.value.as_ref()));
+                match decision {
+                    Some(Decision::Answer(said)) => {
+                        hands.nav.answer.set(said);
+                        Ok(Effected::done())
+                    }
+                    Some(Decision::Work) | None => hand_over(&hands, &nav, &job, cx),
+                }
             }));
         }
         AssistantEffect::OpenModelSettings => hands.open_settings(),
     }
     Ok(Effected::done())
+}
+
+/// What the agent decided a person's request is: the answer to it, given in place, or the work
+/// it names.
+enum Decision {
+    Answer(String),
+    Work,
+}
+
+impl Decision {
+    /// The decision `result` holds, held to the shape the action promises: one of `answer` or
+    /// `work`, in words.
+    fn of(result: Option<&serde_json::Value>) -> Option<Self> {
+        let object = result?.as_object()?;
+        if object.len() != 1 {
+            return None;
+        }
+        let words = |key| {
+            object
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|said| !said.is_empty())
+                .map(str::to_owned)
+        };
+        words("answer")
+            .map(Self::Answer)
+            .or_else(|| words("work").map(|_| Self::Work))
+    }
+}
+
+/// The call that asks the agent what a person's request is, through the host's own transforms:
+/// it answers a question in place, or names the work it asks for.
+///
+/// # Errors
+/// There is no request: an empty field asks nothing.
+fn respond_to(request: &str) -> Result<Call, String> {
+    let request = request.trim();
+    if request.is_empty() {
+        return Err(tr("assistant-job-empty"));
+    }
+    Ok(
+        Call::host(TRANSFORMS, TRANSFORM_RESOURCE, TRANSFORM_RESPOND)
+            .with(serde_json::json!({ "request": request })),
+    )
+}
+
+/// Hand `job` to the assistant's main agent, which starts the sub-agent: the main chat is where
+/// the message stands once Chat took it.
+fn hand_over(
+    hands: &Hands,
+    nav: &Nav,
+    job: &str,
+    cx: &mut EffectCx<Window>,
+) -> ui::framework::EffectAnswer {
+    let send = hands.job_for_main_agent(job)?;
+    let nav = nav.clone();
+    Ok(cx.call(&send, move |(), sent, _cx| {
+        sent?;
+        nav.show(&Place::MainChat);
+        Ok(Effected::done())
+    }))
 }
 
 /// The window as it shows `nav`'s place: the places on the left, the place in the middle
@@ -386,7 +468,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
                 &tr("assistant-supervision"),
             )
             .toggled(place == Place::Supervision)
-            .on_view(move || {
+            .on_open(move || {
                 if nav.place() == Place::Supervision {
                     nav.show(&Place::MainChat);
                 } else {
@@ -421,7 +503,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
                     Icon::Pencil,
                     &tr("assistant-start-sub-agent"),
                 )
-                .on_view(move || asked.ask_for_job()),
+                .on_open(move || asked.ask_for_job()),
             )]
         };
         match &place {
@@ -480,7 +562,7 @@ pub(crate) fn no_assistant(cx: &ViewCx<Window>, hands: &Hands) -> Element {
                 .with_id("assistant-none")
                 .with_action(tr("assistant-create"))
                 .with_action_id("assistant-create")
-                .on_effect(move || {
+                .on_click(move || {
                     if let Err(why) = hands.create_assistant() {
                         said.set(why);
                     }
@@ -556,21 +638,23 @@ fn job_prompt(
         let (nav, hands, said) = (nav.clone(), hands.clone(), refused.clone());
         Button::new("assistant-job-start", "assistant-job-start")
             .role(ButtonRole::Primary)
-            .on_effect(move || {
+            .on_click(move || {
                 let job = nav.job.get();
                 if job.trim().is_empty() {
                     said.set(tr("assistant-job-empty"));
                     return;
                 }
+                // The window stays here while the agent decides: it answers in place, or
+                // the sub-agent starts and the main chat shows where the work stands.
+                nav.answer.set(String::new());
                 hands.start_sub_agent(job);
                 nav.job.set(String::new());
-                nav.show(&Place::MainChat);
             })
     };
     let cancel = {
         let nav = nav.clone();
         Button::new("assistant-job-cancel", "assistant-job-cancel")
-            .on_view(move || nav.asking.set(false))
+            .on_open(move || nav.asking.set(false))
     };
     page(vec![
         Box::new(Text::new(&trf(
@@ -578,6 +662,12 @@ fn job_prompt(
             &[("name", name.into())],
         ))),
         Box::new(job),
+        Box::new(
+            Text::from_state(&nav.answer, |said: &String| said.clone())
+                .with_id("assistant-answer")
+                .with_role(TextRole::Body)
+                .with_live(ui::a11y::Politeness::Polite),
+        ),
         Box::new(
             Row::new()
                 .with_rhythm(ui::tokens::Rhythm::Related)

@@ -7,7 +7,7 @@ isn't compiler magic: it's `std`, a library written in tilolang on the same comp
 ## 1. A component is a described widget
 
 Each ui-core widget has a description generated from its Rust definition
-(`#[derive(Component)]`, catalogue in `crates/dev/ui-graph/components.json`), so it can't drift:
+(`#[derive(Component)]`, catalogue in `crates/ui/ui-graph/components.json`), so it can't drift:
 
 | Part | Is | Example (`ListRow`) |
 |---|---|---|
@@ -437,9 +437,10 @@ view usage_ring(used: Float, caption: Text) {
 - **Motion:** when a shape's numbers change between two readings (an arc's end, a bar's height,
   a path's points), the widget moves them from where they are drawn to the new reading on the
   platform's `Reading` motion, in Rust, at native refresh: a reading taken mid-flight goes on from
-  where it is drawn, never jumps. A change of form (a shape added, a path through more points)
-  lands at once. `motion:` sets the pace (rung 3); reduced motion and a still theme land every
-  reading at once. A view never animates.
+  where it is drawn, never jumps or queues, whoever's change it is (the person's, another
+  member's, an agent's). A change of form lands at once. `motion:` sets the pace (rung 3); reduced motion and a still theme land every
+  reading at once. A view never animates; a Rust widget drawing a number takes it as a
+  `motion::ReadingValue` (Calculator's zoom, the volume bar).
 - **Retained and idle-free:** the shapes are props of a retained node, so a change of them is a
   patch of that node, and the widget paints them when its frame is drawn, like any widget. It
   asks for frames only while a reading moves, so an idle drawing costs nothing.
@@ -464,7 +465,7 @@ The last rung is Rust: a ui-core widget shipped with the package, or the platfor
 surfaces.
 
 - **A widget written in Rust** is a component like any other once it is described (`#[derive(Component)]`,
-  catalogue in `crates/dev/ui-graph/components.json`): it appears in `ui` for every tilolang
+  catalogue in `crates/ui/ui-graph/components.json`): it appears in `ui` for every tilolang
   package as soon as it lands, with its props, slots, events and defaults, and needs no adapter.
   That is also how `std` and the shell are built.
 - **A render graph** — declared shader and compositing nodes over textures, run by the platform

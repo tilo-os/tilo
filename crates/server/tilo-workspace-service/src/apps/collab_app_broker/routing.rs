@@ -442,6 +442,13 @@ impl AppBrokerState {
                     &ContextUpdate::ResourcesArrived(records.clone()),
                 );
             }
+            CollabEvent::RecordsMoved { records } => {
+                subscriptions::context_frame(
+                    channels,
+                    except,
+                    &ContextUpdate::RecordsMoved(records.clone()),
+                );
+            }
             CollabEvent::ScrollbackBatch { .. }
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::KeyAccess { .. }

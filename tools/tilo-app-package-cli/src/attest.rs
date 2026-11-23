@@ -60,7 +60,7 @@ pub(super) fn run(
         signature: Some([0; 64]),
         ..package.meta.root
     };
-    root.signature = Some(publisher.sign_signed_root(&root)?);
+    root.signature = Some(publisher.sign_signed_root(&root));
     let meta = PackageMeta::from_root(root, manifest_bytes, package.meta.collection_bytes)?;
     // A fresh create prevents accidental replacement of official/user packages.
     super::write_tapp_with(

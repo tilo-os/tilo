@@ -440,9 +440,6 @@ impl Checker<'_> {
                 // A row view's id is the declared view's, then `~row<n>` per loop around it.
                 owner: id.split('~').next().unwrap_or(id).to_owned(),
                 id: id.to_owned(),
-                // A row the checker makes is a part of the view it stands in: it is named after that view,
-                // and the words it shows are its item's fields' own.
-                name: owner.to_owned(),
                 params: params.to_vec(),
             },
         ));

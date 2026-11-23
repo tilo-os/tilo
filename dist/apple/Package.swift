@@ -61,10 +61,6 @@ let package = Package(
         // Tilo inside a native app: Tilo's own page as the client behind a Swift interface
         // (pairing, live reads, typed actions), and the view that shows one live Tilo thing.
         .target(name: "TiloLive", dependencies: ["ShellCore"]),
-        // The engine with nothing on screen, for a check to drive against a Tilo site.
-        .executableTarget(name: "TiloLiveProbe", dependencies: ["ShellCore", "TiloLive"]),
-        // The same in an iPhone app, the engine unseen in its root view, for a check in a simulator.
-        .executableTarget(name: "TiloLivePhoneProbe", dependencies: ["ShellCore", "TiloLive"]),
         // The assistant's data interface on Tilo itself: the app as its person's device,
         // through the engine. The one thing the apps name as their source.
         .target(name: "AssistantTilo", dependencies: ["AssistantCore", "AssistantClosed", "ShellCore", "TiloLive"]),

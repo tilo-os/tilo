@@ -55,6 +55,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
         },
         authors,
         records: Vec::new(),
+        items: Vec::new(),
         opened_by: std::collections::BTreeMap::new(),
     }
 }
@@ -473,7 +474,7 @@ tilo_test_env::scenario! {
             .with_actor(automerge::ActorId::from(vec![1; 16]));
         let heads = doc.get_heads();
         let placed = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
-        crate::desktop_doc::write_shared(&mut doc, &placed.tree, &placed.records, &placed.authors);
+        crate::desktop_doc::write_shared(&mut doc, &placed.tree, &placed.records, &placed.items, &placed.authors);
         doc.commit();
         let placing = DocumentMutation::Incremental(doc.save_after(&heads));
         assert!(matches!(
@@ -489,7 +490,7 @@ tilo_test_env::scenario! {
     {
         let leaked = with_settings(desktop(&[(1, 100, ADA), (2, 200, BEN)]), 3, ADA);
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-        crate::desktop_doc::write_shared(&mut doc, &leaked.tree, &leaked.records, &leaked.authors);
+        crate::desktop_doc::write_shared(&mut doc, &leaked.tree, &leaked.records, &leaked.items, &leaked.authors);
         doc.commit();
         let kept = shared_resource::read_as_kept(&doc, None).unwrap();
         assert!(kept.tree.tab(3).is_some(), "the record holds it");

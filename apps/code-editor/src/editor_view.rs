@@ -337,7 +337,7 @@ impl EditorView {
             empty: EmptyState::new("No file open")
                 .with_icon(Icon::FileCode)
                 .with_action("Open file")
-                .on_view({
+                .on_open({
                     let asked = std::rc::Rc::clone(&open_asked);
                     move || asked.set(true)
                 }),

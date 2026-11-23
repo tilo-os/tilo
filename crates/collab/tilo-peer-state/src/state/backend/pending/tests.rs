@@ -16,14 +16,14 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
     let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "pending-predecessor", true).unwrap();
-    doc.commit_edit("fixture", "pending-predecessor");
+    doc.commit_edit("fixture", "pending-predecessor", &cert.user_public_key);
     let predecessor = source
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "pending-descendant", true).unwrap();
-    doc.commit_edit("fixture", "pending-descendant");
+    doc.commit_edit("fixture", "pending-descendant", &cert.user_public_key);
     let descendant = source
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)

@@ -3,7 +3,7 @@
 //! key the device makes for the agent.
 //!
 //! Everything here is the production path a native desktop takes: the workspace is the device's
-//! own, the agent and the ask are the records Chat and the agent package publish, the turn is
+//! own, the agent and the conversation are the records Chat and the agent app publish, the turn is
 //! read from them (`ServerAgents::turns`), and the answer goes through the agent's tools as the
 //! agent — here a scripted model standing where the workspace's linked model would be.
 
@@ -17,9 +17,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use serde_json::Value;
 use tilo_actions::MemberId;
 use tilo_actions::remote::InvokeRequest;
 use tilo_agent_session::model::PlanTurns;
+use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, Usage,
 };
@@ -28,8 +30,8 @@ use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 use super::agent_keys::AgentKeys;
 use super::{Model, ServerAgents};
-use crate::tl_records::runtime::Value as TlValue;
 
+const CHAT: &str = "so.tilo.chat";
 const SCOUT: &str = "scout";
 
 /// A model whose turns are written out: what each request asked is kept, so a test reads what the
@@ -108,12 +110,20 @@ impl AgentKeys for Keys {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    fn made(
+        &self,
+        _key: &[u8; 32],
+    ) -> Option<(tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey)> {
+        None
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = crate::workspaces::fixtures::governor();
+    let catalogue = AppCatalogue::native();
     // The native apps name their surfaces as the host first runs them.
     crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
@@ -121,65 +131,66 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let workspace = workspaces.create("Launch").await.unwrap().workspace;
     let person = hex::encode(cert.user_public_key);
 
-    // The workspace's record of the agents it keeps.
-    let agents_record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    // The workspace's chat, and its record of the agents it keeps.
+    let chat_record = crate::agents::workspace_resource(&catalogue, CHAT);
     workspaces
-        .author_workspace_document(
-            &workspace,
-            &cert,
-            (tilo_workspace_agent::OWNER, &agents_record),
-            |doc| {
-                let mut made = tilo_resource::Replica::<WorkspaceAgents>::new().as_author(&person);
-                made.apply(
-                    WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                        name: tilo_resource::NonBlank::parse("Scout").unwrap(),
-                        id: Some(SCOUT.into()),
-                        model: None,
-                        mcp_client: None,
-                    }),
-                )
-                .map_err(|error| error.to_string())?;
-                std::mem::swap(doc, made.doc_mut());
-                Ok(())
-            },
-        )
+        .prepare_application(&workspace, &cert, &catalogue, CHAT, &chat_record)
+        .await
+        .unwrap();
+    workspaces
+        .author_agents(&workspace, |doc| {
+            let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                .as_author(&person);
+            made.apply(
+                WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                    name: tilo_resource::NonBlank::parse("Scout").unwrap(),
+                    id: Some(SCOUT.into()),
+                    model: None,
+                    mcp_client: None,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            std::mem::swap(doc, made.doc_mut());
+            Ok(())
+        })
         .await
         .unwrap();
 
-    // The person mentions it in a channel of Chat, as their own window's composer sends it: the
-    // mention asks it, as theirs.
-    let packages = crate::asks::chat_packages().unwrap();
-    let ada = crate::asks::Actor::Member(MemberId::person(&person));
-    {
-        let (ada, chat) = (ada.clone(), packages.app().to_owned());
+    // The person writes to it, as their own window's composer does.
+    let conversation = chat::Chat::direct_id([MemberId::person(&person), MemberId::agent(SCOUT)]);
+    let posted = {
+        let mut page = Replica::open(
+            &catalogue,
+            CHAT,
+            &workspace,
+            &MemberId::person(&person),
+            ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
+        page.invoke(
+            &tilo_actions::api::ActionAddress::new(
+                collab_types::document::chain_resource_id(&chat::parts::chain()),
+                "post",
+            ),
+            &serde_json::Map::from_iter([
+                ("channel".to_owned(), conversation.as_str().into()),
+                ("text".to_owned(), "what is planned?".into()),
+            ]),
+            false,
+        )
+        .unwrap();
+        page.take_document_mutations().unwrap()
+    };
+    for (document, mutation) in posted {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            continue;
+        };
+        let document = document.as_str();
         workspaces
-            .with_tl_record(&workspace, &packages, ada.clone(), move |opened| {
-                let all = opened
-                    .host()
-                    .root_of(&chat)
-                    .map_err(|error| error.to_string())?;
-                let channel = opened.invoke(
-                    &ada,
-                    (&chat, "new_channel"),
-                    vec![TlValue::resource(&all), TlValue::Text("plans".into())],
-                    None,
-                )?;
-                opened
-                    .invoke(
-                        &ada,
-                        (&chat, "send"),
-                        vec![
-                            channel,
-                            crate::asks::mentioning(
-                                &MemberId::agent(SCOUT),
-                                "Scout",
-                                " what is planned?",
-                            ),
-                            TlValue::Opt(None),
-                        ],
-                        None,
-                    )
-                    .map(drop)
+            .author_workspace_document(&workspace, &cert, (CHAT, document), |doc| {
+                tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                    .map_err(|error| error.to_string())
             })
             .await
             .unwrap();
@@ -240,36 +251,36 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         "the model reads what the person asked"
     );
 
-    // The reply says first that the turn took it, then what it is at, and holds the answer; what
-    // the turn called went through the device's broker as the agent.
-    let asks = workspaces
-        .with_tl_record(&workspace, &packages, ada, |opened| {
-            crate::asks::asks(opened)
-        })
-        .await
-        .unwrap();
-    let reply = asks
+    // What the turn did went through the device's broker as the agent: the note it was doing, and
+    // the answer it wrote into its reply. It says first that it took the turn, then what it is at.
+    let invoked = provider.asked();
+    let note = invoked
         .iter()
-        .find_map(crate::asks::Asked::latest)
-        .unwrap_or_else(|| panic!("the ask has its reply: {asks:?}"));
-    assert!(
-        reply
-            .steps
-            .iter()
-            .any(|step| step.called == "Looking at what the workspace can do…"),
-        "the turn says what it is doing: {:?}",
-        reply.steps
+        .filter(|request| request.target.address.action.as_str() == "record-work")
+        .map(|request| argument(request, "work"))
+        .find(|work| work["state"] == "doing")
+        .unwrap_or_else(|| panic!("the turn says what it is doing: {invoked:?}"));
+    assert_eq!(
+        note["did"], "Looking at what the workspace can do…",
+        "{note}"
     );
+    let answered = invoked
+        .iter()
+        .filter(|request| request.target.address.action.as_str() == "record-work")
+        .map(|request| argument(request, "say"))
+        .any(|said| {
+            said.as_str()
+                .is_some_and(|said| said.contains("The plan is ready"))
+        });
     assert!(
-        reply.body.contains("The plan is ready"),
-        "the answer is written into the reply: {}",
-        reply.body
+        answered,
+        "the answer is written into the reply: {invoked:?}"
     );
     assert!(
         provider
             .callers()
             .iter()
-            .all(|caller| caller.acting().agent_id() == Some(SCOUT)),
+            .any(|caller| caller.acting().agent_id() == Some(SCOUT)),
         "every call is the agent's own"
     );
 }
@@ -285,4 +296,14 @@ fn text_of(message: &Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The argument `name` of `request`, as JSON.
+fn argument(request: &InvokeRequest, name: &str) -> Value {
+    match &request.argument {
+        tilo_actions::remote::InvokeArgument::Json(arguments) => {
+            arguments.get(name).cloned().unwrap_or(Value::Null)
+        }
+        other => panic!("the call carries JSON arguments: {other:?}"),
+    }
 }

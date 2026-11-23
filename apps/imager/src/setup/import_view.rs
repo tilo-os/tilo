@@ -2146,7 +2146,7 @@ impl ImportApp {
         let sink = Rc::clone(&self.commands);
         Button::new(id, &super::strings::t(key))
             .control_size(ui::widget::ControlSize::Regular)
-            .on_effect(move || sink.borrow_mut().push(command))
+            .on_click(move || sink.borrow_mut().push(command))
     }
 
     fn journey_choices(&self) -> Section {
@@ -3362,7 +3362,7 @@ mod tests {
 
     impl ui::framework::ResourceApp for ImportShots {
         type Resource = Imager;
-        const ID: &'static str = tilo_app_id::apps::IMAGER;
+        const ID: &'static str = crate::resource::APP_ID;
         const TITLE: &'static str = "Disk Imager";
 
         fn scenarios() -> &'static [&'static str] {

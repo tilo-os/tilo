@@ -17,7 +17,7 @@ use crate::cli::BranchArgs;
 use crate::config::{Base, Registry, VmEntry};
 use crate::error::CliError;
 use crate::hypervisor::{self, Branching, Hypervisor, Runner, SystemRunner, Vm, run_all};
-use crate::{forwarded_port, remote, sshkey};
+use crate::{forwarded_port, sshkey};
 
 /// How long `--stop` waits for the hypervisor to report the source off
 /// after its guest shut down.
@@ -66,7 +66,7 @@ impl App {
             },
             receipt: crate::receipt::Receipt::new(&self.base_dir(), Vec::new()),
             warnings: Vec::new(),
-            peer: None,
+            machine: self.machine.clone(),
         }
     }
 
@@ -531,7 +531,10 @@ impl App {
             hostname: None,
             mac: None,
             wake: None,
-            peer: None,
+            // The branch's disk makes itself a new device key at its first boot, so it joins
+            // as a device of its own.
+            device: None,
+            ticket: None,
             ..source.clone()
         };
         copy_key(&sshkey::key_path(&self.registry_path, src), &key)?;
@@ -746,7 +749,7 @@ fn copy_key(from: &Path, to: &Path) -> Result<(), CliError> {
             to.display()
         )))?;
     }
-    remove_if_present(Path::new(&remote::known_hosts_path(
+    remove_if_present(Path::new(&sshkey::known_hosts_path(
         &to.display().to_string(),
     )))
     .map(|_| ())
@@ -764,7 +767,7 @@ fn remove_child(entry: &VmEntry, key: &Path) {
     files.extend([
         key.to_path_buf(),
         sshkey::public_path(key),
-        PathBuf::from(remote::known_hosts_path(&key.display().to_string())),
+        PathBuf::from(sshkey::known_hosts_path(&key.display().to_string())),
     ]);
     for file in files {
         let _ = remove_if_present(&file);

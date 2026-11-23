@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 # The providers the person set up, and the model agents answer with: the
 # reading and the choice this service publishes over both provider sections.
-agent-provider-config = { path = "../../agent/provider-config", features = ["model"] }
+agent-provider-config = { path = "../../integrations/provider-config", features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
 settings-sections = { path = "../../system/settings-sections" }

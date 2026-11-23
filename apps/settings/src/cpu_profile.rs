@@ -228,3 +228,135 @@ fn mounted_settings_cpu_interactions_observe_canonical_panes_and_shared_controls
         }
     }
 }
+
+/// An idle window paints nothing: on the pane it opens on, after its first
+/// reads and arrivals, no widget asks for a frame and no deadline is due —
+/// and the clock advancing asks for none either. A regression names the
+/// widget that does, so the frame it paints can be traced to its cause.
+#[test]
+fn an_idle_settings_window_asks_for_no_frames() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts normally");
+    app.harness().resize((1280, 800)).unwrap();
+    settle(&mut app);
+    let requesters = app.harness().frame_requesters();
+    assert!(
+        requesters.is_empty(),
+        "idle Settings keeps asking for frames: {requesters:?}"
+    );
+    let start = ui::time::now();
+    for step in 1..=20u64 {
+        let at = start + std::time::Duration::from_millis(step * 100);
+        let requesters =
+            ui::time::testing::with_monotonic_time(at, || app.harness().frame_requesters());
+        assert!(
+            requesters.is_empty(),
+            "at +{}ms idle Settings keeps asking for frames: {requesters:?}",
+            step * 100
+        );
+    }
+}
+
+/// A read on a pane the person is not looking at that never lands, with the
+/// deadline it keeps asking to be tried again: the Network page's scan still
+/// on its way after they moved on to Appearance.
+struct StuckRead {
+    polls: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl crate::area::PaneArea for StuckRead {
+    fn serving(&self) -> &'static [Category] {
+        &[Category::Network]
+    }
+
+    fn poll(&self) {
+        self.polls.set(self.polls.get() + 1);
+    }
+
+    fn first_read(&self) -> bool {
+        true
+    }
+
+    fn pending_visual_work(&self) -> bool {
+        true
+    }
+
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        Some(ui::time::now())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// A read that never lands on a pane nobody shows, with the deadline it
+/// keeps asking for, leaves the pane the person reads resting: the window
+/// paints no frame for it and takes in none of its work, beyond the rows it
+/// publishes. The device path reads its areas one at a time, as a live
+/// window does.
+#[test]
+fn a_read_on_a_pane_nobody_shows_asks_for_no_frames_or_polls() {
+    ui::i18n::I18nManager::init("en-US");
+    crate::effects::defer_area_reads_in_tests(true);
+    let polls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    {
+        let polls = std::rc::Rc::clone(&polls);
+        crate::area::replace_in_next_window(move |_| StuckRead { polls });
+    }
+    let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts normally");
+    crate::effects::defer_area_reads_in_tests(false);
+    app.harness().resize((1280, 800)).unwrap();
+    crate::effects::show_pane(&mut app, Category::Appearance);
+    app.settle();
+    // The first reads of the device path land one per sync; the window is
+    // measured once they are all in.
+    let mut pumped = 0;
+    while app
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.area_reads().deferred())
+        .unwrap_or(false)
+    {
+        pumped += 1;
+        assert!(pumped < 400, "the window never finished reading its areas");
+        app.harness()
+            .wait_until(ui::time::Duration::from_millis(10), |_| false);
+    }
+    settle(&mut app);
+
+    assert!(
+        app.harness().pending_visual_work().is_empty(),
+        "the window waits for a read on a pane nobody shows: {:?}",
+        app.harness().pending_visual_work()
+    );
+    assert!(
+        app.harness().frame_requesters().is_empty(),
+        "a read on another pane asks for frames: {:?}",
+        app.harness().frame_requesters()
+    );
+    let start = ui::time::now();
+    for step in 1..=20u64 {
+        let at = start + std::time::Duration::from_millis(step * 100);
+        ui::time::testing::with_monotonic_time(at, || {
+            let drew = app
+                .harness()
+                .poll_frame()
+                .expect("the window either draws a frame or rests");
+            assert!(
+                !drew,
+                "an idle Settings painted a frame over two seconds for a read on another pane: \
+                 {:?}",
+                app.harness().frame_requesters()
+            );
+        });
+    }
+    assert_eq!(
+        polls.get(),
+        0,
+        "the window took in the work of a pane nobody shows {} times",
+        polls.get()
+    );
+}

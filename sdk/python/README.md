@@ -63,9 +63,10 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
 - **A refusal is an exception.** `Refused(code, message, next_steps)` says
   what the API said and which calls would work; a call that waits for the
   person raises `AskPending(url, invocation)` and `await ask.wait()` answers once
-  they
-  decide; a key the API turns away raises `KeyRevoked`, `KeyExpired` or
-  `KeyRefused`.
+  they decide; a key the API turns away raises `KeyRevoked`, `KeyExpired` or
+  `KeyRefused`; a server on another API major version raises
+  `UnsupportedVersion`, an unreachable server raises `Unreachable`, and any
+  other wire failure raises `ProtocolError`.
 - **A transient refusal is waited for.** A call the server says it cannot
   take just now ran nothing, so the client asks again with jitter and the
   same `Idempotency-Key`, for up to `retry_deadline` seconds

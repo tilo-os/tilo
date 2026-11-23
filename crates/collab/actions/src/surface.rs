@@ -48,6 +48,11 @@ pub struct Surface {
     /// person's store.
     #[serde(default, skip_serializing_if = "is_false")]
     pub person: bool,
+    /// Who reads a record of the kind, when not every member of the workspace (core.md, "One set
+    /// of resources per workspace"): each record is sealed to exactly its readers' key group, and
+    /// the store works out who they are ([`ReaderRule`]). Absent for a kind every member reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readers: Option<ReaderRule>,
     /// Absent from a surface file that lists none.
     #[serde(default)]
     pub verbs: Vec<VerbSurface>,
@@ -66,6 +71,8 @@ pub struct Surface {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shows: Vec<String>,
 }
+
+pub use tilo_action_policy::ReaderRule;
 
 /// One verb.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -636,6 +636,18 @@ pub struct InvokeRequest {
 }
 
 impl InvokeRequest {
+    /// The resource this call is made from, as its caller named it in its arguments
+    /// ([`crate::params::FROM_ARGUMENT`]): what the resources it makes are made from, and what
+    /// a turn it starts answers. The dispatch admits a call made from a resource only for a
+    /// caller who may read that resource.
+    #[must_use]
+    pub fn made_from(&self) -> Option<crate::params::MadeFrom> {
+        let InvokeArgument::Json(arguments) = &self.argument else {
+            return None;
+        };
+        crate::params::MadeFrom::from_json(arguments.get(crate::params::FROM_ARGUMENT)?)
+    }
+
     /// What the agent's harness calls the session this request was sent in ("Release prep"), as
     /// the client's agent-session group says it: display only, the name people see the agent by
     /// ([`Caller::in_named_session`]). `None` when the client named no session.
@@ -992,6 +1004,30 @@ impl ActionCallError {
     pub const fn confirmation_required() -> Self {
         Self::ConfirmationRequired {
             departure: Vec::new(),
+        }
+    }
+
+    /// The provider refused for a reason of its own.
+    #[must_use]
+    pub fn refused(reason: impl Into<String>) -> Self {
+        Self::Refused {
+            reason: reason.into(),
+        }
+    }
+
+    /// The request is malformed for this action.
+    #[must_use]
+    pub fn invalid_request(reason: impl Into<String>) -> Self {
+        Self::InvalidRequest {
+            reason: reason.into(),
+        }
+    }
+
+    /// The provider serves no actions right now.
+    #[must_use]
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self::Unavailable {
+            reason: reason.into(),
         }
     }
 
@@ -3250,5 +3286,44 @@ mod tests {
             Ok(Reservation::Reserved),
             "an abandoned start ran nothing and may be admitted again"
         );
+    }
+
+    #[test]
+    fn action_call_error_constructors_build_the_exact_variants() {
+        let refused = ActionCallError::refused("not allowed now");
+        assert_eq!(
+            refused,
+            ActionCallError::Refused {
+                reason: "not allowed now".to_owned(),
+            }
+        );
+        assert_eq!(refused.code(), "refused");
+        assert_eq!(refused.said(), "refused: not allowed now");
+        let owned_refusal = String::from("not allowed now");
+        assert_eq!(ActionCallError::refused(owned_refusal), refused);
+
+        let invalid = ActionCallError::invalid_request("missing field");
+        assert_eq!(
+            invalid,
+            ActionCallError::InvalidRequest {
+                reason: "missing field".to_owned(),
+            }
+        );
+        assert_eq!(invalid.code(), "invalid_arguments");
+        assert_eq!(invalid.said(), "invalid_arguments: missing field");
+        let owned_invalid = String::from("missing field");
+        assert_eq!(ActionCallError::invalid_request(owned_invalid), invalid);
+
+        let unavailable = ActionCallError::unavailable("service off");
+        assert_eq!(
+            unavailable,
+            ActionCallError::Unavailable {
+                reason: "service off".to_owned(),
+            }
+        );
+        assert_eq!(unavailable.code(), "remote_actions_unavailable");
+        assert_eq!(unavailable.said(), "unavailable: service off");
+        let owned_unavailable = String::from("service off");
+        assert_eq!(ActionCallError::unavailable(owned_unavailable), unavailable);
     }
 }

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # The hosted VM guest: the one root filesystem every workspace VM on a host that
 # serves other people's workspaces boots (Firecracker,
-# crates/runtime/linux-vm/src/hosted). It runs the workspace's Linux programs
+# crates/vm/linux-vm/src/hosted). It runs the workspace's Linux programs
 # and its Browser.
 #
 # It is a root *filesystem*, not a disk and not an installed system: no systemd,
@@ -9,7 +9,7 @@
 # container's filesystem into a raw ext4 (`rootfs.ext4`), which every VM's disk
 # starts as a reflinked copy of, and that the guest grows to its size at boot.
 # PID 1 is os/hosted-guest/hosted-init, which mounts what a guest needs, grows
-# the filesystem and hands over to the guest agent (crates/runtime/linux-vm-agent)
+# the filesystem and hands over to the guest agent (crates/vm/linux-vm-agent)
 # — a VM must answer within a few hundred milliseconds of being restored.
 #
 # Fedora 44, the userland every Tilo binary is built for, so the session and
@@ -100,8 +100,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 COPY os/ /build/os/
 COPY apps/browser/ /build/apps/browser/
 COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
-COPY crates/sdk/ui-core/assets/fonts/ /build/crates/sdk/ui-core/assets/fonts/
-COPY crates/sdk/tilo-webview/src/chromium/runtime.rs /build/crates/sdk/tilo-webview/src/chromium/runtime.rs
+COPY crates/ui/ui-core/assets/fonts/ /build/crates/ui/ui-core/assets/fonts/
+COPY crates/engines/tilo-webview/src/chromium/runtime.rs /build/crates/engines/tilo-webview/src/chromium/runtime.rs
 COPY tools/ /build/tools/
 COPY --from=compiled / /out/
 COPY --from=chromium-engine / /run/tilo-chromium/
@@ -140,7 +140,7 @@ RUN set -eu; \
 # when the two disagree.
 RUN set -eu; \
     pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
-        /build/crates/sdk/tilo-webview/src/chromium/runtime.rs)"; \
+        /build/crates/engines/tilo-webview/src/chromium/runtime.rs)"; \
     test -n "$pinned"; \
     test "$pinned" = "$CHROMIUM_RUNTIME_VERSION"; \
     test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host; \
@@ -346,7 +346,7 @@ RUN set -eu; \
 
 # node, npm and npx on PATH for every shell and for every program the agent
 # starts, without a shell hook: the agent sets PATH to
-# /usr/local/bin:/usr/bin:/bin (crates/runtime/linux-vm-agent/src/launch.rs).
+# /usr/local/bin:/usr/bin:/bin (crates/vm/linux-vm-agent/src/launch.rs).
 ARG NODE_ASSET
 RUN set -eu; \
     v=${NODE_ASSET#node-}; \

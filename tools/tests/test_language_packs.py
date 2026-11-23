@@ -53,6 +53,19 @@ class LanguagePackTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
                              ["jobs.ftl", "tasks-model.ftl"])
 
+    def test_a_crate_using_declared_names_is_packed(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = pathlib.Path(scratch) / "repo"
+            crate(repo, "tray", "tilo_resource::declared_names!();\n",
+                  {"en-US": "tray-item = Tray item\n", "de-DE": "tray-item = Symbol\n"})
+            # Named in documentation only: nothing reads its catalogue.
+            crate(repo, "docs", "/// tilo_resource::declared_names!();\n",
+                  {"en-US": "x = X\n", "de-DE": "x = Ix\n"})
+            out = pathlib.Path(scratch) / "packs"
+            self.assertEqual(packs.build(repo, out), 0)
+            self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
+                             ["tray.ftl"])
+
     def test_the_repository_packs_the_tasks_models_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
         self.assertIn(("de-DE", "tasks-model"), found)

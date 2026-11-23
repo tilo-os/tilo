@@ -2,7 +2,7 @@
 """Keep the dev image and the production image apart.
 
 os/Containerfile.dev builds the dev VM image FROM the production image: it adds
-an SSH server, `dev-overrides` binaries, tilo-vmd and a build
+an SSH server, `dev-overrides` binaries, tilo-vm and a build
 toolchain, and it is unsealed. Two ways that could leak into production:
 
 1. The dev image is published or tagged as a production image. So:
@@ -71,7 +71,7 @@ WHY_INTEGRATION = ("tilo-ci holds unsigned OS images that skipped the release si
 WHY_LEAK = ("production images are built from os/Containerfile* and must never contain dev-only "
             "components, dev features or dev-image files; each one weakens the shipped system")
 # Dev-image sources that only os/Containerfile.dev may use.
-DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-vmd/data", "os/scripts/unseal-rootfs.py",
+DEV_SOURCES = ("os/dev-image/", "crates/os/tilo-device-steps/data", "os/scripts/unseal-rootfs.py",
                "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev",
                "Containerfile.host-dev")
 WHY_SERVER = ("the development server image merges unsigned system extensions over /usr at boot and "

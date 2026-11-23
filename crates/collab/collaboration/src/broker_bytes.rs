@@ -103,22 +103,11 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(handle);
             }
         }
-        CollabRequest::Document {
-            mutation,
-            authorization,
-            ..
-        } => {
-            match mutation {
-                DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
-                    meter.bytes(data)
-                }
+        CollabRequest::Document { mutation, .. } => match mutation {
+            DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
+                meter.bytes(data)
             }
-            if let Some(authorization) = authorization {
-                meter.0 = meter
-                    .0
-                    .and_then(|bytes| bytes.checked_add(authorization.retained_bytes()?));
-            }
-        }
+        },
         CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);
@@ -476,6 +465,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 meter.string_capacity(record);
             }
             "ResourcesArrived"
+        }
+        CollabEvent::RecordsMoved { records } => {
+            meter.add_product(records.capacity(), std::mem::size_of::<String>());
+            for record in records {
+                meter.string_capacity(record);
+            }
+            "RecordsMoved"
         }
         CollabEvent::ResourceUnavailable { route } => {
             meter.string_capacity(&route.app_id);

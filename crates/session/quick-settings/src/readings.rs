@@ -16,12 +16,13 @@ use std::sync::{Arc, Mutex};
 use connectivity::model::{Bluetooth, Network, Vpn};
 use power::{Battery, Sleep};
 use serde::Deserialize;
+use tilo_system_resources::model::{Power, PowerMode};
 use tilo_system_resources::update::Update;
 use ui::serde_json;
 
 use crate::PowerProfile;
 use crate::session::{
-    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS,
+    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS, POWER,
     QUICK_SETTINGS, SLEEP, SOUND, SYSTEM_UPDATE, VPN,
 };
 use crate::state::QuickSettingsState;
@@ -142,6 +143,7 @@ pub(crate) fn land(readings: &Readings, resource: &str, text: &str) -> bool {
         }),
         BATTERY => parse::<Battery>(readings, resource, text, land_battery),
         SLEEP => parse::<Sleep>(readings, resource, text, land_sleep),
+        POWER => parse::<Power>(readings, resource, text, land_power),
         SYSTEM_UPDATE => parse::<Update>(readings, resource, text, |state, update| {
             state.firmware_updates = update.firmware;
         }),
@@ -249,16 +251,52 @@ fn land_battery(state: &mut QuickSettingsState, battery: &Battery) {
     });
 }
 
-/// What holds the machine awake, and the power profiles it offers.
+/// What holds the machine awake.
 fn land_sleep(state: &mut QuickSettingsState, sleep: &Sleep) {
     state.awake_holders.clone_from(&sleep.holds);
-    state.power_profiles = sleep
-        .profiles
-        .iter()
-        .filter_map(|it| profile_named(it))
-        .collect();
-    if let Some(profile) = sleep.profile.as_deref().and_then(profile_named) {
-        state.power_profile = profile;
+}
+
+const SET_POWER_MODE: &str = "set-power-mode";
+
+/// The power modes this machine offers, the one in force, and any refusal from
+/// a `set-power-mode` change the panel observed.
+fn land_power(state: &mut QuickSettingsState, power: &Power) {
+    state.power_profiles = power.modes.iter().copied().map(power_profile).collect();
+    if let Some(mode) = power.mode {
+        state.power_profile = power_profile(mode);
+    }
+    let mode_pending = power.pending.iter().any(|id| id == SET_POWER_MODE);
+    if !state.power_seen {
+        state.power_seen = true;
+        state.power_mode_pending = mode_pending;
+        return;
+    }
+    let mode_finished = state.power_mode_pending && !mode_pending;
+    state.power_mode_pending = mode_pending;
+    if mode_finished {
+        if let Some(problem) = &power.problem {
+            state.refusal = Some(problem.clone());
+            state.power_problem = Some(problem.clone());
+        } else {
+            if state.power_problem.is_some() && state.refusal == state.power_problem {
+                state.refusal = None;
+            }
+            state.power_problem = None;
+        }
+    } else if power.problem.is_none() && state.power_problem.is_some() {
+        if state.refusal == state.power_problem {
+            state.refusal = None;
+        }
+        state.power_problem = None;
+    }
+}
+
+/// The panel's profile variant for a published [`PowerMode`].
+const fn power_profile(mode: PowerMode) -> PowerProfile {
+    match mode {
+        PowerMode::Saver => PowerProfile::Saver,
+        PowerMode::Balanced => PowerProfile::Balanced,
+        PowerMode::Performance => PowerProfile::Performance,
     }
 }
 
@@ -313,17 +351,6 @@ fn land_devices(state: &mut QuickSettingsState, reading: &crate::hosted::Devices
     state.personal_devices = Some(reading.count());
     state.handoff_targets = Some(reading.targets());
     state.offer.clone_from(&reading.offer);
-}
-
-/// The power profile `name` is, as the daemon words it; `None` for a name
-/// this panel does not know.
-fn profile_named(name: &str) -> Option<PowerProfile> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "power-saver" | "saver" => Some(PowerProfile::Saver),
-        "balanced" | "balance" => Some(PowerProfile::Balanced),
-        "performance" => Some(PowerProfile::Performance),
-        _ => None,
-    }
 }
 
 /// The displays, as the session publishes them: enough of each to show its
@@ -424,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn a_published_sleep_reading_lands_its_holds_and_profiles() {
+    fn a_published_sleep_reading_lands_its_holds() {
         let _settings = isolated_settings(serde_json::Map::new());
         let readings = Readings::new(QuickSettingsState::unread());
         let sleep = Sleep {
@@ -436,17 +463,60 @@ mod tests {
             power_key: PowerAction::Suspend,
             held_awake: true,
             holds: vec!["Video Player".into()],
-            profile: Some("power-saver".into()),
-            profiles: vec![
-                "power-saver".into(),
-                "balanced".into(),
-                "performance".into(),
-            ],
         };
-        assert!(land(&readings, SLEEP, &published(&sleep)));
+        let wire = tilo_service::reading(&sleep);
+        assert_eq!(wire.get("profile"), None, "{wire}");
+        assert_eq!(wire.get("profiles"), None, "{wire}");
+        assert!(land(&readings, SLEEP, &wire.to_string()));
         readings.read(|state| {
             assert_eq!(state.awake_holders, ["Video Player"]);
+            assert!(state.power_profiles.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_published_power_reading_lands_its_mode_modes_and_problem() {
+        use tilo_system_resources::model::{Power, PowerMode};
+
+        let _settings = isolated_settings(serde_json::Map::new());
+        assert!(
+            crate::session::WATCHED.contains(&crate::session::POWER),
+            "Quick Settings watches the system service's power resource"
+        );
+        let readings = Readings::new(QuickSettingsState::unread());
+        let initial = Power {
+            modes: vec![PowerMode::Saver, PowerMode::Balanced],
+            mode: Some(PowerMode::Saver),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&initial)));
+        readings.read(|state| {
             assert_eq!(state.power_profile, PowerProfile::Saver);
+            assert_eq!(
+                state.power_profiles,
+                [PowerProfile::Saver, PowerProfile::Balanced]
+            );
+            assert_eq!(state.refusal, None);
+        });
+
+        let switching = Power {
+            pending: vec!["set-power-mode".into()],
+            ..initial
+        };
+        assert!(land(&readings, POWER, &published(&switching)));
+        let failed = Power {
+            modes: vec![
+                PowerMode::Saver,
+                PowerMode::Balanced,
+                PowerMode::Performance,
+            ],
+            mode: Some(PowerMode::Performance),
+            problem: Some("power-profiles-daemon refused performance".into()),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&failed)));
+        readings.read(|state| {
+            assert_eq!(state.power_profile, PowerProfile::Performance);
             assert_eq!(
                 state.power_profiles,
                 [
@@ -454,6 +524,99 @@ mod tests {
                     PowerProfile::Balanced,
                     PowerProfile::Performance,
                 ]
+            );
+            assert_eq!(
+                state.refusal.as_deref(),
+                Some("power-profiles-daemon refused performance")
+            );
+        });
+
+        // Dismissing keeps the banner away while the same stale problem stays on later readings.
+        readings.update(|state| state.refusal = None);
+        let external_change = Power {
+            mode: Some(PowerMode::Balanced),
+            ..failed
+        };
+        assert!(land(&readings, POWER, &published(&external_change)));
+        readings.read(|state| {
+            assert_eq!(state.power_profile, PowerProfile::Balanced);
+            assert_eq!(state.refusal, None);
+        });
+
+        // A new attempt that runs and fails with the same message surfaces again.
+        let pending = Power {
+            pending: vec!["set-power-mode".into()],
+            ..external_change.clone()
+        };
+        assert!(land(&readings, POWER, &published(&pending)));
+        assert!(land(&readings, POWER, &published(&external_change)));
+        readings.read(|state| {
+            assert_eq!(
+                state.refusal.as_deref(),
+                Some("power-profiles-daemon refused performance")
+            );
+        });
+
+        // A subsequent success clears the refusal it put up.
+        let recovered = Power {
+            problem: None,
+            ..external_change
+        };
+        assert!(land(&readings, POWER, &published(&recovered)));
+        readings.read(|state| assert_eq!(state.refusal, None));
+    }
+
+    #[test]
+    fn a_late_panel_does_not_open_with_a_stale_power_problem_banner() {
+        use tilo_system_resources::model::{Power, PowerMode};
+
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let stale = Power {
+            modes: vec![PowerMode::Saver, PowerMode::Balanced],
+            mode: Some(PowerMode::Balanced),
+            problem: Some("stale failure from before the panel opened".into()),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&stale)));
+        readings.read(|state| {
+            assert_eq!(state.power_profile, PowerProfile::Balanced);
+            assert_eq!(
+                state.refusal, None,
+                "a stale power problem on the first reading must not open a banner"
+            );
+        });
+    }
+
+    #[test]
+    fn another_power_action_does_not_replace_another_resources_refusal() {
+        use tilo_system_resources::model::{Power, PowerMode};
+
+        let _settings = isolated_settings(serde_json::Map::new());
+        let readings = Readings::new(QuickSettingsState::unread());
+        let baseline = Power {
+            modes: vec![PowerMode::Saver, PowerMode::Balanced],
+            mode: Some(PowerMode::Balanced),
+            ..Power::default()
+        };
+        assert!(land(&readings, POWER, &published(&baseline)));
+        readings.update(|state| state.refusal = Some("Wi-Fi refused".into()));
+
+        let suspending = Power {
+            pending: vec!["suspend".into()],
+            ..baseline.clone()
+        };
+        assert!(land(&readings, POWER, &published(&suspending)));
+        let suspend_failed = Power {
+            problem: Some("logind refused suspend".into()),
+            ..baseline
+        };
+        assert!(land(&readings, POWER, &published(&suspend_failed)));
+        readings.read(|state| {
+            assert_eq!(
+                state.refusal.as_deref(),
+                Some("Wi-Fi refused"),
+                "a non-mode power action failure must not replace another resource's refusal"
             );
         });
     }

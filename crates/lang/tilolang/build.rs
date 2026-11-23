@@ -2,7 +2,7 @@
 //! file), so the language accepts exactly the icons the toolkit draws.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    const SOURCES: &str = "../../sdk/ui-core/assets/icons";
+    const SOURCES: &str = "../../ui/ui-core/assets/icons";
     println!("cargo::rerun-if-changed={SOURCES}");
     let mut names = std::fs::read_dir(SOURCES)?
         .map(|entry| entry.map(|entry| entry.path()))

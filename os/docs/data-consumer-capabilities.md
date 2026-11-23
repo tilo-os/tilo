@@ -1,7 +1,7 @@
 # Installed data consumer capabilities
 
 The installed consumer producers and checks are compiled into the
-`prepared-setup` helper (`crates/platform/imager-backend/src/installed_consumers`).
+`prepared-setup` helper (`crates/os/imager-backend/src/installed_consumers`).
 The image build runs each producer once as root; admission
 (`home_admission`, `applications_admission`, `account_admission`) runs the
 matching read-only check in-process before any target ownership write. No mode

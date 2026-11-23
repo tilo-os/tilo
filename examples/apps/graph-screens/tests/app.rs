@@ -123,15 +123,11 @@ fn the_about_link_navigates_through_a_published_action() {
         .expect("Back returns to the main screen");
 
     harness
-        .invoke_published(
-            "tilo.control:open-about",
-            "invoke",
-            &ui::serde_json::Map::new(),
-        )
-        .expect("the About link is published as an action");
+        .perform_named("open-about", &Action::Activate)
+        .expect("the About link is pressed through its accessibility action");
     harness
         .expect(&about_title)
-        .expect("invoking the action navigates as a click does");
+        .expect("the press navigates as a click does");
 }
 
 /// The app satisfies the Tilo-native contract: every control that can cause

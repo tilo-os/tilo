@@ -2,7 +2,7 @@
 //! RPCs: `apps+runtime` never skips the daemon's signed SDK, publisher, runtime
 //! or ISA checks.
 
-use tilo_vm_protocol::{AccountShow, ApplyResult, LayerImport, LayerSource, LayerVerify, Swap};
+use tilo_device_protocol::{AccountShow, ApplyResult, LayerImport, LayerSource, LayerVerify, Swap};
 
 use super::{App, Outcome, describe_apply, wait_for_session};
 use crate::artifact::{PreparedLayer, prepare};
@@ -16,12 +16,12 @@ fn import(remote: &mut Remote, layer: &mut PreparedLayer) -> Result<String, CliE
         &layer.packed,
         &layer.receipt.component,
         &layer.receipt.source_digest,
-        &remote.hello.arch,
+        &remote.status.arch,
         &[],
     )?;
-    let upload = remote.upload(layer.archive.as_file_mut())?;
+    let upload = remote.put_reader(layer.archive.as_file_mut())?;
     let imported = remote.call(LayerImport {
-        source: LayerSource::Upload(upload),
+        source: LayerSource::Content { hash: upload },
         provenance: Box::new(layer.provenance.clone()),
     })?;
     if imported.hash != layer.receipt.layer_hash {
@@ -44,7 +44,7 @@ fn activate(
     remote: &mut Remote,
     account: &str,
     layer: &PreparedLayer,
-    info: Option<tilo_vm_protocol::manifest::ComponentInfo>,
+    info: Option<tilo_device_protocol::manifest::ComponentInfo>,
 ) -> Result<ApplyResult, CliError> {
     let result = remote.call(Swap {
         account: account.into(),
@@ -116,7 +116,7 @@ impl App {
                     name: (*name).into(),
                     known: manifest.components.keys().cloned().collect(),
                 })?;
-            if component.boot || component.info.scope == tilo_vm_protocol::manifest::Scope::Vm {
+            if component.boot || component.info.scope == tilo_device_protocol::manifest::Scope::Vm {
                 return Err(CliError::InvalidInput(
                     "artifact route only accepts normal session components".into(),
                 ));
@@ -124,7 +124,7 @@ impl App {
         }
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect_for_swap(&vm)?;
-        if remote.hello.arch != prepared.architecture {
+        if remote.status.arch != prepared.architecture {
             return Err(CliError::InvalidInput(
                 "artifact architecture differs from target daemon".into(),
             ));
@@ -164,7 +164,7 @@ impl App {
                     manifest.get(name).map(|c| c.info.clone()),
                 )
             })?;
-            if result.changed && result.policy == tilo_vm_protocol::Policy::SessionRestart {
+            if result.changed && result.policy == tilo_device_protocol::Policy::SessionRestart {
                 self.receipt
                     .phase("session-ready", || wait_for_session(&mut remote, &account));
             }

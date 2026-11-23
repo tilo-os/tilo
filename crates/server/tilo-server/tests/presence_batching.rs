@@ -426,7 +426,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
         let heads = doc.get_heads();
         let end = doc.length(&body);
         doc.splice_text(&body, end, 0, "a").unwrap();
-        doc.commit_edit("fixture", "body");
+        doc.commit_edit("fixture", "body", &author.cert.user_public_key);
         let message = owner
             .publication_mut()
             .publish_incremental(

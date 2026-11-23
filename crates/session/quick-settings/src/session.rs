@@ -32,7 +32,7 @@ pub(crate) const MEDIA: &str = "media";
 /// The power service's reading of the pack.
 pub(crate) const BATTERY: &str = "power:battery";
 /// The power service's reading of the sleep policy: what holds the machine
-/// awake, and the power profiles it offers.
+/// awake.
 pub(crate) const SLEEP: &str = "power:sleep";
 /// The system service's power resource: the machine's power modes and session
 /// power actions.
@@ -68,7 +68,7 @@ pub(crate) const CHROME: &str = "desktop:chrome";
 /// crosses the wire. A resource is opened before
 /// its actions are asked of it, so the screen and the night light are here
 /// even where the panel only presses them or only shows the switch.
-pub(crate) const WATCHED: [&str; 15] = [
+pub(crate) const WATCHED: [&str; 16] = [
     NETWORK,
     BLUETOOTH,
     VPN,
@@ -76,6 +76,7 @@ pub(crate) const WATCHED: [&str; 15] = [
     MEDIA,
     BATTERY,
     SLEEP,
+    POWER,
     SYSTEM_UPDATE,
     DISPLAYS,
     NOTIFICATIONS,

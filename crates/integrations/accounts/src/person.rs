@@ -1,0 +1,924 @@
+//! The workspace's accounts as one record: the mail, calendar and messaging
+//! accounts configured in it, which every member and device of the
+//! workspace reads as the workspace's grants allow. Their secrets are never
+//! in it.
+
+use std::path::{Path, PathBuf};
+
+use tilo_resource::{
+    Collection, Id, Invoke, Model, ModelError, Refusal, Replica, SharedResource, resource,
+};
+
+use crate::{Account, AccountId, AccountTypeId};
+
+/// The app that keeps the workspace's accounts.
+pub use tilo_app_id::apps::SETTINGS as ACCOUNTS_OWNER;
+
+/// A Tilo identity's public connection metadata, edited in shared accounts.
+pub const TILO_IDENTITY_TYPE: &str = "tilo.identity";
+
+/// Public fields needed to choose an existing browser identity. This is a
+/// projection of Settings' account record, not a credential or admission grant.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserAccount {
+    /// The shared account's stable id.
+    pub id: String,
+    /// The chosen account name.
+    pub display_name: String,
+    /// Public root key matching the profile that holds the account record.
+    pub user_public_key: String,
+}
+
+/// One account of the workspace's, without its secret.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct ListedAccount {
+    /// The kind of account (`"email"`, `"caldav"`, …).
+    pub type_id: String,
+    /// The name shown for it ("Work — Fastmail").
+    pub display_name: String,
+    /// Type-specific connection settings. Never a secret. Each account type
+    /// shapes its own; the record keeps them as the JSON they are, a map of
+    /// settings, so two devices changing different settings both keep theirs.
+    pub config: serde_json::Value,
+    /// Whether it is in use.
+    pub enabled: bool,
+    /// Tints the account's avatar so several read as distinct.
+    pub tint: u8,
+}
+
+/// Every account the workspace has, without their secrets. Which one a member's
+/// window shows is that member's own preference, kept beside their Mail settings.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct AccountList {
+    /// Keyed by the account's id, the id its secret is kept under.
+    pub accounts: Collection<ListedAccount>,
+}
+
+/// Bring the workspace's accounts of an older version up to this one: what
+/// an account's connection settings are, and the account each member's
+/// window showed, which is their own preference now. Every account and every
+/// setting is kept.
+///
+/// # Errors
+/// Returns why a stored account's settings do not read as JSON.
+pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    use automerge::transaction::Transactable as _;
+    use tilo_resource::evolution::{collection_items, retype_json};
+    if from == 1 {
+        // Version 1 kept an account's connection settings as one JSON
+        // string; version 2 keeps the JSON value itself.
+        for account in collection_items(doc, &tilo_resource::__private::ROOT, "accounts")? {
+            retype_json::<serde_json::Value>(doc, &account, "config")?;
+        }
+    } else if from != 2 {
+        return Err(ModelError::invalid(format!(
+            "no accounts migration from {from}"
+        )));
+    }
+    // Version 2 also kept, per account type, the account a window showed:
+    // one member's choice, which changed for every member. It is gone, and
+    // each member's Mail preferences keep their own.
+    doc.delete(&tilo_resource::__private::ROOT, "active")?;
+    Ok(())
+}
+
+impl AccountList {
+    /// The kind its record is of, for a crate that names the record without the resource model.
+    #[must_use]
+    pub fn kind() -> &'static str {
+        <Self as tilo_resource::Resource>::KIND
+    }
+}
+
+#[resource(
+    kind = "tilo.accounts",
+    version = 3,
+    migrate = upgrade,
+    read_content = tilo_resource::read::fields
+)]
+impl AccountList {
+    /// Project public browser choices from the existing typed account document.
+    pub fn browser_accounts_from_doc(
+        doc: &tilo_resource::Doc,
+        root: &str,
+        origin: &str,
+    ) -> Result<Vec<BrowserAccount>, tilo_resource::ModelError> {
+        use tilo_resource::Resource as _;
+        Ok(Self::read(doc)?.browser_accounts(root, origin))
+    }
+
+    /// Existing enabled identity accounts for this profile and exact host.
+    #[must_use]
+    pub fn browser_accounts(&self, root: &str, origin: &str) -> Vec<BrowserAccount> {
+        if root.len() != 64 || !root.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Vec::new();
+        }
+        let Ok(url) = url::Url::parse(origin) else {
+            return Vec::new();
+        };
+        if url.scheme() != "https" || url.origin().ascii_serialization() != origin {
+            return Vec::new();
+        }
+        self.accounts
+            .iter()
+            .filter(|(_, account)| {
+                account.enabled
+                    && account.type_id == TILO_IDENTITY_TYPE
+                    && account
+                        .config
+                        .get("userPublicKey")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(root)
+                    && account
+                        .config
+                        .get("origin")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(origin)
+            })
+            .take(64)
+            .map(|(id, account)| BrowserAccount {
+                id: id.as_str().to_owned(),
+                display_name: account.display_name.chars().take(160).collect(),
+                user_public_key: root.to_owned(),
+            })
+            .collect()
+    }
+
+    /// Publish this signed-in identity's public browser connection metadata.
+    #[action]
+    pub fn publish_browser_identity(
+        &mut self,
+        root: String,
+        origin: String,
+        display_name: String,
+    ) -> Result<(), Refusal> {
+        if root.len() != 64
+            || !root.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || root != root.to_ascii_lowercase()
+            || display_name.trim().is_empty()
+            || display_name.chars().count() > 160
+            || display_name.chars().any(char::is_control)
+        {
+            return Err(Refusal::from(
+                "a bounded public identity and name are required",
+            ));
+        }
+        let url =
+            url::Url::parse(&origin).map_err(|_| Refusal::from("an HTTPS origin is required"))?;
+        if url.scheme() != "https"
+            || url.origin().ascii_serialization() != origin
+            || origin.len() > 2048
+        {
+            return Err(Refusal::from("a canonical HTTPS origin is required"));
+        }
+        let id = format!("tilo-identity:{root}@{origin}");
+        let key = Id::from_raw(id.clone());
+        if let Some(existing) = self.accounts.get(&key) {
+            if existing.type_id != TILO_IDENTITY_TYPE {
+                return Err(Refusal::from("the identity account id is already in use"));
+            }
+            // No overwrite: removal/disable/name edits are ordinary Settings
+            // actions. A normal sign-in must not silently reverse them.
+            return Ok(());
+        }
+        self.keep_account(
+            id,
+            TILO_IDENTITY_TYPE.into(),
+            display_name,
+            serde_json::json!({"userPublicKey": root, "origin": origin}),
+            true,
+            0,
+        )
+    }
+
+    /// Save an account: add it, or replace the one with its id.
+    ///
+    /// Whoever the workspace's policy lets change its accounts, a person or
+    /// an agent acting for one, may save an account or remove it.
+    #[action]
+    pub fn save_account(
+        &mut self,
+        #[param("The account's id, which its secret is kept under")] id: String,
+        #[param("The kind of account, such as email or caldav")] type_id: String,
+        #[param("The name shown for it")] display_name: String,
+        #[param("Its connection settings, without any secret")] config: serde_json::Value,
+        #[param("Whether it is in use")] enabled: bool,
+        #[param("Avatar tint")] tint: u8,
+    ) -> Result<(), Refusal> {
+        self.keep_account(id, type_id, display_name, config, enabled, tint)
+    }
+
+    /// Keep an account as [`Self::save_account`] does once it may: for code
+    /// of this device that fills the workspace's accounts itself.
+    ///
+    /// # Errors
+    /// The account names no id or no kind.
+    pub fn keep_account(
+        &mut self,
+        id: String,
+        type_id: String,
+        display_name: String,
+        config: serde_json::Value,
+        enabled: bool,
+        tint: u8,
+    ) -> Result<(), Refusal> {
+        if id.trim().is_empty() || type_id.trim().is_empty() {
+            return Err(Refusal::from("an account needs an id and a type"));
+        }
+        let key = Id::from_raw(id);
+        let account = ListedAccount {
+            type_id,
+            display_name,
+            config,
+            enabled,
+            tint,
+        };
+        if let Some(existing) = self.accounts.get_mut(&key) {
+            *existing = account;
+        } else {
+            self.accounts.push(key, account);
+        }
+        Ok(())
+    }
+
+    /// Keep `account` as [`Self::keep_account`] does.
+    ///
+    /// # Errors
+    /// The account names no id or no kind.
+    pub fn keep(&mut self, account: &Account) -> Result<(), Refusal> {
+        self.keep_account(
+            account.id.to_string(),
+            account.type_id.to_string(),
+            account.display_name.clone(),
+            account.config.clone(),
+            account.enabled,
+            account.tint,
+        )
+    }
+
+    /// Remove account.
+    #[action]
+    pub fn remove_account(&mut self, account: Id) -> Result<(), Refusal> {
+        self.accounts
+            .remove(&account)
+            .map(|_| ())
+            .ok_or_else(|| Refusal::from("there is no such account"))
+    }
+}
+
+/// The account the record keeps as `id`, in the shape every account type reads.
+fn account_of(id: &Id, account: &ListedAccount) -> Account {
+    Account {
+        id: AccountId::new(id.as_str()),
+        type_id: AccountTypeId::new(account.type_id.clone()),
+        display_name: account.display_name.clone(),
+        config: account.config.clone(),
+        enabled: account.enabled,
+        tint: account.tint,
+    }
+}
+
+impl SharedResource for AccountList {
+    const OWNER: &'static str = ACCOUNTS_OWNER;
+}
+
+impl AccountList {
+    /// Every account, in the order the record keeps them.
+    #[must_use]
+    pub fn all(&self) -> Vec<Account> {
+        self.accounts
+            .iter()
+            .map(|(id, account)| account_of(id, account))
+            .collect()
+    }
+
+    /// The account `id`, when the record keeps it.
+    #[must_use]
+    pub fn account(&self, id: &str) -> Option<Account> {
+        let key = Id::from_raw(id.to_owned());
+        self.accounts
+            .get(&key)
+            .map(|account| account_of(&key, account))
+    }
+
+    /// The account `id`, when the record keeps it, as [`Account`] carries its
+    /// id. The same account [`Self::account`] answers.
+    #[must_use]
+    pub fn get(&self, id: &AccountId) -> Option<Account> {
+        self.account(id.as_str())
+    }
+
+    /// Remove the account `id`. Whether the record held it.
+    pub fn remove(&mut self, id: &AccountId) -> bool {
+        self.accounts.remove(&Id::from_raw(id.0.clone())).is_some()
+    }
+
+    /// Whether the record holds no account.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.accounts.is_empty()
+    }
+
+    /// How many accounts the record holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.accounts.len()
+    }
+
+    /// Every account of the kind `type_id`.
+    #[must_use]
+    pub fn of_type(&self, type_id: &str) -> Vec<Account> {
+        self.accounts
+            .iter()
+            .filter(|(_, account)| account.type_id == type_id)
+            .map(|(id, account)| account_of(id, account))
+            .collect()
+    }
+
+    /// The accounts in `value`, the record as any reader of the workspace reads it
+    /// (`record:<app>:<id>`): each account by its id.
+    ///
+    /// # Errors
+    /// `value` does not read as the workspace's accounts.
+    pub fn from_readable(value: &serde_json::Value) -> Result<Self, String> {
+        let mut record = Self::default();
+        let Some(accounts) = value.get("accounts") else {
+            return Ok(record);
+        };
+        let accounts = accounts
+            .as_object()
+            .ok_or("the workspace's accounts do not read as accounts")?;
+        for (id, entry) in accounts {
+            let fields = entry
+                .get(tilo_resource::collection::VALUE)
+                .ok_or_else(|| format!("the workspace's account {id} reads as no account"))?;
+            let text = |field: &str| {
+                fields
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            record
+                .keep_account(
+                    id.clone(),
+                    text("type_id"),
+                    text("display_name"),
+                    fields.get("config").cloned().unwrap_or_default(),
+                    fields
+                        .get("enabled")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or_default(),
+                    fields
+                        .get("tint")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|tint| u8::try_from(tint).ok())
+                        .unwrap_or_default(),
+                )
+                .map_err(|refusal| format!("the workspace's account {id}: {refusal}"))?;
+        }
+        Ok(record)
+    }
+
+    /// The edit that saves `account` as it is.
+    #[must_use]
+    pub fn saving(account: &Account) -> Invoke<Self> {
+        // An account without connection settings is saved with none: the
+        // action API refuses a missing value.
+        let config = if account.config.is_null() {
+            serde_json::json!({})
+        } else {
+            account.config.clone()
+        };
+        Self::SAVE_ACCOUNT.with((
+            account.id.0.clone(),
+            account.type_id.0.clone(),
+            account.display_name.clone(),
+            config,
+            account.enabled,
+            account.tint,
+        ))
+    }
+
+    /// Keep this record as the one `config_root` stages, before its workspace
+    /// exists.
+    ///
+    /// # Errors
+    /// The record cannot be built, or its directory cannot be made or the file
+    /// written.
+    pub fn stage_in(&self, config_root: &Path) -> std::io::Result<()> {
+        let mut replica = Replica::<Self>::new();
+        for account in self.all() {
+            replica
+                .apply_confirmed(Self::saving(&account))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        keep_staged_in(config_root, &mut replica)
+    }
+}
+
+/// Where a home keeps the workspace's accounts before it has a workspace:
+/// the record itself, which an install stages for the workspace it will make.
+/// The value is the record, not a second account list.
+#[must_use]
+pub fn staged_path_in(config_root: &Path) -> PathBuf {
+    crate::accounts_dir_in(config_root).join("record")
+}
+
+/// The record staged under `config_root`, or a new one.
+///
+/// # Errors
+/// The staged record does not read as this record.
+pub fn staged_in(config_root: &Path) -> Result<Replica<AccountList>, String> {
+    let path = staged_path_in(config_root);
+    match std::fs::read(&path) {
+        Ok(bytes) => Replica::load(&bytes).map_err(|error| format!("{}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Replica::new()),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+/// Keep `record` as the record `config_root` stages.
+///
+/// # Errors
+/// The record's directory cannot be made or the file cannot be written.
+pub fn keep_staged_in(
+    config_root: &Path,
+    record: &mut Replica<AccountList>,
+) -> std::io::Result<()> {
+    let path = staged_path_in(config_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    tilo_files::native::atomic::write(&path, &record.save())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_resource::Replica;
+
+    /// The workspace's accounts as version 1 kept them, each account's
+    /// connection settings one JSON string, open with every account and
+    /// every setting as it was.
+    #[test]
+    fn accounts_of_version_one_keep_every_account_and_setting() {
+        use tilo_resource::{Slot, evolution};
+        let root = tilo_resource::__private::ROOT;
+        let config = serde_json::json!({
+            "host": "imap.example",
+            "port": 993,
+            "tls": true,
+            "folders": ["INBOX", "Sent"],
+        });
+        let mut replica = Replica::<AccountList>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &root,
+            &serde_json::json!({
+                "accounts": {
+                    "mail-1": {
+                        "k": "a",
+                        "v": {
+                            "type_id": {"$text": "email"},
+                            "display_name": {"$text": "Work"},
+                            "config": config.to_string(),
+                            "enabled": true,
+                            "tint": 3,
+                        },
+                    },
+                    "dav-1": {
+                        "k": "b",
+                        "v": {
+                            "type_id": {"$text": "caldav"},
+                            "display_name": {"$text": "Calendar"},
+                            "config": "null",
+                            "enabled": false,
+                            "tint": 0,
+                        },
+                    },
+                },
+                "active": {"email": {"$text": "mail-1"}},
+            }),
+        )
+        .unwrap();
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, tilo_resource::__private::ScalarValue::Uint(1))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<AccountList>(&mut old).unwrap());
+        let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
+        assert_eq!(accounts.accounts.len(), 2);
+        let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
+        assert_eq!(mail.type_id, "email");
+        assert_eq!(mail.display_name, "Work");
+        assert_eq!(mail.config, config);
+        assert!(mail.enabled);
+        assert_eq!(mail.tint, 3);
+        let dav = accounts.accounts.get(&Id::from_raw("dav-1")).unwrap();
+        assert_eq!(dav.config, serde_json::Value::Null);
+        assert!(
+            evolution::map_at(&old, &root, "active").unwrap().is_none(),
+            "the account a window showed is each member's preference now"
+        );
+        assert_eq!(accounts.account("mail-1").unwrap().config["port"], 993);
+    }
+
+    /// The workspace's accounts as version 2 kept them: each account's
+    /// connection settings the JSON value itself, and the account a window
+    /// showed per type. Each account and setting stays; the shown account
+    /// is gone, each member's Mail preferences keeping their own.
+    #[test]
+    fn accounts_of_version_two_keep_every_account_and_setting() {
+        use tilo_resource::{Slot, evolution};
+        let root = tilo_resource::__private::ROOT;
+        let config = serde_json::json!({"host": "imap.example", "port": 993});
+        let mut replica = Replica::<AccountList>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &root,
+            &serde_json::json!({
+                "accounts": {
+                    "mail-1": {
+                        "k": "a",
+                        "v": {
+                            "type_id": {"$text": "email"},
+                            "display_name": {"$text": "Work"},
+                            "config": config,
+                            "enabled": true,
+                            "tint": 3,
+                        },
+                    },
+                },
+                "active": {"email": {"$text": "mail-1"}},
+            }),
+        )
+        .unwrap();
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, tilo_resource::__private::ScalarValue::Uint(2))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<AccountList>(&mut old).unwrap());
+        assert_eq!(evolution::stored_version(&old), 3);
+        let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
+        assert_eq!(accounts.accounts.len(), 1);
+        let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
+        assert_eq!(mail.config, config);
+        assert!(
+            evolution::map_at(&old, &root, "active").unwrap().is_none(),
+            "the shown account is each member's preference now"
+        );
+    }
+
+    #[test]
+    fn browser_picker_projects_settings_accounts_without_crossing_identity_or_origin() {
+        let root = "ab".repeat(32);
+        let origin = "https://host.example";
+        let mut record = Replica::<AccountList>::new();
+        for (id, key, host, enabled) in [
+            ("work", root.clone(), origin, true),
+            ("disabled", root.clone(), origin, false),
+            ("other-root", "cd".repeat(32), origin, true),
+            ("other-host", root.clone(), "https://other.example", true),
+        ] {
+            record
+                .apply(AccountList::SAVE_ACCOUNT.with((
+                    id.into(),
+                    TILO_IDENTITY_TYPE.into(),
+                    id.into(),
+                    serde_json::json!({
+                        "userPublicKey": key, "origin": host, "privateField": "never-exported"
+                    }),
+                    enabled,
+                    0,
+                )))
+                .unwrap();
+        }
+        let state = record.state().unwrap();
+        let rows = state.browser_accounts(&root, origin);
+        assert_eq!(
+            rows,
+            vec![BrowserAccount {
+                id: "work".into(),
+                display_name: "work".into(),
+                user_public_key: root.clone()
+            }]
+        );
+        assert!(
+            !serde_json::to_string(&rows)
+                .unwrap()
+                .contains("privateField")
+        );
+        assert!(
+            state
+                .browser_accounts(&root, "http://host.example")
+                .is_empty()
+        );
+        assert!(state.browser_accounts("invalid", origin).is_empty());
+        record
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("work")))
+            .unwrap();
+        assert!(
+            record
+                .state()
+                .unwrap()
+                .browser_accounts(&root, origin)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn identity_publication_uses_the_shared_account_record_and_preserves_disabled_choices() {
+        let root = "ab".repeat(32);
+        let origin = "https://host.example";
+        let mut record = Replica::<AccountList>::new();
+        let publication = AccountList::PUBLISH_BROWSER_IDENTITY.with((
+            root.clone(),
+            origin.into(),
+            "Work".into(),
+        ));
+        record.apply(publication.clone()).unwrap();
+        record.apply(publication.clone()).unwrap();
+        let choices = record.state().unwrap().browser_accounts(&root, origin);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].display_name, "Work");
+        let id = choices[0].id.clone();
+        let account = record.state().unwrap().account(&id).unwrap();
+        assert_eq!(
+            account.config,
+            serde_json::json!({"userPublicKey": root, "origin": origin})
+        );
+        record
+            .apply(AccountList::SAVE_ACCOUNT.with((
+                id.clone(),
+                TILO_IDENTITY_TYPE.into(),
+                "Private".into(),
+                account.config,
+                false,
+                0,
+            )))
+            .unwrap();
+        record.apply(publication).unwrap();
+        assert!(
+            record
+                .state()
+                .unwrap()
+                .browser_accounts(&root, origin)
+                .is_empty()
+        );
+        assert_eq!(
+            record.state().unwrap().account(&id).unwrap().display_name,
+            "Private"
+        );
+        for invalid in [
+            "http://host.example",
+            "https://host.example/path",
+            "https://name:secret@host.example",
+            "https://host.example/?key=value",
+        ] {
+            assert!(
+                record
+                    .apply(AccountList::PUBLISH_BROWSER_IDENTITY.with((
+                        root.clone(),
+                        invalid.into(),
+                        "Work".into()
+                    )))
+                    .is_err()
+            );
+        }
+        assert_eq!(record.state().unwrap().len(), 1);
+    }
+
+    fn save(replica: &mut Replica<AccountList>, id: &str, type_id: &str, host: &str) {
+        replica
+            .apply(AccountList::SAVE_ACCOUNT.with((
+                id.into(),
+                type_id.into(),
+                format!("{id} inbox"),
+                serde_json::json!({ "host": host }),
+                true,
+                2,
+            )))
+            .unwrap();
+    }
+
+    #[test]
+    fn accounts_are_saved_by_id_and_removed() {
+        let mut replica = Replica::<AccountList>::new();
+        save(&mut replica, "a@x.example", "email", "imap.x");
+        save(&mut replica, "b@y.example", "email", "imap.y");
+        save(&mut replica, "work", "caldav", "dav.example");
+        save(&mut replica, "a@x.example", "email", "imap.new");
+
+        let accounts = replica.state().unwrap();
+        assert_eq!(accounts.of_type("email").len(), 2, "saving again replaces");
+        assert_eq!(
+            accounts.account("a@x.example").unwrap().config["host"],
+            "imap.new"
+        );
+
+        replica
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("b@y.example")))
+            .unwrap();
+        let accounts = replica.state().unwrap();
+        assert!(accounts.account("b@y.example").is_none());
+        assert_eq!(
+            accounts.of_type("email").len(),
+            1,
+            "the other account stays"
+        );
+        assert!(
+            replica
+                .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("gone")))
+                .is_err()
+        );
+    }
+
+    /// The edit that saves the account `id` of `type_id` with `config`.
+    fn saving(id: &str, type_id: &str, config: serde_json::Value) -> Invoke<AccountList> {
+        AccountList::SAVE_ACCOUNT.with((id.into(), type_id.into(), "Work".into(), config, true, 0))
+    }
+
+    /// What the account `id` keeps as its settings in `replica`; none when
+    /// it is gone.
+    fn kept(replica: &Replica<AccountList>, id: &str) -> Option<serde_json::Value> {
+        replica
+            .state()
+            .unwrap()
+            .accounts
+            .get(&Id::from_raw(id))
+            .map(|account| account.config.clone())
+    }
+
+    /// Whoever acts for a member, an agent included, changes the workspace's
+    /// accounts as the member may: what an account is, where it signs in, a
+    /// new account, a removal, and an account no longer connected for
+    /// reading only.
+    #[test]
+    fn an_agent_acting_for_a_member_changes_the_workspaces_accounts() {
+        let person = "ab".repeat(32);
+        let mut theirs = workspace_accounts(&person);
+        let mut agent = Replica::<AccountList>::load(&theirs.save())
+            .unwrap()
+            .as_agent_for("helper", &person);
+        let elsewhere = "imap.elsewhere.example";
+        agent
+            .apply(saving("ada@example.test", "email", mail(elsewhere)))
+            .unwrap();
+        assert_eq!(kept(&agent, "ada@example.test"), Some(mail(elsewhere)));
+        agent
+            .apply(saving(
+                "work",
+                "webdav",
+                calendar("https://dav.elsewhere.example/"),
+            ))
+            .unwrap();
+        assert_eq!(
+            kept(&agent, "work"),
+            Some(calendar("https://dav.elsewhere.example/"))
+        );
+        agent
+            .apply(saving("news@example.test", "email", mail(elsewhere)))
+            .unwrap();
+        assert_eq!(kept(&agent, "news@example.test"), Some(mail(elsewhere)));
+        agent
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("ada@example.test")))
+            .unwrap();
+        assert_eq!(kept(&agent, "ada@example.test"), None);
+        let reading_only = serde_json::json!({
+            "server_url": "https://dav.example/", "username": "ada", "read_only": true,
+        });
+        agent.apply(saving("read", "caldav", reading_only)).unwrap();
+        agent
+            .apply(saving("read", "caldav", calendar("https://dav.example/")))
+            .unwrap();
+        assert_eq!(kept(&agent, "read"), Some(calendar("https://dav.example/")));
+    }
+
+    /// A mail account's settings, reading at `incoming`.
+    fn mail(incoming: &str) -> serde_json::Value {
+        serde_json::json!({"incoming": incoming, "outgoing": "smtp.example", "username": "ada"})
+    }
+
+    /// A calendar account's settings, at `address`.
+    fn calendar(address: &str) -> serde_json::Value {
+        serde_json::json!({"server_url": address, "username": "ada"})
+    }
+
+    /// The workspace's accounts as a member's device keeps them: a mail
+    /// account, a calendar account, and one added and removed again.
+    fn workspace_accounts(person: &str) -> Replica<AccountList> {
+        let mut theirs = Replica::<AccountList>::new().as_invoker(person);
+        theirs
+            .apply(saving("ada@example.test", "email", mail("imap.example")))
+            .unwrap();
+        theirs
+            .apply(saving("work", "caldav", calendar("https://dav.example/")))
+            .unwrap();
+        theirs
+            .apply(saving("old@example.test", "email", mail("imap.example")))
+            .unwrap();
+        theirs
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("old@example.test")))
+            .unwrap();
+        theirs
+    }
+
+    /// The device's own code, with nobody invoking, and a member at their
+    /// device change the workspace's accounts as before.
+    #[test]
+    fn a_members_own_device_changes_the_accounts_as_before() {
+        let person = "ab".repeat(32);
+        let mut theirs = workspace_accounts(&person);
+        let mut device = Replica::<AccountList>::load(&theirs.save()).unwrap();
+        device
+            .apply(saving("news@example.test", "email", mail("imap.example")))
+            .unwrap();
+        device
+            .apply(saving(
+                "news@example.test",
+                "email",
+                mail("imap.moved.example"),
+            ))
+            .unwrap();
+        device
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("news@example.test")))
+            .unwrap();
+        assert_eq!(kept(&device, "news@example.test"), None);
+
+        theirs
+            .apply(saving(
+                "ada@example.test",
+                "email",
+                mail("imap.moved.example"),
+            ))
+            .unwrap();
+        assert_eq!(
+            kept(&theirs, "ada@example.test"),
+            Some(mail("imap.moved.example"))
+        );
+        theirs
+            .apply(AccountList::REMOVE_ACCOUNT.with(Id::from_raw("work")))
+            .unwrap();
+        assert_eq!(kept(&theirs, "work"), None);
+    }
+
+    /// The workspace's roles decide who changes its accounts, as they decide
+    /// any workspace action: an Editor, whether their own device or an agent
+    /// they grant Mail, adds and removes accounts; a Viewer is refused.
+    #[test]
+    fn an_editor_changes_the_accounts_and_a_viewer_is_refused() {
+        use tilo_action_policy::{
+            Acting, ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Role,
+            TreePath, WorkspacePolicy,
+        };
+        use tilo_resource::Resource as _;
+        const WORKSPACE: &str = "w";
+        const MAIL: &str = "so.tilo.mail";
+        let editor = "ab".repeat(32);
+        let viewer = "cd".repeat(32);
+        let mut policy = WorkspacePolicy::new(WORKSPACE, &editor);
+        policy.members.insert(editor.clone(), Role::Editor);
+        policy.members.insert(viewer.clone(), Role::Viewer);
+        // Mail publishes the accounts record, so its actions are Mail's.
+        let accounts = TreePath::workspace(WORKSPACE)
+            .app(MAIL)
+            .kind(AccountList::KIND);
+        let cx = Context::at_secs(1);
+        let answer = |acting: &Acting, granted: &[Grant]| {
+            Authority::of_acting(acting, &policy, granted)
+                .decide(&accounts, ActionKind::Undoable, &cx)
+                .answer
+        };
+        assert_eq!(answer(&Acting::person(&editor), &[]), Answer::Allow);
+        assert_eq!(answer(&Acting::person(&viewer), &[]), Answer::Deny);
+        // The grant an agent's turn gives it, on Mail.
+        let mail = [Grant::new(
+            "turn:helper:0",
+            Grantee::agent("helper"),
+            TreePath::workspace(WORKSPACE).app(MAIL),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Grantee::person(&editor),
+        )];
+        assert_eq!(
+            answer(
+                &Acting::agent("helper").acting_for(Acting::person(&editor)),
+                &mail
+            ),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(
+                &Acting::agent("helper").acting_for(Acting::person(&viewer)),
+                &mail
+            ),
+            Answer::Deny
+        );
+    }
+}

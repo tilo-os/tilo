@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
-    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenedFile, Packet as _, ToProcess,
+    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenRequest, Packet as _, ToProcess,
 };
 
 use super::package_runs::{installed_apps, runs_in_process, verified_installed};
@@ -133,8 +133,9 @@ pub struct Instance {
     pub document: Option<String>,
     /// The item the window opens on, by its anchor.
     pub reveal: Option<String>,
-    /// The file the window opens, as content the instance reads from the content store.
-    pub open: Option<OpenedFile>,
+    /// What the window opens: a file, as content the instance reads from the content store, or a
+    /// link it hands its package's `open-link`.
+    pub open: Option<OpenRequest>,
     /// What the person may do in the app, projected from the workspace's policy.
     pub access: Option<tilo_action_policy::MemberAccess>,
     /// The person's formats and language, as the session resolved them: what the instance writes
@@ -696,11 +697,8 @@ impl Processes {
     }
 }
 
-/// Start the tilolang host `key`, keeping `storage` and reading what an earlier version of its app
-/// kept (the directory, and where the host sees it beneath its mount), on its process link: the
-/// one place a host is started, and the only one that names the platform. On Linux the launcher
-/// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
-/// its sandbox.
+/// Start the tilolang host `key` with its `storage` and `earlier` grant: the one place a host
+/// starts, and the only one that names the platform's launcher (`tilo-launcher tilolang-process`).
 fn spawn_host(
     launcher: &Path,
     key: &HostKey,
@@ -741,19 +739,35 @@ type Said = Option<std::io::Result<std::thread::JoinHandle<VecDeque<String>>>>;
 
 /// Relay each line `stderr` says to the session's log under `tag`, and answer the last ones once
 /// it ends.
-fn last_lines(stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
-    use std::io::BufRead as _;
+fn last_lines(mut stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
     let mut last = VecDeque::with_capacity(SAID_LINES);
-    for line in std::io::BufReader::new(stderr).lines() {
-        let Ok(line) = line else {
-            break;
-        };
-        tracing::info!(target: tilo_startup_metrics::APP_OUTPUT_TARGET, "[tilolang-process {tag}] {line}");
+    let mut chunk = [0_u8; 4096];
+    let mut lines = wire_frame::BoundedLines::new(wire_frame::LINE_BYTES);
+    let mut keep = |bytes: &[u8], truncated: bool| {
+        let mut line = String::from_utf8_lossy(bytes).into_owned();
+        if truncated {
+            line.push_str("… [truncated]");
+        }
+        tracing::info!(
+            target: tilo_startup_metrics::APP_OUTPUT_TARGET,
+            "[tilolang-process {tag}] {line}"
+        );
         if last.len() == SAID_LINES {
             last.pop_front();
         }
         last.push_back(line);
+    };
+    loop {
+        let read = match stderr.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let bytes = chunk.get(..read).unwrap_or_default();
+        lines.push(bytes, &mut keep);
     }
+    lines.finish(keep);
     last
 }
 
@@ -1040,5 +1054,76 @@ mod tests {
             seen_end(&exited, &VecDeque::new()),
             "it exited with status 3 without saying why; it wrote no error output"
         );
+    }
+
+    #[test]
+    fn last_lines_cuts_an_overlong_line_and_keeps_the_line_after_it() {
+        /// Streams `remaining` copies of `b'a'`, then `tail`, in 4 KiB chunks,
+        /// with an `Interrupted` error before the first chunk.
+        struct HugeThenShort {
+            remaining: usize,
+            tail: &'static [u8],
+            interrupted: bool,
+        }
+
+        impl std::io::Read for HugeThenShort {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                if self.remaining > 0 {
+                    let count = buf.len().min(4096).min(self.remaining);
+                    if let Some(slot) = buf.get_mut(..count) {
+                        slot.fill(b'a');
+                    }
+                    self.remaining = self.remaining.saturating_sub(count);
+                    return Ok(count);
+                }
+                if self.tail.is_empty() {
+                    return Ok(0);
+                }
+                let count = buf.len().min(self.tail.len());
+                if let (Some(dst), Some(src)) = (buf.get_mut(..count), self.tail.get(..count)) {
+                    dst.copy_from_slice(src);
+                }
+                self.tail = self.tail.get(count..).unwrap_or_default();
+                Ok(count)
+            }
+        }
+
+        const BOUND: usize = wire_frame::LINE_BYTES;
+        const MARK: &str = "… [truncated]";
+        let reader = HugeThenShort {
+            remaining: 1024 * 1024,
+            tail: b"\nshort\n",
+            interrupted: false,
+        };
+        let kept = last_lines(reader, "ws app");
+        assert_eq!(kept.len(), 2, "kept both the cut line and the short line");
+        for line in &kept {
+            assert!(
+                line.len() <= BOUND.saturating_add(MARK.len()),
+                "kept line length {} exceeds bound + mark",
+                line.len()
+            );
+        }
+        assert_eq!(
+            kept.front().map(String::as_str),
+            Some(format!("{}{MARK}", "a".repeat(BOUND)).as_str())
+        );
+        assert_eq!(kept.back().map(String::as_str), Some("short"));
+    }
+
+    #[test]
+    fn last_lines_keeps_reading_past_non_utf8_bytes() {
+        let reader = std::io::Cursor::new(b"bad \xff\xfe bytes\nafter\n".to_vec());
+        let kept = last_lines(reader, "ws app");
+        assert_eq!(kept.len(), 2, "non-UTF-8 must not stop reading: {kept:?}");
+        assert_eq!(
+            kept.front().map(String::as_str),
+            Some("bad \u{FFFD}\u{FFFD} bytes")
+        );
+        assert_eq!(kept.back().map(String::as_str), Some("after"));
     }
 }

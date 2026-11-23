@@ -135,6 +135,11 @@ pub fn settings_client(socket: &std::path::Path) -> package_service::client::Blo
     client_for(socket, tilo_app_id::apps::SETTINGS)
 }
 
+/// A connection from the person's own terminal (`tilo-install`, `app`).
+pub fn person_client(socket: &std::path::Path) -> package_service::client::BlockingClient {
+    client_for(socket, package_service::wire::PERSON)
+}
+
 fn client_for(socket: &std::path::Path, app_id: &str) -> package_service::client::BlockingClient {
     let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {

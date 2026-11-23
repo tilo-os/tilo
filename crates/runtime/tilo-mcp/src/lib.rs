@@ -13,6 +13,7 @@ pub mod session_api;
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
+pub mod tool;
 mod turn;
 
 pub use images::MediaReader;
@@ -96,7 +97,6 @@ pub struct McpServer<H> {
     /// times what its tools waited for.
     watched: Option<Observation>,
     workspace: String,
-    actor: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
     /// The session every invocation of this connection is attributed to.
@@ -113,6 +113,10 @@ pub struct McpServer<H> {
     open_files: std::sync::Arc<OpenFiles>,
     /// Where answers read the content an action produced, to show it.
     media: Option<std::sync::Arc<dyn crate::MediaReader>>,
+    /// The person's other devices as the host reaches them, which
+    /// [`crate::devices::DEVICES_TOOL`] lists; `None` for a host that
+    /// reaches none, which lists no device.
+    devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
     /// The app each of this session's invocations went to, so a later
     /// `tilo_status` reads produced content with that app's scope.
     produced_by: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, String>>,
@@ -169,10 +173,6 @@ pub struct McpServer<H> {
     /// that did not start or answer in time is not started again by every
     /// listing after it. A program's call starts another, and clears this.
     task_given_up: std::sync::atomic::AtomicBool,
-    /// The person's other devices as the host reaches them, which
-    /// [`crate::devices::DEVICES_TOOL`] lists; `None` for a host that
-    /// reaches none.
-    devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
     /// The record this session's last agent call worked in
     /// ([`ActedRecord`]): where its agent is, for the presence its server
     /// shows the person.
@@ -594,34 +594,15 @@ pub fn agent_id(caller: &Caller) -> String {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// An MCP client of `actor`'s on this device, in `workspace`. The client is
-    /// an agent acting for the person ([`agent_id`]): what it does is the
-    /// agent's, for them, within what both the person and the delegation a
-    /// device gives its agents allow.
-    #[must_use]
-    pub fn new(host: H, workspace: String, actor: String) -> Self {
-        let caller = Caller::local_person(actor.clone())
-            .in_workspace(workspace.clone())
-            .in_new_execution();
-        let agent = agent_id(&caller);
-        let caller = caller.delegated_to(agent);
-        Self::from_caller(host, workspace, actor, caller)
-    }
-
-    /// One session of agent `agent_id`, which the host admitted itself into
-    /// `workspace` (a desktop's MCP server, after `person` said so). The
-    /// person's own device hands the session to that agent: the agent stays
-    /// the actor, and what it may do is the person's own authority held
-    /// to the delegation a device gives its agents
-    /// ([`tilo_action_policy::roles::agent_grants`]). Each session is its own
-    /// fresh execution, retired when the session drops.
+    /// A session of agent `agent_id` for `person` in `workspace`, as a host that admits it by its
+    /// own means takes it: the agent is the actor, for the person ([`Self::for_delegated`]).
     #[must_use]
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {
-        let caller = Caller::local_person(person)
+        let caller = Caller::local_agent(agent_id)
+            .acting_for(person)
             .in_workspace(workspace.clone())
-            .delegated_to(agent_id)
             .in_new_execution();
-        Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
+        Self::from_caller(host, workspace, caller)
     }
 
     /// One session of `person` themselves in `workspace`: a REPL the host admitted because
@@ -633,17 +614,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let caller = Caller::local_person(person)
             .in_workspace(workspace.clone())
             .in_new_execution();
-        Self::from_caller(host, workspace, person.to_owned(), caller)
+        Self::from_caller(host, workspace, caller)
     }
 
     /// The host has already bound this exact authenticated run to its action
     /// server. This constructor does not mint or replace the execution identity.
     pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
-        let Some(actor) = caller.acting().person_id() else {
+        if caller.acting().person_id().is_none() {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",
             ));
-        };
+        }
         let workspace = caller
             .workspace()
             .ok_or_else(|| std::io::Error::other("MCP workspace unavailable"))?
@@ -654,10 +635,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             return Err(std::io::Error::other("MCP certified execution unavailable"));
         }
-        Ok(Self::from_caller(host, workspace, actor.to_owned(), caller))
+        Ok(Self::from_caller(host, workspace, caller))
     }
 
-    fn from_caller(host: H, workspace: String, actor: String, caller: Caller) -> Self {
+    fn from_caller(host: H, workspace: String, caller: Caller) -> Self {
         let host = std::sync::Arc::new(host);
         Self {
             tree: Self::tree_of(&host, &caller, &workspace),
@@ -665,7 +646,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             retire_execution: H::retire_execution,
             watched: None,
             workspace,
-            actor,
             caller,
             agent_session: std::sync::Mutex::new(None),
             detail: std::sync::Mutex::new(Detail::Compact),
@@ -673,6 +653,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             handles: std::sync::Mutex::default(),
             open_files: std::sync::Arc::default(),
             media: None,
+            devices: None,
             produced_by: std::sync::Mutex::default(),
             produced_effect: std::sync::Mutex::default(),
             shown: std::sync::Mutex::default(),
@@ -682,7 +663,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             uploads: std::sync::Mutex::default(),
             programs: std::sync::Mutex::default(),
             task_hosts: None,
-            devices: None,
             task: tokio::sync::Mutex::new(None),
             forms: std::sync::Mutex::default(),
             task_answer_wait: QUERY_ANSWER_WAIT,
@@ -740,16 +720,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             watch(&id, state);
         }
     }
-    /// List the person's devices as `devices` reaches them, with
-    /// [`crate::devices::DEVICES_TOOL`].
-    #[must_use]
-    pub fn with_devices(
-        mut self,
-        devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
-    ) -> Self {
-        self.devices = devices;
-        self
-    }
     /// The agent this connection is goes by `name` , as the person's shell calls it: what its
     /// changes are shown by wherever they are read.
     #[must_use]
@@ -786,6 +756,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_media(mut self, media: Option<std::sync::Arc<dyn crate::MediaReader>>) -> Self {
         self.media = media;
+        self
+    }
+
+    /// List the person's devices as `devices` reaches them, with
+    /// [`crate::devices::DEVICES_TOOL`].
+    #[must_use]
+    pub fn with_devices(
+        mut self,
+        devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
+    ) -> Self {
+        self.devices = devices;
         self
     }
     fn produced_by(
@@ -1602,10 +1583,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         session::name_from_initialize(&self.caller, &mut self.agent_session.lock_recover(), params);
         let session = self.session_id();
         let mut server = json!({"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")});
-        // The agent this session is (a server connection's task agent), so it
-        // can tell the person which agent to give access to.
+        // The agent this session is, so it can tell the person which agent to give access to.
         if let (Some(agent), Some(fields)) =
-            (self.actor.strip_prefix("agent:"), server.as_object_mut())
+            (self.caller.acting().agent_id(), server.as_object_mut())
         {
             fields.insert("agent".into(), json!(agent));
         }
@@ -3025,12 +3005,12 @@ fn definitions(content_puts: bool, content_gets: bool, devices: bool) -> Vec<Val
 
 /// The `tools/list` answer of an agent in a hosted workspace, which is what the
 /// developer documentation's tool reference is written from: a workspace stores
-/// and reads content, and its server reaches the person's other devices. No
+/// and reads content. No
 /// session and no host are needed to name the tools, so a page can be written on
 /// a machine with neither.
 #[must_use]
 pub fn tools_json() -> Value {
-    json!({"tools": definitions(true, true, true)})
+    json!({"tools": definitions(true, true, false)})
 }
 #[cfg(test)]
 #[path = "mcp_serve_tests.rs"]

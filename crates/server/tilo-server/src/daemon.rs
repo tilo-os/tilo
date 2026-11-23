@@ -522,20 +522,12 @@ impl Server {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
         };
-        // A certified host governs the workspaces it creates, unless its embedder
-        // serves workspace joining itself, and only when its device may own
-        // workspaces: governing one is holding its keys, so a device that may not
-        // keeps no workspace. It answers their governance as actions itself, beside
-        // whatever apps its embedder serves, and it runs the app transforms its
-        // embedder gives it a job runner for.
-        let governs_workspaces = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
-            && identity.device_cert.capabilities.holds_workspace_keys()
-            && !additional_protocols.iter().any(|(alpn, _)| {
-                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
-            });
-        // A server that governs workspaces takes part in every channel of them, as
-        // one key holder beside their members.
-        let workspace_keys = governs_workspaces
+        // A certified host keeps workspaces only when its device may hold their
+        // keys, and then takes part in every channel of them, as one key holder
+        // beside their members.
+        let keeps_workspaces = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
+            && identity.device_cert.capabilities.holds_workspace_keys();
+        let workspace_keys = keeps_workspaces
             .then(|| {
                 crate::workspace_keys::open(&cfg.state_root, identity.device_signing_key.clone())
             })
@@ -566,6 +558,7 @@ impl Server {
                 // workspace gives it, applied below once it is open.
                 label: cfg.web_entry.as_deref().map_or_else(String::new, site_name),
                 rented: cfg.rented,
+                origin: cfg.web_entry.as_deref().and_then(site_origin),
                 trust_policy: cfg.trust_policy.clone(),
                 max_workspace_grants: cfg.max_workspace_grants,
                 reaching,
@@ -581,7 +574,6 @@ impl Server {
             },
             identity.clone(),
             endpoint.clone(),
-            governs_workspaces,
             workspace_keys
                 .as_ref()
                 .map(|workspace_keys| workspace_keys.groups()),
@@ -742,14 +734,6 @@ impl Server {
                     app_serving,
                 )),
             );
-        }
-        // The host is a member of every workspace it holds: its own device is on
-        // those rosters, so it reads and serves them as any key holder does.
-        for workspace in workspaces.lock().await.values() {
-            workspace
-                .lock()
-                .await
-                .admit_device(identity.device_cert.device_public_key)?;
         }
         Ok(Self {
             endpoint,
@@ -986,6 +970,14 @@ impl Server {
 /// The site name a keeper's web entry names: `tilo.sh` for
 /// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
 /// server's name alone.
+/// The https origin of the site `web_entry` names (`https://eu1.tilo.sh`), which the address
+/// this keeper signs carries: `None` for an entry that is no https address.
+fn site_origin(web_entry: &str) -> Option<String> {
+    let rest = web_entry.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    (!host.is_empty()).then(|| format!("https://{host}"))
+}
+
 fn site_name(web_entry: &str) -> String {
     let rest = web_entry
         .split_once("://")

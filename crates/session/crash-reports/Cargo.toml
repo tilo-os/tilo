@@ -9,12 +9,12 @@ license.workspace = true
 [dependencies]
 # A report's file name starts with its local time, and a list sorts by it.
 jiff.workspace = true
-tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
+tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 # The reports are private files of this user's, created and read as such.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # `journalctl` for the reports the kernel kept across a reset.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 # The fact shape Settings, an agent and a script read a report as.
 tilo-actions = { path = "../../collab/actions" }
 # The reports a session service publishes.
@@ -22,7 +22,7 @@ tilo-service = { path = "../service" }
 # A report is a resource of a declared type.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # A report's time reads in the person's own date style.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 serde_json.workspace = true
 tracing.workspace = true
 # A kept stop is known by the digest of its log, so reading the same ones at
@@ -32,7 +32,7 @@ blake3.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 
 [dev-dependencies]
 tempfile.workspace = true

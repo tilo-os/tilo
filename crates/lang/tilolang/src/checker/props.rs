@@ -1,7 +1,7 @@
 //! The props a view gives a described component are the ones that component declares.
 //!
 //! A component's description is the contract between a view and the widget the UI host builds
-//! (`crates/dev/ui-graph`): a prop the description does not have is a batch the host refuses, so the window
+//! (`crates/ui/ui-graph`): a prop the description does not have is a batch the host refuses, so the window
 //! goes without what the app sent, at run time, after the app has landed. The checker is the only writer of
 //! those names, so what it wrote is read back here, over the whole module: a name the catalogue does not know
 //! is the compiler's own defect (`E000`), and it fails the compile that would have sent it.

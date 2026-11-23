@@ -488,7 +488,7 @@ mod tests {
         );
 
         let mut drives = topology_from(&served(
-            include_str!("../../../crates/system/block-devices/tests/fixtures/disks.json"),
+            include_str!("../../../crates/os/block-devices/tests/fixtures/disks.json"),
             &BTreeMap::new(),
         ))
         .drives;

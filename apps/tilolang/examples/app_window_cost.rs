@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::{End, pair};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
+use tilolang_tilo::instance::{
+    Config, GlobalLocale, Instance, Locale, Mode, Platform, Publication,
+};
 use tilolang_tilo::publish::{Planner, Publications};
 use tilolang_tilo::runtime::{Actor, NameHost};
 use tilolang_tilo::tilolang::Compiled;
@@ -56,6 +58,10 @@ impl Publication for Published {
     }
 }
 
+/// Shares the toolkit's locale/format globals; `now` is pinned below so the instance's runtime
+/// (`now`, `today`, `shown` and `sentence`) evaluates against a fixed instant.
+static BENCH_LOCALE: GlobalLocale = tilo_app_window::platform_locale!(GlobalLocale);
+
 impl Platform for Packages {
     fn load(&self, host: &Host) -> u64 {
         for compiled in self.0.iter() {
@@ -66,14 +72,16 @@ impl Platform for Packages {
         0
     }
 
-    fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str().into()))
-            .collect();
-        tilo_app_window::i18n::t_args(id, &args)
+    fn locale(&self) -> Option<&dyn Locale> {
+        Some(&BENCH_LOCALE)
     }
 
+    fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
+        tilo_app_window::i18n::phrase(id, args)
+    }
+
+    /// Fixed instant for the instance's runtime (`now`, `today`, `shown` and `sentence`); widget
+    /// date controls on the `AppWindow` side still read `ui::clock`.
     fn now(&self) -> String {
         "2026-10-27T10:00:00Z".to_owned()
     }
@@ -121,6 +129,7 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
             store: tilolang_tilo::resources::ResourceStore::in_memory(),
             sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             root: tilolang_tilo::host::RootView::default(),
+            link_home: None,
         },
         Rc::clone(platform) as Rc<dyn Platform>,
         Rc::new(Alone),

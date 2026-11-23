@@ -1,4 +1,4 @@
-use tilo_vm_protocol::{LayerImport, LayerSource, LayerVerify};
+use tilo_device_protocol::{LayerImport, LayerSource, LayerVerify};
 
 use super::{App, Outcome};
 use crate::cli::LocalLayerImport;
@@ -10,9 +10,9 @@ pub(super) fn import(
     remote: &mut Remote,
     prepared: &mut Prepared,
 ) -> Result<(String, bool), CliError> {
-    let upload = remote.upload(prepared.archive.as_file_mut())?;
+    let upload = remote.put_reader(prepared.archive.as_file_mut())?;
     let imported = remote.call(LayerImport {
-        source: LayerSource::Upload(upload),
+        source: LayerSource::Content { hash: upload },
         provenance: Box::new(prepared.provenance.clone()),
     })?;
     if imported.hash != prepared.hash {
@@ -44,7 +44,7 @@ impl App {
             let vm = self.resolve_vm(None)?;
             self.connect(&vm)?
         };
-        let expected_target = format!("{}-unknown-linux-gnu", remote.hello.arch);
+        let expected_target = format!("{}-unknown-linux-gnu", remote.status.arch);
         if prepared.provenance.target.as_deref() != Some(expected_target.as_str()) {
             return Err(CliError::InvalidInput(
                 "local layer target does not match the machine it is imported into".into(),
@@ -68,61 +68,79 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::hypervisor::CommandLine;
+    use std::sync::{Arc, Mutex};
 
-    const PEER: &str = r#"
-import base64,json,sys
-hash,corrupt,log,protocol=sys.argv[1:]
-print(json.dumps({"tilo_device_admin":{"device":"test","label":"test","route":"direct","via":"test","session":1}}),flush=True)
-received=0
-provenance=None
-for line in sys.stdin:
- request=json.loads(line);method=request['method']
- with open(log,'a') as file:file.write(method+'\n')
- if method=='hello':result={"protocol":int(protocol),"daemon_version":"test","root":"test","arch":"x86_64"}
- elif method=='layer.upload.begin':result={"upload":"test"}
- elif method=='layer.upload.chunk':
-  received+=len(base64.b64decode(request['params']['data']));result={"received":received}
- elif method=='layer.import':
-  provenance=request['params']['provenance'];result={"hash":'c'*64 if corrupt=='content' else hash,"existed":False}
- elif method=='layer.verify':
-  if corrupt=='unsupported':
-   print(json.dumps({"jsonrpc":"2.0","id":request['id'],"error":{"code":-32601,"message":"layer.verify unavailable","hint":"use a daemon with native layer verification","see":None}}),flush=True)
-   continue
-  if corrupt=='yes':provenance['source_commit']='f'*40
-  result={"hash":hash,"provenance":provenance}
- else:raise RuntimeError(method)
- print(json.dumps({"jsonrpc":"2.0","id":request['id'],"result":result}),flush=True)
-"#;
+    use serde_json::{Value, json};
+    use tilo_device_protocol::{RpcError, code};
+
+    use super::*;
+    use crate::remote::fixture::Device;
+
+    /// A device that imports a put layer as `hash` (another hash for `content`), and answers its
+    /// verification with the provenance it was imported with (changed for `changed`, refused for
+    /// `unverifiable`).
+    fn device(mode: &'static str, hash: &str) -> Device {
+        let hash = hash.to_owned();
+        let imported = Arc::new(Mutex::new(Value::Null));
+        Device::serving(move |action, argument| match action {
+            "layer-import" => {
+                *imported.lock().unwrap() = argument["provenance"].clone();
+                let hash = if mode == "content" {
+                    "c".repeat(64)
+                } else {
+                    hash.clone()
+                };
+                Ok(json!({ "hash": hash, "existed": false }))
+            }
+            "layer-verify" if mode == "unverifiable" => Err(RpcError {
+                code: code::INVALID,
+                message: "layer verification unavailable".into(),
+                hint: String::new(),
+                see: None,
+            }),
+            "layer-verify" => {
+                let mut provenance = imported.lock().unwrap().clone();
+                if mode == "changed" {
+                    provenance["source_commit"] = json!("f".repeat(40));
+                }
+                Ok(json!({ "hash": hash, "provenance": provenance }))
+            }
+            other => panic!("an import asks for no {other}"),
+        })
+    }
+
+    fn prepared(bytes: &[u8], hash: &str) -> Prepared {
+        let mut archive = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut archive, bytes).unwrap();
+        std::io::Seek::rewind(&mut archive).unwrap();
+        let mut provenance = tilo_device_protocol::Provenance::local("launcher");
+        provenance.source_commit = Some("b".repeat(40));
+        Prepared {
+            archive,
+            provenance,
+            hash: hash.to_owned(),
+        }
+    }
+
+    fn actions(device: &Device) -> Vec<String> {
+        device
+            .asked()
+            .into_iter()
+            .map(|asked| asked.action)
+            .collect()
+    }
 
     tilo_test_env::scenario! {
         fn a_local_layer_is_imported_only_as_verified;
 
         phase native_import_verifies_provenance_without_build_wake_or_swap;
         {
-            for corrupt in ["no", "yes"] {
-                let dir = tempfile::tempdir().unwrap();
-                let log = dir.path().join("calls");
+            for mode in ["same", "changed"] {
                 let hash = "a".repeat(64);
-                let line = CommandLine::new("python3", &["-c", PEER])
-                    .arg(hash.clone())
-                    .arg(corrupt)
-                    .arg(log.display().to_string())
-                    .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-                let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
-                let mut archive = tempfile::NamedTempFile::new().unwrap();
-                std::io::Write::write_all(&mut archive, b"actual frozen bytes").unwrap();
-                std::io::Seek::rewind(&mut archive).unwrap();
-                let mut provenance = tilo_vm_protocol::Provenance::local("launcher");
-                provenance.source_commit = Some("b".repeat(40));
-                let mut prepared = Prepared {
-                    archive,
-                    provenance,
-                    hash: hash.clone(),
-                };
-                let result = import(&mut remote, &mut prepared);
-                if corrupt == "yes" {
+                let device = device(mode, &hash);
+                let mut remote = Remote::connect("test", &device.machine, &device.route).unwrap();
+                let result = import(&mut remote, &mut prepared(b"actual frozen bytes", &hash));
+                if mode == "changed" {
                     assert!(
                         result.is_err(),
                         "a changed producer must not be reported as imported"
@@ -130,43 +148,29 @@ for line in sys.stdin:
                 } else {
                     assert_eq!(result.unwrap(), (hash, false));
                 }
-                let calls = std::fs::read_to_string(log).unwrap();
+                assert_eq!(actions(&device), ["layer-import", "layer-verify"]);
+                let put = blake3::hash(b"actual frozen bytes").to_hex().to_string();
+                assert_eq!(device.content.get(&put).as_deref(), Some(&b"actual frozen bytes"[..]));
                 assert_eq!(
-                    calls,
-                    "hello\nlayer.upload.begin\nlayer.upload.chunk\nlayer.import\nlayer.verify\n"
+                    device.asked()[0].argument["source"],
+                    json!({ "content": { "hash": put } })
                 );
             }
         }
 
         phase local_layer_import_refuses_changed_content_and_unavailable_verification;
         {
-            for mode in ["content", "unsupported"] {
-                let dir = tempfile::tempdir().unwrap();
-                let log = dir.path().join("calls");
+            for mode in ["content", "unverifiable"] {
                 let hash = "a".repeat(64);
-                let line = CommandLine::new("python3", &["-c", PEER])
-                    .arg(hash.clone())
-                    .arg(mode)
-                    .arg(log.display().to_string())
-                    .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-                let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
-                let mut archive = tempfile::NamedTempFile::new().unwrap();
-                std::io::Write::write_all(&mut archive, b"frozen bytes").unwrap();
-                std::io::Seek::rewind(&mut archive).unwrap();
-                let mut prepared = Prepared {
-                    archive,
-                    provenance: tilo_vm_protocol::Provenance::local("launcher"),
-                    hash,
-                };
-                let error = import(&mut remote, &mut prepared).unwrap_err();
-                let calls = std::fs::read_to_string(log).unwrap();
-                let prefix = "hello\nlayer.upload.begin\nlayer.upload.chunk\nlayer.import\n";
+                let device = device(mode, &hash);
+                let mut remote = Remote::connect("test", &device.machine, &device.route).unwrap();
+                let error = import(&mut remote, &mut prepared(b"frozen bytes", &hash)).unwrap_err();
                 if mode == "content" {
                     assert!(error.to_string().contains("differs"), "{error}");
-                    assert_eq!(calls, prefix);
+                    assert_eq!(actions(&device), ["layer-import"]);
                 } else {
                     assert!(error.to_string().contains("unavailable"), "{error}");
-                    assert_eq!(calls, format!("{prefix}layer.verify\n"));
+                    assert_eq!(actions(&device), ["layer-import", "layer-verify"]);
                 }
             }
         }

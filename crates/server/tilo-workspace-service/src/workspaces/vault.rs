@@ -102,6 +102,29 @@ impl Workspaces {
     /// This service does not hold the workspace, the policy does not let its device read
     /// Passwords now, its device holds no keys of the vault, or the document does not read.
     pub(crate) async fn open_vault(&self, workspace: &str) -> Result<OpenVault, String> {
+        self.opened_vault(workspace, true)
+            .await?
+            .ok_or_else(|| VAULT_NOT_HERE.to_owned())
+    }
+
+    /// `workspace`'s vault as [`Self::open_vault`] opens it, but without making its keys where
+    /// nobody made them yet: `None` when it has none here, so nothing is kept in it. A read that
+    /// only looks for what is kept writes nothing.
+    ///
+    /// # Errors
+    /// As [`Self::open_vault`], except that no keys here is `None`.
+    pub(crate) async fn read_made_vault(
+        &self,
+        workspace: &str,
+    ) -> Result<Option<OpenVault>, String> {
+        self.opened_vault(workspace, false).await
+    }
+
+    async fn opened_vault(
+        &self,
+        workspace: &str,
+        making: bool,
+    ) -> Result<Option<OpenVault>, String> {
         // The policy decides as the vault is read: keys this device was handed before its access
         // was taken away still open what was sealed with them, and they open nothing here.
         let state = self
@@ -117,19 +140,19 @@ impl Workspaces {
             tracing::debug!(%workspace, %reason, "the policy does not let this device read the vault");
             return Err(VAULT_NOT_HERE.to_owned());
         }
-        // The keys are made where nobody made them yet, as this device's own write of any of
-        // the workspace's documents makes them.
+        // When `making`, the keys are made where nobody made them yet, as this device's own
+        // write of any of the workspace's documents makes them.
         // The vault's steps are boxed here, once: every sign-in, use and connection awaits this,
         // and inlined their state would make each of those futures as large as all of it.
-        let keys = match Box::pin(self.own_route_keys(&route(workspace), true)).await {
+        let keys = match Box::pin(self.own_route_keys(&route(workspace), making)).await {
             Some(Ok(keys)) => keys,
-            Some(Err(reason)) => {
+            Some(Err(reason)) if making => {
                 tracing::debug!(%workspace, %reason, "the vault's keys are not held here");
                 return Err(VAULT_NOT_HERE.to_owned());
             }
-            None => return Err(VAULT_NOT_HERE.to_owned()),
+            Some(Err(_)) | None => return Ok(None),
         };
-        Box::pin(self.read_vault(workspace, keys)).await
+        Box::pin(self.read_vault(workspace, keys)).await.map(Some)
     }
 
     /// Carry what this host kept of each of its workspaces' vaults before into their vault
@@ -568,23 +591,39 @@ impl VaultAt<'_> {
         }
     }
 
-    /// Remove the account `id` from the workspace's accounts. Whether it was there.
+    /// Keep `keep` and remove `remove` in the workspace's accounts, in one change: what an
+    /// action does to accounts that belong together.
     ///
     /// # Errors
-    /// As [`Workspaces::remove_workspace_account`].
-    pub(crate) async fn remove_account(&self, id: &str) -> Result<bool, String> {
+    /// As [`Workspaces::keep_workspace_accounts`].
+    pub(crate) async fn keep_and_remove_accounts(
+        &self,
+        keep: &[accounts::Account],
+        remove: &[&str],
+    ) -> Result<(), String> {
         match self {
             Self::Workspace(workspaces, workspace) => {
-                workspaces.remove_workspace_account(workspace, id).await
+                workspaces
+                    .keep_workspace_accounts(workspace, keep, remove)
+                    .await
             }
             #[cfg(test)]
-            Self::Held(held) => Ok(held
-                .accounts
-                .lock()
-                .map_err(|_| "the accounts are poisoned".to_owned())?
-                .accounts
-                .remove(&tilo_resource::Id::from_raw(id.to_owned()))
-                .is_some()),
+            Self::Held(held) => {
+                let mut accounts = held
+                    .accounts
+                    .lock()
+                    .map_err(|_| "the accounts are poisoned".to_owned())?;
+                for id in remove {
+                    accounts.remove(&accounts::AccountId::from((*id).to_owned()));
+                }
+                for account in keep {
+                    accounts
+                        .keep(account)
+                        .map_err(|refusal| refusal.to_string())?;
+                }
+                drop(accounts);
+                Ok(())
+            }
         }
     }
 }

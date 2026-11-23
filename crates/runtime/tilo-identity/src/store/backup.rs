@@ -6,12 +6,8 @@
 //! metadata, retrieve the provider-held secret, and immediately seal the
 //! complete legacy record.  No public API here returns that record or its
 //! secret bytes.
-#[cfg(target_os = "linux")]
-use std::ffi::CString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -473,56 +469,21 @@ fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-/// Atomically publish without replacement. Linux's `renameat2` is the normal
-/// path. Filesystems that do not implement it may still support hard links;
-/// that fallback retains no-replace semantics and is followed by a directory
-/// fsync. A filesystem supporting neither is refused rather than risking an
-/// attacker swapping in a destination between a preflight check and rename.
-#[cfg(target_os = "linux")]
+/// Atomically publish without replacement through
+/// [`tilo_files::native::rename_file_noreplace`]. On Linux and Apple systems
+/// it attempts the exclusive rename (`renameat2(RENAME_NOREPLACE)` /
+/// `renameatx_np(RENAME_EXCL)`) and falls back to a no-follow hard link and
+/// unlink on `EINVAL`, `ENOSYS`, or `ENOTSUP`; other targets (Android
+/// included) take the hard-link-then-unlink path directly. Unlinking `temp`
+/// failing after the link is returned as an error, and callers follow success
+/// with a directory fsync. A filesystem supporting neither is refused rather
+/// than risking an attacker swapping in a destination between a preflight
+/// check and rename.
 fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
-    let source = CString::new(temp.as_os_str().as_bytes()).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "backup path contains a NUL byte",
-        )
-    })?;
-    let target = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "backup path contains a NUL byte",
-        )
-    })?;
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result == 0 {
-        return Ok(());
+    match tilo_files::native::rename_file_noreplace(temp, destination)? {
+        tilo_files::native::FileRename::Moved => Ok(()),
+        tilo_files::native::FileRename::SourceUnlinkFailed(error) => Err(error),
     }
-    let error = io::Error::last_os_error();
-    if matches!(
-        error.raw_os_error(),
-        Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
-    ) {
-        return publish_with_link(temp, destination);
-    }
-    Err(error)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
-    publish_with_link(temp, destination)
-}
-
-fn publish_with_link(temp: &Path, destination: &Path) -> io::Result<()> {
-    fs::hard_link(temp, destination)?;
-    fs::remove_file(temp)
 }
 
 fn sync_directory(path: &Path) {

@@ -4,7 +4,7 @@
 //! session's error, so either errno means the connection is gone.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn ended(result: io::Result<()>) -> io::Result<()> {
     match result {
@@ -102,20 +102,12 @@ pub fn clear_stale_mount(at: &Path) -> io::Result<()> {
     let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
         return Ok(());
     };
-    let escaped = at.to_string_lossy().replace(' ', "\\040");
-    let listed = mounts.lines().any(|line| {
-        let mut fields = line.split_whitespace();
-        let _source = fields.next();
-        let point = fields.next();
-        let kind = fields.next();
-        point == Some(escaped.as_str()) && kind.is_some_and(|kind| kind.starts_with("fuse"))
-    });
-    if !listed {
+    let Some(listed) = fuse_mount_at(&mounts, at) else {
         return Ok(());
-    }
+    };
     let status = std::process::Command::new(FUSERMOUNT)
         .args(["-u", "-z"])
-        .arg(at)
+        .arg(&listed)
         .status()?;
     if status.success() {
         Ok(())
@@ -124,5 +116,85 @@ pub fn clear_stale_mount(at: &Path) -> io::Result<()> {
             "{FUSERMOUNT} could not remove the stale mount at {}",
             at.display()
         )))
+    }
+}
+
+/// The FUSE mount point `mounts` (as `/proc/self/mounts` reads) lists for `at`.
+///
+/// The kernel lists a mount by its real path, with a space, tab, newline or backslash as an
+/// octal escape: a folder in a home reached through a symlink (`/home` on an image-based
+/// Fedora is `/var/home`) is listed under the real one. Only `at`'s parent is resolved; the
+/// mount point itself is never touched.
+fn fuse_mount_at(mounts: &str, at: &Path) -> Option<PathBuf> {
+    let real = at
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .zip(at.file_name())
+        .map(|(parent, name)| parent.join(name));
+    mounts.lines().find_map(|line| {
+        let mut fields = line.split(' ');
+        let _source = fields.next();
+        let point = PathBuf::from(unescape(fields.next()?));
+        let kind = fields.next()?;
+        (kind.starts_with("fuse") && (point == at || real.as_ref() == Some(&point)))
+            .then_some(point)
+    })
+}
+
+/// A `/proc/self/mounts` field with its `\ooo` octal escapes decoded.
+fn unescape(field: &str) -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStringExt as _;
+    let mut out = Vec::with_capacity(field.len());
+    let mut rest = field.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        let code = after
+            .get(..3)
+            .filter(|_| byte == b'\\')
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 8).ok());
+        if let Some(code) = code {
+            out.push(code);
+            rest = after.get(3..).unwrap_or_default();
+        } else {
+            out.push(byte);
+            rest = after;
+        }
+    }
+    std::ffi::OsString::from_vec(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuse_mount_at;
+
+    #[test]
+    fn a_mount_in_a_home_reached_through_a_symlink_is_found_under_its_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_home = dir.path().join("var/home/me");
+        std::fs::create_dir_all(&real_home).unwrap();
+        let real_home = real_home.canonicalize().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("var/home"), dir.path().join("home")).unwrap();
+        let at = dir.path().join("home/me/Tilo (Tilo)");
+        let listed = real_home.join("Tilo (Tilo)");
+        let escaped = listed.to_str().unwrap().replace(' ', "\\040");
+        let mounts =
+            format!("proc /proc proc rw 0 0\ntilo {escaped} fuse.tilo rw,nosuid,nodev 0 0\n");
+        assert_eq!(fuse_mount_at(&mounts, &at), Some(listed));
+        // The same path's other mounts, and other paths' FUSE mounts, are not it.
+        let other = format!("tmpfs {escaped} tmpfs rw 0 0\ntilo {escaped}2 fuse.tilo rw 0 0\n");
+        assert_eq!(fuse_mount_at(&other, &at), None);
+        // A backslash and a tab in a name are escaped too.
+        let odd = real_home.join("a\\b\tc");
+        let line = format!(
+            "tilo {} fuse.tilo rw 0 0",
+            odd.to_str()
+                .unwrap()
+                .replace('\\', "\\134")
+                .replace('\t', "\\011")
+        );
+        assert_eq!(
+            fuse_mount_at(&line, &dir.path().join("home/me/a\\b\tc")),
+            Some(odd)
+        );
     }
 }

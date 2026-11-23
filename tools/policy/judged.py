@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Sequence
 
+#: How long one git call may take before the check refuses rather than waits. Every read these
+#: checks make is a listing, a diff or a blob read of what the commit carries: none of them walks
+#: the tree, so a call that reaches this is a git that is stuck, not one answering slowly. A
+#: commit refuses with the step named rather than hanging the person who made it.
+GIT_TIMEOUT_SECONDS = 60
 # The flag every check that can judge a commit takes.
 STAGED_FLAG = "--staged"
 STAGED_HELP = (
@@ -46,42 +52,28 @@ def git(root: Path, *args: str, input: bytes | None = None, empty: tuple[int, ..
     index of the commit it is assembling, which is the one to judge. An exit
     status in ``empty`` says nothing matched rather than that git failed.
     """
-    finished = subprocess.run(
-        ["git", "-C", str(root), *args],
-        input=input,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    command = ["git", "-C", str(root), *args]
+    try:
+        finished = subprocess.run(
+            command,
+            input=input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"git {args[0]} did not finish within {GIT_TIMEOUT_SECONDS} s"
+            + (f" (git {' '.join(args)})" if len(args) > 1 else "")
+            + "; refusing rather than holding the commit",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
     if finished.returncode != 0 and finished.returncode not in empty:
         raise subprocess.CalledProcessError(
             finished.returncode, finished.args, finished.stdout, finished.stderr
         )
     return finished.stdout
-
-
-#: The longest expression one ``git grep`` is handed. Git refuses an expression
-#: over 64 KiB, so a search for many names goes as several expressions of one
-#: call (``alternations``), which keeps a file any of them matches.
-MAX_EXPRESSION = 16 * 1024
-
-
-def alternations(before: str, names: Sequence[str], after: str) -> list[str]:
-    """``before(a|b|...)after`` over ``names``, in as few expressions as stay
-    within ``MAX_EXPRESSION`` each: together they match what the one would."""
-    room = MAX_EXPRESSION - len(before.encode()) - len(after.encode())
-    expressions: list[str] = []
-    held: list[str] = []
-    size = 0
-    for name in names:
-        length = len(name.encode())
-        if held and size + 1 + length > room:
-            expressions.append(before + "|".join(held) + after)
-            held, size = [], 0
-        size += length + (1 if held else 0)
-        held.append(name)
-    if held:
-        expressions.append(before + "|".join(held) + after)
-    return expressions
 
 
 @dataclass
@@ -96,6 +88,7 @@ class Judged:
     root: Path
     staged: bool = False
     _changed: set[Path] | None = field(default=None, repr=False)
+    _renamed: dict[Path, Path] = field(default_factory=dict, repr=False)
     _blobs: dict[Path, bytes] = field(default_factory=dict, repr=False)
     _only: set[Path] | None = field(default=None, repr=False)
 
@@ -104,10 +97,12 @@ class Judged:
 
         A check that needs a name defined somewhere in the tree reads only the
         files that can define it. One ``git grep`` answers which they are: the
-        expression is an extended regular one (``fn[[:space:]]+(decode|parse)``),
-        and a file it does not match cannot hold what the check looks for.
-        Several expressions keep a file any of them matches, which is how a
-        search too long for one expression is asked (``alternations``).
+        expression is an extended regular one, and a file it does not match
+        cannot hold what the check looks for. Keep it one constant expression:
+        an alternation of every name a commit calls grows without bound, and a
+        large commit then waits on a grep that never ends. Ask for the loose
+        shape (``fn[[:space:]]+[A-Za-z_]``) and match the names in Python over
+        the few files that answer.
         """
         patterns = [pattern] if isinstance(pattern, str) else list(pattern)
         scopes = [Path(scope) for scope in scopes if (self.root / scope).exists()]
@@ -135,7 +130,7 @@ class Judged:
     ) -> list[Path]:
         """The files under ``scopes`` to judge, relative to the root, sorted.
 
-        A scope is a directory (``crates/sdk/ui-core``) or the whole root
+        A scope is a directory (``crates/ui/ui-core``) or the whole root
         (``.``). In ``--staged`` mode only the files the commit stages are
         listed; each scope a check passes narrows that further.
         """
@@ -170,9 +165,28 @@ class Judged:
     def changed(self) -> set[Path]:
         """The paths the index holds a change for: added, copied, modified, renamed."""
         if self._changed is None:
-            names = git(self.root, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
-            self._changed = {Path(os.fsdecode(name)) for name in names.split(b"\0") if name}
+            listing = git(
+                self.root, "diff", "--cached", "--name-status", "-M", "-z", "--diff-filter=ACMR"
+            ).split(b"\0")
+            self._changed = set()
+            index = 0
+            while index < len(listing) and listing[index]:
+                status = listing[index]
+                if status[:1] in (b"R", b"C"):
+                    old, new = listing[index + 1], listing[index + 2]
+                    if status[:1] == b"R":
+                        self._renamed[Path(os.fsdecode(new))] = Path(os.fsdecode(old))
+                    index += 3
+                else:
+                    new = listing[index + 1]
+                    index += 2
+                self._changed.add(Path(os.fsdecode(new)))
         return self._changed
+
+    def renamed_from(self, relative: Path) -> Path:
+        """The path HEAD gives a file the commit stages under a new name, else ``relative``."""
+        self.changed()
+        return self._renamed.get(relative, relative)
 
     def is_staged(self, relative: Path) -> bool:
         return self.staged and relative in self.changed()

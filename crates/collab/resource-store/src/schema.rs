@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_actions::CREATE_ACTION;
-use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, Surface, TypeField};
+use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, ReaderRule, Surface, TypeField};
 
 /// The verb a change that sets a resource's field names: the field edit any editable field
 /// takes, which writes only fields that are not read-only.
@@ -19,6 +19,8 @@ pub struct Schema {
     pub types: Vec<Type>,
     /// Each verb's write-set; a schema that declares none checks no change's verb.
     pub verbs: Vec<Verb>,
+    /// Who reads a resource of each kind that says, by kind: the store places it by this alone.
+    pub readers: BTreeMap<String, ReaderRule>,
 }
 
 /// What one verb writes: each kind it writes resources of, and the kinds it may write that
@@ -179,7 +181,15 @@ impl Schema {
         let types = declared
             .iter()
             .filter(|ty| !ty.is_enum())
-            .map(|ty| Type::of(ty, &enums, &cases))
+            .map(|ty| {
+                let mut ty_of = Type::of(ty, &enums, &cases);
+                // A record one of the surface's own fields holds is nested in its record, as an
+                // item of a collection is: its type names no `stored`, the surface's field does.
+                if ty.name == own_name {
+                    ty_of.nested.extend(held_records(surface));
+                }
+                ty_of
+            })
             .collect();
         let verbs = surface
             .verbs
@@ -212,7 +222,15 @@ impl Schema {
                 nested: BTreeSet::new(),
             }))
             .collect();
-        Self { types, verbs }
+        Self {
+            types,
+            verbs,
+            readers: surface
+                .readers
+                .iter()
+                .map(|rule| (surface.kind.clone(), rule.clone()))
+                .collect(),
+        }
     }
 
     /// What the verb `name` writes, when it is declared.
@@ -229,7 +247,7 @@ impl Schema {
 }
 
 /// The kinds the surface's own record holds records of that no surface here types: each
-/// collection of resources, by its kind.
+/// collection of resources and each record a field holds, by its kind.
 fn nested_kinds(surface: &Surface) -> BTreeSet<String> {
     let mut kinds = BTreeSet::new();
     for field in surface
@@ -248,6 +266,7 @@ fn nested_kinds(surface: &Surface) -> BTreeSet<String> {
             }));
         }
     }
+    kinds.extend(held_records(surface).into_iter().map(|(_, kind)| kind));
     kinds
 }
 
@@ -259,6 +278,30 @@ fn collected(item: &FieldType) -> impl Iterator<Item = &FieldType> {
         item => std::slice::from_ref(item),
     }
     .iter()
+/// The records the surface's own record holds one of in a field (`stored = "record"`), each by
+/// the name its record keeps the field under ([`own_type`]) and the kind it is.
+fn held_records(surface: &Surface) -> Vec<(String, String)> {
+    let by_title = surface.verbs.iter().any(|verb| verb.id == CREATE_ACTION);
+    surface
+        .fields
+        .iter()
+        .filter(|field| !field.path.contains('.') && field.stored == RESOURCE_UNIT)
+        .filter_map(|field| {
+            let mut ty = &field.ty;
+            while let FieldType::Option(inner) = ty {
+                ty = inner;
+            }
+            let FieldType::Resource(kind) = ty else {
+                return None;
+            };
+            let name = if by_title && !field.title.is_empty() {
+                field.title.clone()
+            } else {
+                field.path.clone()
+            };
+            Some((name, kind.clone()))
+        })
+        .collect()
 }
 
 /// The surface's own record, as a type: the fields it lists at its root (a dotted path names a

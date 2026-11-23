@@ -6,7 +6,7 @@
 #
 # The generation is what bounded rollback is arithmetic on, so how it is produced
 # is a correctness question rather than a bookkeeping one (see
-# crates/system/tilo-rollback/src/generation.rs):
+# crates/os/tilo-rollback/src/generation.rs):
 #
 #   * dense — `+1` per published image. The retention window means "N, N-1, N-2",
 #     so a sparse sequence keeps fewer images than it claims to. Worse, the floor

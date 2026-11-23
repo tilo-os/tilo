@@ -55,7 +55,7 @@ crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", d
 ctr = { version = "0.10", default-features = false, features = ["zeroize"] }
 ctutils = { version = "0.4", default-features = false, features = ["subtle"] }
 cursor-icon = { version = "1" }
-curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", features = ["digest", "rand_core"] }
+curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", default-features = false, features = ["alloc", "digest", "precomputed-tables", "zeroize"] }
 curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core"] }
 data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
@@ -120,8 +120,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 imagesize = { version = "0.14" }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
+itertools = { version = "0.13" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -166,9 +165,7 @@ rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
-rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
-raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
@@ -181,7 +178,7 @@ ring = { version = "0.17" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "system", "termios", "thread", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "stdio", "system", "termios", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
@@ -293,7 +290,7 @@ crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", d
 ctr = { version = "0.10", default-features = false, features = ["zeroize"] }
 ctutils = { version = "0.4", default-features = false, features = ["subtle"] }
 cursor-icon = { version = "1" }
-curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", features = ["digest", "rand_core"] }
+curve25519-dalek-164d15cefe24d7eb = { package = "curve25519-dalek", version = "4", default-features = false, features = ["alloc", "digest", "precomputed-tables", "zeroize"] }
 curve25519-dalek-cdf1610d3e1514e9 = { package = "curve25519-dalek", version = "5", features = ["rand_core"] }
 data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
@@ -360,8 +357,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 imagesize = { version = "0.14" }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
+itertools = { version = "0.13" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 libc = { version = "0.2", features = ["extra_traits"] }
@@ -407,9 +403,7 @@ rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
-rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
-raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
@@ -422,7 +416,7 @@ ring = { version = "0.17" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.65", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "system", "termios", "thread", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "mm", "mount", "net", "param", "pipe", "process", "stdio", "system", "termios", "thread", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 scopeguard = { version = "1" }
@@ -507,7 +501,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -522,7 +516,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -544,7 +538,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -559,7 +553,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -580,7 +574,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -595,7 +589,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -617,7 +611,7 @@ futures-executor = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "serde"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -632,7 +626,7 @@ phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", defaul
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand", "stdio"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "rand"] }
 sysinfo = { version = "0.36" }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }

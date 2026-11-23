@@ -298,6 +298,7 @@ follows `authority.md` and `docs/architecture/apps.md`:
 | `uses web` (outbound HTTP / outside service) | **Ask** | System approval sheet naming exact destinations/endpoints before any request |
 | `uses notify` (sending notices to members) | **Ask** | System approval sheet before the first notice |
 | `uses clipboard` (copying to, and pasting from, the person's clipboard) | **Ask** | System approval sheet naming what the app copies and reads before the first copy or paste |
+| `uses image` (decoding, cropping, turning, resizing and encoding the app's own files, and its previews) | **Allowed** | Never: the pixels are of files the workspace already holds, and the cache is the device's own |
 | Reading another app's resources or calling its actions (`use`) | **Ask** (stranger's code has no foreign grants) | System approval sheet showing the actual target resource and action, never the app's button label (`authority.md` §6) |
 | Background `trigger`s (`every` / `at`) | **Disabled** until pinned/enabled | Workspace must explicitly enable the app's triggers with a grant listing schedules and effects |
 

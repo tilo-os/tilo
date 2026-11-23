@@ -5,7 +5,7 @@
 //! while every device of its people is off. A path is read as the verbs read one ([`super`]),
 //! and nothing is written over unless the caller says so.
 
-use fuser::FileType;
+use crate::node::FileType;
 
 use super::super::{hash_of, plain};
 use super::{Changed, join, names};

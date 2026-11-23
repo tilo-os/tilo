@@ -7,7 +7,7 @@ app and system component, as a language pack: `<out>/<locale>/<crate>.ftl`
 for each crate whose catalogue has that language and is read on the device
 from the packs: one its window declares (`ui::embedded_catalog!`), or the one
 its actions and records are named from (`#[resource]`, `#[derive(Effect)]`,
-`word!`, `declared_catalogue!`; tilo_resource::label). One pack per language:
+`word!`, `declared_catalogue!`, `declared_names!`; tilo_resource::label). One pack per language:
 a crate's `de-DE.ftl` and another's `de.ftl` both go to `de`,
 where `<crate>` is the crate's package name. The OS image carries them under
 `/usr/share/tilo/language-packs`; the registry offers each as a signed
@@ -43,7 +43,7 @@ MACRO = re.compile(r"^\s*(?:ui::|crate::)?embedded_catalog!\(", re.MULTILINE)
 # on a line of its own, not its mention in documentation.
 LABELS = re.compile(
     r"^\s*(?:#\[(?:[\w:]*::)?resource\(|#\[derive\([^)]*\bEffect\b"
-    r"|.*\bword!\(\s*\"|(?:[\w:]*::)?declared_catalogue!\()",
+    r"|.*\bword!\(\s*\"|(?:[\w:]*::)?(?:declared_catalogue|declared_names)!\()",
     re.MULTILINE,
 )
 

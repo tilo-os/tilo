@@ -170,7 +170,7 @@ impl DocumentAdmission {
         })
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MissingPrerequisite {
     /// The workspace's rules: its members, roles and grants.
     Rules,

@@ -3,7 +3,7 @@
 #
 #   check-dev-kernel.sh [ROOT]     (default /)
 #
-# tilo-vmd gives every headful slot a vkms card created through configfs and
+# The device's steps give every headful slot a vkms card created through configfs and
 # per-seat uinput devices.
 # Missing any of these surfaces only when the first slot starts, as an opaque
 # modprobe or mkdir error, so check the image's own kernel here instead:
@@ -22,7 +22,7 @@ set -euo pipefail
 root="${1:-/}"
 fix="pin it in os/kernel/config-fragments/tilo.config (next to CONFIG_DRM_VKMS=m), rebuild the kernel (os/kernel/Containerfile), and rebuild the base image"
 fail() {
-  printf 'check-dev-kernel: %s\n  why: tilo-vmd creates each headful slot'"'"'s display (vkms via configfs) and input (uinput); without it no slot session can start.\n  fix: %s\n' "$1" "$2" >&2
+  printf 'check-dev-kernel: %s\n  why: the device'"'"'s steps create each headful slot'"'"'s display (vkms via configfs) and input (uinput); without it no slot session can start.\n  fix: %s\n' "$1" "$2" >&2
   exit 1
 }
 

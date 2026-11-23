@@ -206,7 +206,9 @@ bin = "bin/app"
     }
 
     fn cmd(&self, args: &[&str]) -> (bool, String) {
-        let out = Command::new(tilo_test_env::package_binary!("tilo-install"))
+        let mut command = Command::new(tilo_test_env::package_binary!("tilo-install"));
+        crate::support::offline(&mut command, &self.path("data"));
+        let out = command
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.home.path())
@@ -426,7 +428,9 @@ tilo_test_env::scenario! {
         env.trust(&[&runtime_key]);
         let (version, bundle) = env.bundle("host", b"canonical runtime payload", &runtime_identity);
         let package = env.runtime_tapp("host", &bundle, &format!("tilo-runtime/{version}"));
-        let output = Command::new(tilo_test_env::package_binary!("tilo-install"))
+        let mut command = Command::new(tilo_test_env::package_binary!("tilo-install"));
+        crate::support::offline(&mut command, &env.path(".local/share"));
+        let output = command
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", env.home.path())

@@ -555,7 +555,30 @@ view place_content(p: LayoutPlace) {
 /// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when there
 /// is no resource here to draw (a terminal, a legacy window). The window's controls are the
 /// frame's, in its one bar, outside it.
+///
+/// The window the place shows says where it stands: a window that runs on another device shows
+/// its notice instead of an empty well, and one whose app stopped answering keeps its content
+/// under the hung card, so the person answers the app where they are working.
 view place_view(p: LayoutPlace) {
+    if let w = window_showing(p) {
+        if w.elsewhere {
+            window_elsewhere(w)
+        } else if w.not_responding {
+            layers(fill) {
+                place_body(p, fill)
+                hung_card(w)
+            }
+        } else {
+            place_body(p)
+        }
+    } else {
+        place_body(p)
+    }
+}
+
+/// What a place draws when its window is this device's: its resource through its view, or the well
+/// the window shows in.
+view place_body(p: LayoutPlace) {
     if let q = query_of(p.key) {
         query_view(q, p)
     } else if let r = placed_resource(p.resource) {
@@ -567,6 +590,12 @@ view place_view(p: LayoutPlace) {
     } else {
         ui.WindowWell(place: p.key, fill)
     }
+}
+
+/// The window the place `p` shows, as the session lists it: a place's key is its window's tab, so
+/// the device's windows say whether it is here and whether its app still answers.
+fn window_showing(p: LayoutPlace) -> Option<device.Window> {
+    return device.windows.all.find(w -> w.key == p.key)
 }
 
 /// The query the place `key` shows, while its app answers it; `.none` for a place showing a

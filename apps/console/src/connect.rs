@@ -30,7 +30,7 @@ fn set_up(resources: &Resources) -> Element {
         Box::new(
             Button::new("console-connect-setup", "console-connect-setup")
                 .role(ButtonRole::Primary)
-                .on_view(move || resources.show_connect()),
+                .on_open(move || resources.show_connect()),
         ),
     ])
 }
@@ -128,7 +128,7 @@ fn grant_row(records: &Resources, index: usize, grant: &mcp_server::Grant) -> El
             "console-grant-revoke",
         )
         .role(ButtonRole::Destructive)
-        .on_view(move || {
+        .on_open(move || {
             records.server(
                 mcp_server::REVOKE,
                 &mcp_server::GrantRef { grant: id.clone() },

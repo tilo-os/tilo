@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Size and load-cost budget for the shared app runtime, `libruntime_dylib.so`.
 
-Every thin app maps this one Rust dylib (crates/runtime/runtime-dylib), so its
+Every thin app maps this one Rust dylib (crates/sdk/runtime-dylib), so its
 size is what a device downloads when an app's runtime is missing, and its
 dynamic relocations are work the loader repeats, and memory it dirties, in
 every app process before `main`. The KPI holds four numbers per
@@ -24,7 +24,7 @@ through `tools/ci/runtime-dylib-lazy-link.py`, which loads them on first use
 and records them in the `.tilo.lazy_needed` section; the check reports those.
 
 Engines a few apps use live in libraries of their own beside the runtime
-(crates/runtime/engines/). `measure --engine FILE` reports each one's
+(crates/engines/loadable/). `measure --engine FILE` reports each one's
 numbers, fails when one does not link the runtime, and fails when an app of
 `apps_without_media` loads one at exec: an engine is loaded only by its apps,
 and an app of that list that uses one is named in `[engine_users]`. Each

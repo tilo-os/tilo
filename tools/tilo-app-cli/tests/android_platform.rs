@@ -134,12 +134,12 @@ while read -r name; do echo "entry:$name" >> "$archive"; done
         "[package]\nname = \"tilo-runtime\"\n",
     ),
     (
-        "checkout/crates/sdk/ui-core/android/java/so/tilo/android/TiloActivity.java",
+        "checkout/crates/ui/ui-core/android/java/so/tilo/android/TiloActivity.java",
         "class TiloActivity {}\n",
     ),
-    ("checkout/crates/sdk/ui-core/assets/fonts/Inter.ttf", "font"),
+    ("checkout/crates/ui/ui-core/assets/fonts/Inter.ttf", "font"),
     (
-        "checkout/crates/sdk/ui-core/assets/fonts/manifest.toml",
+        "checkout/crates/ui/ui-core/assets/fonts/manifest.toml",
         "[[font]]\nscope = \"product\"\nfile = \"Inter.ttf\"\n",
     ),
 ];

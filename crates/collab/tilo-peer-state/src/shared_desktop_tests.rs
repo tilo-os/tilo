@@ -60,6 +60,7 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
             ..Layout::default()
         },
         records: Vec::new(),
+        items: Vec::new(),
         authors: windows
             .iter()
             .map(|(id, who)| (*id, (*who).to_owned()))

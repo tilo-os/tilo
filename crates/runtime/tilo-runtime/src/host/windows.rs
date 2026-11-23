@@ -19,11 +19,6 @@ fn not_yet() -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, NOT_YET)
 }
 
-/// Create `path` as a directory only this person can enter.
-pub(crate) fn private_directory(_path: &Path) -> io::Result<()> {
-    Err(not_yet())
-}
-
 /// Refuse a profile an earlier Tilo left reachable by others, and create it as
 /// its owner's private directory.
 pub(crate) fn check_private_profile(_path: &Path) -> io::Result<()> {

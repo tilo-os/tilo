@@ -24,40 +24,19 @@ impl AppConnection {
             resource_type,
         } = join;
         let route = CrdtRoute::from_channel_key(&channel_id);
-        // Decoded first, so the match scrutinizes a plain value: the join
-        // presentations each hold a `Drop`, which must not live past the arm.
-        let agent_presentation =
-            runtime_collab::AgentJoinIdentity::decode(&identity).map_err(|error| {
-                BrokerError::failed(format!("agent join presentation is malformed: {error}"))
-            })?;
-        let mut verified_identity = match agent_presentation {
-            Some(presentation) => super::verify_agent_join(
-                &route,
-                &presentation,
-                state.membership.as_ref(),
-                state
-                    .trusted_devices
-                    .as_ref()
-                    .map(|devices| devices.as_slice()),
-                state.certificate_authority.get().map(Arc::as_ref),
-            )
-            .map_err(|error| {
-                BrokerError::failed(format!("collaboration join identity rejected: {error}"))
-            })?,
-            None => admit_join_presentation(
-                &route,
-                &super::join_presentation(&identity).map_err(BrokerError::failed)?,
-                state.membership.as_ref(),
-                state
-                    .trusted_devices
-                    .as_ref()
-                    .map(|devices| devices.as_slice()),
-                state.certificate_authority.get().map(Arc::as_ref),
-            )
-            .map_err(|error| {
-                BrokerError::failed(format!("collaboration join identity rejected: {error}"))
-            })?,
-        };
+        let mut verified_identity = admit_join_presentation(
+            &route,
+            &super::join_presentation(&identity).map_err(BrokerError::failed)?,
+            state.membership.as_ref(),
+            state
+                .trusted_devices
+                .as_ref()
+                .map(|devices| devices.as_slice()),
+            state.certificate_authority.get().map(Arc::as_ref),
+        )
+        .map_err(|error| {
+            BrokerError::failed(format!("collaboration join identity rejected: {error}"))
+        })?;
         phases.mark("verify");
         // A workspace still being joined or placed on its host holds the join
         // until apps can open documents in it, whichever client asks.
@@ -169,10 +148,6 @@ impl AppConnection {
                 "host worker cannot delegate an agent identity".into(),
             ));
         }
-        // A certified agent joins only as itself: a person's handle would name
-        // it otherwise.
-        super::agent_cert::joins_as(&verified_identity, if person { "person" } else { "agent" })
-            .map_err(BrokerError::failed)?;
         match member {
             None => {
                 // A person's handle is presentation, not their certified
@@ -181,13 +156,6 @@ impl AppConnection {
                 if !announced.is_empty() {
                     verified_identity.display_handle = Some(announced);
                 }
-            }
-            Some(MemberId::Agent(member_handle)) if verified_identity.agent_cert.is_some() => {
-                // A certified agent acts in its session alone, while the
-                // workspace lists it and its session goes.
-                state
-                    .admit_agent_join(&route.cluster_id, &member_handle, &verified_identity)
-                    .map_err(BrokerError::failed)?;
             }
             Some(MemberId::Agent(member_handle)) => {
                 // Unlike a display handle, this names the exact workspace

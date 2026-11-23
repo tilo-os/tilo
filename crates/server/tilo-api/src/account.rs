@@ -35,13 +35,14 @@
 
 use crate::grant_key::GrantKey;
 use crate::server::{Connection, ServerError};
-use crate::session::{Provider, Reach};
+use crate::session::{Here, Provider, Reach};
 use crate::store::{Grant, GrantKind, Scope};
 use crate::{Server, now_ms};
 use collab_types::workspace_grant::WorkspaceGrant;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
+use tilo_actions::policy::roles::governance::RENAME;
 use tilo_actions::policy::{Answer, Asker, Invoked};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
@@ -54,7 +55,11 @@ use tilo_actions::{
     ActionParam, ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind,
     ParamType, RiskLevel,
 };
-use tilo_server_session::workspaces::{RUN_UNATTENDED, WorkspaceLabels};
+use tilo_server_session::workspaces::{
+    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PersonalList, RUN_UNATTENDED,
+    WorkspaceLabels,
+};
 use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
 
@@ -90,6 +95,9 @@ enum Op {
     BranchWorkspace,
     RenameWorkspace,
     DeleteWorkspace,
+    EnterWorkspace,
+    LeaveWorkspace,
+    JoinWorkspace,
     Unattended,
     ListKeys,
     CreateKey,
@@ -130,11 +138,12 @@ const fn verb(
     }
 }
 
-const VERBS: [Verb; 15] = [
+const VERBS: [Verb; 18] = [
     verb(
         WORKSPACES,
         "list",
-        "Your workspaces, and the hosts you can create on; with labels, those labelled so",
+        "Your workspaces, whether this device keeps each, and the hosts you can create on; with \
+         labels, those labelled so",
         ActionKind::Read,
         Op::ListWorkspaces,
         || vec![labels_param()],
@@ -188,6 +197,36 @@ const VERBS: [Verb; 15] = [
         ActionKind::Outside,
         Op::DeleteWorkspace,
         || vec![workspace_param()],
+    ),
+    verb(
+        WORKSPACES,
+        "enter",
+        "Keep a workspace of yours on this device, synced with its host",
+        ActionKind::Outside,
+        Op::EnterWorkspace,
+        || vec![workspace_param()],
+    ),
+    verb(
+        WORKSPACES,
+        "leave",
+        "Stop keeping a workspace on this device; you stay in it",
+        ActionKind::Outside,
+        Op::LeaveWorkspace,
+        || vec![workspace_param()],
+    ),
+    verb(
+        WORKSPACES,
+        "join",
+        "Join the workspace an invitation brings you into, and keep it on this device",
+        ActionKind::Outside,
+        Op::JoinWorkspace,
+        || {
+            vec![ActionParam::required(
+                "invite",
+                ParamType::Text,
+                "The invitation, as its link or text was handed to you.",
+            )]
+        },
     ),
     verb(
         WORKSPACES,
@@ -630,14 +669,6 @@ impl Account {
         page
     }
 
-    /// The grant's own connection, for what the account asks of a server.
-    fn connection(&self) -> Result<Arc<Connection>, ServerError> {
-        match &self.0.reach {
-            Reach::Forwarded(connection) => Ok(Arc::clone(connection)),
-            Reach::Here(here) => here.connection().ok_or(ServerError::NoAccountHere),
-        }
-    }
-
     fn keep(&self, id: InvocationId, run: Run) {
         let mut running = crate::lock(&self.0.running);
         if running.by_id.insert(id, run).is_none() {
@@ -649,6 +680,15 @@ impl Account {
             }
         }
         drop(running);
+    }
+
+    /// Answered the next time the workspaces the account lists may have changed: what a watch of
+    /// `account/workspaces` waits on. `None` where nothing tells.
+    fn changed(&self) -> Option<Pending<Result<(), ActionCallError>>> {
+        let Reach::Here(here) = &self.0.reach else {
+            return None;
+        };
+        Some(here.workspaces_changed()?.map(Ok))
     }
 
     /// Whether the account answers the invocation `id`.
@@ -770,17 +810,27 @@ impl Account {
         if let Some(outcome) = webhook {
             return outcome;
         }
-        let key = match self.connection() {
-            Ok(key) => key,
-            // Listing what the key reaches needs no server: a desktop serving its own
-            // workspaces lists them.
-            Err(_) if op == Op::ListWorkspaces => return self.workspaces(&server, args).await,
-            Err(error) => return refused(&error),
+        let key = match &self.0.reach {
+            Reach::Forwarded(key) => Arc::clone(key),
+            Reach::Here(here) => return here_answers(here.as_ref(), &server, op, args).await,
         };
         match op {
-            Op::ListWorkspaces => self.workspaces(&server, args).await,
-            Op::CreateWorkspace => create_workspace(&key, args).await,
-            Op::BranchWorkspace => branch_workspace(&key, args).await,
+            Op::ListWorkspaces => workspaces(&key, &server, args).await,
+            Op::EnterWorkspace | Op::LeaveWorkspace | Op::JoinWorkspace => failed(
+                "not_permitted",
+                "only one of the person's devices keeps workspaces",
+                "ask it on the device that is to keep the workspace",
+            ),
+            Op::CreateWorkspace | Op::BranchWorkspace => {
+                let (action, arguments) = match server_operation(op, args) {
+                    Ok(asked) => asked,
+                    Err(outcome) => return outcome,
+                };
+                match key.server().make(&key, action, arguments).await {
+                    Ok(made) => Outcome::Ok(json!({"workspace": made})),
+                    Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
+                }
+            }
             Op::RenameWorkspace => rename_workspace(&key, args).await,
             Op::DeleteWorkspace => server.delete_workspace(&grant, &key, args).await,
             Op::Unattended => self.unattended(&key, id, args).await,
@@ -798,27 +848,6 @@ impl Account {
                 "a webhook is kept by the server itself",
                 "try again shortly",
             ),
-        }
-    }
-
-    /// The workspaces the key reaches that are labelled with every one of the `labels` `args`
-    /// names, with the hosts it may create on.
-    async fn workspaces(&self, server: &Server, args: &Value) -> Outcome {
-        let labels = match labels_of(args) {
-            Ok(labels) => labels,
-            Err(refused) => return refused,
-        };
-        let labels = &labels;
-        let listed = match &self.0.reach {
-            Reach::Forwarded(connection) => connection.server().labelled(connection, labels).await,
-            Reach::Here(here) => Ok(here.workspaces()),
-        };
-        match listed {
-            Ok(mut workspaces) => {
-                workspaces.retain(|workspace| labelled(workspace, labels));
-                Outcome::Ok(json!({"workspaces": workspaces, "hosts": host_rows(server)}))
-            }
-            Err(error) => refused(&error),
         }
     }
 
@@ -1171,7 +1200,14 @@ impl ActionProvider for Joined {
         caller: &Caller,
         scope: tilo_actions::remote::WatchScope,
     ) -> Option<Pending<Result<(), ActionCallError>>> {
-        self.actions.as_ref()?.changed(caller, scope)
+        match &self.actions {
+            Some(actions) => actions.changed(caller, scope),
+            // The account's own tree: its records are the person's workspaces.
+            None if matches!(scope, tilo_actions::remote::WatchScope::Records) => {
+                self.account.changed()
+            }
+            None => None,
+        }
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -1711,44 +1747,277 @@ fn field<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
-/// Make the workspace `args` names (`name`, and `id` when the caller chose
-/// one) as `key`.
-async fn create_workspace(key: &Connection, args: &Value) -> Outcome {
-    let Some(name) = field(args, "name") else {
-        return failed(
-            "invalid_arguments",
-            "`name` is required",
-            "pass {name: \"Applicant: Jane Doe\"}",
-        );
+/// The workspaces `key` reaches that are labelled with every one of the `labels` `args` names,
+/// with the hosts it may create on.
+async fn workspaces(key: &Connection, server: &Server, args: &Value) -> Outcome {
+    let labels = match labels_of(args) {
+        Ok(labels) => labels,
+        Err(refused) => return refused,
     };
-    let (id, labels) = match (chosen_id(args), labels_of(args)) {
-        (Ok(id), Ok(labels)) => (id, labels),
-        (Err(refused), _) | (_, Err(refused)) => return refused,
-    };
-    match key.server().create(key, name, &labels, id).await {
-        Ok(created) => Outcome::Ok(json!({"workspace": created})),
+    match key.server().labelled(key, &labels).await {
+        Ok(mut workspaces) => {
+            workspaces.retain(|workspace| labelled(workspace, &labels));
+            Outcome::Ok(json!({"workspaces": workspaces, "hosts": host_rows(server)}))
+        }
         Err(error) => refused(&error),
     }
 }
 
-/// Branch the workspace `args` names (`workspace`, one of the person's own)
-/// into a new one named `name`, under `id` when the caller chose one, as `key`.
-async fn branch_workspace(key: &Connection, args: &Value) -> Outcome {
-    let (Some(source), Some(name)) = (field(args, "workspace"), field(args, "name")) else {
-        return failed(
+/// What a desktop answers `op` with `args`: the workspaces it keeps, kept or left at the
+/// person's word, and everything else as the person's account at their server answers it.
+/// A workspace made there is kept here too, and one deleted there is kept here no more.
+async fn here_answers(here: &dyn Here, server: &Server, op: Op, args: &Value) -> Outcome {
+    let needs_workspace = || {
+        failed(
             "invalid_arguments",
-            "`workspace` and `name` are required",
-            "pass {workspace: \"<id>\", name}; account/workspaces#list names them",
-        );
+            "`workspace` is required",
+            "pass {workspace: \"<id>\"}; account/workspaces#list names them",
+        )
     };
-    let (id, labels) = match (chosen_id(args), labels_of(args)) {
-        (Ok(id), Ok(labels)) => (id, labels),
-        (Err(refused), _) | (_, Err(refused)) => return refused,
-    };
-    match key.server().branch(key, source, name, &labels, id).await {
-        Ok(branch) => Outcome::Ok(json!({"workspace": branch})),
-        Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
+    match op {
+        Op::ListWorkspaces => return listed_here(here, server, args).await,
+        Op::EnterWorkspace | Op::LeaveWorkspace => {
+            let Some(workspace) = field(args, "workspace") else {
+                return needs_workspace();
+            };
+            let entering = op == Op::EnterWorkspace;
+            let done = if entering {
+                here.keep(workspace).await
+            } else {
+                here.leave(workspace).await
+            };
+            return match done {
+                Ok(()) => Outcome::Ok(json!({"workspace": workspace, "kept_here": entering})),
+                Err(why) => failed("unavailable", why, "try again shortly"),
+            };
+        }
+        Op::JoinWorkspace => {
+            let Some(invite) = field(args, "invite") else {
+                return failed(
+                    "invalid_arguments",
+                    "`invite` is required",
+                    "pass {invite: \"<the invitation>\"}",
+                );
+            };
+            return match here.join(invite).await {
+                Ok(workspace) => Outcome::Ok(json!({"workspace": workspace, "kept_here": true})),
+                Err(why) => failed(
+                    "refused",
+                    why,
+                    "ask whoever invited you for a new invitation",
+                ),
+            };
+        }
+        _ => {}
     }
+    let Some(account) = here.account() else {
+        return refused(&ServerError::NoAccountHere);
+    };
+    let asked = match op {
+        Op::RenameWorkspace | Op::Unattended | Op::Usage | Op::AskModel => account_target(op, args),
+        _ => server_operation(op, args).map(|(action, arguments)| (host(action), arguments)),
+    };
+    let (target, arguments) = match asked {
+        Ok(asked) => asked,
+        Err(outcome) => return outcome,
+    };
+    let answer = match account.call(target, arguments.clone()).await {
+        Ok(answer) => answer,
+        Err(why) => return failed("unavailable", why, "try again shortly"),
+    };
+    let Some(workspace) = arguments
+        .get("workspace")
+        .and_then(Value::as_str)
+        .filter(|_| {
+            matches!(
+                op,
+                Op::CreateWorkspace | Op::BranchWorkspace | Op::DeleteWorkspace
+            )
+        })
+    else {
+        return Outcome::Ok(answer);
+    };
+    if op == Op::DeleteWorkspace {
+        if here.workspaces().iter().any(|kept| kept.id == workspace)
+            && let Err(why) = here.leave(workspace).await
+        {
+            tracing::warn!(%why, %workspace, "a deleted workspace's copy is still kept here");
+        }
+        return Outcome::Ok(json!({"deleted": workspace}));
+    }
+    let made = match serde_json::from_value::<CreatedWorkspace>(answer) {
+        Ok(made) => made.workspace,
+        Err(error) => {
+            return failed(
+                "unavailable",
+                format!("the server answered no workspace: {error}"),
+                "try again shortly",
+            );
+        }
+    };
+    let kept = here.keep(&made.workspace).await;
+    if let Err(why) = &kept {
+        tracing::warn!(%why, workspace = %made.workspace, "a workspace made from this device is not kept here");
+    }
+    let workspace = crate::server::Workspace {
+        kept_here: kept.is_ok(),
+        ..crate::server::Workspace::listed(&made, None)
+    };
+    Outcome::Ok(json!({ "workspace": workspace }))
+}
+
+/// The server's own operation `action`.
+fn host(action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: HOST_ACTIONS_PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
+    }
+}
+
+/// What a computer asks its server for `op` with `args` beyond the person's workspaces
+/// themselves, as a key asks it over its connection: renaming a workspace and turning its
+/// unattended runs on or off as its governance decides, the account's usage, and a turn of the
+/// person's model.
+fn account_target(
+    op: Op,
+    args: &Value,
+) -> Result<(RemoteActionTarget, Map<String, Value>), Outcome> {
+    let needs =
+        |what: &str, next: &str| failed("invalid_arguments", format!("{what} required"), next);
+    let mut arguments = Map::new();
+    let target = match op {
+        Op::RenameWorkspace => {
+            let (Some(workspace), Some(name)) = (field(args, "workspace"), field(args, "name"))
+            else {
+                return Err(needs(
+                    "`workspace` and `name` are",
+                    "pass {workspace: \"<id>\", name: \"Acme\"}",
+                ));
+            };
+            arguments.insert("name".into(), json!(name.trim()));
+            RemoteActionTarget::workspace_governance(workspace, RENAME)
+        }
+        Op::Unattended => {
+            let (Some(workspace), Some(on)) = (
+                field(args, "workspace"),
+                args.get("on").and_then(Value::as_bool),
+            ) else {
+                return Err(needs(
+                    "`workspace` and `on` are",
+                    "pass {workspace, on: true}",
+                ));
+            };
+            arguments.insert("on".into(), json!(on));
+            RemoteActionTarget::workspace_governance(workspace, RUN_UNATTENDED)
+        }
+        Op::AskModel => {
+            let (Some(_), Some(Value::Object(request))) =
+                (field(args, "workspace"), args.get("request"))
+            else {
+                return Err(needs(
+                    "`workspace` and `request` are",
+                    "pass {workspace, request: {messages, …}}",
+                ));
+            };
+            arguments.clone_from(request);
+            person_models::target(person_models::ASK)
+        }
+        _ => tilo_actions::remote::server_account::target(
+            tilo_actions::remote::server_account::ACCOUNT,
+        ),
+    };
+    Ok((target, arguments))
+}
+
+/// The server's own operation that answers `op`, asked with `args`, and its arguments: making,
+/// branching and deleting the person's workspaces. A computer asks its server nothing else
+/// itself; a key asks the rest over its connection.
+fn server_operation(op: Op, args: &Value) -> Result<(&'static str, Map<String, Value>), Outcome> {
+    let (id, labels) = (chosen_id(args)?, labels_of(args)?);
+    let mut arguments = Map::new();
+    if !labels.is_empty() {
+        arguments.insert("labels".into(), json!(labels));
+    }
+    let made = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
+    let named = |what: &str| {
+        field(args, what).map(|text| json!(text)).ok_or_else(|| {
+            failed(
+                "invalid_arguments",
+                format!("`{what}` is required"),
+                "account/workspaces#list names the workspaces and what each is called",
+            )
+        })
+    };
+    let action = match op {
+        Op::CreateWorkspace => {
+            arguments.insert("name".into(), named("name")?);
+            arguments.insert("workspace".into(), json!(made));
+            CREATE_OWN_WORKSPACE
+        }
+        Op::BranchWorkspace => {
+            arguments.insert("workspace".into(), named("workspace")?);
+            arguments.insert("name".into(), named("name")?);
+            arguments.insert("branch".into(), json!(made));
+            BRANCH_OWN_WORKSPACE
+        }
+        Op::DeleteWorkspace => {
+            arguments.insert("workspace".into(), named("workspace")?);
+            DELETE_WORKSPACE
+        }
+        _ => {
+            return Err(failed(
+                "not_permitted",
+                "a computer's own keys are made on it with `tilo keys`, not asked of its server",
+                "run `tilo keys` on this computer",
+            ));
+        }
+    };
+    Ok((action, arguments))
+}
+
+/// The workspaces a desktop keeps, and those of the person's its server lists that it does
+/// not keep, labelled with every one of the `labels` `args` names, with the hosts it may create on.
+async fn listed_here(here: &dyn Here, server: &Server, args: &Value) -> Outcome {
+    let labels = match labels_of(args) {
+        Ok(labels) => labels,
+        Err(refused) => return refused,
+    };
+    let mut workspaces = here.workspaces();
+    if let Some(account) = here.account() {
+        let mut arguments = Map::new();
+        if !labels.is_empty() {
+            arguments.insert("labels".into(), json!(labels));
+        }
+        match account
+            .call(host(LIST_PERSONAL), arguments)
+            .await
+            .and_then(|listed| {
+                serde_json::from_value::<PersonalList>(listed).map_err(|error| error.to_string())
+            }) {
+            Ok(listed) => {
+                for row in listed
+                    .workspaces
+                    .into_iter()
+                    .map(crate::server::Workspace::personal)
+                {
+                    match workspaces.iter_mut().find(|kept| kept.id == row.id) {
+                        Some(kept) => {
+                            *kept = crate::server::Workspace {
+                                kept_here: true,
+                                ..row
+                            };
+                        }
+                        None => workspaces.push(row),
+                    }
+                }
+            }
+            Err(why) => {
+                tracing::debug!(%why, "the server's list is not in this device's");
+            }
+        }
+    }
+    workspaces.retain(|workspace| labelled(workspace, &labels));
+    Outcome::Ok(json!({"workspaces": workspaces, "hosts": host_rows(server)}))
 }
 
 /// Name the workspace `args` names (`workspace`) `name`, as `key`: the

@@ -282,6 +282,7 @@ impl Widget for FileExplorerWidget {
             state.update_toolbar();
             state.composed_once = true;
             state.refresh_places_pane(chrome);
+            state.refresh_cloud_header(chrome);
             chrome.nav.set_content(state.build_content_pane(theme));
         });
 
@@ -371,7 +372,12 @@ impl Widget for FileExplorerWidget {
 
     fn needs_animation_frame(&self) -> bool {
         // The reveal slide keeps settling across frames, so the host keeps pumping them.
-        self.chrome.nav.needs_animation_frame()
+        let state = self.state.borrow();
+        state.cloud.pending.is_some()
+            || state.mounted_cloud.is_pending()
+            || state.cloud.chooser.is_some()
+            || state.cloud_import_pending()
+            || self.chrome.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {

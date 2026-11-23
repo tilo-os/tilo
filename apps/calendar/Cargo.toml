@@ -21,14 +21,14 @@ web-features = []
 
 [dependencies]
 fnv.workspace = true
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-timezone-engine = { path = "../../crates/runtime/engines/timezone", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
+tilo-timezone-engine = { path = "../../crates/engines/loadable/timezone", optional = true }
 # The CalDAV client and the account credentials its sign-in reaches.
-tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
-tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
+tilo-accounts-engine = { path = "../../crates/engines/loadable/accounts", optional = true }
+tilo-contact-directory-engine = { path = "../../crates/engines/loadable/contact-directory", optional = true }
 # Read-only address-book hints, offered as attendees; choosing one confirms no
 # identity and sends nothing.
-tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
+tilo-contact-directory = { path = "../../crates/integrations/tilo-contact-directory" }
 hex.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
@@ -41,11 +41,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 calendar-model = { path = "../calendar-model", features = ["store"] }
 # Shared multi-account store and encrypted secret vault. Settings owns writes;
 # credentials are sealed in the vault rather than the plaintext store.
-accounts = { path = "../../crates/system/accounts", features = ["person"] }
+accounts = { path = "../../crates/integrations/accounts", features = ["person"] }
 # Tilo action model for serializable, replayable document mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes are rich text, edited in the SDK rich-text editor.
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 jiff.workspace = true
 automerge.workspace = true
@@ -61,7 +61,7 @@ taffy.workspace = true
 # Multistatus parsing and REPORT bodies are always built; the async HTTP
 # client behind live CalDAV sync (REPORT and ETag-guarded PUT/DELETE) is guarded
 # by `live`, so the headless build stays off the network stack.
-tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false }
+tilo-dav = { path = "../../crates/integrations/tilo-dav", default-features = false }
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -69,7 +69,7 @@ thin = ["dep:runtime-dylib"]
 # credentials its sign-in reaches) and the contact directory through their
 # engine libraries in the runtime bundle (libtilo_timezone_engine.so,
 # libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
-# crates/runtime/engines/) instead of the runtime. The release collection
+# crates/engines/loadable/) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
 # (`tilo-app dev`) links their crates statically, because an engine library
 # links only through tools/ci/rustc-thin-app-wrapper.sh.
@@ -86,8 +86,8 @@ default = ["live"]
 live = ["tilo-dav/oauth", "calendar-model/live"]
 
 [dev-dependencies]
-account-credentials = { path = "../../crates/system/account-credentials" }
-tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false, features = ["test-support"] }
+account-credentials = { path = "../../crates/integrations/account-credentials" }
+tilo-dav = { path = "../../crates/integrations/tilo-dav", default-features = false, features = ["test-support"] }
 # Reads the signed manifest's offers to check them against what the app publishes.
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

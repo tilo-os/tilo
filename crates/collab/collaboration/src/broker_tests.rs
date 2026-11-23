@@ -14,6 +14,9 @@
     reason = "the tests and the fixtures they share with the toolkit's tests are test code"
 )]
 use super::*;
+use std::pin::Pin;
+use tokio::io::{AsyncRead, AsyncWrite};
+
 use runtime_collab::{ActionCatalogue, BrokerActionSurface, SurfaceDelta};
 
 /// The concrete broker transport's bridge state behind a test manager.
@@ -489,7 +492,6 @@ impl Feed {
 /// calls from `broker`'s seeds and records them in its captures.
 struct FakeHost {
     broker: FakeBroker,
-    join_hold: Option<HostJoinHold>,
     frames: tokio_mpsc::UnboundedSender<HostFrame>,
     channels: RefCell<HashMap<Handle, Rc<FakeChannel>>>,
     subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
@@ -508,22 +510,10 @@ pub(super) async fn serve_fake_broker<S>(stream: S, broker: FakeBroker)
 where
     S: AsyncRead + AsyncWrite + 'static,
 {
-    serve_fake_host(stream, broker, None).await;
-}
-
-#[expect(
-    clippy::future_not_send,
-    reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
-)]
-async fn serve_fake_host<S>(stream: S, broker: FakeBroker, join_hold: Option<HostJoinHold>)
-where
-    S: AsyncRead + AsyncWrite + 'static,
-{
     let (mut reader, mut writer) = tokio::io::split(stream);
     let (frames, mut outgoing) = tokio_mpsc::unbounded_channel();
     let host = Rc::new(FakeHost {
         broker,
-        join_hold,
         frames,
         channels: RefCell::default(),
         subscriptions: RefCell::default(),
@@ -940,10 +930,6 @@ impl FakeHost {
     }
 
     fn join(self: &Rc<Self>, join: wire::Join) -> FakeAnswer {
-        let hold = self
-            .join_hold
-            .as_ref()
-            .map(|hold| hold.attempt(&join.channel));
         let mut captures = self.captures();
         captures
             .joined
@@ -960,9 +946,6 @@ impl FakeHost {
         drop(captures);
         let host = Rc::clone(self);
         Box::pin(async move {
-            if let Some(hold) = hold {
-                hold.await?;
-            }
             if let Some(held) = held {
                 // `JoiningProbe::REFUSAL`, word for word; the probe is not built on every target.
                 held.await
@@ -1327,99 +1310,6 @@ pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, 
     (client, captures)
 }
 
-fn host_identity_fixture(
-    certificate: Option<Vec<u8>>,
-    replies: Vec<tilo_identity_client::wire::Response>,
-) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
-    host_identity_fixture_with_keys(certificate, replies, None)
-}
-
-/// A scripted identity service. `GroupKeys` requests arrive on the
-/// endpoint's own refresh cadence, so they are answered from `keys`
-/// (or as unavailable) without consuming the scripted `replies`.
-fn host_identity_fixture_with_keys(
-    certificate: Option<Vec<u8>>,
-    replies: Vec<tilo_identity_client::wire::Response>,
-    keys: Option<(u64, Vec<u8>)>,
-) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
-    use tilo_identity_client::wire::Response;
-    let mut responses = vec![Response::Metadata {
-        display_name: "Host fixture".into(),
-        avatar_color: [1, 2, 3],
-        group_public_key: [4; 32],
-        signing_public_key: [5; 32],
-        device_certificate: certificate,
-        threshold: 1,
-        total_shares: 1,
-        share_index: 1,
-    }];
-    responses.extend(replies);
-    let output = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let captured = output.clone();
-    let (client, mut server) = tokio::io::duplex(64 * 1024);
-    tokio::task::spawn_local(async move {
-        let framing = tilo_identity_client::wire::FRAMING;
-        let mut responses = responses.into_iter();
-        loop {
-            let Ok(Some(body)) = framing.read_async(&mut server).await else {
-                return;
-            };
-            captured
-                .lock()
-                .unwrap()
-                .extend_from_slice(&framing.encode(&body).unwrap());
-            let asks_keys = matches!(
-                postcard::from_bytes::<tilo_identity_client::wire::Request>(&body),
-                Ok(tilo_identity_client::wire::Request::GroupKeys { .. })
-            );
-            let response = if asks_keys {
-                match &keys {
-                    Some((generation, keys)) => Response::GroupKeys {
-                        access: tilo_identity_client::wire::KeyAccess::Ready,
-                        generation: *generation,
-                        keys: keys.clone(),
-                    },
-                    None => Response::GroupKeys {
-                        access: tilo_identity_client::wire::KeyAccess::Unavailable,
-                        generation: 0,
-                        keys: Vec::new(),
-                    },
-                }
-            } else {
-                let Some(response) = responses.next() else {
-                    return;
-                };
-                response
-            };
-            if framing
-                .write_value_async(&mut server, &response)
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
-    (client, output)
-}
-
-fn host_identity_requests(bytes: &[u8]) -> Vec<tilo_identity_client::wire::Request> {
-    let mut remaining = bytes;
-    let mut requests = Vec::new();
-    while !remaining.is_empty() {
-        if remaining.len() < 4 {
-            break;
-        }
-        let len = u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize;
-        if remaining.len() < 4 + len {
-            break;
-        }
-        requests.push(postcard::from_bytes(&remaining[4..4 + len]).unwrap());
-        remaining = &remaining[4 + len..];
-    }
-    requests
-}
-
 #[test]
 #[cfg(unix)]
 fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
@@ -1513,559 +1403,6 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
     worker.join().unwrap();
 }
 
-tilo_test_env::scenario! {
-    fn host_connector_handoff_fails_closed_without_fallback;
-
-    phase host_connector_failure_is_consumed_once_without_inherited_fallback;
-    {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let seen = calls.clone();
-        let cluster_id = Uuid::new_v4();
-        let expected = RouteSpec {
-            app_id: "so.tilo.notes".into(),
-            cluster_id,
-            document: Some("note".into()),
-        };
-        let connector = HostSessionConnector::new(move |route| async move {
-            seen.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(route, expected);
-            assert_eq!(thread::current().name(), Some("ui-collab-shovel"));
-            assert!(tokio::runtime::Handle::try_current().is_ok());
-            // A !Send value across await proves this future stays on LocalSet.
-            let local = Rc::new(());
-            tokio::task::yield_now().await;
-            drop(local);
-            Err::<(tokio::io::DuplexStream, tokio::io::DuplexStream), _>(
-                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "fixture host refused its grant",
-                )),
-            )
-        });
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        );
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-                assert_eq!(error.to_string(), "fixture host refused its grant");
-            }
-            _ => panic!("host refusal must reach caller"),
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    phase host_connector_without_certificate_cannot_use_harness_identity;
-    {
-        let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, _) = host_identity_fixture(None, vec![]);
-            let (stream, _peer) = tokio::io::duplex(4096);
-            Ok((stream, identity))
-        });
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            Uuid::new_v4(),
-            None,
-            None,
-        );
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-                assert_eq!(
-                    error.to_string(),
-                    "workspace identity has no certified device"
-                );
-            }
-            _ => panic!("missing certificate must refuse before joining"),
-        }
-    }
-
-    phase host_connector_join_proof_refusal_reaches_caller;
-    {
-        let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, _) = host_identity_fixture(
-                Some(b"fixture".to_vec()),
-                vec![tilo_identity_client::wire::Response::Denied(
-                    "fixture device revoked".into(),
-                )],
-            );
-            let (stream, _peer) = tokio::io::duplex(4096);
-            Ok((stream, identity))
-        });
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            Uuid::new_v4(),
-            None,
-            None,
-        );
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-                assert_eq!(error.to_string(), "fixture device revoked");
-            }
-            _ => panic!("proof refusal must not become an unsigned join"),
-        }
-    }
-
-    phase host_connector_uses_certified_presentation_and_broker_document_policy;
-    {
-        let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-        let broker_captures = captures.clone();
-        let (requests_tx, requests_rx) = mpsc::sync_channel(1);
-        let cluster_id = Uuid::new_v4();
-        let channel = collab_types::WorkspaceId::parse(&cluster_id.to_string()).unwrap();
-        let keys = key_group::KeyGroup::create(
-            channel,
-            key_group::MemberKey::generate("device").unwrap(),
-        )
-        .unwrap()
-        .content_keys()
-        .unwrap()
-        .to_bytes()
-        .unwrap()
-        .to_vec();
-        let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, requests) = host_identity_fixture_with_keys(
-                Some(b"fixture certificate".to_vec()),
-                vec![
-                    tilo_identity_client::wire::Response::Signature(vec![7; 64]),
-                    tilo_identity_client::wire::Response::Denied("fixture role revoked".into()),
-                    tilo_identity_client::wire::Response::Signature(vec![8; 64]),
-                ],
-                Some((1, keys)),
-            );
-            requests_tx.send(requests).unwrap();
-            let broker = FakeBroker {
-                captures: broker_captures,
-                ..FakeBroker::default()
-            };
-            let (client, server) = tokio::io::duplex(64 * 1024);
-            tokio::task::spawn_local(serve_fake_broker(server, broker));
-            Ok((client, identity))
-        });
-        let mut manager = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        )
-        .unwrap();
-        // Returning a manager must include the existing Hello/primary barrier.
-        assert!(manager.is_connected());
-        assert!(manager.primary_route.current(true).is_some());
-        assert_eq!(manager.state(), CollaborationState::Ready);
-        assert_eq!(manager.take_state_change(), Some(CollaborationState::Ready));
-        assert_eq!(manager.take_state_change(), None);
-        let joined = captures.lock().unwrap().joined.clone();
-        assert_eq!(joined.len(), 1);
-        assert_eq!(
-            joined[0].0,
-            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
-        );
-        let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined[0].1)
-            .unwrap()
-            .unwrap();
-        assert_eq!(presentation.workspace_id, cluster_id.to_string());
-        assert_eq!(presentation.device_certificate, b"fixture certificate");
-        assert_eq!(presentation.proof, vec![7; 64]);
-        let requests = tilo_test_env::recv("the host identity requests", &requests_rx);
-        manager.send(CollabRequest::document_incremental(
-            b"fixture document change".to_vec(),
-        ));
-        let is_op = |request: &tilo_identity_client::wire::Request| {
-            matches!(
-                request,
-                tilo_identity_client::wire::Request::CollaborationOp { .. }
-            )
-        };
-        tilo_test_env::wait_until(
-            "`host_identity_requests(&requests.lock().unwrap()).iter().any(is_op)`",
-            || {
-                host_identity_requests(&requests.lock().unwrap())
-                    .iter()
-                    .any(is_op)
-            },
-        );
-        let requests = host_identity_requests(&requests.lock().unwrap());
-        assert!(
-            matches!(&requests[1], tilo_identity_client::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
-        );
-        assert!(
-            matches!(&requests[2], tilo_identity_client::wire::Request::GroupKeys { app_id, document_id, .. } if app_id == "so.tilo.notes" && document_id == "note"),
-            "a joined route asks for its channel keys before its first edit"
-        );
-        let op = requests.iter().find(|request| is_op(request)).unwrap();
-        match op {
-            tilo_identity_client::wire::Request::CollaborationOp {
-                workspace_id,
-                app_id,
-                document_id,
-                unsigned_op,
-            } => {
-                assert_eq!(workspace_id, &cluster_id.to_string());
-                assert_eq!(app_id, "so.tilo.notes");
-                assert_eq!(document_id, "note");
-                let op: SignedOp = postcard::from_bytes(unsigned_op).unwrap();
-                assert_eq!(
-                    op.author,
-                    collab_types::Ed25519PublicKey::from_bytes([5; 32])
-                );
-                assert_ne!(op.payload, b"fixture document change".to_vec());
-                assert!(
-                    op.encryption.is_some(),
-                    "a certified endpoint seals under the route's workspace keys"
-                );
-            }
-            _ => panic!("document must use the broker policy path"),
-        }
-        // Synchronize behind the mutation: a denied signature cannot be sent
-        // through the harness or unsigned path after this readiness barrier.
-        manager.await_primary_route().unwrap();
-        assert!(captures.lock().unwrap().signed_ops.is_empty());
-        assert!(manager.send(CollabRequest::document_incremental(
-            b"later allowed change".to_vec()
-        )));
-        assert_document_publication_failure(&mut manager, "fixture role revoked");
-        assert!(
-            manager.is_connected(),
-            "policy refusal leaves identity transport usable"
-        );
-        assert_eq!(
-            captures.lock().unwrap().signed_ops.len(),
-            1,
-            "later RPC succeeds without erasing the earlier prefix failure"
-        );
-    }
-
-    phase host_connector_refused_primary_join_is_not_connected_success;
-    {
-        let (attempt_tx, attempt_rx) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (connector, release) =
-            host_join_hold_connector(false, calls.clone(), attempt_tx, stop_tx, || {});
-        let cluster_id = Uuid::new_v4();
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        );
-        drop(release);
-        match result {
-            Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
-                assert!(error.to_string().contains("fixture primary join refused"));
-            }
-            _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
-        }
-        assert_eq!(
-            tilo_test_env::recv("the primary join attempt", &attempt_rx),
-            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            attempt_rx.try_recv().is_err(),
-            "must not retry another route"
-        );
-        tilo_test_env::recv("fixture broker stops after failed manager", &stop_rx);
-    }
-}
-
-/// A host's handoff ends with the host's own outcome, however late: the
-/// worker's clock is paused and runs a minute ahead while the handoff
-/// is pending, and the host's reason is what the caller hears.
-#[test]
-fn host_connector_waits_for_the_hosts_handoff_and_reports_its_reason() {
-    struct PendingHandoff(mpsc::Sender<()>);
-    impl Drop for PendingHandoff {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-
-    let (minute_tx, minute_rx) = mpsc::sync_channel(1);
-    let (fail_tx, fail_rx) = tokio::sync::oneshot::channel::<()>();
-    let (dropped_tx, dropped_rx) = mpsc::channel();
-    let connector = HostSessionConnector::new(move |_| async move {
-        let _handoff = PendingHandoff(dropped_tx);
-        tokio::task::spawn_local(async move {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            let _ = minute_tx.send(());
-        });
-        let _ = fail_rx.await;
-        Err::<(tokio::io::DuplexStream, tokio::io::DuplexStream), _>(
-            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(
-                "the host could not reach its broker",
-            )),
-        )
-    })
-    .on_paused_clock();
-    let (result_tx, result_rx) = mpsc::sync_channel(1);
-    let caller = thread::spawn(move || {
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            Uuid::new_v4(),
-            None,
-            None,
-        );
-        let _ = result_tx.send(result.map(drop));
-    });
-    tilo_test_env::recv(
-        "a minute to pass on the worker's clock while the handoff is pending",
-        &minute_rx,
-    );
-    assert!(
-        matches!(result_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-        "the caller still waits for the host"
-    );
-    fail_tx.send(()).unwrap();
-    let result = tilo_test_env::recv("the host's outcome to reach the caller", &result_rx);
-    caller.join().unwrap();
-    match result {
-        Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-            assert!(
-                error
-                    .to_string()
-                    .contains("the host could not reach its broker"),
-                "the caller hears the host's reason: {error}"
-            );
-        }
-        _ => panic!("a failed handoff cannot produce a connected session"),
-    }
-    tilo_test_env::recv(
-        "the failed handoff releases its owned resources",
-        &dropped_rx,
-    );
-}
-
-/// A primary join waits for the broker's answer, however late. The
-/// worker's clock is paused and runs a minute ahead while the broker
-/// holds the join, far past any deadline a clock could have set; the
-/// broker's answer then opens the manager. Nothing is retried meanwhile.
-#[test]
-fn a_primary_join_waits_for_a_late_broker_answer() {
-    let (attempt_tx, attempt_rx) = mpsc::channel();
-    let (stop_tx, stop_rx) = mpsc::channel();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
-    let (minute_tx, minute_rx) = mpsc::sync_channel(1);
-    let (connector, release) =
-        host_join_hold_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
-            // On the worker's paused clock: a minute once the broker
-            // holds the join.
-            tokio::task::spawn_local(async move {
-                if entered_rx.await.is_ok() {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    let _ = minute_tx.send(());
-                }
-            });
-        });
-    let connector = connector.on_paused_clock();
-    let cluster_id = Uuid::new_v4();
-    let (result_tx, result_rx) = mpsc::sync_channel(1);
-    let caller = thread::spawn(move || {
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            cluster_id,
-            Some("note".into()),
-            None,
-        );
-        let _ = result_tx.send(result.map(|manager| {
-            manager
-                .primary_route()
-                .map(|observation| observation.route.document.clone())
-        }));
-    });
-    assert_eq!(
-        tilo_test_env::recv("the primary join attempt", &attempt_rx),
-        channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
-    );
-    entered_tx.send(()).unwrap();
-    tilo_test_env::recv(
-        "a minute to pass on the worker's clock while the broker holds the join",
-        &minute_rx,
-    );
-    assert!(
-        matches!(result_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-        "the join still waits for the broker's answer"
-    );
-    drop(release);
-    let joined = tilo_test_env::recv("the broker's late answer", &result_rx);
-    caller
-        .join()
-        .expect("the caller returns once the broker answered");
-    match joined {
-        Ok(route) => assert_eq!(route, Some(Some("note".into()))),
-        Err(error) => panic!("a late answer opens the manager, not {error}"),
-    }
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(
-        attempt_rx.try_recv().is_err(),
-        "must not retry another route"
-    );
-    tilo_test_env::recv("the fixture broker stops once the manager closes", &stop_rx);
-}
-
-/// A primary join the broker fails ends the caller's wait with the
-/// broker's reason as soon as it fails, after any delay.
-#[test]
-fn a_failed_primary_join_reports_its_reason_at_once() {
-    let (attempt_tx, attempt_rx) = mpsc::channel();
-    let (stop_tx, stop_rx) = mpsc::channel();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
-    let (minute_tx, minute_rx) = mpsc::sync_channel(1);
-    let (connector, release) =
-        host_join_hold_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
-            tokio::task::spawn_local(async move {
-                if entered_rx.await.is_ok() {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    let _ = minute_tx.send(());
-                }
-            });
-        });
-    let connector = connector.on_paused_clock();
-    let (result_tx, result_rx) = mpsc::sync_channel(1);
-    let caller = thread::spawn(move || {
-        let result = CollaborationManager::for_route_host_blocking(
-            connector,
-            "so.tilo.notes",
-            Uuid::new_v4(),
-            Some("note".into()),
-            None,
-        );
-        let _ = result_tx.send(result.map(drop));
-    });
-    tilo_test_env::recv("the primary join attempt", &attempt_rx);
-    entered_tx.send(()).unwrap();
-    tilo_test_env::recv(
-        "a minute to pass on the worker's clock while the broker holds the join",
-        &minute_rx,
-    );
-    // The broker fails the join it held.
-    release.fail();
-    let result = tilo_test_env::recv("the failed join to reach the caller", &result_rx);
-    caller.join().unwrap();
-    match result {
-        Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
-            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
-            assert!(
-                error.to_string().contains("fixture hold dropped"),
-                "the caller hears the broker's reason: {error}"
-            );
-        }
-        _ => panic!("a failed join never returns a connected manager"),
-    }
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(
-        attempt_rx.try_recv().is_err(),
-        "must not retry another route"
-    );
-    tilo_test_env::recv(
-        "the fixture broker stops after the failed manager",
-        &stop_rx,
-    );
-}
-
-// The successful fake host, changing only its join answer: the delayed
-// case joins as it does once released.
-struct HostJoinHold {
-    release: RefCell<Option<tokio::sync::oneshot::Receiver<()>>>,
-    attempted: mpsc::Sender<String>,
-    stopped: mpsc::Sender<()>,
-}
-
-impl Drop for HostJoinHold {
-    fn drop(&mut self) {
-        let _ = self.stopped.send(());
-    }
-}
-
-impl HostJoinHold {
-    /// Hold the join of `route` until released; refuse it at once when
-    /// nothing will release it.
-    fn attempt(&self, route: &str) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
-        self.attempted.send(route.to_owned()).unwrap();
-        let release = self.release.borrow_mut().take();
-        Box::pin(async move {
-            release
-                .ok_or("fixture primary join refused")?
-                .await
-                .map_err(|_| "fixture hold dropped".to_owned())
-        })
-    }
-}
-
-// Releasing on unwind also lets the worker finish if an assertion fails.
-struct HostJoinRelease(Option<tokio::sync::oneshot::Sender<()>>);
-impl HostJoinRelease {
-    /// Fail the held join instead of answering it.
-    fn fail(mut self) {
-        drop(self.0.take());
-    }
-}
-impl Drop for HostJoinRelease {
-    fn drop(&mut self) {
-        if let Some(sender) = self.0.take() {
-            let _ = sender.send(());
-        }
-    }
-}
-
-/// `on_worker` runs on the manager's worker as it connects.
-fn host_join_hold_connector(
-    delayed: bool,
-    calls: Arc<AtomicUsize>,
-    attempted: mpsc::Sender<String>,
-    stopped: mpsc::Sender<()>,
-    on_worker: impl FnOnce() + Send + 'static,
-) -> (HostSessionConnector, HostJoinRelease) {
-    let (release, wait) = tokio::sync::oneshot::channel();
-    let connector = HostSessionConnector::new(move |_| async move {
-        calls.fetch_add(1, Ordering::SeqCst);
-        on_worker();
-        let (identity, _) = host_identity_fixture(
-            Some(b"fixture certificate".to_vec()),
-            vec![tilo_identity_client::wire::Response::Signature(vec![7; 64])],
-        );
-        let (client, server) = tokio::io::duplex(64 * 1024);
-        // The broker is another process in production: serve it on its
-        // own thread, so it ends only when the manager closes the
-        // connection, never because the manager's worker ended.
-        thread::Builder::new()
-            .name("ui-collab-test-join-hold".into())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                let hold = HostJoinHold {
-                    release: RefCell::new(delayed.then_some(wait)),
-                    attempted,
-                    stopped,
-                };
-                LocalSet::new().block_on(
-                    &runtime,
-                    serve_fake_host(server, FakeBroker::default(), Some(hold)),
-                );
-            })
-            .unwrap();
-        Ok((client, identity))
-    });
-    (connector, HostJoinRelease(Some(release)))
-}
-
 /// Stand up a fake collaboration host on one end of a Unix socket
 /// pair; returns the client-side raw fd + captures state for assertions.
 #[cfg(unix)]
@@ -2124,8 +1461,6 @@ fn session_owner_commit_sdk_failure_stops_queued_terminal() {
     captures.lock().unwrap().fail_document = true;
     manager.send(CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(b"committed worker mutation".to_vec()),
-
-        authorization: None,
         commit: None,
     });
     manager.send(CollabRequest::UpdateInvocation {
@@ -4631,7 +3966,6 @@ tilo_test_env::scenario! {
         data.push(0);
         let command = SdkCommand::Primary(CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(data),
-            authorization: None,
             commit: None,
         });
 
@@ -4869,7 +4203,7 @@ tilo_test_env::scenario! {
         let heads = document.base_heads();
         let snapshot = document.save();
         document.put(automerge::ROOT, "body", "after").unwrap();
-        collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body");
+        collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body", &[1; 32]);
         let delta = document.save_after(&heads);
         // The route refuses documents until it is joined and its document
         // mode is resolved; the first refused attempt starts that join.
@@ -5627,13 +4961,6 @@ tilo_test_env::scenario! {
     }
 }
 
-fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {
-    let error = manager
-        .begin_document_publication_barrier()
-        .and_then(|receipt| receipt.wait(Some(tilo_test_env::hang_deadline())))
-        .unwrap_err();
-    assert!(error.to_string().contains(expected), "{error}");
-}
 fn notebook_action(index: usize) -> serde_json::Value {
     serde_json::json!({
         "resource": format!("notes.page:{index:032x}"),

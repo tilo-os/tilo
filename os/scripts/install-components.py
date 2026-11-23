@@ -441,7 +441,7 @@ def resolve_source(entry: FileEntry, from_dirs: list[Path], build_root: Path | N
     assert entry.source is not None
     relative = entry.source.rstrip("/")
     if source_session_fonts(entry, build_root):
-        fonts = Path(__file__).resolve().parents[2] / "crates/sdk/ui-core/assets/fonts"
+        fonts = Path(__file__).resolve().parents[2] / "crates/ui/ui-core/assets/fonts"
         return Path(font_catalog_command("root", str(fonts), "--scope", "os"))
     if relative == "@asset/cosign-v2.5.2":
         assert entry.manifest_dir is not None

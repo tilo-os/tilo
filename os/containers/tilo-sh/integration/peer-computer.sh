@@ -2,8 +2,8 @@
 # A scratch computer for the peer's checks: a home, state, config and runtime directory of its
 # own, and a second home for the person's own computer, which holds their root and adds this one,
 # with no user service manager to reach, so nothing of this account's own Tilo, its folders or its
-# service is touched. Sourced by peer-kill-midwrite.sh, peer-git-midwrite.sh, peer-long-change.sh
-# and peer-handover.sh, after they set `tilo` (the program to test), `scratch` (a new directory)
+# service is touched. Sourced by peer-kill-midwrite.sh, peer-git-midwrite.sh and peer-long-change.sh,
+# after they set `tilo` (the program to test), `scratch` (a new directory)
 # and `logs`, against a running local stack (stack.sh up) that TILO_SH_STATE and TILO_SH_PORT_BASE
 # name.
 
@@ -23,6 +23,28 @@ computer=(env -u DBUS_SESSION_BUS_ADDRESS -u TILO_API_KEY
   XDG_RUNTIME_DIR="$scratch/runtime" TILO_SITE="$TILO_SITE" TILO_API_URL="$TILO_API_URL")
 as_person() { "${person[@]}" "$@"; }
 as_computer() { "${computer[@]}" "$@"; }
+# Run a computer's daemon as its user service would: started before anything asks it, and again
+# whenever it ends (killed or stopped), its log in the device's directory. No user service
+# manager is reachable here, so this stands in for it; a check that must not have a daemon
+# restarted for a while (it removes what the daemon keeps) holds `$scratch/daemons-held` until
+# it is done. STATE AS...: the computer's state directory and how to run as it.
+serve_daemon() {
+  local state=$1
+  shift
+  mkdir -p "$state/tilo/device"
+  (
+    child=
+    trap '[[ -z $child ]] || kill "$child" 2>/dev/null; wait; exit 0' TERM INT
+    while :; do
+      while [[ -e $scratch/daemons-held ]]; do sleep 0.2; done
+      "$@" "$(dirname "$tilo")/tilo-runtime" </dev/null >/dev/null 2>>"$state/tilo/device/daemon.log" &
+      child=$!
+      wait "$child" || true
+      sleep 0.5
+    done
+  ) &
+  pids+=("$!")
+}
 # The end of each computer's daemon log (`tilo-runtime`, which mounts the folders): what a
 # check that failed prints beside its own logs.
 daemon_logs() {
@@ -93,6 +115,10 @@ short() { printf 'short of %s; the folder stood at %s' "$(cat "$logs/folder.log.
 log_in_and_show() {
   say "a person whose own computer holds their identity, an owner of the stack"
   local key link ticket add
+  # Each computer's daemon runs from the start, as its service runs it, serving the device
+  # alone until a login names it.
+  serve_daemon "$scratch/person/state" "${person[@]}"
+  serve_daemon "$scratch/state" "${computer[@]}"
   key=$(as_person "$tilo" login --new-identity --name Ada --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_public_key"])')
   bash "$here/../stack.sh" owner "$key" --name Ada >/dev/null
   link=$(bash "$here/../stack.sh" invite -- --role administrator)

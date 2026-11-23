@@ -201,5 +201,80 @@ class CatalogueCoverageTests(unittest.TestCase):
         self.assertIn("run `tilo-app locale sync`", err)
 
 
+class StagedCatalogueCoverageTests(unittest.TestCase):
+    """The drift a commit's own catalogues add, judged in the index it stages."""
+
+    def setUp(self):
+        import subprocess
+        self.subprocess = subprocess
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.git("init", "-q")
+        self.git("config", "user.name", "test")
+        self.git("config", "user.email", "test@example.invalid")
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def git(self, *arguments: str) -> None:
+        self.subprocess.run(
+            ["git", "-C", str(self.root), *arguments], check=True, capture_output=True
+        )
+
+    def commit(self, files: dict[str, str]) -> None:
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "state")
+
+    def stage(self, files: dict[str, str]) -> None:
+        for name, text in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.git("add", "--", *files)
+
+    def test_a_source_key_added_without_its_translation_is_refused(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": "a = Titel\n    .doc = Was es ist.\n\n"
+                                              "b = Einstellungen\n"})
+        self.stage({"app/locales/en-US.ftl": SOURCE + "\nc = Close\n"})
+        self.assertEqual(coverage.staged_drift(self.root), [
+            "app/locales/en-US.ftl:6: c has no de-DE text",
+        ])
+
+    def test_a_source_key_added_with_its_translation_passes(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": SOURCE})
+        self.stage({"app/locales/en-US.ftl": SOURCE + "\nc = Close\n",
+                    "app/locales/de-DE.ftl": SOURCE + "\nc = Schließen\n"})
+        self.assertEqual(coverage.staged_drift(self.root), [])
+
+    def test_a_translation_key_with_no_source_original_is_refused(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": SOURCE})
+        self.stage({"app/locales/de-DE.ftl": SOURCE + "\nd = Nur auf Deutsch\n"})
+        problems = coverage.staged_drift(self.root)
+        self.assertEqual(problems, [
+            "app/locales/de-DE.ftl:6: d has no en-US text",
+        ])
+
+    def test_a_key_a_staged_catalogue_defines_twice_is_refused(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": SOURCE})
+        self.stage({"app/locales/en-US.ftl": SOURCE + "\nb = Settings again\n"})
+        problems = coverage.staged_drift(self.root)
+        self.assertTrue(any("b is defined again" in problem for problem in problems), problems)
+
+    def test_a_commit_staging_no_catalogue_adds_no_drift(self):
+        self.commit({"app/locales/en-US.ftl": SOURCE,
+                     "app/locales/de-DE.ftl": "a = Titel\n"})
+        self.stage({"app/src/main.rs": "fn main() {}\n"})
+        self.assertEqual(coverage.staged_drift(self.root), [])
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -237,6 +237,7 @@ session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
 
+session-nearby-send = Nearby Send
 session-windows = Windows
 session-tray = Tray
 session-invite = Invite
@@ -349,6 +350,9 @@ session-answer-ask = Answer
 session-ask-later = Ask me later
 session-tray-open = Open
 session-agents-stop = Stop
+session-agents-other-devices = Whether agents from my other devices work here
+session-agents-accept-other-devices = Accept agents from my other devices
+session-agents-act-without-asking = Let them act without asking
 session-people = People
 
 ## What the lock screen is called while it is up.
@@ -424,9 +428,6 @@ session-agent-name = Assistant
 style-failed-app-name = Shell
 style-failed-title = Your style could not be shown
 style-failed-body = { $style } could not be shown, so the shell shows Strips. Your choice is kept.
-
-## A turn whose agent stopped before it answered the person's message.
-turn-unanswered = The agent stopped before it answered
 
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } mentioned you in ‘{ $place }’
@@ -534,6 +535,8 @@ so-tilo-desktop-overlays-show-surface = Show or hide a panel
 so-tilo-desktop-overlays-walk-switcher = Switch windows
 so-tilo-desktop-overlays-select-switcher = Choose window in switcher
 so-tilo-desktop-overlays-commit-switcher = Go to chosen window
+so-tilo-desktop-overlays-pick-emoji = Write the picked emoji into the field the person types in, and close the picker.
+so-tilo-desktop-overlays-close-emoji = Close the emoji picker without writing anything
 
 ## Actions
 
@@ -573,12 +576,6 @@ so-tilo-desktop-overlays-open-surface = Open a surface
 so-tilo-desktop-window-menu-choose = Choose a row
 so-tilo-desktop-window-menu-close = Close the window menu
 so-tilo-desktop-window-menu-open = Open the window menu
-machines-waiting-source = Your devices
-machines-waiting-title = Device approval
-machines-waiting-body = { $machine } is asking to join. Compare code { $code } on both devices.
-machines-waiting-review = Review request
-machines-waiting-approve = Approve { $code }
-machines-waiting-decline = Deny
 
 ## A declared action's parameter description is read as `<label>-<argument>`.
 
@@ -605,3 +602,15 @@ airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver
 
 so-tilo-session-notifications-reply = Reply in a banner that offers a reply
 session-osd = Readout
+## Banners
+
+session-banners = Banners
+so-tilo-session-banners-open-banner = Open the notification
+so-tilo-session-banners-dismiss = Dismiss the notification
+so-tilo-session-banners-act = Choose on the notification
+so-tilo-session-banners-reply = Reply to the notification
+so-tilo-session-banners-snooze = Snooze the notification
+so-tilo-session-banners-focus-newest = Focus the newest notification
+so-tilo-session-banners-read = Read it in full
+so-tilo-session-banners-answer-call = Answer the call
+so-tilo-session-banners-decline-call = Decline the call

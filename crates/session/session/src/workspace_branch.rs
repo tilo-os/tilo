@@ -908,7 +908,9 @@ impl crate::Shared {
             }
             self.handle.replace_tree(tree.clone());
             #[cfg(target_os = "linux")]
-            self.restore.borrow_mut().add(&tree, workspace);
+            self.restore
+                .borrow_mut()
+                .add(&tree, workspace, &self.desktops.window_items());
         }
         tracing::info!(
             %source,

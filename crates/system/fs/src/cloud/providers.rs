@@ -127,8 +127,7 @@ pub fn spec_for(account: &accounts::Account) -> Option<MountSpec> {
     source_spec(account)
 }
 
-/// A source for an import-only account, as the CLI's migration holds one: it
-/// never mounts.
+/// A source for standalone browsing; import mode never implies a mount.
 pub fn source_spec(account: &accounts::Account) -> Option<MountSpec> {
     if !account.enabled
         || accounts::cloud_types::files_mode(account).is_none()

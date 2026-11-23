@@ -43,12 +43,12 @@ fn calling(calls: &[(&str, serde_json::Value)], asked: &Arc<Mutex<Vec<ModelReque
     })
 }
 
-/// The person of `root` writes `words` to the assistant in `workspace` on `device`, and the
-/// server answers that one turn with a model that calls `calls`, its agents told the devices
+/// The person of `root` writes `words` to the assistant in `workspace` on `device`, the
+/// assistant acting for `person` (Ada where none is named), and the server answers that one turn with a model that calls `calls`, its agents told the devices
 /// `placed` holds are the server's own. What each call was answered, in order.
 async fn asked_by(
     served: &Served,
-    workspace: &str,
+    (workspace, person): (&str, Option<(&SigningKey, &crate::support::Device)>),
     (root, device): (&SigningKey, &crate::support::Device),
     (words, calls): (&str, &[(&str, serde_json::Value)]),
     placed: Option<&EnvironmentRegistry>,
@@ -63,7 +63,14 @@ async fn asked_by(
     )
     .await;
     let model = calling(calls, &asked);
-    answered_knowing(served, workspace, &message, model, placed.cloned()).await;
+    answered_knowing(
+        served,
+        (workspace, person),
+        &message,
+        model,
+        placed.cloned(),
+    )
+    .await;
     tools_answered(&asked)
 }
 
@@ -156,7 +163,7 @@ async fn a_device_the_server_placed_for_a_window_is_never_the_one_the_assistant_
     let calls = everything_then_the_list();
     let shown = asked_by(
         &served,
-        &own,
+        (&own, None),
         hers,
         ("Which other workspaces am I in?", &calls),
         Some(&placed),
@@ -192,7 +199,7 @@ async fn a_device_the_server_placed_for_a_window_is_never_the_one_the_assistant_
     // her own: they say she is on no device in any of them.
     let untold = asked_by(
         &served,
-        &own,
+        (&own, None),
         hers,
         ("Which other workspaces am I in, once more?", &calls),
         None,
@@ -240,7 +247,7 @@ async fn a_persons_own_assistant_lists_their_other_workspaces_while_its_workspac
 
     let shown = asked_by(
         &served,
-        &own,
+        (&own, None),
         hers,
         ("Which other workspaces am I in?", &calls),
         Some(&placed),
@@ -274,7 +281,7 @@ async fn a_persons_own_assistant_lists_their_other_workspaces_while_its_workspac
     ];
     let shown = asked_by(
         &served,
-        &own,
+        (&own, None),
         hers,
         ("And now, which other workspaces am I in?", &after),
         Some(&placed),
@@ -304,7 +311,7 @@ async fn a_persons_own_assistant_lists_their_other_workspaces_while_its_workspac
     ];
     let shown = asked_by(
         &served,
-        &own,
+        (&own, None),
         (&cy, &cy_device),
         ("Which other workspaces is Ada in?", &his),
         Some(&placed),
@@ -361,7 +368,7 @@ async fn where_the_servers_own_device_is_a_persons_newest_the_assistant_reads_as
     let calls = everything_then_the_list();
     let shown = asked_by(
         &served,
-        &own,
+        (&own, None),
         hers,
         ("Which other workspaces am I in?", &calls),
         Some(&placed),

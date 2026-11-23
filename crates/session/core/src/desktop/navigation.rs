@@ -2211,6 +2211,7 @@ mod tests {
                 &mut doc,
                 &tree(),
                 &[],
+                &[],
                 &tilo_desktop_model::ownership::Authors::default()
             ));
             doc.commit();

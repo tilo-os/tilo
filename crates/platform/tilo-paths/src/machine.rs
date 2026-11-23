@@ -21,6 +21,30 @@ use std::ffi::OsString;
 /// reaches the machine's own daemons, `hosted` for one that must not.
 pub const VAR: &str = "TILO_MACHINE";
 
+/// Where Tilo OS's system unit keeps the device daemon's sockets: its own runtime directory,
+/// which every account may enter, each connection admitted by the account it comes from.
+pub const DAEMON_SOCKETS: &str = "/run/tilo-runtime";
+/// The device daemon's native endpoint, in its sockets' directory: what apps, the system's own
+/// callers (the sign-in's session hooks) and `tilo-runtime --connect` reach.
+pub const DAEMON_NATIVE: &str = "native.sock";
+/// The variable naming a device daemon's profile when it is not the account's own: a test's, a VM
+/// host's.
+pub const DAEMON_PROFILE_VAR: &str = "TILO_RUNTIME_PROFILE";
+
+/// The profile an account's own device daemon keeps its state in, under its home: its store, its
+/// device's key and certificates, and the sockets of a profile named apart. Tilo OS's system unit
+/// keeps its profile outside every home instead.
+#[must_use]
+pub fn account_daemon_profile() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    let suffix = "Library/Application Support/Tilo/runtime";
+    #[cfg(target_os = "windows")]
+    let suffix = "AppData/Local/Tilo/runtime";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let suffix = ".local/state/tilo/runtime";
+    Some(super::home()?.join(suffix))
+}
+
 /// Whether a session reaches the machine's own daemons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {

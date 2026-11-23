@@ -1,0 +1,105 @@
+[package]
+name = "tilo-migrate"
+version = "0.1.0"
+description = "The one migration engine: every source a person brings things from (folders, browsers, Thunderbird, mail, cloud drives, Outline, Linear, Forgejo), reviewed, chosen and brought into the workspace through its apps' own actions"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "tilo_migrate"
+path = "src/lib.rs"
+
+[features]
+# The sample Thunderbird profile the end-to-end proofs import.
+fixture = []
+# Recognise the directories tests build their fixtures in, so destination
+# namespace checks do not refuse the machine's own temporary directories.
+test-support = []
+
+[dependencies]
+accounts = { path = "../../integrations/accounts", features = ["person"] }
+anyhow.workspace = true
+# Cloud drives sign in, refresh and resolve their storage as Settings does.
+account-credentials = { path = "../../integrations/account-credentials" }
+cloud-source = { path = "../../integrations/cloud-source" }
+# A cloud drive is opened as the filesystem opens it.
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+# A browser profile's bookmarks and history.
+browser-continuity = { workspace = true, features = ["native"] }
+# The accounts record a migration connects an account in, and the edit Settings makes of it.
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+rand.workspace = true
+# Whether a run's process still runs.
+# What a typo-free edit to the workspace's accounts record is.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+base64.workspace = true
+blake3.workspace = true
+# Calendar's wall-time formats and dates.
+jiff.workspace = true
+# Pinned, no-follow directory access and its destination namespace protection.
+cap-fs-ext = "3.4.6"
+cap-primitives = "3.4.6"
+cap-std = "3.4.6"
+hex.workspace = true
+mail-parser = "0.11.4"
+# RFC 5545/6350 content lines for the vCard and iCalendar Thunderbird keeps.
+pim-lines = { path = "../../engines/pim-lines" }
+reqwest = { workspace = true, features = ["blocking"] }
+# Thunderbird's address books and local calendars are SQLite; the bundled
+# engine keeps a laptop build from needing the system library.
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# Thunderbird's saved passwords (NSS: key4.db, logins.json), read so they move
+# to the person's vault; the one reviewed home of that cryptography.
+tilo-seal = { path = "../../system/tilo-seal" }
+tempfile.workspace = true
+tilo-net = { workspace = true, features = ["blocking"] }
+# The stored RRULE spelling and the time-zone names a calendar keeps.
+tilo-recurrence = { version = "0.1.0", path = "../../engines/tilo-recurrence" }
+# Whole-or-not-at-all writes of the entries the inbox keeps.
+tilo-files = { path = "../../platform/tilo-files" }
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# The system's own lookup of the familiar folders (`xdg-user-dir`, the Windows shell).
+bounded-command = { path = "../../platform/bounded-command" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-paths.workspace = true
+# The key a Chromium-family browser keeps its `v11` passwords under, in the system keyring.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+tilo-process = { path = "../../platform/tilo-process" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+# Fake cloud drives for the cloud sources.
+cloud-source-dav = { path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
+# A local service that answers slowly, so a fetch's request count and wall time can be checked.
+test-http = { path = "../../../tools/test-http" }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "sample_thunderbird_profile"
+required-features = ["fixture"]

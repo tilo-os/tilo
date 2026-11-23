@@ -66,12 +66,6 @@ const fn unknown() -> ActionCallError {
     ActionCallError::UnknownAction
 }
 
-fn refused(reason: impl Into<String>) -> ActionCallError {
-    ActionCallError::Refused {
-        reason: reason.into(),
-    }
-}
-
 impl Workspaces {
     /// Put the questions about running commands unattended to people through
     /// `asker`. A host with none refuses to turn it on.
@@ -86,15 +80,19 @@ impl Workspaces {
     /// asked as before: a key reaching all their workspaces, a key for another
     /// workspace, an agent on a device of theirs, and any other person's key.
     pub async fn runs_unattended(&self, workspace_id: WorkspaceId, caller: &Caller) -> bool {
-        // An agent's key, as the server names one: its person's agent on a
-        // session its own certificate opened.
-        if !(caller.acting().is_agent() && caller.is_session_delegated()) {
-            return false;
-        }
+        // An agent's key, as the server names one: the agent is the key.
         let (Some(user), Some(device)) = (caller.user_public_key(), caller.device_public_key())
         else {
             return false;
         };
+        if caller
+            .acting()
+            .agent_id()
+            .and_then(tilo_action_policy::key_of_agent)
+            != Some(*device)
+        {
+            return false;
+        }
         let Some(own) = self.own() else {
             return false;
         };
@@ -167,11 +165,14 @@ impl Workspaces {
             })
             .ok_or_else(unknown)?;
         // The person on a device of theirs, or an agent's key of theirs; an
-        // agent a device handed its session to asks through neither.
+        // agent a device of theirs runs asks through neither.
         let asks = caller.acting().is_person()
             || (certificate.capabilities.agent.is_some()
-                && caller.is_session_delegated()
-                && caller.acting().is_agent());
+                && caller
+                    .acting()
+                    .agent_id()
+                    .and_then(tilo_action_policy::key_of_agent)
+                    == Some(certificate.device_public_key));
         if !asks {
             return Err(unknown());
         }
@@ -189,7 +190,7 @@ impl Workspaces {
         let person = certificate.user_public_key;
         let own = self
             .own()
-            .ok_or_else(|| refused(Refusal::NotYourOwn.to_reason()))?;
+            .ok_or_else(|| ActionCallError::refused(Refusal::NotYourOwn.to_reason()))?;
         let workspace = self
             .workspace_identity(workspace_id)
             .await
@@ -204,11 +205,12 @@ impl Workspaces {
             .agent
             .is_none_or(|scope| scope.reaches(&workspace));
         if !reaches || own.owner_of(&workspace) != Some(person) {
-            return Err(refused(Refusal::NotYourOwn.to_reason()));
+            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
         if !on || own.runs_unattended(&workspace) {
-            own.set_unattended(&workspace, on).map_err(refused)?;
+            own.set_unattended(&workspace, on)
+                .map_err(ActionCallError::refused)?;
             return Ok(answer(on));
         }
         let name = self
@@ -217,7 +219,8 @@ impl Workspaces {
             .unwrap_or_else(|| workspace.clone());
         self.ask_person(person, question(caller, certificate, &name))
             .await?;
-        own.set_unattended(&workspace, true).map_err(refused)?;
+        own.set_unattended(&workspace, true)
+            .map_err(ActionCallError::refused)?;
         tracing::info!(%workspace, "a workspace runs commands unattended");
         Ok(answer(true))
     }

@@ -81,7 +81,7 @@ impl Workspaces {
         let held = self
             .workspace_accounts(workspace)
             .await
-            .map_err(refused_with)?;
+            .map_err(ActionCallError::refused)?;
         answer(&Ok::<_, String>(mail_accounts(
             &held,
             &self.workspace_root(workspace),
@@ -100,7 +100,8 @@ impl Workspaces {
     }
 
     /// Fires whenever a workspace's accounts or providers kept here change.
-    pub(super) fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+    #[must_use]
+    pub fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.person_settings_moved.subscribe()
     }
 
@@ -279,6 +280,17 @@ impl Workspaces {
         *prover = Arc::new(Finding(proving, find));
     }
 
+    /// Keep iCloud accounts' calendars through `server_url` from now on: a
+    /// test's calendar server stands in for iCloud's own.
+    #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
+    pub fn keep_icloud_calendars_at(&self, server_url: &str) {
+        *self
+            .inner
+            .icloud_calendars_at
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(server_url.to_owned());
+    }
+
     /// The person `caller` asks for, on the device `certificate` certifies,
     /// from a workspace `workspace_id` names: what a request that keeps a
     /// person's own secrets needs before it runs. Unknown and forbidden are
@@ -359,9 +371,9 @@ impl Workspaces {
                 // they are shown that reading, and that reading is what
                 // leaves on their yes: nothing is read again from what was
                 // begun.
-                let staged = Staged::read(dir, beginning).map_err(refused_with)?;
+                let staged = Staged::read(dir, beginning).map_err(ActionCallError::refused)?;
                 if reach.answer != tilo_action_policy::Answer::Allow {
-                    let shown = staged.shown().map_err(refused_with)?;
+                    let shown = staged.shown().map_err(ActionCallError::refused)?;
                     // A message that left already is answered as the send
                     // it was: its person is asked nothing more.
                     if let Some(sent) = self.recorded_mail_send(Some(&here), &staged).await {
@@ -405,7 +417,11 @@ impl Workspaces {
         let root = signing.root;
         match request.target.address.action.as_str() {
             person_accounts::LIST => {
-                let held = signing.vault.accounts().await.map_err(refused_with)?;
+                let held = signing
+                    .vault
+                    .accounts()
+                    .await
+                    .map_err(ActionCallError::refused)?;
                 let mut listed = mail_accounts(&held, root);
                 if agent {
                     // Whose sign-in is running is no agent's business.
@@ -471,10 +487,6 @@ pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
     }
 }
 
-fn refused_with(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
-}
-
 /// Turn one action's answer into what the caller reads, or the reason it was
 /// refused.
 pub(super) fn answer<T: serde::Serialize>(
@@ -490,22 +502,18 @@ pub(super) fn answer<T: serde::Serialize>(
     }
 }
 
-fn invalid(reason: &str) -> ActionCallError {
-    ActionCallError::InvalidRequest {
-        reason: reason.to_owned(),
-    }
-}
-
 /// The arguments of a request, as the value its action names.
 pub(super) fn argument<T: serde::de::DeserializeOwned>(
     request: &InvokeRequest,
     what: &str,
 ) -> Result<T, ActionCallError> {
     let InvokeArgument::Json(argument) = &request.argument else {
-        return Err(invalid(&format!("a request names {what}")));
+        return Err(ActionCallError::invalid_request(format!(
+            "a request names {what}"
+        )));
     };
     serde_json::from_value(Value::Object(argument.clone())).map_err(|error| {
-        invalid(&format!(
+        ActionCallError::invalid_request(format!(
             "{what} is not readable: {}",
             without_values(&error)
         ))
@@ -565,7 +573,7 @@ pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, Actio
         .and_then(Value::as_str)
         .filter(|provider| !provider.trim().is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| invalid("the provider is named by its id"))
+        .ok_or_else(|| ActionCallError::invalid_request("the provider is named by its id"))
 }
 
 /// Add `adding` once `tester` saw its server accept its sign-in: the secret
@@ -579,6 +587,8 @@ pub(super) async fn add_mail_with(
     (vault, root): (VaultAt<'_>, &Path),
     adding: AddMailAccount,
     kept: Option<tilo_actions::remote::person_vault::ItemRef>,
+    provider: person_accounts::Provider,
+    linked: Option<(accounts::Account, String)>,
 ) -> Result<MailAccount, String> {
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
@@ -622,9 +632,15 @@ pub(super) async fn add_mail_with(
     if let Value::Object(settings) = &mut settings {
         settings.insert(
             "services".into(),
-            serde_json::to_value(adding.services.within(person_accounts::Provider::Other))
+            serde_json::to_value(adding.services.within(provider))
                 .map_err(|error| error.to_string())?,
         );
+        // The calendar account kept as its service: what reads the link back
+        // when the account's services, or the account itself, go.
+        if let Some((calendar, server)) = &linked {
+            settings.insert("calendar_account".into(), calendar.id.as_str().into());
+            settings.insert("server".into(), server.clone().into());
+        }
     }
     account.config = settings;
 
@@ -666,7 +682,16 @@ pub(super) async fn add_mail_with(
         // Kept again without a password, it keeps the sign-in it had.
         accounts::email::set_password_item(&mut account.config, Some(&before.to_string()));
     }
-    vault.keep_account(&account).await?;
+    // One change keeps every account this action makes: the mail account and,
+    // where its provider keeps calendars, the calendar account beside it.
+    match linked {
+        Some((calendar, _)) => {
+            vault
+                .keep_and_remove_accounts(&[account.clone(), calendar], &[])
+                .await?;
+        }
+        None => vault.keep_account(&account).await?,
+    }
     kept_mail(&vault.accounts().await?, root, account.id.as_str())
 }
 
@@ -676,16 +701,46 @@ async fn remove_mail(
     (vault, root): (VaultAt<'_>, &Path),
     account: &str,
 ) -> Result<MailAccounts, String> {
-    let sign_in = vault
-        .accounts()
-        .await?
-        .account(account)
-        .and_then(|kept| sign_in_of(&kept.config));
-    if !vault.remove_account(account).await? {
+    let held = vault.accounts().await?;
+    let kept = held.account(account);
+    if kept.is_none() {
         return Err("That account is not kept here".into());
     }
+    let sign_in = kept.as_ref().and_then(|kept| sign_in_of(&kept.config));
+    // The calendars kept as its service go with it, in one change to the
+    // accounts record.
+    #[cfg(feature = "agents")]
+    let linked = kept.as_ref().and_then(|kept| {
+        calendars::linked_to(
+            &held,
+            kept.config.get("calendar_account").and_then(Value::as_str),
+            account,
+        )
+    });
+    #[cfg(feature = "agents")]
+    let linked_sign_in = linked
+        .as_ref()
+        .and_then(|id| held.account(id))
+        .and_then(|kept| sign_in_of(&kept.config));
+    #[allow(
+        unused_mut,
+        reason = "a build without the calendar module removes the mail account alone"
+    )]
+    let mut remove = vec![account];
+    #[cfg(feature = "agents")]
+    if let Some(calendar) = &linked {
+        remove.push(calendar.as_str());
+    }
+    vault.keep_and_remove_accounts(&[], &remove).await?;
     if let Some(sign_in) = &sign_in {
         vault.forget_sign_in(account, sign_in).await?;
+    }
+    #[cfg(feature = "agents")]
+    if let Some(calendar) = &linked {
+        if let Some(sign_in) = &linked_sign_in {
+            vault.forget_sign_in(calendar, sign_in).await?;
+        }
+        calendars::forget_kept(root, calendar);
     }
     Ok(mail_accounts(&vault.accounts().await?, root))
 }
@@ -2405,6 +2460,8 @@ mod mail_session_tests {
                     services: person_accounts::Services::default(),
                 },
                 None,
+                person_accounts::Provider::Other,
+                None,
             ))
             .unwrap();
         assert!(kept.has_secret);
@@ -2476,6 +2533,8 @@ mod mail_session_tests {
                     identities: Vec::new(),
                     services: person_accounts::Services::default(),
                 },
+                None,
+                person_accounts::Provider::Other,
                 None,
             ))
             .unwrap();

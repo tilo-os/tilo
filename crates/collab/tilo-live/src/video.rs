@@ -3,7 +3,7 @@
 //!
 //! # Tracks
 //!
-//! A device's broadcast carries its voice on [`crate::relay::VOICE_TRACK`]
+//! A device's broadcast carries its call's voice on [`crate::live::call_track`]
 //! and, while it shows them, one track per picture [`Source`] and [`Layer`]
 //! (`camera/low`, `camera/mid`, `camera/high`, `screen/low`, `screen/high`).
 //! A layer is a complete stream of its own (simulcast), so a subscriber picks

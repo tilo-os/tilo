@@ -1,11 +1,11 @@
 //! A tree sync whose peer is this device's workspace service, in another process.
 //!
-//! The session holds the device's one workspace service; the files daemon that mounts a
-//! workspace is a process of its own. The session serves the service's side of a tree sync
+//! The device daemon holds the device's one workspace service; the files daemon that mounts a
+//! workspace is a process of its own. The device daemon serves the service's side of a tree sync
 //! (its reads, its writes as this device, the serving device's word that it holds them, and what
-//! changed) on a socket, for the Files endpoint it recorded the daemon's process as, and only
-//! for the Files resources of the workspace the daemon names. [`start`] is the daemon's side: the
-//! same [`TreeSync`] every folder runs, with the socket as its peer.
+//! changed) on a socket, to processes of its own account, and only for the Files resources of the
+//! workspace the files daemon names. [`start`] is the files daemon's side: the same [`TreeSync`]
+//! every folder runs, with the socket as its peer.
 //!
 //! The same connection carries everything else the daemon needs of the workspace, so the daemon
 //! opens nothing else to reach it:
@@ -19,15 +19,16 @@
 //!   workspace's signed member list, told again the moment that list changes
 //!   ([`Service::access`]).
 //!
-//! The connection comes and goes with the session. While it is down, reads and writes fail and
-//! the sync waits as it waits for any peer that cannot be reached; each time it is back, the
-//! sync opens every part of the tree again.
+//! The connection comes and goes with the device daemon. While it is down, reads and writes fail
+//! and the sync waits as it waits for any peer that cannot be reached. The daemon binds the socket
+//! once it serves, so the socket appearing is its word that it is ready: the files daemon dials
+//! when it appears, and again each time the daemon binds it anew, and opens every part of the
+//! tree again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use fs_protocol::TreeChunk;
 use serde::{Deserialize, Serialize};
@@ -43,13 +44,6 @@ use super::{
 /// The frames both sides send: a little-endian `u32` length, then one postcard value. A whole
 /// part read can be large; this bounds what either side takes.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
-
-/// The socket below a session's services the tree is served on.
-pub const SOCKET: &str = "files-tree";
-
-/// How long the daemon waits before dialing the session again after its connection ended: the
-/// session may restart under a daemon that outlives it.
-const RECONNECT: Duration = Duration::from_secs(2);
 
 /// What the daemon asks the session.
 #[derive(Debug, Serialize, Deserialize)]
@@ -385,9 +379,34 @@ impl Link {
     }
 }
 
-/// Keep a connection to the session while the sync runs, dialing again whenever one ends.
+/// Keep a connection to the device daemon while the sync runs, dialing again whenever it binds
+/// its socket anew after one ended.
 async fn keep_linked(link: Arc<Link>, socket: PathBuf, wakes: mpsc::UnboundedSender<Wake>) {
     let _unlinked = Unlinked(Arc::clone(&link));
+    let bound = Arc::new(tokio::sync::Notify::new());
+    let watching = {
+        let (bound, named) = (Arc::clone(&bound), socket.clone());
+        socket.parent().map(|dir| {
+            tilo_files::native::watch_presence(
+                dir,
+                move |path| path == named,
+                move || {
+                    bound.notify_one();
+                },
+            )
+        })
+    };
+    let _watching = match watching {
+        Some(Ok(watching)) => watching,
+        Some(Err(error)) => {
+            tracing::error!(workspace = link.workspace, %error, socket = %socket.display(), "the files daemon cannot follow the device daemon's socket: its tree syncs with nothing until it starts again");
+            return;
+        }
+        None => {
+            tracing::error!(workspace = link.workspace, socket = %socket.display(), "the device daemon's socket names no directory");
+            return;
+        }
+    };
     let mut said: Option<String> = None;
     loop {
         let ended = tokio::select! {
@@ -402,10 +421,13 @@ async fn keep_linked(link: Arc<Link>, socket: PathBuf, wakes: mpsc::UnboundedSen
         if let Err(error) = ended
             && said.as_ref() != Some(&error)
         {
-            tracing::warn!(workspace = link.workspace, %error, "the workspace's tree does not reach the session");
+            tracing::warn!(workspace = link.workspace, %error, "the workspace's tree does not reach the device daemon; it is dialed again once the daemon binds its socket");
             said = Some(error);
         }
-        tokio::time::sleep(RECONNECT).await;
+        tokio::select! {
+            () = bound.notified() => {}
+            () = wakes.closed() => return,
+        }
     }
 }
 
@@ -420,7 +442,7 @@ impl Drop for Unlinked {
     }
 }
 
-/// One connection to the session at `socket`, until it ends.
+/// One connection to the device daemon at `socket`, until it ends.
 async fn linked_once(
     link: &Arc<Link>,
     socket: &std::path::Path,
@@ -629,6 +651,55 @@ impl TreeWriter for Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    /// The files daemon dials the device daemon once its socket appears, and again each time the
+    /// daemon binds it anew after a connection ended: on the daemon's word, never on a timer.
+    #[test]
+    fn the_sync_dials_each_time_the_daemon_binds_its_socket() {
+        const WITHIN: Duration = Duration::from_secs(10);
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("tree.sock");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = runtime
+            .block_on(crate::ContentStore::open(dir.path().join("content")))
+            .unwrap();
+        let link = Arc::new(Link {
+            workspace: "studio".to_owned(),
+            out: Mutex::new(None),
+            waiting: Mutex::new(BTreeMap::new()),
+            next: AtomicU64::new(0),
+            state: Mutex::new(PeerState::default()),
+            store: Arc::new(store),
+            access: tokio::sync::watch::channel(None).0,
+            shown: Mutex::new(None),
+        });
+        let (wakes, _wake_events) = mpsc::unbounded_channel();
+        // Started before the daemon serves: nothing to dial yet.
+        runtime.spawn(keep_linked(Arc::clone(&link), socket.clone(), wakes));
+        for serving in ["its start", "its restart"] {
+            let _ = std::fs::remove_file(&socket);
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let (said, hello) = std::sync::mpsc::channel();
+            let daemon = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = said.send(FRAMING.read_value::<_, Ask>(&mut stream).unwrap());
+            });
+            let first = hello
+                .recv_timeout(WITHIN)
+                .unwrap_or_else(|_| panic!("the sync dials the daemon after {serving}"));
+            assert!(
+                matches!(first, Some(Ask::Hello { ref workspace }) if workspace == "studio"),
+                "{first:?}"
+            );
+            // The daemon goes away, and the connection with it.
+            daemon.join().unwrap();
+        }
+    }
 
     /// A read the session never answers ends when the sync's runtime stops: a stopping runtime
     /// waits for its blocking tasks, and a read left waiting would hold it for good.

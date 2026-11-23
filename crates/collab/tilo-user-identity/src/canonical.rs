@@ -1,7 +1,7 @@
 //! Canonical byte-encoding of everything that gets signed.
 //!
 //! All signed types in this crate — `DeviceCert`, `RevocationEntry`,
-//! `EnrollmentToken`, and every workspace-directory delta — encode
+//! and every workspace-directory delta — encode
 //! their signing preimage through the same three-step pipeline:
 //!
 //! 1. Build a view of the struct that omits its `signature` field.
@@ -25,68 +25,8 @@
 //! a type sees its tag in the same file.
 
 use serde::Serialize;
-use serde::de::DeserializeOwned;
-use thiserror::Error;
 
-/// Errors from canonical encoding/decoding of signable types.
-///
-/// Mirrors `collab-types::CanonicalError` so error handling is
-/// familiar to anyone who has worked on the collab stack. Wraps
-/// `postcard::Error` behind a `String` so callers do not need to
-/// depend on postcard directly.
-#[derive(Debug, Error, PartialEq, Eq, Clone)]
-pub enum CanonicalError {
-    /// The value could not be encoded. Unreachable for the types
-    /// this crate defines but propagated for hygiene.
-    #[error("postcard serialisation failed: {0}")]
-    Serialize(String),
-
-    /// The bytes could not be decoded. Common causes: truncated
-    /// input, extra trailing bytes (postcard is exact-length), enum
-    /// discriminant out of range, or a `deny_unknown_fields` violation.
-    #[error("postcard deserialisation failed: {0}")]
-    Deserialize(String),
-}
-
-/// Serialise a value to its canonical byte form.
-///
-/// This uses the same postcard encoding as [`signing_digest`]. Two
-/// peers running the same crate version will produce identical bytes
-/// for the same input.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError::Serialize`] if `value` cannot be
-/// postcard-encoded (effectively unreachable for the types this
-/// crate defines).
-pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalError> {
-    postcard::to_allocvec(value).map_err(|e| CanonicalError::Serialize(e.to_string()))
-}
-
-/// Decode a canonical-encoded value. Rejects trailing bytes.
-///
-/// `postcard::from_bytes` in 1.1.x is *lenient* — it happily decodes
-/// a value out of an over-long slice and drops the leftover. That
-/// leniency would let a peer append arbitrary junk to a signed
-/// blob without invalidating the signature (which was computed
-/// over the exact-length preimage). To close that hole we use
-/// `take_from_bytes` and reject any non-empty remainder.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError::Deserialize`] if `bytes` does not decode
-/// as a `T`, or if any bytes remain after decoding one value.
-pub fn from_canonical_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CanonicalError> {
-    let (value, rest) =
-        postcard::take_from_bytes(bytes).map_err(|e| CanonicalError::Deserialize(e.to_string()))?;
-    if !rest.is_empty() {
-        return Err(CanonicalError::Deserialize(format!(
-            "{} trailing bytes after value",
-            rest.len()
-        )));
-    }
-    Ok(value)
-}
+pub use collab_types::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 
 /// Compute the 32-byte signing preimage hash for `view`, prefixed
 /// by `domain_tag`. The Ed25519 signature is then produced over

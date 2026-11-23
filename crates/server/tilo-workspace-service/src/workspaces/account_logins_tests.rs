@@ -999,7 +999,9 @@ async fn a_member_refused_passwords_opens_nothing_the_vault_keeps_after() {
 }
 
 /// A branch of a workspace starts with everything its source holds, the passwords its vault keeps
-/// included: its own device opens them there with the branch's own keys.
+/// included: its own device opens them there with the branch's own keys. A
+/// workspace is branched where agents run.
+#[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_branch_opens_the_passwords_its_source_kept() {
     const BRANCH: &str = "6f2b8a51-6d0f-4d4e-9d6c-5d3b3f1f2a11";

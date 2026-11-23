@@ -79,7 +79,9 @@ fn update(home: &Path, key: &SigningKey, tapp: &Path) -> (bool, String) {
 
 fn run(home: &Path, key: &SigningKey, args: &[&std::ffi::OsStr]) -> (bool, String) {
     let publisher = hex::encode(key.verifying_key().to_bytes());
-    let out = Command::new(tilo_test_env::package_binary!("tilo-install"))
+    let mut command = Command::new(tilo_test_env::package_binary!("tilo-install"));
+    crate::support::offline(&mut command, &home.join("data"));
+    let out = command
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)

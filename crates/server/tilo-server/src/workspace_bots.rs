@@ -250,7 +250,7 @@ pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), Stri
 pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, String> {
     let expected = moderation_grant(
         workspace,
-        &hex::encode(workspaces.governor().user_public_key),
+        &hex::encode(workspaces.device_cert().user_public_key),
     );
     let now = Context::at_time(tilo_clock::wall());
     Ok(workspaces

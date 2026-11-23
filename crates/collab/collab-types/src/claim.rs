@@ -11,6 +11,7 @@
 //! ([`tilo_actions::Did`]), and the units are listed from the record.
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::PersonId;
 pub use tilo_actions::FrameworkChange;
 use tilo_actions::context::ContinuedAction;
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
@@ -309,18 +310,39 @@ impl ChangeClaim {
             },
         })
     }
+
+    /// [`Self::of_change`], for a change of a history a device of `imported`'s imported, when
+    /// it is one: a change that names no invoker is that person's, as the import step said
+    /// ([`crate::receipt::decide_op_imported`]). Without one it is refused as any is.
+    ///
+    /// # Errors
+    /// As [`Self::of_change`].
+    pub fn of_imported_change(
+        hash: [u8; 32],
+        message: Option<&str>,
+        units: Vec<UnitPath>,
+        imported: Option<&tilo_action_policy::Acting>,
+    ) -> Result<Self, ClaimError> {
+        match (Self::of_change(hash, message, units.clone()), imported) {
+            (Err(ClaimError::NoInvoker), Some(person)) => Ok(Self {
+                change: hash,
+                action: ClaimedAction::whole_resource_edit(String::new()),
+                units,
+                invoker: Some(person.clone()),
+            }),
+            (claim, _) => claim,
+        }
+    }
 }
 
 /// The invoker a resource store's [`crate::Stamp`] names: a person, or an
 /// agent or automation acting for one. A stamp names none: the change says
 /// who made it or it is refused.
 fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
-    if stamp.invoker.is_empty() {
-        return Err(ClaimError::NoInvoker);
-    }
-    let actor = tilo_action_policy::Actor::of_actor_bytes(stamp.invoker.as_bytes())
-        .ok_or(ClaimError::NoInvoker)?;
-    Ok(tilo_action_policy::Acting::from(actor))
+    stamp
+        .invoked_by()
+        .map(tilo_action_policy::Acting::from)
+        .ok_or(ClaimError::NoInvoker)
 }
 
 /// Who made the change whose commit message is `message`, as its history
@@ -402,12 +424,23 @@ pub fn mutation_claims(
 /// them: a test in place of an app, writing a record directly.
 pub trait CommitNamed {
     /// Commit the pending operations as a field edit of `field` on a record
-    /// of kind `kind`.
-    fn commit_edit(&mut self, kind: &str, field: &str) -> Option<automerge::ChangeHash>;
+    /// of kind `kind`, made by the person whose root key is `person`: every
+    /// change names who made it, and a receiver refuses one that names nobody.
+    fn commit_edit(
+        &mut self,
+        kind: &str,
+        field: &str,
+        person: &[u8; 32],
+    ) -> Option<automerge::ChangeHash>;
 }
 
 impl CommitNamed for automerge::AutoCommit {
-    fn commit_edit(&mut self, kind: &str, field: &str) -> Option<automerge::ChangeHash> {
+    fn commit_edit(
+        &mut self,
+        kind: &str,
+        field: &str,
+        person: &[u8; 32],
+    ) -> Option<automerge::ChangeHash> {
         let context = ActionContext {
             what: Some(Did::Edit(tilo_actions::FieldEdit {
                 ty: kind.to_owned(),
@@ -419,7 +452,10 @@ impl CommitNamed for automerge::AutoCommit {
                 args: std::collections::BTreeMap::new(),
             })),
             ..ActionContext::for_resource(kind, kind, kind)
-        };
+        }
+        .with_invoker(tilo_actions::ActionInvoker::person(PersonId::from_root(
+            *person,
+        )));
         let mut options = automerge::transaction::CommitOptions::default();
         if let Some(message) = context.change_message() {
             options.set_message(message);
@@ -428,8 +464,9 @@ impl CommitNamed for automerge::AutoCommit {
     }
 }
 
-/// A fresh record of kind `kind` whose one change sets `field` to `value`,
-/// as an incremental mutation with its claims: a stand-in for an app's write.
+/// A fresh record of kind `kind` whose one change sets `field` to `value`, made by the person
+/// whose root key is `person`, as an incremental mutation with its claims: a stand-in for an
+/// app's write.
 ///
 /// # Errors
 /// [`ClaimError::Unparsable`] when the field cannot be written.
@@ -437,12 +474,13 @@ pub fn field_edit_mutation(
     kind: &str,
     field: &str,
     value: &str,
+    person: &[u8; 32],
 ) -> Result<(crate::op::DocumentMutation, Vec<ChangeClaim>), ClaimError> {
     use automerge::transaction::Transactable as _;
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, field, value)
         .map_err(|error| ClaimError::Unparsable(error.to_string()))?;
-    doc.commit_edit(kind, field);
+    doc.commit_edit(kind, field, person);
     let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&[]));
     let claims = mutation_claims(&mutation, record_unit)?;
     Ok((mutation, claims))
@@ -525,7 +563,11 @@ mod tests {
         let person = "ab".repeat(32);
         let stamp = crate::Stamp {
             verb: "$origin".into(),
-            invoker: person.clone(),
+            invoker: crate::Stamp::by(&tilo_action_policy::Actor::Member(
+                tilo_action_policy::MemberId::Person(
+                    tilo_action_policy::PersonId::parse(&person).unwrap(),
+                ),
+            )),
             invocation: "i1".into(),
             ..crate::Stamp::default()
         };
@@ -708,7 +750,7 @@ mod tests {
         // incremental op names its action and is claimed, in order.
         {
             use automerge::transaction::Transactable;
-            let (mutation, claims) = field_edit_mutation("note", "title", "a").unwrap();
+            let (mutation, claims) = field_edit_mutation("note", "title", "a", &[1; 32]).unwrap();
             assert_eq!(check_claimed(&op_of(&mutation)), Ok(()));
             assert!(
                 check_claimed(&op_of(&mutation).with_claims(claims))

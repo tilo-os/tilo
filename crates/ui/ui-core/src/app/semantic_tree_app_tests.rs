@@ -1,0 +1,2328 @@
+include!("hosted_model_tests.rs");
+
+include!("hosted_pump_dirty_tests.rs");
+
+include!("deferred_remote_tests.rs");
+
+include!("application_handoff_tests.rs");
+
+use super::*;
+use crate::a11y_tree::{SemanticActionKind, SemanticId};
+use crate::component::Described;
+use crate::state::State;
+use crate::widget::TaffyTreeExt;
+use crate::widget::{AppModel, ModelPath};
+use crate::widget::{Button, TreeViewNodeProps, TreeViewProps, Widget};
+use automerge::transaction::Transactable;
+use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use tilo_actions::{
+    Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
+    ResourceSpec,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum CounterAction {
+    Bump,
+    Reset,
+    HostBump,
+    SetLabel(String),
+}
+const COUNTER_TYPE: &str = "test.counter";
+const ASYNC_COUNTER_TYPE: &str = "test.async-counter";
+
+#[derive(Clone)]
+struct LargeDirectoryProvider {
+    catalog: crate::search::SearchCatalog,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    largest_budget: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl LargeDirectoryProvider {
+    fn new(records: usize) -> Self {
+        let catalog = crate::search::SearchCatalog::new("Large directory");
+        // One bulk snapshot, as a provider rebuilding its whole corpus
+        // publishes it; later `upsert`s keep their incremental semantics.
+        catalog
+            .replace_all_resources((0..records).map(|index| {
+                let resource = format!("test.item:{index}");
+                let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
+                crate::search::SearchItem::new(
+                    resource,
+                    crate::search::SearchResult::for_action(
+                        "Large directory",
+                        index.to_string(),
+                        address,
+                    ),
+                )
+                .field(
+                    format!("record {index} needle-{index}"),
+                    crate::search::FieldWeight::UNRANKED,
+                )
+            }))
+            .expect("canonical synthetic directory rows");
+        Self {
+            catalog,
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            largest_budget: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    fn resource_for(address: &tilo_actions::ActionAddress) -> Option<ResourceSpec> {
+        address
+            .resource
+            .strip_prefix("test.item:")?
+            .parse::<usize>()
+            .ok()?;
+        Some(
+            ResourceSpec::new(address.resource.clone(), "test.item", "Synthetic record")
+                .with_action(
+                    ActionSpec::operation(
+                        "open",
+                        "Open",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .ok()?
+                    .with_contract(tilo_actions::ActionContract::view()),
+                ),
+        )
+    }
+}
+
+impl crate::search::SearchProvider for LargeDirectoryProvider {
+    fn name(&self) -> &'static str {
+        "Large directory"
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
+    }
+
+    fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
+        self.catalog.search(query)
+    }
+
+    fn search_page(
+        &self,
+        query: &crate::search::SearchQuery,
+        cursor: Option<&crate::search::SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> crate::search::SearchPage {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.largest_budget
+            .fetch_max(work_budget, std::sync::atomic::Ordering::Relaxed);
+        self.catalog
+            .query_page(query.text(), cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<ResourceSpec> {
+        Self::resource_for(address)
+    }
+}
+
+impl QAction for CounterAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        match self {
+            CounterAction::Bump | CounterAction::HostBump => {
+                let n = match doc.get(&ROOT, "n") {
+                    Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
+                    _ => 0,
+                };
+                doc.put(&ROOT, "n", ScalarValue::Int(n.saturating_add(1)))?;
+            }
+            CounterAction::Reset => {
+                doc.put(&ROOT, "n", ScalarValue::Int(0))?;
+            }
+            CounterAction::SetLabel(s) => {
+                doc.put(&ROOT, "label", s.as_str())?;
+            }
+        }
+        Ok(())
+    }
+    fn locus(&self) -> ExecutionLocus {
+        if matches!(self, CounterAction::HostBump) {
+            ExecutionLocus::ServerPreferred
+        } else {
+            ExecutionLocus::ClientLocal
+        }
+    }
+}
+
+/// One open resource exporting an immediate `bump` and a prompted
+/// `set-label`.
+struct CounterCard {
+    button: Button,
+    destructive: bool,
+    lazy_resource: Option<ResourceSpec>,
+    directory_provider: Option<LargeDirectoryProvider>,
+    directory_roots: usize,
+    post_bump_reset: bool,
+    async_bump: bool,
+    pending_bump: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// Bump the counter as part of every `ping`, as an effect's handler
+    /// submits an edit.
+    bump_after_ping: bool,
+    follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
+    /// On the next settle, replace the button with a new one, carrying its
+    /// pending activation over, as a surface closing its own dialog does.
+    replace_on_settle: std::rc::Rc<std::cell::Cell<bool>>,
+    replaced: bool,
+}
+
+fn counter_resource(destructive: bool) -> ResourceSpec {
+    counter_resource_with_reset(destructive, false)
+}
+
+fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> ResourceSpec {
+    let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap();
+    let bump = if destructive {
+        bump.destructive()
+    } else {
+        bump
+    };
+    let resource = ResourceSpec::new("test.counter", "test.counter", "Counter")
+        .with_action(bump)
+        .with_action(
+            ActionSpec::immediate(
+                "host-bump",
+                "Host bump",
+                COUNTER_TYPE,
+                &CounterAction::HostBump,
+            )
+            .unwrap(),
+        )
+        .with_action(
+            ActionSpec::operation(
+                "inspect",
+                "Inspect counter",
+                OperationKind::View,
+                COUNTER_TYPE,
+                &CounterAction::Bump,
+            )
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract::view()),
+        )
+        .with_action(
+            ActionSpec::operation(
+                "ping",
+                "Ping service",
+                OperationKind::Effect,
+                COUNTER_TYPE,
+                &CounterAction::Bump,
+            )
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract::default())
+            // Pinging a service reaches outside the document.
+            .of_kind(tilo_actions::ActionKind::Outside),
+        )
+        .with_action(ActionSpec::prompted_param(
+            "set-label",
+            "Set label",
+            tilo_actions::ActionParam::required("value", tilo_actions::ParamType::Text, "Label"),
+            "name…",
+            ExecutionLocus::ClientLocal,
+            |s: &str| {
+                EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
+                    .unwrap()
+            },
+        ));
+    if reset_visible {
+        resource.with_action(
+            ActionSpec::immediate("reset", "Reset", COUNTER_TYPE, &CounterAction::Reset).unwrap(),
+        )
+    } else {
+        resource
+    }
+}
+
+impl CounterCard {
+    fn new() -> Self {
+        Self::with_destructive(false)
+    }
+
+    fn with_destructive(destructive: bool) -> Self {
+        let resource = counter_resource(destructive);
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
+        Self {
+            button: Button::new("bump", "Bump").on_action(binding),
+            destructive,
+            lazy_resource: None,
+            directory_provider: None,
+            directory_roots: 1,
+            post_bump_reset: false,
+            async_bump: false,
+            pending_bump: None,
+            resource_result: None,
+            bump_after_ping: false,
+            follow_ups: vec![],
+            replace_on_settle: std::rc::Rc::default(),
+            replaced: false,
+        }
+    }
+
+    fn with_post_bump_reset() -> Self {
+        let mut card = Self::new();
+        card.post_bump_reset = true;
+        card
+    }
+
+    fn with_async_post_bump_reset() -> Self {
+        let mut card = Self::with_post_bump_reset();
+        card.async_bump = true;
+        card
+    }
+
+    fn with_lazy_resource(resource: ResourceSpec) -> Self {
+        Self {
+            button: Button::new("lazy-resource", "Lazy resource"),
+            destructive: false,
+            lazy_resource: Some(resource),
+            directory_provider: None,
+            directory_roots: 1,
+            post_bump_reset: false,
+            async_bump: false,
+            pending_bump: None,
+            resource_result: None,
+            bump_after_ping: false,
+            follow_ups: vec![],
+            replace_on_settle: std::rc::Rc::default(),
+            replaced: false,
+        }
+    }
+
+    fn with_directory_provider(provider: LargeDirectoryProvider) -> Self {
+        let mut card = Self::new();
+        card.directory_provider = Some(provider);
+        card
+    }
+
+    fn with_directory_roots(count: usize) -> Self {
+        let mut card = Self::new();
+        card.directory_roots = count;
+        card
+    }
+
+    fn current_resource(&self, doc: &automerge::AutoCommit) -> ResourceSpec {
+        let mut resource = counter_resource_with_reset(
+            self.destructive,
+            self.post_bump_reset && counter_in_doc(doc) > 0,
+        );
+        if self.bump_after_ping {
+            resource = resource.with_action(
+                ActionSpec::operation(
+                    "peek",
+                    "Peek at the counter",
+                    OperationKind::Effect,
+                    COUNTER_TYPE,
+                    &CounterAction::Bump,
+                )
+                .unwrap()
+                .with_contract(tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Read,
+                    ..tilo_actions::ActionContract::default()
+                }),
+            );
+        }
+        if self.async_bump {
+            resource.with_action(
+                ActionSpec::operation(
+                    "async-bump",
+                    "Asynchronous bump",
+                    OperationKind::Effect,
+                    ASYNC_COUNTER_TYPE,
+                    &(),
+                )
+                .unwrap()
+                .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
+                .returns(tilo_actions::ResultSpec::Job),
+            )
+        } else {
+            resource
+        }
+    }
+}
+impl Widget for CounterCard {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::ResourceOperations
+    );
+
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
+        let (s, p) = crate::doc::document_ref(s, p);
+        self.button.sync(s, p);
+    }
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+        if self.replace_on_settle.replace(false) {
+            if let Some(invocation) =
+                crate::widget::controls::take_control_invocation(&mut self.button)
+            {
+                self.follow_ups.push((invocation, None));
+            }
+            let resource = counter_resource(self.destructive);
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
+            self.button = Button::new("bump-replacement", "Bump").on_action(binding);
+            self.replaced = true;
+        }
+        self.button.settle(edits, p);
+        let mut actions = crate::local_dispatch::LocalDispatch::new();
+        if let Some(invocation) = self.pending_bump.take() {
+            actions
+                .try_dispatch(edits.document_mut(), COUNTER_TYPE, &CounterAction::Bump)
+                .unwrap();
+            self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            });
+        }
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let kid = self.button.build_layout(taffy, theme, node_map);
+        taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.button]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.button]
+    }
+    fn name(&self) -> &'static str {
+        "CounterCard"
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.replaced)
+    }
+}
+
+impl crate::widget::ResourceOperations for CounterCard {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let request = op.request();
+        if let Some(started) = crate::widget::start_in_children(
+            self,
+            op,
+            &mut crate::widget::Edits::lend(doc.document_mut()),
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
+            self.pending_bump = Some(request.invocation);
+            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+        }
+        if self.bump_after_ping && request.kind == tilo_actions::OperationKind::Effect {
+            self.follow_ups.push((
+                tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.counter", "bump"),
+                    arguments: serde_json::Map::new(),
+                },
+                Some(request.invocation),
+            ));
+        }
+        Ok(
+            (request.kind == tilo_actions::OperationKind::Effect
+                && request.type_id == COUNTER_TYPE)
+                .then(|| {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                }),
+        )
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for CounterCard {
+    fn take_attributed_control_invocation(
+        &mut self,
+    ) -> Option<crate::widget::controls::AttributedControlInvocation> {
+        if self.follow_ups.is_empty() {
+            self.take_control_invocation()
+                .map(|invocation| (invocation, None))
+        } else {
+            Some(self.follow_ups.remove(0))
+        }
+    }
+}
+
+impl crate::search::capability::SearchSource for CounterCard {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.directory_provider
+            .clone()
+            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+            .unwrap_or_default()
+    }
+}
+
+impl crate::resources::PublishesResources for CounterCard {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
+        self.lazy_resource
+            .is_none()
+            .then(|| self.current_resource(doc))
+            .into_iter()
+            .collect()
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &automerge::AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
+        let offset = std::str::from_utf8(cursor)
+            .ok()
+            .and_then(|cursor| cursor.parse::<usize>().ok())
+            .unwrap_or(0);
+        let end = offset.saturating_add(max_results).min(self.directory_roots);
+        let resources = (offset..end)
+            .map(|index| {
+                if index == 0 {
+                    self.current_resource(doc)
+                } else {
+                    ResourceSpec::new(
+                        format!("test.counter:{index}"),
+                        "test.counter",
+                        format!("Counter {index}"),
+                    )
+                    .with_action(
+                        ActionSpec::operation(
+                            "inspect",
+                            "Inspect counter",
+                            OperationKind::View,
+                            COUNTER_TYPE,
+                            &CounterAction::Bump,
+                        )
+                        .unwrap()
+                        .with_contract(tilo_actions::ActionContract::view()),
+                    )
+                }
+            })
+            .collect();
+        Some(crate::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: end.to_string().into_bytes(),
+            exhausted: end >= self.directory_roots,
+        })
+    }
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<ResourceSpec> {
+        if let Some(resource) = self
+            .lazy_resource
+            .as_ref()
+            .filter(|resource| find_action_resource(std::slice::from_ref(resource), id).is_some())
+        {
+            return Some(resource.clone());
+        }
+        if id == "test.counter" {
+            return Some(self.current_resource(doc));
+        }
+        id.strip_prefix("test.counter:")
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+            .filter(|index| *index < self.directory_roots)
+            .map(|index| {
+                ResourceSpec::new(
+                    format!("test.counter:{index}"),
+                    "test.counter",
+                    format!("Counter {index}"),
+                )
+                .with_action(
+                    ActionSpec::operation(
+                        "inspect",
+                        "Inspect counter",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                )
+            })
+    }
+}
+
+// These fixtures inject already admitted deliveries through the public handler.
+// The legacy peer models that transport; it claims no native history capture.
+pub(super) fn admitted_delivery_manager() -> CollaborationManager {
+    CollaborationManager::with_peer_transport(HostedModelTransport(Rc::new(RefCell::new(vec![]))))
+}
+
+// A legacy owner may receive an already admitted delivery after its outbound
+// channel disconnects. It has no native history/read protocol, and cannot
+// publish a terminal result or admit a new outbound action.
+struct DisconnectedDeliveryPeer;
+impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
+    fn is_connected(&self) -> bool {
+        false
+    }
+    fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+        Err("fixture outbound channel disconnected".into())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        vec![]
+    }
+    fn join_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: crate::resource::ResourceType,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+fn disconnected_delivery_manager() -> CollaborationManager {
+    CollaborationManager::with_peer_transport(DisconnectedDeliveryPeer)
+}
+
+fn app() -> App {
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(CounterCard::new()));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    app
+}
+
+#[test]
+fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
+    let mut app = app();
+    app.collaboration.manager = CollaborationManager::disabled();
+    let before = app.state.doc.clone().save();
+    app.invoke_published_action(
+        81,
+        tilo_actions::InvocationId::new(),
+        "test.counter".into(),
+        "bump".into(),
+        None,
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote-original")),
+        None,
+    );
+    assert_eq!(counter(&app), 0);
+    assert_eq!(app.state.doc.clone().save(), before);
+    assert!(app.actions.directed_invocations.is_empty());
+}
+
+fn lazy_resource(id: &str) -> ResourceSpec {
+    ResourceSpec::new(id, id, "Lazy counter").with_action(
+        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap(),
+    )
+}
+
+fn lazy_app(resource: ResourceSpec) -> App {
+    let mut app = App::new(
+        State::new(),
+        Box::new(CounterCard::with_lazy_resource(resource)),
+    );
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    app
+}
+
+#[test]
+fn background_document_job_from_an_unbound_resource_waits_for_broker_admission() {
+    let address = tilo_actions::ActionAddress::new("test.lazy-document-job", "bump");
+    let spec = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+        .unwrap()
+        .execution(tilo_actions::ExecutionMode::Background { cancellable: true })
+        .returns(tilo_actions::ResultSpec::Job);
+    let mut app =
+        lazy_app(ResourceSpec::new(&address.resource, "test.counter", "Counter").with_action(spec));
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+    let started = app
+        .invoke_resource_action(ResourceInvocation::new(&address, &actor))
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::widget::ResourceOperationStart::Accepted
+    ));
+    assert_eq!(counter(&app), 0, "no edit before native broker admission");
+    let request = sent
+        .borrow()
+        .iter()
+        .find_map(|request| match request {
+            CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            } => Some(invoke.clone()),
+            _ => None,
+        })
+        .expect("the real action path must submit a broker request");
+    assert_eq!(request.target.address, address);
+    app.invoke_published_action(
+        53,
+        request.invocation,
+        address.resource,
+        address.action,
+        None,
+        &actor,
+        None,
+    );
+    assert_eq!(
+        counter(&app),
+        1,
+        "the admitted delivery applies exactly once"
+    );
+    assert_eq!(
+        sent.borrow()
+            .iter()
+            .filter(|request| matches!(
+                request,
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(_)
+                }
+            ))
+            .count(),
+        1,
+        "admitted document delivery must not route in a loop"
+    );
+}
+
+fn counter(app: &App) -> i64 {
+    counter_in_doc(&app.state.doc)
+}
+
+fn counter_in_doc(doc: &automerge::AutoCommit) -> i64 {
+    match doc.get(&ROOT, "n") {
+        Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn activate_bound_button(app: &mut App) {
+    let node = app.focusable_order[0];
+    let pointer = app.layout.node_map[&node];
+    assert!(unsafe {
+        (*pointer).perform_action(
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut crate::widget::Edits::lend(&mut app.state.doc),
+            &app.state.root,
+        )
+    });
+}
+
+#[test]
+fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
+    {
+        let resource = lazy_resource("test.lazy");
+        let mut app = lazy_app(resource);
+        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
+        let snapshot = app.collect_resources();
+        assert!(
+            tilo_actions::api::resolve(&snapshot, &address).is_none(),
+            "the retained snapshot must omit the lazy action"
+        );
+        assert!(
+            app.actions.resource_cache.borrow().is_some(),
+            "the snapshot is retained before fallback"
+        );
+
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+
+        assert!(
+            result.is_ok(),
+            "the lazy resource should resolve: {result:?}"
+        );
+        assert_eq!(counter(&app), 1);
+    }
+
+    {
+        let mut app = lazy_app(lazy_resource("test.lazy"));
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            &crate::permissions::MemberId::person("restricted"),
+        ));
+
+        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(matches!(denied, Err(tilo_actions::ApiError::Unknown(_))));
+        assert_eq!(counter(&app), 0, "the denied fallback must not run");
+
+        app.set_permission_ctx(PermissionContext::permissive());
+        let allowed = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(
+            allowed.is_ok(),
+            "restoring write permission should admit it"
+        );
+        assert_eq!(counter(&app), 1);
+    }
+
+    {
+        let child = lazy_resource("test.lazy.child");
+        let tree =
+            ResourceSpec::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
+        let mut app = lazy_app(tree);
+        let resolved = crate::widget::resolve_widget_resource(
+            app.root_widget.as_ref(),
+            &app.state.doc,
+            "test.lazy.child",
+        )
+        .expect("the recursive lazy child is discoverable");
+        assert_eq!(
+            find_action_resource(&[resolved], "test.lazy.child")
+                .map(|resource| resource.id.as_str()),
+            Some("test.lazy.child")
+        );
+
+        let address = tilo_actions::ActionAddress::new("test.lazy.child", "bump");
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(
+            result.is_ok(),
+            "the recursive lazy action should resolve: {result:?}"
+        );
+        assert_eq!(counter(&app), 1);
+    }
+
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let tree = app.semantic_tree();
+        let node = tree
+            .node(&SemanticId("r:test.counter".into()))
+            .expect("the app's open resource is a semantic node");
+        assert_eq!(node.name.as_deref(), Some("Counter"));
+        assert!(
+            node.action("bump").is_some(),
+            "the resource's action is an affordance"
+        );
+        assert!(node.action("set-label").is_some());
+        // The root owns it (resources hang off the window root).
+        let root = tree.node(tree.root()).unwrap();
+        assert!(root.children.contains(&SemanticId("r:test.counter".into())));
+    }
+
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let ids_before: Vec<SemanticId> =
+            app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        let delta = app.refresh_semantic_tree();
+        assert!(
+            delta.is_empty(),
+            "a stable frame yields no delta, got {delta:?}"
+        );
+        let ids_after: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        assert_eq!(ids_before, ids_after, "node identity survives a refresh");
+    }
+}
+
+#[test]
+fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
+    {
+        let mut app = app();
+        activate_bound_button(&mut app);
+        assert_eq!(counter(&app), 0, "control only queued an intent");
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 1);
+        assert!(app.state.peek_last_undo().is_some());
+        assert_eq!(
+            app.control_action_coverage()[0].status,
+            ControlBindingStatus::Resolved
+        );
+    }
+
+    {
+        let mut app = app();
+        let button = app.focusable_order[0];
+        // Retained widget ids have the same stable AccessKit mapping used by
+        // the native provider. This exercises the public AT-SPI action path,
+        // rather than manually draining the widget's queued intent.
+        let accesskit_button = accesskit::NodeId(u64::from(button) + 1);
+
+        assert_eq!(
+            app.dispatch_a11y_action(accesskit_button, &crate::a11y::Action::Activate),
+            None
+        );
+        assert_eq!(
+            counter(&app),
+            1,
+            "AT-SPI activation must apply the bound action before success is returned"
+        );
+        assert!(app.state.peek_last_undo().is_some());
+    }
+
+    {
+        let mut app = app();
+        let node = app.focusable_order[0];
+        let pointer = app.layout.node_map[&node];
+        assert!(unsafe { (*pointer).is_enabled() });
+
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            &crate::permissions::MemberId::person("restricted"),
+        ));
+        assert!(!unsafe { (*pointer).is_enabled() });
+        assert!(!unsafe {
+            (*pointer).perform_action(
+                &crate::a11y::Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut app.state.doc),
+                &app.state.root,
+            )
+        });
+
+        app.set_permission_ctx(PermissionContext::permissive());
+        assert!(unsafe { (*pointer).is_enabled() });
+    }
+
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_destructive(true)),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 0);
+        assert!(app.state.peek_last_undo().is_none());
+        assert!(app.action_palette().is_some(), "confirmation UI is open");
+        // The person confirms in the host's own dialog with its verb button;
+        // it asks the action's own question and never wants a typed phrase.
+        let question = app.asking().map(|(_, text)| text).unwrap_or_default();
+        assert!(question.ends_with('?'), "{question:?}");
+        assert!(!question.contains("CONFIRM"), "{question:?}");
+        assert!(app.confirm_asked().is_some());
+        assert!(app.asking().is_none(), "answered once");
+        assert_eq!(counter(&app), 1, "the confirmed destructive action applied");
+    }
+
+    {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
+        probe.typed_text = true;
+        observed.enqueue_text("run", "captured before confirmation");
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+
+        assert_eq!(host.dispatch_control_invocations(), 1);
+        assert!(
+            host.action_palette()
+                .is_some_and(crate::action_palette::ActionPalette::in_argument_mode),
+            "captured arguments enter confirmation directly"
+        );
+        assert!(observed.payloads.borrow().is_empty());
+
+        host.actions
+            .action_palette
+            .as_deref_mut()
+            .expect("confirmation palette is open")
+            .set_query("CONFIRM");
+        assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
+        assert_eq!(
+            observed.payloads.borrow().as_slice(),
+            ["captured before confirmation"],
+            "confirmation dispatches the original intent arguments"
+        );
+    }
+}
+
+#[test]
+fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
+    {
+        let mut app = app();
+        let claimed = tilo_actions::InvocationId::new();
+        let ambient = tilo_actions::ActionContext::default().with_source_invocation(Some(claimed));
+        let address = tilo_actions::ActionAddress::new("test.counter", "bump");
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address, &actor)
+                .invocation(Some(claimed))
+                .ambient_context(Some(&ambient)),
+        )
+        .unwrap();
+        let context = app
+            .state
+            .doc
+            .get_changes(&[])
+            .last()
+            .and_then(|change| change.message())
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .expect("the local action retained its ordinary history context");
+        assert_eq!(context.source_invocation, None);
+    }
+
+    {
+        let mut app = app();
+        let resources = app.collect_resources();
+        assert!(!resources.is_empty(), "test action surface was rejected");
+        let forged_invocation = tilo_actions::InvocationId::new();
+        let ambient = tilo_actions::ActionContext::default()
+            .with_app("org.tilo.Agent", "Agent")
+            .with_purpose("Make the opening concrete")
+            .with_group("task:opening", "Rewrite the opening", "task")
+            .with_source_invocation(Some(forged_invocation));
+
+        let address = tilo_actions::ActionAddress::new("test.counter", "bump");
+        let admitted_invocation = tilo_actions::InvocationId::new();
+        let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
+        let request = ResourceInvocation::new(&address, &scribe)
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(admitted_invocation))
+            .ambient_context(Some(&ambient));
+        let result = app.invoke_resource_action(request);
+
+        assert!(result.is_ok(), "the directed action failed: {result:?}");
+        assert_eq!(counter(&app), 1, "the directed action was applied");
+        let changes = app.state.doc.get_changes(&[]);
+        let committed = changes.last().expect("the directed action committed");
+        assert_eq!(
+            crate::history_source::authors::actor_handle(&committed.actor_id().to_hex_string())
+                .as_deref(),
+            Some("agent:Scribe")
+        );
+        let context = committed
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .expect("the action commit retained semantic provenance");
+        assert!(
+            matches!(&context.what, Some(tilo_actions::Did::Verb(_))),
+            "the action records what it did: {context:?}"
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("test.counter"),
+            "the concrete addressed resource stays authoritative"
+        );
+        assert_eq!(context.purpose, ambient.purpose);
+        assert_eq!(context.group, ambient.group);
+        assert_eq!(context.app, ambient.app);
+        assert_eq!(context.source_invocation, Some(admitted_invocation));
+        assert_eq!(
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::MemberId::agent("Scribe")),
+            "undo attribution and durable history use the same actor"
+        );
+    }
+
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        app.collaboration.manager = admitted_delivery_manager();
+        assert!(
+            tilo_actions::api::survey(&app.collect_resources())
+                .iter()
+                .all(|descriptor| descriptor.address.action != "reset"),
+            "reset is unavailable before the counter changes"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(42)),
+            id: 42,
+            resource: "test.counter".into(),
+            action: "bump".into(),
+            argument: None,
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            context: None,
+        });
+
+        assert_eq!(counter(&app), 1, "the directed document action ran");
+        assert!(
+            tilo_actions::api::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the post-mutation surface exposes the newly valid reset action"
+        );
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "the broker event batch republishes without waiting for native window input"
+        );
+    }
+
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        app.collaboration.manager = admitted_delivery_manager();
+
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
+        app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation,
+            id: 43,
+            resource: "test.counter".into(),
+            action: "async-bump".into(),
+            argument: None,
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            context: None,
+        });
+        assert_eq!(counter(&app), 0, "admission alone does not mutate");
+        assert_eq!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .map(|pending| pending.wire_id),
+            Some(43),
+            "Accepted remains pending until the widget reports a terminal update"
+        );
+
+        app.refresh_focus_order();
+        assert_eq!(counter(&app), 1, "the later model pass applied the job");
+        assert!(
+            tilo_actions::api::survey(&app.collect_resources())
+                .iter()
+                .any(|descriptor| descriptor.address.action == "reset"),
+            "the terminal document now exposes reset"
+        );
+        let publication_attempts = app.actions.action_surface_publication_attempts;
+
+        assert!(
+            app.poll_directed_invocations(),
+            "the terminal update arrived"
+        );
+        assert!(app.actions.directed_invocations.is_empty());
+        assert_eq!(
+            app.actions.action_surface_publication_attempts,
+            publication_attempts.saturating_add(1),
+            "terminal lifecycle polling republishes without native input"
+        );
+    }
+
+    {
+        let resource = ResourceSpec::new("test.invalid", "test.invalid", "Invalid action")
+            .with_action(
+                ActionSpec::immediate(
+                    "decode",
+                    "Decode",
+                    "test.unregistered",
+                    &CounterAction::Bump,
+                )
+                .unwrap(),
+            );
+        let mut app = lazy_app(resource);
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        let address = tilo_actions::ActionAddress::new("test.invalid", "decode");
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(
+            matches!(result, Err(tilo_actions::ApiError::UnregisteredType(ref id))
+        if id == "test.unregistered"),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(app.state.doc.pending_ops(), pending);
+        assert_eq!(app.state.doc.base_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
+    }
+
+    {
+        let mut app = app();
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        for (action, actor) in [
+            (
+                "host-bump",
+                tilo_actions::Actor::Member(app.collaboration.local_author.clone()),
+            ),
+            (
+                "inspect",
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            ),
+            (
+                "missing",
+                tilo_actions::Actor::Member(app.collaboration.local_author.clone()),
+            ),
+        ] {
+            let address = tilo_actions::ActionAddress::new("test.counter", action);
+            let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+            assert!(result.is_err(), "unadmitted action must fail: {action}");
+            assert_eq!(app.state.doc.pending_ops(), pending, "{action}");
+            assert_eq!(app.state.doc.base_heads(), before, "{action}");
+            assert!(app.state.peek_last_undo().is_none());
+        }
+        app.state.doc.put(ROOT, "draft", "finished").unwrap();
+        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
+        assert!(app.state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(app.collaboration.local_author.clone()),
+            Some(context),
+        ));
+        let changes = app.state.doc.get_changes(&before);
+        assert_eq!(changes.len(), 1, "refusal must not split the pending edit");
+        let context = changes[0]
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Draft")
+        );
+    }
+
+    {
+        let mut app = app();
+        let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
+
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let local = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(local.is_err(), "an unbrokered client must fail closed");
+        assert_eq!(counter(&app), 0);
+
+        let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
+        let request = ResourceInvocation::new(&address, &scribe)
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new()));
+        let admitted = app.invoke_resource_action(request);
+        assert!(admitted.is_ok(), "the authoritative broker admitted it");
+        assert_eq!(counter(&app), 1);
+        assert_eq!(
+            app.state.peek_last_undo().and_then(|entry| entry.author),
+            Some(crate::permissions::MemberId::agent("Scribe"))
+        );
+    }
+
+    {
+        let mut app = app();
+        let invocation = tilo_actions::InvocationId::new();
+        let error = app
+            .invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("test.counter", "inspect"),
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+                )
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(invocation)),
+            )
+            .expect_err("a remote presentation action must be refused");
+
+        assert_eq!(counter(&app), 0, "the private view action never ran");
+        assert!(
+            matches!(
+                error,
+                tilo_actions::ApiError::Unavailable { ref code, .. } if code == "private_view"
+            ),
+            "unexpected refusal: {error:?}"
+        );
+    }
+
+    {
+        /// A typed effect vocabulary as an app declares it.
+        #[derive(Clone, Debug, tilo_resource::Effect)]
+        #[effect(operation = "test.counter", catalogue = "tests/locales")]
+        enum Folder {
+            /// Copy the folder to this computer's clipboard.
+            #[effect(kind = "outside")]
+            #[effect(own_device)]
+            CopyLocalFolder,
+            /// Count the copies.
+            #[effect(kind = "outside")]
+            Count,
+        }
+        let mut resource = ResourceSpec::new("test.folder", "test.folder", "Folder");
+        for spec in <Folder as tilo_resource::Effect>::specs() {
+            resource = resource.with_action(spec);
+        }
+        let mut app = lazy_app(resource);
+        let invoke = |app: &mut App, action: &str, actor: &tilo_actions::Actor| {
+            app.invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("test.folder", action),
+                    actor,
+                )
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+        };
+        assert!(matches!(
+            invoke(&mut app, "copy-local-folder", &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest"))),
+            Err(tilo_actions::ApiError::Unavailable { ref code, .. }) if code == "own_device"
+        ));
+        assert!(
+            invoke(
+                &mut app,
+                "count",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest"))
+            )
+            .is_ok(),
+            "a member still reaches the shared effects"
+        );
+        let me = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());
+    }
+}
+
+#[test]
+fn local_control_results_stay_local_and_report_refusal_or_success() {
+    {
+        use crate::application_test_support::ProbeHarness;
+        use crate::widget::{Column, TileHost};
+        for closed in [false, true] {
+            let owner = ProbeHarness::new();
+            let (component, sibling_seen) =
+                crate::widget::control_result_probe::component(&owner, 11, false);
+            let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
+            let root = Column::new()
+                .push(Box::new(legacy))
+                .push(Box::new(TileHost::from_component(component)));
+            let mut host = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            if closed {
+                host.close_components();
+            }
+            legacy_seen.enqueue("missing");
+            host.dispatch_control_invocations();
+            assert_eq!(legacy_seen.results.borrow().len(), 1);
+            assert!(
+                sibling_seen.results.borrow().is_empty(),
+                "legacy feedback must not enter bound sibling"
+            );
+            assert_eq!(sibling_seen.calls.get(), 0);
+        }
+    }
+
+    {
+        use crate::application_test_support::ProbeHarness;
+        use crate::widget::{Column, TileHost};
+        let owner = ProbeHarness::new();
+        let (first, first_seen) = crate::widget::control_result_probe::component(&owner, 11, false);
+        let (second, second_seen) =
+            crate::widget::control_result_probe::component(&owner, 12, false);
+        let root = Column::new()
+            .push(Box::new(TileHost::from_component(first)))
+            .push(Box::new(TileHost::from_component(second)));
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        first_seen.enqueue("run");
+        host.dispatch_control_invocations();
+        assert_eq!(first_seen.results.borrow().len(), 1);
+        assert!(second_seen.results.borrow().is_empty());
+        assert_eq!(first_seen.calls.get(), 1);
+        assert_eq!(second_seen.calls.get(), 0);
+    }
+
+    {
+        use crate::application_test_support::{ProbeHarness, runner_inputs};
+        for accepted in [false, true] {
+            let owner = ProbeHarness::new();
+            let (component, observed) =
+                crate::widget::control_result_probe::component(&owner, 11, accepted);
+            let binding = component.callback_binding();
+            let mut host = App::from_component(component, runner_inputs()).unwrap();
+            observed.enqueue("run");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            let expected = if accepted {
+                crate::widget::ResourceOperationStart::Accepted
+            } else {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            };
+            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+            observed.enqueue("run");
+            binding
+                .permissions
+                .set(crate::permissions::PermissionContext::member(
+                    &crate::permissions::MemberId::person("reader"),
+                    collab_types::role::Role::Viewer,
+                ));
+            let before = owner
+                .records
+                .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                .unwrap();
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1, "revoked permission blocks handler");
+            assert_eq!(
+                owner
+                    .records
+                    .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                    .unwrap(),
+                before
+            );
+            assert_eq!(observed.results.borrow().len(), 2);
+            assert!(matches!(observed.results.borrow().last(), Some(Err(_))));
+        }
+    }
+
+    {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+        observed.enqueue("run");
+        host.dispatch_control_invocations();
+        assert_eq!(observed.calls.get(), 0);
+        assert_eq!(
+            *observed.results.borrow(),
+            vec![Err(tilo_actions::ApiError::ConfirmationRequired)]
+        );
+        assert!(host.action_palette().is_some());
+    }
+
+    {
+        use crate::widget::control_result_probe::Probe;
+        for accepted in [false, true] {
+            let (probe, observed) = Probe::new(accepted);
+            let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+            observed.enqueue("run");
+            host.dispatch_control_invocations();
+            assert_eq!(
+                observed.calls.get(),
+                1,
+                "accepted={accepted}; feedback={:?}",
+                observed.results.borrow()
+            );
+            let expected = if accepted {
+                crate::widget::ResourceOperationStart::Accepted
+            } else {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            };
+            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+            observed.enqueue("missing");
+            host.dispatch_control_invocations();
+            assert_eq!(observed.calls.get(), 1);
+            assert!(matches!(
+                observed.results.borrow().last(),
+                Some(Err(tilo_actions::ApiError::Unknown(_)))
+            ));
+        }
+    }
+
+    {
+        use crate::widget::control_result_probe::Probe;
+        let (probe, observed) = Probe::new(false);
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+        observed.enqueue("run");
+        let readonly = crate::permissions::PermissionContext::member(
+            &crate::permissions::MemberId::person("reader"),
+            collab_types::role::Role::Viewer,
+        );
+        host.set_permission_ctx(readonly);
+        let before = host.state.doc.base_heads();
+        host.dispatch_control_invocations();
+        assert_eq!(observed.calls.get(), 0, "permission checked before handler");
+        assert_eq!(host.state.doc.base_heads(), before);
+        assert_eq!(
+            automerge::transaction::Transactable::pending_ops(&host.state.doc),
+            0
+        );
+        assert!(matches!(
+            observed.results.borrow().as_slice(),
+            [Err(tilo_actions::ApiError::Unknown(_))]
+        ));
+        assert!(observed.pending.borrow().is_empty());
+    }
+
+    {
+        let mut app = app();
+        let before = app.state.doc.get_heads();
+        let address = tilo_actions::ActionAddress::new("test.counter", "ping");
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
+        assert!(matches!(
+            result,
+            Ok(crate::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert_eq!(app.state.doc.get_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
+    }
+}
+
+fn label(app: &App) -> String {
+    match app.state.doc.get(&ROOT, "label") {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Str(s) => s.to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
+#[test]
+fn semantic_invocation_matches_the_affordance_dispatch() {
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let bump = app
+            .semantic_tree()
+            .action(&SemanticId("r:test.counter".into()), "bump")
+            .expect("bump affordance");
+
+        let from_affordance =
+            tilo_actions::EncodedAction::encode(COUNTER_TYPE, &CounterAction::Bump).unwrap();
+
+        match &bump.kind {
+            SemanticActionKind::App(enc) => assert_eq!(
+                enc, &from_affordance,
+                "the a11y node exposes the same EncodedAction the on-screen control dispatches"
+            ),
+            other => panic!("expected an app action, got {other:?}"),
+        }
+    }
+
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let id = SemanticId("r:test.counter".into());
+        assert_eq!(counter(&app), 0);
+
+        assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
+        assert_eq!(
+            counter(&app),
+            1,
+            "the invoked action mutated the shared doc"
+        );
+        assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
+        assert_eq!(counter(&app), 2);
+
+        // An unknown action name is a graceful no-op.
+        assert!(!app.invoke_semantic_action(&id, "nope", None).unwrap());
+        assert_eq!(counter(&app), 2);
+    }
+
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let id = SemanticId("r:test.counter".into());
+        assert!(
+            app.invoke_semantic_action(&id, "set-label", Some("hello"))
+                .unwrap()
+        );
+        assert_eq!(
+            label(&app),
+            "hello",
+            "the prompted argument reached the built action"
+        );
+    }
+
+    {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None)
+            .unwrap();
+
+        let mut host = crate::local_dispatch::LocalDispatch::new();
+        let mut host_doc = automerge::AutoCommit::new();
+        host.try_dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump)
+            .unwrap();
+
+        let via_a11y = counter(&app);
+        let via_affordance = match host_doc.get(&ROOT, "n") {
+            Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
+            _ => 0,
+        };
+        assert_eq!(
+            via_a11y, via_affordance,
+            "both paths produce the same result"
+        );
+    }
+}
+
+/// A tree of a branch "Root" over a leaf "Child": the rows the semantic routes act on.
+fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
+    let node = |label: &str, item: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
+        item: crate::component::ResourceId(item.into()),
+        label: label.into(),
+        parent: parent.map(|parent| crate::component::ResourceId(parent.into())),
+        branch,
+        ..TreeViewNodeProps::default()
+    };
+    let props = TreeViewProps {
+        hide_root: true,
+        nodes: vec![
+            node("Root", "1", None, true),
+            node("Child", "2", Some("1"), false),
+        ]
+        .into(),
+        expanded: Some(if open {
+            vec![crate::component::ResourceId("1".into())]
+        } else {
+            Vec::new()
+        }),
+        ..TreeViewProps::default()
+    };
+    Box::new(crate::widget::DescribedTreeView::from_props(id, props))
+}
+
+#[test]
+fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
+    {
+        let mut app = App::new(State::new(), items_tree("items-tree", true));
+        app.init_layout();
+
+        app.refresh_semantic_tree();
+        let child = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
+            })
+            .map(|node| node.id.clone())
+            .expect("semantic child row");
+        assert!(
+            app.invoke_semantic_action(&child, "activate", None)
+                .expect("semantic row activation")
+        );
+        app.refresh_semantic_tree();
+        assert!(
+            app.semantic_tree()
+                .node(&child)
+                .is_some_and(|node| node.state.selected)
+        );
+
+        let update = app.build_a11y_tree_update(1.0);
+        assert_eq!(
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+                .count(),
+            2
+        );
+        let root_row = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .map(|(id, node)| {
+                assert!(node.supports_action(accesskit::Action::Collapse));
+                *id
+            })
+            .expect("virtual root row");
+        let route = crate::accesskit_bridge::resolve_node_id(
+            app.root_widget.as_ref(),
+            &app.layout.node_map,
+            root_row,
+        )
+        .expect("root row route");
+        assert!(matches!(
+            route,
+            crate::accesskit_bridge::A11yTarget::Synthetic {
+                semantic_target: Some(ref target),
+                ..
+            } if target == "key:node:1"
+        ));
+        assert_eq!(
+            app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
+            None
+        );
+        app.refresh_semantic_tree();
+        let root_semantics = app
+            .semantic_tree()
+            .iter()
+            .find(|node| {
+                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
+            })
+            .expect("root semantics after collapse");
+        assert_eq!(root_semantics.state.expanded, Some(false));
+
+        // A folded branch's rows are gone before assistive technology is told of the tree.
+        app.init_layout();
+        let collapsed = app.build_a11y_tree_update(1.0);
+        let rows = collapsed
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == accesskit::Role::TreeItem)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "collapsing removes the child row");
+        assert!(rows[0].1.supports_action(accesskit::Action::Expand));
+    }
+
+    {
+        let search = crate::widget::Autocomplete::new()
+            .with_id("city-search")
+            .with_placeholder("Search city")
+            .with_suggester(|query| {
+                if query == "Ber" {
+                    vec![crate::widget::Suggestion::new("Berlin")]
+                } else {
+                    Vec::new()
+                }
+            });
+        let nav = crate::widget::NavShell::new()
+            .overview(Box::new(search))
+            .content(Box::new(crate::widget::Column::new()));
+        let mut app = App::new(State::new(), Box::new(nav));
+        app.init_layout();
+        let update = app.build_a11y_tree_update(1.0);
+        let field = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .0;
+        app.dispatch_a11y_action(field, &crate::a11y::Action::SetValue("Ber".into()));
+        let update = app.build_a11y_tree_update(1.0);
+        let result = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Berlin"))
+            .expect("native edit must publish a result")
+            .0;
+        app.dispatch_a11y_action(result, &crate::a11y::Action::Activate);
+        let update = app.build_a11y_tree_update(1.0);
+        let field = &update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .1;
+        assert_eq!(field.value(), Some("Berlin"));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Berlin"))
+        );
+    }
+
+    {
+        let changed = std::rc::Rc::new(std::cell::Cell::new(usize::MAX));
+        let captured = std::rc::Rc::clone(&changed);
+        let group = crate::widget::ToggleGroup::new(
+            vec![
+                crate::widget::toggle_group::Segment::new("Light"),
+                crate::widget::toggle_group::Segment::new("Dark"),
+            ],
+            0,
+        )
+        .on_choose("choice", move |index| captured.set(index));
+        let mut app = App::new(State::new(), Box::new(group));
+        app.init_layout();
+        app.refresh_semantic_tree();
+        let dark = app
+            .semantic_tree()
+            .find_by_name("Dark")
+            .map(|node| node.id.clone())
+            .expect("synthetic Dark segment");
+
+        assert!(
+            app.invoke_semantic_action(&dark, "activate", None)
+                .expect("semantic dispatch")
+        );
+        assert_eq!(changed.get(), 1);
+    }
+
+    {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let captured = std::rc::Rc::clone(&presses);
+        let button = Button::new("drive-me", "Drive me").on_click(move || {
+            captured.set(captured.get().saturating_add(1));
+        });
+        let mut app = App::new(State::new(), Box::new(button));
+        app.init_layout();
+
+        let resource = app
+            .collect_resources()
+            .into_iter()
+            .find(|resource| resource.kind == "tilo.ui.control" && resource.label == "Drive me");
+        assert!(resource.is_none_or(|resource| {
+            resource
+                .actions
+                .iter()
+                .all(|action| action.id != "activate")
+        }));
+        assert_eq!(presses.get(), 0);
+    }
+}
+
+#[test]
+fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
+    let mut card = CounterCard::new();
+    card.bump_after_ping = true;
+    let mut app = App::new(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    app.collaboration.manager = disconnected_delivery_manager();
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        7,
+        invocation,
+        "test.counter".into(),
+        "ping".into(),
+        None,
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+        None,
+    );
+    assert_eq!(counter(&app), 1, "the effect's edit was applied");
+    assert_eq!(
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        Some(crate::permissions::MemberId::agent("Scribe")),
+        "by the effect's invoker, not the person at the device"
+    );
+    assert!(
+        app.actions.acting_for.is_empty(),
+        "the answered invocation runs for nobody"
+    );
+
+    // An effect a viewer may take lends them no write: its edit is refused.
+    app.invoke_published_action(
+        8,
+        tilo_actions::InvocationId::new(),
+        "test.counter".into(),
+        "peek".into(),
+        None,
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Viewer")),
+        None,
+    );
+    assert_eq!(counter(&app), 1, "the viewer's effect wrote nothing");
+    assert!(app.actions.acting_for.is_empty());
+
+    // An edit the app submits on its own is the local person's.
+    let local = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
+    app.invoke_resource_action(ResourceInvocation::new(
+        &tilo_actions::ActionAddress::new("test.counter", "bump"),
+        &local,
+    ))
+    .expect("the local person bumps");
+    assert_eq!(counter(&app), 2);
+    assert_eq!(
+        app.state.peek_last_undo().and_then(|entry| entry.author),
+        local.member_id().cloned()
+    );
+}
+
+#[test]
+fn with_a_broker_an_effects_edit_is_admitted_there_for_its_invoker() {
+    let terminal = |sent: &[CollabRequest], invocation: tilo_actions::InvocationId| {
+        sent.iter().find_map(|request| match request {
+            CollabRequest::UpdateInvocation { update, .. }
+                if update.is_terminal() && update.invocation() == invocation =>
+            {
+                Some(update.clone())
+            }
+            _ => None,
+        })
+    };
+    for refused in [true, false] {
+        let mut card = CounterCard::new();
+        card.bump_after_ping = true;
+        let mut app = App::new(State::new(), Box::new(card));
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        let sent = Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+        let invocation = tilo_actions::InvocationId::new();
+        app.invoke_published_action(
+            9,
+            invocation,
+            "test.counter".into(),
+            "ping".into(),
+            None,
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            None,
+        );
+        assert_eq!(
+            counter(&app),
+            0,
+            "nothing is applied before the broker admits it"
+        );
+        let follow_up = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                } => Some(invoke.clone()),
+                _ => None,
+            })
+            .expect("the edit goes to the broker");
+        assert_eq!(follow_up.on_behalf_of, Some(invocation));
+        assert_eq!(follow_up.target.address.action, "bump");
+        assert!(
+            terminal(&sent.borrow(), invocation).is_none(),
+            "the effect answers once its edit is admitted"
+        );
+
+        let request_id = *app.actions.follow_ups.keys().next().unwrap();
+        let receipt = if refused {
+            Err("NotPermitted".to_owned())
+        } else {
+            Ok((
+                follow_up.invocation,
+                tilo_actions::InvocationUpdate::Accepted {
+                    invocation: follow_up.invocation,
+                },
+            ))
+        };
+        assert!(app.settle_follow_up(request_id, &receipt));
+        match terminal(&sent.borrow(), invocation) {
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) if refused => {
+                assert_eq!(error.code, "permission_denied");
+            }
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. }) if !refused => {}
+            other => panic!("unexpected answer: {other:?}"),
+        }
+        assert!(app.actions.acting_for.is_empty());
+    }
+}
+
+#[test]
+fn broker_invocation_uuid_collision_preserves_original_operation_route() {
+    for conflicting_action in ["bump", "async-bump"] {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        app.collaboration.manager = admitted_delivery_manager();
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
+        app.invoke_published_action(
+            43,
+            invocation,
+            "test.counter".into(),
+            "async-bump".into(),
+            None,
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device-first")),
+            None,
+        );
+        // A conflicting caller must never replace the active operation's
+        // cancellation/completion route or run a second effect.
+        app.invoke_published_action(
+            44,
+            invocation,
+            "test.counter".into(),
+            conflicting_action.into(),
+            None,
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device-second")),
+            None,
+        );
+        assert_eq!(
+            counter(&app),
+            0,
+            "conflicting invocation was rejected before its effect"
+        );
+        assert_eq!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .unwrap()
+                .wire_id,
+            43
+        );
+        app.request_invocation_cancellation(44);
+        assert!(
+            !app.actions
+                .directed_invocations
+                .get(&invocation)
+                .unwrap()
+                .cancellation_requested
+        );
+        app.request_invocation_cancellation(43);
+        assert!(
+            app.actions
+                .directed_invocations
+                .get(&invocation)
+                .unwrap()
+                .cancellation_requested
+        );
+        app.refresh_focus_order();
+        assert_eq!(counter(&app), 1, "only the first operation ran");
+        assert!(app.poll_directed_invocations());
+        assert!(app.actions.directed_invocations.is_empty());
+    }
+}
+
+include!("action_directory_snapshot_tests.rs");
+
+fn directory_query(
+    revision: impl Into<String>,
+    parent_resource: impl Into<String>,
+    max_results: u32,
+    max_bytes: u32,
+    max_work: u32,
+) -> runtime_collab::ActionDirectoryQuery {
+    runtime_collab::ActionDirectoryQuery {
+        peer_id: 1,
+        revision: revision.into(),
+        cursor: Vec::new(),
+        needle: String::new(),
+        parent_resource: parent_resource.into(),
+        max_results,
+        max_bytes,
+        max_work,
+        max_depth: 8,
+        resource_name: String::new(),
+    }
+}
+
+#[test]
+fn action_directory_pages_caps_and_cursors_fail_closed() {
+    {
+        let mut app = app();
+        let root = app.action_directory_page(directory_query("", "", 8, 8_192, 8));
+        assert_eq!(root.rows.len(), 1);
+        assert_eq!(root.rows[0].resource, "test.counter");
+        assert!(root.rows[0].action.is_none());
+        assert!(root.rows[0].has_children);
+
+        let actions =
+            app.action_directory_page(directory_query(root.revision, "test.counter", 8, 8_192, 8));
+        assert!(actions.rows.len() >= 5, "parent exposes its action rows");
+        assert!(actions.rows.iter().all(|row| row.action.is_some()));
+        assert!(matches!(
+            app.resolve_action_directory("stale", "test.counter", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+    }
+
+    {
+        let mut app = app();
+        app.actions.next_broker_request_id = Some(u64::MAX);
+        assert_eq!(app.take_broker_request_id().unwrap(), u64::MAX);
+        assert!(matches!(
+            app.take_broker_request_id(),
+            Err(tilo_actions::ApiError::Unavailable { code, .. })
+                if code == "broker_request_identity_exhausted"
+        ));
+    }
+
+    {
+        let mut app = app();
+        let first = app.action_directory_cursor_key();
+        let second = app.action_directory_cursor_key();
+        assert_ne!(first, second);
+        assert!(first.starts_with("tilo-dir-"));
+        assert!(second.starts_with("tilo-dir-"));
+    }
+
+    {
+        let mut app = app();
+        let page = app.action_directory_page(directory_query("", "", 1, 1, 1));
+        assert!(
+            page.rows.is_empty(),
+            "one byte cannot contain a resource row"
+        );
+        assert!(page.budget_exhausted);
+        assert!(!page.exhausted);
+    }
+
+    {
+        let mut app = App::new(
+            State::new(),
+            Box::new(CounterCard::with_directory_roots(
+                ACTION_DIRECTORY_MAX_RESULTS + 1,
+            )),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        let first = app.action_directory_page(directory_query(
+            "",
+            "",
+            u32::try_from(ACTION_DIRECTORY_MAX_RESULTS).unwrap_or(u32::MAX),
+            64 * 1024,
+            u32::try_from(ACTION_DIRECTORY_MAX_WORK).unwrap_or(u32::MAX),
+        ));
+        assert_eq!(first.rows.len(), ACTION_DIRECTORY_MAX_RESULTS);
+        assert!(!first.exhausted);
+        let tail = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: first.revision.clone(),
+            cursor: first.next_cursor,
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 8,
+            max_bytes: 8_192,
+            max_work: 32,
+            max_depth: 8,
+            resource_name: String::new(),
+        });
+        assert_eq!(tail.rows.len(), 1);
+        assert_eq!(tail.rows[0].resource, "test.counter:128");
+        assert!(tail.exhausted);
+    }
+}
+
+#[test]
+fn directory_finds_a_100k_tail_without_scanning_the_corpus() {
+    let provider = LargeDirectoryProvider::new(100_000);
+    let calls = std::sync::Arc::clone(&provider.calls);
+    let largest_budget = std::sync::Arc::clone(&provider.largest_budget);
+    let corpus = provider.catalog.clone();
+    let mut app = App::new(
+        State::new(),
+        Box::new(CounterCard::with_directory_provider(provider)),
+    );
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    let page = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+        peer_id: 1,
+        revision: String::new(),
+        cursor: Vec::new(),
+        needle: "needle-99999".into(),
+        parent_resource: String::new(),
+        max_results: 8,
+        max_bytes: 8_192,
+        max_work: 8,
+        max_depth: 8,
+        resource_name: String::new(),
+    });
+    assert_eq!(page.rows.len(), 1);
+    assert_eq!(page.rows[0].resource, "test.item:99999");
+    // One bounded call finds the only record holding the needle, and the
+    // index knows nothing else matches.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert!(page.exhausted);
+    assert!(
+        largest_budget.load(std::sync::atomic::Ordering::Relaxed) <= 8,
+        "the adapter passed the caller's bounded work budget to the retained index"
+    );
+    // Freeing a 100k-row index costs seconds in a debug build and proves
+    // nothing here: the app lets go of its handle, and the last one is
+    // released off the test thread.
+    drop(app);
+    std::thread::spawn(move || drop(corpus));
+}
+
+#[test]
+fn directory_cursor_saturation_evicts_old_cursors_as_stale() {
+    let mut app = app();
+    let revision = app.action_directory_revision();
+    let first = app.action_directory_next_cursor(ActionDirectoryCursor {
+        revision: revision.clone(),
+        needle: String::new(),
+        parent_resource: String::new(),
+        provider_index: 0,
+        provider_cursor: None,
+        browse_offset: 0,
+        root_widget_index: 0,
+        root_provider_cursor: None,
+    });
+    for offset in 1..=ACTION_DIRECTORY_MAX_CURSORS {
+        let _ = app.action_directory_next_cursor(ActionDirectoryCursor {
+            revision: revision.clone(),
+            needle: String::new(),
+            parent_resource: String::new(),
+            provider_index: 0,
+            provider_cursor: None,
+            browse_offset: offset,
+            root_widget_index: 0,
+            root_provider_cursor: None,
+        });
+    }
+    assert!(app.actions.action_directory_cursors.len() <= ACTION_DIRECTORY_MAX_CURSORS);
+    let page = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+        peer_id: 1,
+        revision,
+        cursor: first,
+        needle: String::new(),
+        parent_resource: String::new(),
+        max_results: 1,
+        max_bytes: 1_024,
+        max_work: 1,
+        max_depth: 1,
+        resource_name: String::new(),
+    });
+    assert!(page.stale_cursor);
+}
+
+#[test]
+fn a_needle_finds_actions_published_only_in_the_resource_tree() {
+    let mut app = app();
+    let mut query = directory_query("", "", 8, 65_536, 64);
+    query.needle = "ping".into();
+    let page = app.action_directory_page(query);
+    assert!(page.exhausted, "{page:?}");
+    let found = page
+        .rows
+        .iter()
+        .map(|row| (row.resource.as_str(), row.action.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("test.counter", Some("ping"))]);
+
+    let mut query = directory_query("", "", 1, 65_536, 64);
+    query.needle = "BUMP".into();
+    let first = app.action_directory_page(query.clone());
+    assert_eq!(first.rows.len(), 1);
+    assert!(!first.exhausted);
+    query.revision = first.revision.clone();
+    query.cursor = first.next_cursor.clone();
+    let second = app.action_directory_page(query);
+    assert_eq!(second.rows.len(), 1);
+    assert_ne!(
+        first.rows[0].action, second.rows[0].action,
+        "the cursor resumes after the returned match"
+    );
+}
+
+#[test]
+fn a_needle_finds_an_action_by_its_parameters() {
+    let mut app = app();
+    let mut query = directory_query("", "", 8, 65_536, 64);
+    query.needle = "value".into();
+    let page = app.action_directory_page(query);
+    let found = page
+        .rows
+        .iter()
+        .map(|row| (row.resource.as_str(), row.action.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("test.counter", Some("set-label"))], "{page:?}");
+}
+
+#[cfg(all(target_os = "linux", feature = "native"))]
+#[path = "native_pty_wake_tests.rs"]
+mod native_pty_wake_tests;
+
+/// A settle that replaces the focused control and, in the same frame,
+/// dispatches its destructive action: the confirmation that opens finds
+/// where focus returns in the live tree, never through the layout's
+/// pointer to the control that was replaced.
+#[test]
+fn a_control_replaced_while_its_destructive_action_asks_is_not_followed() {
+    let card = CounterCard::with_destructive(true);
+    let replace = std::rc::Rc::clone(&card.replace_on_settle);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let button = app.focusable_order[0];
+    app.set_focused_node(Some(button));
+    activate_bound_button(&mut app);
+    replace.set(true);
+    assert!(app.sync_model(true));
+    assert!(app.action_palette().is_some(), "the host asks to confirm");
+    assert_eq!(counter(&app), 0, "nothing ran unconfirmed");
+    assert!(
+        app.actions.ordinary_palette_return_focus.is_none(),
+        "focus returns to no control: the focused one was replaced, and its \
+         replacement was never focused"
+    );
+}
+
+/// What an assistive technology asks of a table row — press it, open its
+/// menu — reaches the row it named, by the node it was handed and never by
+/// a point guessed from it.
+#[test]
+fn a_table_row_does_what_an_assistive_technology_asks_of_it() {
+    use crate::a11y::Action;
+    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+
+    #[derive(Clone)]
+    struct Listed {
+        name: &'static str,
+    }
+
+    let opened = std::rc::Rc::new(RefCell::new(Vec::<usize>::new()));
+    let recorded = std::rc::Rc::clone(&opened);
+    let menus = std::rc::Rc::new(RefCell::new(Vec::<usize>::new()));
+    let listed = std::rc::Rc::clone(&menus);
+    let mut table = DataTable::<Listed>::new(vec![
+        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+            .with_accessible_value(|row: &Listed| row.name.to_owned()),
+    ])
+    .with_row_key(|row: &Listed| row.name.len() as u64)
+    .selectable(true)
+    .on_activate(move |index| recorded.borrow_mut().push(index))
+    .on_row_context_menu(move |index, _point, _rect| listed.borrow_mut().push(index));
+    table.set_rows(vec![
+        Listed { name: "Notes.txt" },
+        Listed { name: "Report.pdf" },
+    ]);
+    table.set_viewport(96.0, 24.0);
+    let mut app = App::new(State::new(), Box::new(table));
+    app.init_layout();
+
+    let row = |update: &accesskit::TreeUpdate, label: &str| {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::Row && node.label() == Some(label))
+            .map(|(id, node)| {
+                (
+                    *id,
+                    node.supports_action(accesskit::Action::Click),
+                    node.supports_action(accesskit::Action::ShowContextMenu),
+                )
+            })
+            .unwrap_or_else(|| panic!("the row reading {label} is exported"))
+    };
+    let update = app.build_a11y_tree_update(1.0);
+    let (notes, pressable, _) = row(&update, "Notes.txt");
+    assert!(pressable, "a row a reader names is one it can press");
+    assert!(
+        row(&update, "Report.pdf").1,
+        "every listed file is pressable"
+    );
+    let _ = app.dispatch_a11y_action(notes, &Action::Activate);
+    assert_eq!(
+        &*opened.borrow(),
+        &[0],
+        "the file the reader named is opened"
+    );
+
+    let update = app.build_a11y_tree_update(1.0);
+    let (report, _, menuable) = row(&update, "Report.pdf");
+    assert!(menuable, "a row whose menu opens announces that menu");
+    let handled = app.dispatch_a11y_action(report, &Action::ShowContextMenu);
+    assert_eq!(
+        &*menus.borrow(),
+        &[1],
+        "the menu opens on the row the reader named, not on what was selected ({handled:?})"
+    );
+}

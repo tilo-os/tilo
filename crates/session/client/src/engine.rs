@@ -43,6 +43,7 @@ use tilo_workspace_keys::{KeyAccess, KeyProvider};
 use crate::identity;
 use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
+pub use tilo_peer_state::workspace_view::{Holder, Hosting, NotDeletable};
 
 mod documents;
 #[cfg(test)]
@@ -51,19 +52,6 @@ pub(crate) use documents::page_holder;
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
 const FILE: &str = "workspaces.json";
-
-/// Why a workspace is not the person's to delete here, when it is not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotDeletable {
-    /// This device does not hold it.
-    NotHeld,
-    /// Someone else is still in it, so it is not this device's to delete.
-    OthersInIt,
-    /// Another of the person's devices holds it too: deleting it here would not delete it for them.
-    OtherDevice,
-    /// It belongs to someone else.
-    NotOwner,
-}
 
 /// The part an invitation brings someone in at: a role, and whether it also makes them an
 /// administrator (an Editor with every governance action).
@@ -152,17 +140,6 @@ pub enum SealKeys {
     NoSecretStore,
 }
 
-/// Who hosts a workspace this device holds, as its record says ([`Engine::hosting`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hosting {
-    /// The host's name, as its person gave it; empty when the record names no host.
-    pub host: String,
-    /// The host is this device.
-    pub here: bool,
-    /// This device is the workspace's member: its host took it in.
-    pub admitted: bool,
-}
-
 /// Whether a workspace admitted this device, as this device's copy of it says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Admission {
@@ -237,26 +214,6 @@ pub struct Engine {
     open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
 }
 
-/// One holder of a workspace, as a member's device reads it off the holder's
-/// own signed address ([`Engine::holders`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Holder {
-    /// Its device key, hex.
-    pub device: String,
-    /// What it calls itself: its server's name from its person's admin
-    /// workspace, or its site's name; its device's label when it names none.
-    pub label: String,
-    /// Whether it holds the workspace's keys: it reads the workspace. A store
-    /// holds its ciphertext and reads none of it.
-    pub reads: bool,
-    /// Whether the machine under it is rented from a cloud provider, whose
-    /// operator can read what it holds.
-    pub cloud: bool,
-    /// Whether it has a moderation agent for the workspace, which a person
-    /// who governs the workspace may turn on.
-    pub moderates: bool,
-}
-
 /// What a workspace's holder answers an ask of its governance, once it has.
 #[cfg(not(target_arch = "wasm32"))]
 pub type ServiceAnswer =
@@ -278,13 +235,14 @@ pub trait Founder: Send + Sync {
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Ask `workspace`'s governance action `action` with `arguments` of its holder: this
-    /// device's own service when it holds `workspace`, else the holder its enrollment names, on
-    /// the device action service. `None` when this device reaches no holder of it.
+    /// Ask `workspace`'s action `target` (its governance's, or the models its work runs on) with
+    /// `arguments` of its holder: this device's own service when it holds `workspace`, else the
+    /// holder its enrollment names, on the device action service. `None` when this device reaches
+    /// no holder of it.
     fn ask(
         &self,
         workspace: WorkspaceId,
-        action: &str,
+        target: tilo_actions::remote::RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer>;
 
@@ -1454,11 +1412,28 @@ impl Engine {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
+        let target = tilo_actions::remote::RemoteActionTarget::workspace_governance(
+            &workspace.to_string(),
+            action,
+        );
+        self.ask_holder_of(workspace, target, arguments)
+    }
+
+    /// Ask `workspace`'s action `target` with `arguments` of its holder, as this device
+    /// ([`Founder::ask`]): what [`Self::ask_holder`] asks of its governance, for any action the
+    /// holder answers its members' devices.
+    #[must_use]
+    pub fn ask_holder_of(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        target: tilo_actions::remote::RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
         let mut ended = self.founded.subscribe();
         if !self.founding.lock_recover().contains(&workspace) {
-            return self.founders.get()?.ask(workspace, action, arguments);
+            return self.founders.get()?.ask(workspace, target, arguments);
         }
-        let (engine, action) = (Arc::clone(self), action.to_owned());
+        let (engine, action) = (Arc::clone(self), target);
         Some(Box::pin(async move {
             while engine.founding.lock_recover().contains(&workspace) {
                 if ended.changed().await.is_err() {
@@ -1468,7 +1443,7 @@ impl Engine {
             match engine
                 .founders
                 .get()
-                .and_then(|founder| founder.ask(workspace, &action, arguments))
+                .and_then(|founder| founder.ask(workspace, action, arguments))
             {
                 Some(asked) => asked.await,
                 None => Err("this device reaches no holder of the workspace".to_owned()),

@@ -266,9 +266,9 @@ pub fn authenticated(source: &str, value: &Value) -> Result<()> {
         }
         return Ok(());
     }
-    if let Some(e) = expected {
-        validate::expectation(e, "home")?;
-    }
+    let expected_home = expected
+        .map(|e| validate::expectation(e, "home"))
+        .transpose()?;
     let setup = value.get("completed_setup").ok_or_else(invalid)?;
     let parent = fs::directory(source)?;
     fs::protected(&parent, fs::uid(), false)?;
@@ -277,21 +277,26 @@ pub fn authenticated(source: &str, value: &Value) -> Result<()> {
     if fs::receipt(&parent, Some(fs::uid()), true)?.as_ref() != Some(setup) {
         return Err(invalid());
     }
+    let setup_binding = value.get("setup_binding").and_then(Value::as_str);
     if (value.get("retained_home").is_some_and(|v| !v.is_null()) && !shared)
-        || expected.is_some_and(|e| e.get("setup_binding") != value.get("setup_binding"))
+        || expected_home
+            .as_ref()
+            .is_some_and(|e| Some(e.setup_binding()) != setup_binding)
     {
         return Err(invalid());
     }
     let actual = payload::staged(source, "home")?;
-    if actual.as_ref().and_then(|v| v.get("expectation")) != expected {
+    if actual.as_ref().map(|staged| &staged.expected) != expected_home.as_ref() {
         return Err(invalid());
     }
     let actual_apps = payload::staged(source, "applications")?;
     if let Some(e) = apps {
-        validate::expectation(e, "applications")?;
-        if e.get("setup_binding") != value.get("setup_binding")
-            || expected.is_some_and(|home| e.get("operation") == home.get("operation"))
-            || actual_apps.as_ref().and_then(|v| v.get("expectation")) != Some(e)
+        let expected_apps = validate::expectation(e, "applications")?;
+        if Some(expected_apps.setup_binding()) != setup_binding
+            || expected_home
+                .as_ref()
+                .is_some_and(|home| expected_apps.operation() == home.operation())
+            || actual_apps.as_ref().map(|staged| &staged.expected) != Some(&expected_apps)
         {
             return Err(invalid());
         }

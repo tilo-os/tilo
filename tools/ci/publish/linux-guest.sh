@@ -21,7 +21,7 @@ repository=registry.tilo.so/tilo/linux-guest
 # Everything that ends up in the guest disk.
 inputs_digest() {
   find os/Containerfile.linux-guest os/linux-guest os/base-snapshot.env \
-    crates/runtime/linux-vm-agent crates/runtime/linux-vm-protocol \
+    crates/vm/linux-vm-agent crates/vm/linux-vm-protocol \
     os/external-assets/xwayland-satellite tools/ci/install-xwayland-satellite.sh -type f -print0 \
     | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
 }

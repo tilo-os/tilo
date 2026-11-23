@@ -1,18 +1,17 @@
 //! A person's assistant on the server signs in to their mail with a password it never sees, with
 //! no device of theirs on while it works.
 //!
-//! The whole chain through the server's own interfaces: the person mentions the assistant in a
-//! channel of Chat, which asks it; it needs a mail account and asks for the password through the
-//! vault; the server asks the person's own device in the system's protected field, keeps what
-//! they type in the workspace's vault on the server and tells the assistant the reference; the
-//! turn that follows holds only the reference and calls the use; the first use asks the person in
-//! the assistant's reply; they answer "always" there; the server signs in and adds the account;
-//! the second use asks nothing. The password is in no message, no reply, no tool result, no model
-//! request, no log line and nowhere on the server's disk in the clear.
-use super::hosted_agent_turns::{SCOUT, make_agent};
+//! The whole chain through the server's own interfaces: the assistant needs a mail account and asks
+//! for the password, first in the conversation, which refuses it, then through the vault; the
+//! server asks the person's own device in the system's protected field, keeps what they type in the
+//! workspace's vault on the server and tells the assistant the reference; the turn that follows
+//! holds only the reference and calls the use; the first use asks the person; they answer "Always";
+//! the server signs in and adds the account; the second use asks nothing. The password is in no
+//! message, no tool result, no model request, no log line and nowhere on the server's disk in the
+//! clear.
+use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_agent};
 use super::*;
 use std::sync::Mutex;
-use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::{person_accounts, person_vault};
 use tilo_server::workspaces::{
     Workspaces,
@@ -22,14 +21,15 @@ use tilo_server::workspaces::{
     },
 };
 use tilo_workspace_service::agents::{ServerAgents as Agents, windows::Windows};
-use tilo_workspace_service::asks as tl_asks;
-use tilo_workspace_service::tl_records::runtime::Value as TlValue;
+use ui::tilo_resource::{Id, Resource as _};
+
+const CHAT: &str = "so.tilo.chat";
 /// What the person types into the protected field. Nothing but the server's sign-in may hold it.
 pub(super) const PASSWORD: &str = "only-the-mail-server-may-read-this";
 const IMAP: &str = "imap://imap.example.test:993";
 const SMTP: &str = "smtp://smtp.example.test:465";
 /// What the agent is told when its person is asked first.
-const ASKED: &str = "Your person is asked in your reply";
+const ASKED: &str = "Your person is asked in the conversation";
 
 /// Every log line the test's process writes, at every level.
 #[derive(Clone, Default)]
@@ -110,7 +110,7 @@ pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf
 /// A server with one person, their assistant on it, and the workspace's own model.
 pub(super) struct Hosted {
     /// The server itself, kept running until the test ends.
-    pub(super) server: crate::harness::hosted::Hosted,
+    server: crate::harness::hosted::Hosted,
     pub(super) actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     pub(super) workspaces: Workspaces,
     pub(super) workspace: String,
@@ -129,125 +129,6 @@ pub(super) struct Hosted {
     /// Where the server is reached: what a stand-in for a window in the workspace's machine
     /// dials.
     pub(super) address: iroh::EndpointAddr,
-    /// Where the person writes to their assistant.
-    chat: InChat,
-}
-
-/// A person writing to their assistant in tl Chat, and the asks and replies that makes.
-pub(super) struct InChat {
-    workspaces: Workspaces,
-    workspace: String,
-    /// The person, by their person id.
-    person: String,
-    /// The channel of Chat the person writes to their assistant in, by its id and type, once
-    /// they wrote there.
-    channel: Mutex<Option<(String, String)>>,
-}
-
-impl InChat {
-    /// Where `person` writes to Scout in `workspace`. Scout is a member that reads the
-    /// workspace, as the grant a person gives an agent they add makes it: an ask of an agent
-    /// that may not read what it is asked about is no turn.
-    pub(super) async fn new(workspaces: &Workspaces, workspace: &str, person: String) -> Self {
-        use ui::permissions::policy::{Answer, Grant, Grantee, KindSet, TreePath};
-        let member = Grant::new(
-            format!("agent-member:{SCOUT}"),
-            Grantee::agent(SCOUT),
-            TreePath::workspace(workspace),
-            KindSet::READ,
-            Answer::Allow,
-            Grantee::person(person.clone()),
-        );
-        let governor = workspaces.governor().clone();
-        workspaces
-            .put_workspace_grants(workspace, &governor, [0x5c; 32], vec![member])
-            .await
-            .expect("the workspace takes Scout as a member");
-        Self {
-            workspaces: workspaces.clone(),
-            workspace: workspace.to_owned(),
-            person,
-            channel: Mutex::new(None),
-        }
-    }
-
-    /// The person writes `words` to their assistant in the channel they talk to it in, as
-    /// "@Scout <words>": the mention asks it, as their Chat makes it as it takes the message in.
-    pub(super) async fn says(&self, words: &str) {
-        let packages = tl_asks::chat_packages().unwrap();
-        let ada = tl_asks::Actor::Member(MemberId::person(self.person.clone()));
-        let chat = packages.app().to_owned();
-        let channel = self.channel.lock().unwrap().clone();
-        let words = format!(" {words}");
-        let channel = self
-            .workspaces
-            .with_tl_record(&self.workspace, &packages, ada.clone(), move |opened| {
-                let known = channel.and_then(|(id, ty)| tl_asks::ResourceRef::parse_id(&id, ty));
-                let channel = match known {
-                    Some(channel) => channel,
-                    None => {
-                        let all = opened
-                            .host()
-                            .root_of(&chat)
-                            .map_err(|error| error.to_string())?;
-                        let made = opened.invoke(
-                            &ada,
-                            (&chat, "new_channel"),
-                            vec![TlValue::resource(&all), TlValue::Text("with-scout".into())],
-                            None,
-                        )?;
-                        let TlValue::Ref(made) = made else {
-                            return Err("the channel was not made".to_owned());
-                        };
-                        (*made.target).clone()
-                    }
-                };
-                opened.invoke(
-                    &ada,
-                    (&chat, "send"),
-                    vec![
-                        TlValue::resource(&channel),
-                        tl_asks::mentioning(&MemberId::agent(SCOUT), "Scout", &words),
-                        TlValue::Opt(None),
-                    ],
-                    None,
-                )?;
-                Ok((channel.id_string(), channel.ty))
-            })
-            .await
-            .expect("the person writes to their assistant");
-        *self.channel.lock().unwrap() = Some(channel);
-    }
-
-    /// The asks of the workspace and their replies, as the person's devices read them, oldest
-    /// first.
-    pub(super) async fn asked(&self) -> Vec<tl_asks::Asked> {
-        let packages = tl_asks::chat_packages().unwrap();
-        let mut asked = self
-            .workspaces
-            .with_tl_record(
-                &self.workspace,
-                &packages,
-                tl_asks::Actor::Member(MemberId::person(self.person.clone())),
-                |opened| tl_asks::asks(opened),
-            )
-            .await
-            .unwrap();
-        asked.sort_by(|one, other| one.asked_at.cmp(&other.asked_at));
-        asked
-    }
-
-    /// What the questions the assistant's replies put to its person say, oldest first.
-    pub(super) async fn questions(&self) -> Vec<String> {
-        self.asked()
-            .await
-            .iter()
-            .flat_map(|asked| asked.replies.iter())
-            .flat_map(|reply| reply.steps.iter())
-            .filter(|step| step.called.starts_with("question:"))
-            .map(|step| step.answered.clone())
-            .collect()
-    }
 }
 
 /// The person at their own devices: every question the server puts to them there, each waiting
@@ -390,6 +271,12 @@ impl Hosted {
         let acts_for = root.verifying_key().to_bytes();
         let person = hex::encode(acts_for);
         make_agent(&page, &workspaces, &workspace, &person, None).await;
+        let catalogue = crate::common::catalogue();
+        let governor = workspaces.device_cert().clone();
+        workspaces
+            .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
+            .await
+            .unwrap();
         let model = ScriptedProvider::answering(Vec::new());
         workspaces.answer_models_with(model.clone());
         workspaces
@@ -418,7 +305,6 @@ impl Hosted {
             .approving(&workspace, &[SCOUT])
             .await
             .placing(browsers.map(|browsers| browsers as Arc<dyn Windows>));
-        let chat = InChat::new(&workspaces, &workspace, person).await;
         Self {
             server,
             actions,
@@ -433,7 +319,6 @@ impl Hosted {
             proved,
             state,
             address,
-            chat,
         }
     }
 
@@ -442,14 +327,14 @@ impl Hosted {
     }
 
     /// The server stops and starts again: whatever ran its agents is gone, and what works them
-    /// now knows only what the workspace and the server's own store hold.
+    /// now knows only what the documents and the server's own store hold.
     pub(super) async fn restart(&mut self) {
         self.agents = self.server.approving(&self.workspace, &[SCOUT]).await;
     }
 
-    /// The person writes `words` to their assistant in the channel they talk to it in.
-    pub(super) async fn says(&self, words: &str) {
-        self.chat.says(words).await;
+    /// The person's conversation with their assistant.
+    fn conversation(&self) -> Id {
+        chat::Chat::direct_id([MemberId::person(self.person()), MemberId::agent(SCOUT)])
     }
 
     /// The person writes `words` to their assistant, and the server answers the one turn that
@@ -458,7 +343,14 @@ impl Hosted {
         for step in steps {
             self.model.then(step);
         }
-        self.says(words).await;
+        write_to_agent(
+            &self.actions,
+            &self.workspaces,
+            &self.workspace,
+            (&self.root, &self.browser),
+            words,
+        )
+        .await;
         let turns = self.agents.turns(&self.workspace).await.unwrap();
         assert_eq!(turns.len(), 1, "one turn for {words:?}: {turns:?}");
         tokio::time::timeout(
@@ -470,35 +362,64 @@ impl Hosted {
         .unwrap();
     }
 
-    /// The asks of the workspace and their replies, as the person's devices read them.
-    pub(super) async fn asked(&self) -> Vec<tl_asks::Asked> {
-        self.chat.asked().await
+    /// The questions of `kind` the conversation holds, oldest first.
+    pub(super) async fn questions(&self, kind: &str) -> Vec<(Id, chat::chat::Message)> {
+        let part = conversation_part(&self.workspaces, &self.workspace).await;
+        let mut asked: Vec<_> = part
+            .messages
+            .iter()
+            .filter(|(_, held)| {
+                held.question
+                    .as_ref()
+                    .is_some_and(|question| question.kind.0 == kind)
+            })
+            .map(|(id, held)| (id.clone(), held.clone()))
+            .collect();
+        asked.sort_by_key(|(_, held)| held.ts);
+        asked
     }
 
-    /// What the questions the assistant's replies put to its person say, oldest first.
-    pub(super) async fn questions(&self) -> Vec<String> {
-        self.chat.questions().await
-    }
-
-    /// The person answers the question that waits with `answer`, written to their assistant
-    /// where it asked, and the server looks: it carries the answer out.
-    pub(super) async fn answers(&self, answer: &str) {
-        self.says(answer).await;
-        Box::pin(self.agents.look(&self.workspace)).await.unwrap();
-    }
-
-    /// Everything the workspace's asks and their replies say, for what must not be in it.
-    pub(super) async fn said(&self) -> String {
-        format!("{:?}", self.asked().await)
-    }
-
-    /// The bytes the server keeps of the workspace's resources, where the asks and replies are.
-    pub(super) async fn record_bytes(&self) -> Vec<u8> {
-        self.workspaces
-            .store_documents(&self.workspace)
+    /// The person answers the question `message` asks with `answer`: written into the
+    /// conversation's document as the person themselves at a device of theirs, the way their Chat
+    /// window writes it. Nothing an agent may call answers a question, so this is no action of
+    /// the server's service.
+    pub(super) async fn answers(&self, message: &Id, answer: &str) {
+        let saved = self
+            .workspaces
+            .resource_document(&self.workspace, CHAT, "")
             .await
             .unwrap()
-            .concat()
+            .expect("the workspace's chat");
+        let held = chat::chat::Chat::read(&automerge::AutoCommit::load(&saved).unwrap()).unwrap();
+        let person = self.person();
+        let answering = chat::messages::chat_messages::AnswerQuestion {
+            message: message.clone(),
+            answer: answer.to_owned(),
+            device: Some("browser".to_owned()),
+        };
+        let catalogue = crate::common::catalogue();
+        let governor = self.workspaces.device_cert().clone();
+        let part = chat::parts::part(0);
+        self.workspaces
+            .author_application(
+                &self.workspace,
+                &governor,
+                &catalogue,
+                CHAT,
+                part.as_str(),
+                |doc| {
+                    chat::demo::apply_part_doc_as(
+                        doc,
+                        &held,
+                        |replica| replica.as_invoker(&person),
+                        None,
+                        chat::parts::ChatMessages::ANSWER_QUESTION.with(answering),
+                    )
+                    .map_err(|error| format!("{error:?}"))
+                },
+            )
+            .await
+            .expect("the person answers their question");
     }
 
     /// One action of the person's own on the server, asked from their device over its link.
@@ -558,16 +479,7 @@ impl Hosted {
     /// The assistant is woken once by what the server tells it, and answers `says`: everything
     /// its model was sent for that turn.
     pub(super) async fn woken_with(&self, says: &str) -> String {
-        self.woken_doing(vec![Reply::text(says)]).await
-    }
-
-    /// The one turn the server starts for the assistant on its own, taking the model's next
-    /// `steps`: what the assistant was told it was asked, the first request of that turn.
-    pub(super) async fn woken_doing(&self, steps: Vec<Reply>) -> String {
-        let before = self.model.asked().len();
-        for step in steps {
-            self.model.then(step);
-        }
+        self.model.then(Reply::text(says));
         let deadline = tilo_test_env::hang_deadline();
         let turns = loop {
             let turns = self.agents.turns(&self.workspace).await.unwrap();
@@ -588,8 +500,10 @@ impl Hosted {
         .await
         .expect("the turn ends")
         .unwrap();
-        let asked = self.model.asked();
-        format!("{:?}", asked.get(before).expect("it was asked").request)
+        format!(
+            "{:?}",
+            self.model.asked().last().expect("it was asked").request
+        )
     }
 
     /// What the model was shown of its last tool call: the request that followed it.
@@ -651,17 +565,30 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
     )
 }
 
-/// The assistant asks for the password through the vault. The ask ends at once; the server asks
-/// her own device in the protected field, in the system's words, keeps what she types in the
-/// workspace's vault, and asks the assistant once with the reference. The reference.
+/// The assistant asks for the password. It tries the conversation first, with a question that
+/// offers no answers, which its person could answer only in words, and is refused: no question
+/// is posted. Its ask through the vault ends at once; the server asks her own device in the
+/// protected field, in the system's words, keeps what she types in the workspace's vault, and
+/// wakes the assistant once with the reference. The reference.
 pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
     hosted: &Hosted,
 ) -> String {
+    let conversation = hosted.conversation();
     let devices = hosted.her_devices();
     hosted
         .turn(
             "Please connect my mail, ada@example.test.",
             vec![
+                does(
+                    "call-2",
+                    "chat/Messages#ask",
+                    &serde_json::json!({
+                        "channel": conversation.as_str(),
+                        "text": "I need the sign-in of ada@example.test.",
+                        "kind": "secret",
+                        "detail": {"kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada"},
+                    }),
+                ),
                 does(
                     "call-3",
                     "vault/vault#ask",
@@ -673,14 +600,23 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
             ],
         )
         .await;
+    let results = hosted.tool_results();
+    assert_eq!(
+        results.matches("reply in the conversation").count(),
+        1,
+        "the question without answers is refused, and says where words go: {results}"
+    );
     assert!(
         hosted.last_tool_result().contains("protected field"),
         "the ask through the vault says she is asked where it cannot read: {}",
         hosted.last_tool_result()
     );
+    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
     assert!(
-        hosted.questions().await.is_empty(),
-        "no question was put in the reply"
+        part.messages
+            .iter()
+            .all(|(_, message)| message.question.is_none()),
+        "no question was posted in the conversation"
     );
 
     // Her device is asked in the system's protected field, in the system's words.
@@ -734,52 +670,49 @@ pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, refe
         hosted.proved.lock().unwrap().is_empty(),
         "nothing signed in unasked"
     );
-    let asked = hosted.questions().await;
-    assert_eq!(asked.len(), 1, "one question about the use: {asked:?}");
+    let asked = hosted.questions(chat::question::ACTION).await;
+    assert_eq!(asked.len(), 1, "one question about the use");
+    let (question, held) = &asked[0];
+    let asks = held.question.as_ref().unwrap();
+    assert_eq!(asks.person, MemberId::person(hosted.person()));
+    assert_eq!(
+        held.text, "You asked me to read your mail.",
+        "why, in the agent's words"
+    );
+    let kept = asks.kept().expect("question detail");
+    assert_eq!(
+        kept.pointer("/use/item/belongsTo"),
+        Some(&serde_json::json!([IMAP, SMTP]))
+    );
+    let shown = format!("{:?} {}", asks.draft(), asks.detail.0);
     assert!(
-        asked[0].starts_with("You asked me to read your mail.") && asked[0].contains("always"),
-        "why, in the agent's words, and how it is answered: {}",
-        asked[0]
+        shown.contains("ada@example.test"),
+        "what it signs in to: {shown}"
     );
     let id = reference.trim_start_matches("vault.item:");
     assert!(
-        !asked[0].contains(id),
-        "the question withholds the item's address"
-    );
-    // Her devices hear of it with none of them looking: the question waits in her log, named by
-    // the agent that asks.
-    let waiting = || {
-        hosted
-            .workspaces
-            .told_after(&hosted.root.verifying_key().to_bytes(), 0)
-            .told
-            .into_iter()
-            .filter(|told| told.kind == Kind::Question && told.waits())
-            .collect::<Vec<_>>()
-    };
-    let told = waiting();
-    assert_eq!(told.len(), 1, "{told:?}");
-    assert_eq!(
-        told[0].words,
-        "You asked me to read your mail.\n\nAddress: ada@example.test\nIncomingHost: \
-         imap.example.test\nOutgoingHost: smtp.example.test\nPassword: •••\n\nAnswer allow, \
-         always or no.",
-        "she is told what the use would sign in with, the password withheld"
-    );
-    assert_eq!(
-        told[0].from.as_ref().map(|from| from.name.as_str()),
-        Some("Scout")
+        !shown.contains(id),
+        "the item's address is withheld: {shown}"
     );
 
-    // She answers in the channel, as she writes to it: the answer is carried out, and the
-    // assistant is asked once what came of it.
-    hosted.answers("always").await;
-    let told = hosted.woken_with("Your mail is connected.").await;
-    assert!(waiting().is_empty(), "the answered question waits no more");
-    assert!(
-        told.contains("allowed, and from now on without asking"),
-        "the assistant is told how she answered: {told}"
-    );
+    hosted.answers(question, chat::question::ALWAYS).await;
+    hosted.agents.look(&hosted.workspace).await.unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let now = hosted.questions(chat::question::ACTION).await;
+        let outcome = now[0].1.question.as_ref().unwrap().outcome.clone();
+        if outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.outcome.0 == chat::question::DONE)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the server never carried the answer out: {outcome:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(
         hosted.proved.lock().unwrap().clone(),
         vec![format!("ada@example.test with {PASSWORD}")],
@@ -808,7 +741,11 @@ async fn the_second_use_asks_nothing(hosted: &mut Hosted, reference: &str) {
         !told.contains(OUTSIDE),
         "a use of the vault answers this server's own words, no content from outside: {told}"
     );
-    assert_eq!(hosted.questions().await.len(), 1, "no second question");
+    assert_eq!(
+        hosted.questions(chat::question::ACTION).await.len(),
+        1,
+        "no second question"
+    );
     assert_eq!(
         hosted.proved.lock().unwrap().len(),
         2,
@@ -863,8 +800,8 @@ async fn the_second_use_asks_nothing(hosted: &mut Hosted, reference: &str) {
 async fn the_password_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines) {
     let asked = hosted.model.asked();
     assert!(
-        asked.len() >= 7,
-        "three turns of two calls each, and the one told what came of the answer: {}",
+        asked.len() >= 6,
+        "three turns of two calls each: {}",
         asked.len()
     );
     for call in &asked {
@@ -880,9 +817,15 @@ async fn the_password_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, line
         "the model works with the reference"
     );
 
-    let said = hosted.said().await;
+    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
+    let said = format!("{:?}", part.messages.iter().collect::<Vec<_>>());
     assert!(said.contains("ada@example.test") && !said.contains(PASSWORD));
-    let saved = hosted.record_bytes().await;
+    let saved = hosted
+        .workspaces
+        .resource_document(&hosted.workspace, CHAT, chat::parts::part(0).as_str())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !saved
             .windows(PASSWORD.len())
@@ -923,7 +866,7 @@ async fn refused_and_nobody_is_asked(hosted: &Hosted, told: &str) {
         "the agent is told it was refused: {told}"
     );
     assert!(
-        hosted.questions().await.is_empty(),
+        hosted.questions(chat::question::ACTION).await.is_empty(),
         "nobody is asked about a use that names no item of theirs"
     );
     assert!(
@@ -992,7 +935,7 @@ const HIS_PASSWORD: &str = "only-his-own-mail-server-may-read-this";
 async fn admit(hosted: &Hosted, workspace: &str, device: &crate::support::Device) {
     crate::workspace_actions::resource_support::admit_with(
         &hosted.workspaces,
-        hosted.workspaces.governor(),
+        hosted.workspaces.device_cert(),
         workspace,
         device,
         tilo_peer_state::join::Role::Editor,
@@ -1104,6 +1047,10 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
     his_page.peer.close();
     hosted.page.peer.close();
 }
+
+/// What a person's "Always" to a question its agent reworded does: nothing.
+#[path = "hosted_reworded_question.rs"]
+mod reworded;
 
 /// Which device of its person a turn acts as beside the device the server placed for a window.
 #[path = "hosted_placed_window.rs"]

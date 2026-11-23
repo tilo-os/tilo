@@ -1,27 +1,27 @@
-//! tilo-install — the user-facing CLI to install, run, and manage Tilo
-//! packages (.tapp) locally, verifying the package signature and trust
-//! chain before installing.
+//! tilo-install — the person's command line for Tilo packages (.tapp): install, update, remove,
+//! pin, collect, trust, images and runtime bundles, and the reads beside them.
 //!
-//! Packages go into the device's package store — the same registry the
-//! launcher, the shell and the app host read — with their payload bytes in
-//! the content store and each tree materialised once from it. Installing and
-//! updating are [`package_store::installer`]'s; this prints what it did.
+//! While the device runs, every change is the package service's action: this sends it and shows
+//! what it did, so a change from a terminal gets the same permissions and record as one from the
+//! Store, an agent or an automation. An OS image build has no device, identity or service, so it
+//! names the store it writes (`--offline-store DIR`) and the same action runs in this process.
+//! Reads (list, inspect, verify, run, the trust lists) read the store directly.
 
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use clap::{Args, Parser, Subcommand};
 
-mod offered;
 mod trust_cmd;
+use package_service_client::wire::{self, Change, ChangeReport, SavedData, Uploaded};
 use package_store::installer::{
     self, Error, data_home_root, decode_hex_32, load_revocation_list, load_trusted_attestors,
-    revoked_keys_path, runtime_bundle_present, store_error, trusted_attestors_path,
+    runtime_bundle_present,
 };
-use package_store::{Admission, InstalledPackage, PackageStore, shim};
-use tilo_app_package::{BlobFetcher, PackageId};
+use package_store::{InstalledPackage, PackageStore};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +29,11 @@ use tilo_app_package::{BlobFetcher, PackageId};
     about = "Install, launch, list, or remove Tilo packages."
 )]
 struct Cli {
+    /// Write the package store at DIR in this process, as an OS image build does: there is no
+    /// device, identity or package service to ask. Without it, changes go through the person's
+    /// package service.
+    #[arg(long, global = true, value_name = "DIR")]
+    offline_store: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -358,8 +363,14 @@ enum RuntimeCmd {
     Verify { version: String },
 }
 
+/// The store `--offline-store` names, set once at start.
+static OFFLINE_STORE: OnceLock<PathBuf> = OnceLock::new();
+
 fn data_root() -> Result<PathBuf, Error> {
-    package_store::layout::default_user_root().ok_or(Error::NoDataDir)
+    match OFFLINE_STORE.get() {
+        Some(root) => Ok(root.clone()),
+        None => package_store::layout::default_user_root().ok_or(Error::NoDataDir),
+    }
 }
 
 fn store() -> Result<PackageStore, Error> {
@@ -408,205 +419,43 @@ impl From<&TrustFlags> for installer::Trust {
     }
 }
 
-/// Show what an install or update did: its warnings on stderr, its lines on stdout.
-fn print_report(report: &installer::Report) {
-    for warning in &report.warnings {
-        eprintln!("tilo-install: {warning}");
-    }
-    for line in &report.lines {
-        println!("{line}");
+/// The trust flags as the package service takes them.
+fn wire_trust(flags: &TrustFlags) -> wire::Trust {
+    wire::Trust {
+        require_package_root: flags.require_package_root.clone(),
+        require_publisher: flags.require_publisher.clone(),
+        require_attestor: flags.require_attestor.clone(),
+        allow_self_signed: flags.allow_self_signed,
     }
 }
 
-struct InstallOptions {
-    pinned: bool,
-    replacement: installer::Replacement,
-    dry_run: bool,
-    /// Where payload blobs the archive does not carry come from.
-    payload_from: Option<app_registry::HttpBlobs>,
-}
-
-fn install(
-    tapp: &Path,
-    options: &InstallOptions,
-    trust: &TrustFlags,
-    runtime: &RuntimeFlags,
-) -> Result<(), Error> {
-    let store = store()?;
-    let report = installer::install(
-        &store,
-        &catalog()?,
-        &installer::Candidate::file(tapp),
-        &installer::Request {
-            trust: trust.into(),
-            pinned: options.pinned,
-            replacement: options.replacement,
-            ignore_missing_runtime: runtime.ignore_missing_runtime,
-            dry_run: options.dry_run,
-        },
-        options
-            .payload_from
-            .as_ref()
-            .map(|source| source as &dyn BlobFetcher),
-    )?;
-    print_report(&report);
-    if report.outcome == installer::Outcome::Installed
-        && let Some(selected) = &report.selected
-    {
-        #[cfg(all(unix, not(target_os = "macos")))]
-        register_search_providers();
-        println!("run with:  tilo-install run {}", selected.id);
-    }
+/// Make `change`, which names `file` when it takes one, and show what it did: through the package
+/// service, or in this process for the store `--offline-store` names.
+fn make(change: Change, file: Option<&Path>) -> Result<(), String> {
+    let report: ChangeReport = match OFFLINE_STORE.get() {
+        Some(root) => {
+            let store = PackageStore::at(root);
+            let catalog = package_store::Catalog::at(root, package_store::SystemStore::from_env());
+            package_service::change::apply(
+                &package_service::change::Target {
+                    store: &store,
+                    catalog: &catalog,
+                    max_store_bytes: package_store::DEFAULT_MAX_STORE_BYTES,
+                },
+                change,
+                file,
+            )?
+        }
+        None => package_service_client::person::change(change, file)?,
+    };
+    package_service_client::person::show(&report, "tilo-install");
     Ok(())
 }
 
-/// Let GNOME Shell and `KRunner` search the resources the runtime beside this binary admits. Best
-/// effort: an app installs and runs without it.
-#[cfg(all(unix, not(target_os = "macos")))]
-fn register_search_providers() {
-    let Some(runtime) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("tilo-runtime")))
-        .filter(|runtime| runtime.is_file())
-    else {
-        return;
-    };
-    let written = data_home_root()
-        .map_err(|error| error.to_string())
-        .and_then(|data| {
-            let config = tilo_paths::config_dir().ok_or("no configuration directory")?;
-            tilo_os_search::linux_files::write(&data, &config, &runtime)
-                .map_err(|error| error.to_string())
-        });
-    match written {
-        Ok(()) => println!(
-            "  search   : KRunner finds its resources now, GNOME Shell after the next login"
-        ),
-        Err(error) => eprintln!("tilo-install: host search not registered: {error}"),
+fn uploaded(path: &Path) -> Uploaded {
+    Uploaded {
+        source: path.display().to_string(),
     }
-}
-
-/// Fetch a newer version and swap it in, keeping the user's per-workspace data.
-fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error> {
-    let targets: Vec<InstalledPackage> = if let Some(id) = pkg_id {
-        vec![find_installed(id)?]
-    } else {
-        if request.from.is_some() {
-            return Err(Error::Policy(
-                "--from names one .tapp, so it needs one package id".into(),
-            ));
-        }
-        if !request.dry_run {
-            drop_superseded()?;
-        }
-        list_catalog()?
-    };
-    if targets.is_empty() {
-        println!("(no packages installed)");
-        return Ok(());
-    }
-
-    let mut updated: u32 = 0;
-    let mut current: u32 = 0;
-    for entry in &targets {
-        match update_one(entry, request)? {
-            installer::Outcome::Planned => {}
-            installer::Outcome::AlreadyCurrent => current = current.saturating_add(1),
-            _ => updated = updated.saturating_add(1),
-        }
-    }
-    if targets.len() > 1 {
-        println!("{updated} updated, {current} already current");
-    }
-    Ok(())
-}
-
-/// Remove the user's copies of apps the image now ships a newer version of: nothing runs them any
-/// more.
-fn drop_superseded() -> Result<(), Error> {
-    let superseded = catalog()?
-        .superseded()
-        .map_err(|e| Error::RegistryRead(e.to_string()))?;
-    if superseded.is_empty() {
-        return Ok(());
-    }
-    let store = store()?;
-    for entry in superseded {
-        store.remove(&entry.id, true).map_err(store_error)?;
-        if !entry.cli_commands.is_empty() {
-            let _ = shim::remove_shims(&bin_root()?, &entry.id, &entry.cli_commands);
-        }
-        println!(
-            "{} {}: the system image ships a newer version; removed this copy",
-            entry.id, entry.version
-        );
-    }
-    Ok(())
-}
-
-struct UpdateRequest<'a> {
-    from: Option<&'a Path>,
-    version_req: Option<&'a str>,
-    allow_downgrade: bool,
-    dry_run: bool,
-    trust: &'a TrustFlags,
-    runtime: &'a RuntimeFlags,
-    /// Where payload blobs a `--from` archive does not carry come from.
-    payload_from: Option<app_registry::HttpBlobs>,
-}
-
-fn update_one(
-    entry: &InstalledPackage,
-    request: &UpdateRequest<'_>,
-) -> Result<installer::Outcome, Error> {
-    // The candidate is a local file or the configured registries' offer; either way the installer
-    // verifies it before anything is stored. A registry serves thin packages: their payload comes
-    // from the node that served them, and only the blobs the store lacks are fetched.
-    let (staged, candidate, trust, provider) = if let Some(path) = request.from {
-        (
-            None,
-            installer::Candidate::file(path),
-            installer::Trust::from(request.trust),
-            None,
-        )
-    } else {
-        let offered = offered::fetch_from_registries(entry, request.version_req, request.trust)?;
-        let candidate = installer::Candidate::staged(offered.staged.path(), offered.source);
-        (
-            Some(offered.staged),
-            candidate,
-            installer::Trust::from(&offered.trust),
-            offered.payload,
-        )
-    };
-    let payload: Option<&dyn BlobFetcher> = match (&provider, &request.payload_from) {
-        (Some(provider), _) => Some(provider),
-        (None, Some(server)) => Some(server),
-        (None, None) => None,
-    };
-    let store = store()?;
-    let report = installer::update(
-        &store,
-        &catalog()?,
-        &entry.id,
-        &candidate,
-        &installer::UpdateRequest {
-            trust,
-            origin: if request.from.is_some() {
-                installer::Origin::LocalFile
-            } else {
-                installer::Origin::Registry
-            },
-            allow_downgrade: request.allow_downgrade,
-            ignore_missing_runtime: request.runtime.ignore_missing_runtime,
-            dry_run: request.dry_run,
-        },
-        payload,
-    );
-    drop(staged);
-    let report = report?;
-    print_report(&report);
-    Ok(report.outcome)
 }
 
 fn list_json(include_runtime_paths: bool) -> Result<(), Error> {
@@ -701,103 +550,35 @@ fn installed_from(entry: &InstalledPackage) -> &'static str {
     }
 }
 
-/// Uninstall a package, deciding about its user data separately.
-///
-/// The payload is the publisher's, reproducible by reinstalling; the per-workspace data is the
-/// user's and does not come back, so the two are separate decisions and data is never deleted
-/// silently.
-fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
-    // Only the user's copy can go; removing it puts the image's back.
-    let layers = layers(pkg_id)?;
-    let Some(entry) = layers.user.clone() else {
-        return Err(match layers.image {
-            Some(_) => Error::ImageApp(pkg_id.into()),
-            None => Error::NotInstalled(pkg_id.into()),
-        });
-    };
-    let data_home = data_home_root()?;
-    let workspaces = package_store::state::find(&data_home, pkg_id);
-
-    if dry_run {
-        println!("plan: uninstall {} {}", entry.id, entry.version);
-        if let Some(image) = &layers.image {
-            println!("  then runs : {} from the system image", image.version);
-        }
-        println!("  payload   : remove {}", entry.payload_root.display());
-        println!("  registry  : drop the entry");
-        if entry.cli_commands.is_empty() {
-            println!("  shims     : none");
+/// Uninstall a package, asking about its saved data first when no flag decided: the payload is the
+/// publisher's, reproducible by reinstalling; the per-workspace data is the person's and does not
+/// come back, so "no" leaves everything as it was.
+fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), String> {
+    let saved_data = if purge {
+        SavedData::Delete
+    } else if keep_state {
+        SavedData::Keep
+    } else if dry_run {
+        SavedData::Ask
+    } else {
+        let workspaces = package_store::state::find(
+            &data_home_root().map_err(|error| error.to_string())?,
+            pkg_id,
+        );
+        if decide_state(&workspaces) {
+            SavedData::Delete
         } else {
-            println!(
-                "  shims     : remove {} from {}",
-                entry.cli_commands.join(", "),
-                bin_root()?.display()
-            );
+            SavedData::Keep
         }
-        println!(
-            "  content   : evict the blobs no other package uses from {}",
-            store()?.layout().content().display()
-        );
-        print_state_summary(&workspaces);
-        println!(
-            "  state     : {}",
-            if purge {
-                "DELETE (--purge)"
-            } else if keep_state {
-                "keep (--keep-state)"
-            } else {
-                "you would be asked"
-            }
-        );
-        println!("(nothing was removed)");
-        return Ok(());
-    }
-
-    // Ask about user data before removing the package, so "no" leaves things as they were.
-    let delete_state = decide_state(&workspaces, purge, keep_state);
-
-    let removed = store()?.remove(pkg_id, true).map_err(store_error)?;
-    // Undo PATH shims, best effort: a missing `bin/` just means none were installed.
-    if !entry.cli_commands.is_empty() {
-        let bin_dir = bin_root()?;
-        shim::remove_shims(&bin_dir, &entry.id, &entry.cli_commands)
-            .map_err(|e| Error::Shim(e.to_string()))?;
-        println!(
-            "  removed {} PATH shim(s) from {}",
-            entry.cli_commands.len(),
-            bin_dir.display()
-        );
-    }
-    println!("uninstalled: {pkg_id} {}", entry.version);
-    if let Some(image) = &layers.image {
-        println!(
-            "  now runs : {} {} from the system image",
-            image.id, image.version
-        );
-    }
-    println!(
-        "  content  : evicted {} blob(s) no other package uses",
-        removed.evicted_blobs
-    );
-
-    if delete_state {
-        let (removed, failures) = package_store::state::remove(&workspaces);
-        println!("  state    : deleted in {removed} workspace(s)");
-        for (path, e) in failures {
-            eprintln!("tilo-install: could not remove {}: {e}", path.display());
-        }
-    } else if !workspaces.is_empty() {
-        println!(
-            "  state    : kept — {} workspace(s), {} under {}",
-            workspaces.len(),
-            package_store::state::human_bytes(package_store::state::total_bytes(&workspaces)),
-            data_home
-                .join(package_store::state::WORKSPACES_DIR)
-                .display()
-        );
-        println!("             reinstalling picks it back up; `--purge` deletes it.");
-    }
-    Ok(())
+    };
+    make(
+        Change::Uninstall {
+            app: pkg_id.to_owned(),
+            saved_data,
+            dry_run,
+        },
+        None,
+    )
 }
 
 /// Replay the signature chain for one installed package, or all of them.
@@ -858,14 +639,6 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
             checked,
         });
     }
-    Ok(())
-}
-
-/// Flip the pin: pinned packages are kept, ranked first, and exempt from eviction under size
-/// pressure.
-fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
-    store()?.set_pinned(pkg_id, pinned).map_err(store_error)?;
-    println!("{}: {pkg_id}", if pinned { "pinned" } else { "unpinned" });
     Ok(())
 }
 
@@ -934,7 +707,12 @@ fn run(
             );
         }
     }
-    if let Err(error) = store()?.mark_used(pkg_id) {
+    if let Err(error) = make(
+        Change::Opened {
+            app: pkg_id.to_owned(),
+        },
+        None,
+    ) {
         eprintln!("tilo-install: could not record the launch: {error}");
     }
 
@@ -1030,45 +808,15 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn print_state_summary(workspaces: &[package_store::state::WorkspaceState]) {
-    if workspaces.is_empty() {
-        println!("  saved data: none");
-        return;
-    }
-    println!(
-        "  saved data: {} workspace(s), {} total",
-        workspaces.len(),
-        package_store::state::human_bytes(package_store::state::total_bytes(workspaces))
-    );
-    for saved in workspaces {
-        println!(
-            "              {:<24} {:>10}  {} file(s)",
-            saved.workspace,
-            package_store::state::human_bytes(saved.bytes),
-            saved.files
-        );
-    }
-}
-
-/// Whether to delete the app's saved data.
-///
-/// Flags win; otherwise the user is asked, and with no terminal to ask on the answer is keep:
-/// silent, unattended data deletion is the one failure that cannot be undone.
-fn decide_state(
-    workspaces: &[package_store::state::WorkspaceState],
-    purge: bool,
-    keep_state: bool,
-) -> bool {
+/// Whether to delete the app's saved data, asked when there is any: with no terminal to ask on the
+/// answer is keep, as silent, unattended data deletion is the one failure that cannot be undone.
+fn decide_state(workspaces: &[package_store::state::WorkspaceState]) -> bool {
     if workspaces.is_empty() {
         return false;
     }
-    if purge {
-        return true;
+    for line in package_store::state::summary(workspaces) {
+        println!("{line}");
     }
-    if keep_state {
-        return false;
-    }
-    print_state_summary(workspaces);
     if !stdin_is_a_terminal() {
         println!(
             "  (no terminal to ask on — keeping it. Re-run with --purge to delete, \
@@ -1111,60 +859,6 @@ fn print_path() -> Result<(), Error> {
     Ok(())
 }
 
-fn runtime_install(
-    version: &str,
-    from_host: bool,
-    from: Option<&Path>,
-    arch: Option<&str>,
-    identity: Option<&Path>,
-    force: bool,
-) -> Result<(), Error> {
-    let dest = runtime_bundle::default_bundle_path(version)
-        .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    if dest.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() && !force {
-        return Err(Error::RuntimeBundleExists(version.to_string()));
-    }
-    let bundles = runtime_bundles()?;
-    let _collection_held_off = bundles.install_lock()?;
-    if let Some(replaced) = bundles.retire(version)? {
-        bundles.purge(&replaced, &package_store::gc::in_use_now())?;
-    }
-    // Built on this device on purpose, from no package: kept until removed.
-    bundles.pin(version)?;
-    fs::create_dir_all(&dest)?;
-    let host_root: Option<&Path> = if let Some(p) = from {
-        Some(p)
-    } else if from_host {
-        Some(Path::new("/"))
-    } else {
-        None
-    };
-    let manifest = runtime_bundle::build_bundle_with(
-        &dest,
-        version,
-        &runtime_bundle::BuildOptions {
-            from: host_root,
-            arch,
-            identity,
-            extra_libs: &[],
-            extra_bins: &[],
-        },
-    )
-    .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    println!("installed runtime bundle: tilo-runtime/{version}");
-    println!("  path     : {}", dest.display());
-    println!("  arch     : {}", manifest.arch);
-    println!("  files    : {}", manifest.files.len());
-    println!("  root-hash: blake3:{}", manifest.root_hash);
-    if let Some(pk) = &manifest.publisher_hex {
-        println!("  publisher: ed25519:{pk}");
-    }
-    let mut report = installer::Report::default();
-    installer::seal_runtime_bundle(&dest, &manifest, &mut report);
-    print_report(&report);
-    Ok(())
-}
-
 fn runtime_list() -> Result<(), Error> {
     let base = tilo_paths::data_dir()
         .ok_or(Error::NoDataDir)?
@@ -1200,139 +894,6 @@ fn runtime_list() -> Result<(), Error> {
     Ok(())
 }
 
-fn runtime_bundles() -> Result<runtime_bundle::gc::BundleRoot, Error> {
-    runtime_bundle::gc::BundleRoot::from_env().map_err(|e| Error::RuntimeBundle(e.to_string()))
-}
-
-fn runtime_remove(version: &str) -> Result<(), Error> {
-    let bundles = runtime_bundles()?;
-    let _collection_held_off = bundles.install_lock()?;
-    bundles.unpin(version)?;
-    // Out of the version's directory in one rename first: a removal stopped halfway would otherwise
-    // leave a bundle a launch picks.
-    let trashed = bundles
-        .retire(version)?
-        .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
-    if bundles.purge(&trashed, &package_store::gc::in_use_now())? {
-        println!("removed runtime bundle: tilo-runtime/{version}");
-    } else {
-        println!(
-            "removed runtime bundle: tilo-runtime/{version}; a running app still has it \
-             mounted, so its files go once that app closes (`tilo-install gc`)"
-        );
-    }
-    Ok(())
-}
-
-fn runtime_pin(version: &str, pinned: bool) -> Result<(), Error> {
-    let bundles = runtime_bundles()?;
-    if !bundles
-        .bundle(version)
-        .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
-        .exists()
-    {
-        return Err(Error::RuntimeBundleNotInstalled(version.to_string()));
-    }
-    if pinned {
-        bundles.pin(version)?;
-        println!("pinned runtime bundle: tilo-runtime/{version}");
-    } else {
-        bundles.unpin(version)?;
-        println!("unpinned runtime bundle: tilo-runtime/{version}");
-    }
-    Ok(())
-}
-
-fn gc_request(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> package_store::gc::Request {
-    package_store::gc::Request {
-        max_store_bytes,
-        grace_secs,
-        now: tilo_clock::unix_now(),
-        dry_run,
-        keep: Vec::new(),
-    }
-}
-
-fn collect_garbage(
-    request: package_store::gc::Request,
-) -> Result<package_store::gc::Report, Error> {
-    let store = store()?;
-    let catalog = package_store::Catalog::at(
-        store.layout().root(),
-        package_store::SystemStore::from_env(),
-    );
-    package_store::gc::collect(&store, &catalog, &runtime_bundles()?, request).map_err(Error::Gc)
-}
-
-fn gc(dry_run: bool, grace_secs: u64, max_store_bytes: u64) -> Result<(), Error> {
-    let report = collect_garbage(gc_request(dry_run, grace_secs, max_store_bytes))?;
-    let runtimes = &report.runtimes;
-    if runtimes.busy {
-        println!("runtimes: an install is running; collected by the next change");
-    }
-    for id in &report.evicted {
-        println!("evicted  : {id} (store over {max_store_bytes} bytes)");
-    }
-    for path in &report.orphans.removed {
-        println!("removed  : {} (named by no package)", path.display());
-    }
-    if report.orphans.staging_bytes > 0 {
-        println!(
-            "removed  : {} of staging crashed installs left",
-            human_bytes(report.orphans.staging_bytes)
-        );
-    }
-    for (version, bytes) in &runtimes.removed {
-        let verb = if dry_run { "would go" } else { "removed " };
-        println!("{verb} : runtime {version} ({})", human_bytes(*bytes));
-    }
-    for (version, why) in &runtimes.kept {
-        let why = match why {
-            runtime_bundle::gc::Kept::Referenced => "an installed package runs on it",
-            runtime_bundle::gc::Kept::Pinned => "pinned",
-            runtime_bundle::gc::Kept::Leased => "installed within the grace period",
-            runtime_bundle::gc::Kept::InUse => "a running app has it mounted",
-            runtime_bundle::gc::Kept::Launching => "an app launched on it holds it",
-        };
-        println!("kept     : runtime {version} ({why})");
-    }
-    let verb = if dry_run { "would free" } else { "freed" };
-    println!("{verb}: {}", human_bytes(report.freed_bytes()));
-    Ok(())
-}
-
-/// After an install, update or uninstall that began at `started` (Unix seconds): reclaim what it
-/// left unneeded, keeping every app it wrote, which is about to be opened. Never fails the change it
-/// follows, and reports on stderr so the change's own output stays as scripts read it.
-fn collect_after_change(started: u64) {
-    let written = store()
-        .map_err(|error| error.to_string())
-        .and_then(|store| package_store::gc::written_since(&store, started));
-    let written = match written {
-        Ok(written) => written,
-        Err(error) => {
-            eprintln!("tilo-install: warning: nothing reclaimed: {error}");
-            return;
-        }
-    };
-    let request = package_store::gc::Request::after_change(package_store::DEFAULT_MAX_STORE_BYTES)
-        .keeping(written);
-    match collect_garbage(request) {
-        Ok(report) if report.freed_bytes() > 0 || !report.evicted.is_empty() => eprintln!(
-            "tilo-install: reclaimed {} ({} runtime build(s), {} app(s) evicted)",
-            human_bytes(report.freed_bytes()),
-            report.runtimes.removed.len(),
-            report.evicted.len()
-        ),
-        Ok(_) => {}
-        Err(error) => eprintln!("tilo-install: warning: nothing reclaimed: {error}"),
-    }
-}
-
-fn human_bytes(bytes: u64) -> String {
-    package_store::state::human_bytes(bytes)
-}
-
 fn runtime_path(version: &str) -> Result<(), Error> {
     if let Some(p) = runtime_bundle::resolve_bundle_path(version) {
         println!("{}", p.display());
@@ -1356,7 +917,7 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
+fn runtime(cmd: RuntimeCmd) -> Result<(), String> {
     match cmd {
         RuntimeCmd::Install {
             version,
@@ -1365,44 +926,64 @@ fn runtime(cmd: RuntimeCmd) -> Result<(), Error> {
             arch,
             identity,
             force,
-        } => runtime_install(
-            &version,
-            from_host,
-            from.as_deref(),
-            arch.as_deref(),
-            identity.as_deref(),
-            force,
+        } => {
+            // An explicit prefix wins over the host root; neither builds from the host's
+            // defaults.
+            let from = from.or_else(|| from_host.then(|| PathBuf::from("/")));
+            make(
+                Change::InstallRuntime {
+                    version,
+                    from: from.map(|from| from.display().to_string()),
+                    arch,
+                    identity: identity.as_deref().map(uploaded),
+                    force,
+                },
+                identity.as_deref(),
+            )
+        }
+        RuntimeCmd::List => runtime_list().map_err(|error| error.to_string()),
+        RuntimeCmd::Remove { version } => make(Change::RemoveRuntime { version }, None),
+        RuntimeCmd::Pin { version } => make(
+            Change::PinRuntime {
+                version,
+                pinned: true,
+            },
+            None,
         ),
-        RuntimeCmd::List => runtime_list(),
-        RuntimeCmd::Remove { version } => runtime_remove(&version),
-        RuntimeCmd::Pin { version } => runtime_pin(&version, true),
-        RuntimeCmd::Unpin { version } => runtime_pin(&version, false),
-        RuntimeCmd::Path { version } => runtime_path(&version),
-        RuntimeCmd::Verify { version } => runtime_verify(&version),
+        RuntimeCmd::Unpin { version } => make(
+            Change::PinRuntime {
+                version,
+                pinned: false,
+            },
+            None,
+        ),
+        RuntimeCmd::Path { version } => runtime_path(&version).map_err(|error| error.to_string()),
+        RuntimeCmd::Verify { version } => {
+            runtime_verify(&version).map_err(|error| error.to_string())
+        }
     }
 }
 
 fn main() {
     let cli = Cli::parse();
-    // What changes the installed set: collection runs after it succeeds.
-    let changes = matches!(
-        cli.cmd,
-        Cmd::Install { dry_run: false, .. }
-            | Cmd::Update { dry_run: false, .. }
-            | Cmd::Uninstall { dry_run: false, .. }
-    );
-    let started = tilo_clock::unix_now();
-    let result = dispatch(cli.cmd);
-    if let Err(e) = result {
+    if let Some(root) = cli.offline_store {
+        let _ = OFFLINE_STORE.set(root);
+    }
+    if let Err(e) = dispatch(cli.cmd) {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);
     }
-    if changes {
-        collect_after_change(started);
-    }
 }
 
-fn dispatch(cmd: Cmd) -> Result<(), Error> {
+fn read(result: Result<(), Error>) -> Result<(), String> {
+    result.map_err(|error| error.to_string())
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per command, each a read or a change"
+)]
+fn dispatch(cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Install {
             tapp,
@@ -1413,20 +994,21 @@ fn dispatch(cmd: Cmd) -> Result<(), Error> {
             runtime,
             dry_run,
             payload_from,
-        } => install(
-            &tapp,
-            &InstallOptions {
+        } => make(
+            Change::Install {
+                file: uploaded(&tapp),
+                trust: wire_trust(&trust),
                 pinned,
                 replacement: match (force, preserve_held) {
-                    (false, _) => installer::Replacement::Refuse,
-                    (true, false) => installer::Replacement::Replace,
-                    (true, true) => installer::Replacement::PreserveHeld,
+                    (false, _) => wire::Replacement::Refuse,
+                    (true, false) => wire::Replacement::Replace,
+                    (true, true) => wire::Replacement::PreserveHeld,
                 },
+                ignore_missing_runtime: runtime.ignore_missing_runtime,
                 dry_run,
-                payload_from: payload_from.map(app_registry::HttpBlobs::new),
+                payload_from,
             },
-            &trust,
-            &runtime,
+            Some(&tapp),
         ),
         Cmd::Update {
             pkg_id,
@@ -1437,132 +1019,116 @@ fn dispatch(cmd: Cmd) -> Result<(), Error> {
             trust,
             runtime,
             payload_from,
-        } => update(
-            pkg_id.as_deref(),
-            &UpdateRequest {
-                from: from.as_deref(),
-                version_req: version.as_deref(),
+        } => make(
+            Change::Update {
+                app: pkg_id,
+                file: from.as_deref().map(uploaded),
+                version,
                 allow_downgrade,
                 dry_run,
-                trust: &trust,
-                runtime: &runtime,
-                payload_from: payload_from.map(app_registry::HttpBlobs::new),
+                trust: wire_trust(&trust),
+                ignore_missing_runtime: runtime.ignore_missing_runtime,
+                payload_from,
             },
+            from.as_deref(),
         ),
         Cmd::List {
             json: true,
             runtime_paths,
-        } => list_json(runtime_paths),
-        Cmd::List { json: false, .. } => list(),
+        } => read(list_json(runtime_paths)),
+        Cmd::List { json: false, .. } => read(list()),
         Cmd::Uninstall {
             pkg_id,
             purge,
             keep_state,
             dry_run,
         } => uninstall(&pkg_id, purge, keep_state, dry_run),
-        Cmd::Verify { pkg_id } => verify_installed(pkg_id.as_deref()),
-        Cmd::Pin { pkg_id } => set_pinned(&pkg_id, true),
-        Cmd::Unpin { pkg_id } => set_pinned(&pkg_id, false),
+        Cmd::Verify { pkg_id } => read(verify_installed(pkg_id.as_deref())),
+        Cmd::Pin { pkg_id } => make(
+            Change::SetPinned {
+                app: pkg_id,
+                pinned: true,
+            },
+            None,
+        ),
+        Cmd::Unpin { pkg_id } => make(
+            Change::SetPinned {
+                app: pkg_id,
+                pinned: false,
+            },
+            None,
+        ),
         Cmd::Run {
             pkg_id,
             no_services,
             minimal_libs,
             allow_missing_runtime,
             trust,
-        } => run(
+        } => read(run(
             &pkg_id,
             no_services,
             minimal_libs,
             allow_missing_runtime,
             &trust,
-        ),
-        Cmd::Inspect { pkg_id } => inspect(&pkg_id),
+        )),
+        Cmd::Inspect { pkg_id } => read(inspect(&pkg_id)),
         Cmd::Trust { cmd } => match cmd {
-            TrustCmd::Add { id, pubkey, scope } => trust_cmd::trust_add(&id, &pubkey, &scope),
-            TrustCmd::List => trust_cmd::trust_list(),
-            TrustCmd::Remove { id } => trust_cmd::trust_remove(&id),
+            TrustCmd::Add { id, pubkey, scope } => {
+                make(Change::AddAttestor { id, pubkey, scope }, None)
+            }
+            TrustCmd::List => read(trust_cmd::trust_list()),
+            TrustCmd::Remove { id } => make(Change::RemoveAttestor { id }, None),
         },
-        Cmd::Revoke { pubkey_hex, reason } => trust_cmd::revoke(&pubkey_hex, &reason),
+        Cmd::Revoke { pubkey_hex, reason } => make(
+            Change::Revoke {
+                pubkey: pubkey_hex,
+                reason,
+            },
+            None,
+        ),
         Cmd::Revoked { cmd } => match cmd {
-            RevokedCmd::List => trust_cmd::revoked_list(),
+            RevokedCmd::List => read(trust_cmd::revoked_list()),
         },
-        Cmd::Check { tapp, trust } => trust_cmd::check_verdict(&tapp, &trust),
-        Cmd::Path => print_path(),
+        Cmd::Check { tapp, trust } => read(trust_cmd::check_verdict(&tapp, &trust)),
+        Cmd::Path => read(print_path()),
         Cmd::Gc {
             dry_run,
             grace_secs,
             max_store_bytes,
-        } => gc(dry_run, grace_secs, max_store_bytes),
+        } => make(
+            Change::Collect {
+                dry_run,
+                grace_secs,
+                max_store_bytes,
+            },
+            None,
+        ),
         Cmd::Runtime { cmd } => runtime(cmd),
         Cmd::Image { cmd } => image(cmd),
     }
 }
 
-fn parse_image_id(raw: &str) -> Result<PackageId, Error> {
-    let text = if raw.starts_with("tapp:") {
-        raw.to_owned()
-    } else {
-        format!("tapp:{raw}")
-    };
-    text.parse()
-        .map_err(|error| Error::Parse(format!("image id {raw:?}: {error}")))
-}
-
-fn image_store() -> Result<package_store::Store, Error> {
-    let mut store = package_store::Store::new(store()?);
-    let system = package_store::SystemStore::from_env();
-    if let Some(system) = &system {
-        store = store
-            .with_system(package_store::Layout::new(&system.data_dir))
-            .with_system(package_store::Layout::new(&system.payload_dir));
-    }
-    let trust = package_store::ImageTrust::from_env(system.as_ref()).map_err(store_error)?;
-    Ok(store.with_trust(trust))
-}
-
-fn image(cmd: ImageCmd) -> Result<(), Error> {
+fn image(cmd: ImageCmd) -> Result<(), String> {
     match cmd {
         ImageCmd::Add {
             tapp,
             publisher,
             payload_from,
-        } => {
-            let store = image_store()?;
-            let mut trust = store.trust().clone();
-            if let Some(publisher) = publisher {
-                trust = trust.with_publisher(
-                    decode_hex_32(&publisher).map_err(Error::InvalidRequiredPublisher)?,
-                );
-            }
-            let payload = payload_from.map(app_registry::HttpBlobs::new);
-            let file = std::io::BufReader::new(fs::File::open(&tapp)?);
-            let meta = store
-                .user()
-                .install_image(
-                    file,
-                    |meta| {
-                        let attested_by = trust.check(meta).map_err(|error| error.to_string())?;
-                        Ok(Admission {
-                            pinned: false,
-                            attested_by,
-                            source: tapp.display().to_string(),
-                            held: false,
-                        })
-                    },
-                    payload.as_ref().map(|fetcher| fetcher as &dyn BlobFetcher),
-                )
-                .map_err(store_error)?;
-            println!(
-                "{} {} {} {}",
-                meta.id,
-                meta.manifest.package.kind,
-                meta.manifest.package.id,
-                meta.manifest.package.version
-            );
-            Ok(())
-        }
+        } => make(
+            Change::AddImage {
+                file: uploaded(&tapp),
+                publisher,
+                payload_from,
+            },
+            Some(&tapp),
+        ),
         ImageCmd::List => {
-            for meta in image_store()?.images().map_err(store_error)? {
+            for meta in package_service::change::image_store(
+                &data_root().map_err(|error| error.to_string())?,
+            )
+            .and_then(|store| store.images().map_err(installer::store_error))
+            .map_err(|error| error.to_string())?
+            {
                 let runtime = meta
                     .manifest
                     .image
@@ -1581,7 +1147,7 @@ fn image(cmd: ImageCmd) -> Result<(), Error> {
             Ok(())
         }
         ImageCmd::Path { id, registry } => {
-            let id = parse_image_id(&id)?;
+            let id = package_service_client::image_id(&id)?;
             let registry = registry
                 .or_else(|| {
                     std::env::var("TILO_REGISTRY")
@@ -1589,21 +1155,20 @@ fn image(cmd: ImageCmd) -> Result<(), Error> {
                         .filter(|url| !url.is_empty())
                 })
                 .unwrap_or_else(|| "https://apps.tilo.so".to_owned());
-            let store = image_store()?.with_fetcher(app_registry::HttpBlobs::new(registry));
-            let tree = package_store::materialized_tree(&store, &id)
-                .map_err(|error| Error::Store(error.to_string()))?;
-            println!("{}", tree.display());
-            Ok(())
+            make(
+                Change::FetchImage {
+                    id: *id.as_bytes(),
+                    registry,
+                },
+                None,
+            )
         }
-        ImageCmd::Remove { id } => {
-            let id = parse_image_id(&id)?;
-            let removed = store()?.remove_image(id).map_err(store_error)?;
-            eprintln!(
-                "tilo-install: removed {id}; evicted {} blob(s)",
-                removed.evicted_blobs
-            );
-            Ok(())
-        }
+        ImageCmd::Remove { id } => make(
+            Change::RemoveImage {
+                id: *package_service_client::image_id(&id)?.as_bytes(),
+            },
+            None,
+        ),
     }
 }
 

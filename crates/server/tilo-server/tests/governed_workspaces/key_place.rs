@@ -139,7 +139,6 @@ async fn laptop_service(
         },
         device_endpoint(laptop).await,
         keys.groups(),
-        false,
         |config| config,
     )
     .await

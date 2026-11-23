@@ -326,13 +326,15 @@ fn write(
     store: &Arc<dyn PersonDocuments>,
     edit: impl Fn(&mut AutoCommit) -> Result<(), automerge::AutomergeError> + Send + Sync + 'static,
 ) {
+    // The answers are the person's: each change names them.
+    let person = store.person();
     store.edit(
         PERSON_RECORDS_APP,
         &document(),
         Box::new(move |doc| {
             use collab_types::CommitNamed as _;
             edit(doc).map_err(|error| error.to_string())?;
-            doc.commit_edit(DEVICE_ANSWERS_KIND, "answers");
+            doc.commit_edit(DEVICE_ANSWERS_KIND, "answers", &person);
             Ok(())
         }),
     );

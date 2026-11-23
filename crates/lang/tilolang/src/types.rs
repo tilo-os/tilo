@@ -130,6 +130,35 @@ impl Vt {
     pub const H: Self = Self::I32;
 }
 
+/// How a value of a type crosses the WebAssembly boundary.
+///
+/// Both the compiler ([`Ty::repr`]) and the runtime derive from [`Ty::abi_repr`], so they cannot
+/// disagree. `Bool` and `Handle` both travel as a 32-bit integer ([`Vt::I32`]), kept distinct here
+/// so marshalling and unmarshalling know whether to interpret the bits as a flag or a host handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Repr {
+    /// A 64-bit signed integer (`Int`, `Duration`, built-in `Choice` indices).
+    I64,
+    /// A 64-bit float (`Float`, `Length`).
+    F64,
+    /// A boolean, passed as a 32-bit integer (`0` or `1`).
+    Bool,
+    /// A host-table handle, passed as a 32-bit integer.
+    Handle,
+}
+
+impl Repr {
+    /// The WebAssembly value type that carries this representation.
+    #[must_use]
+    pub const fn vt(self) -> Vt {
+        match self {
+            Self::I64 => Vt::I64,
+            Self::F64 => Vt::F64,
+            Self::Bool | Self::Handle => Vt::I32,
+        }
+    }
+}
+
 impl Ty {
     /// Whether a form can ask the person for a value of this type when nobody gave it. A `File` is
     /// no form's: it comes from the person's own chooser (`file.choose(a)`).
@@ -153,12 +182,48 @@ impl Ty {
         }
     }
 
-    pub const fn repr(&self) -> Option<Vt> {
+    /// How a value of this type crosses the WebAssembly boundary; `None` for `Unit`, which
+    /// carries no wasm value.
+    #[must_use]
+    pub const fn abi_repr(&self) -> Option<Repr> {
         match self {
-            Self::Float | Self::Length(_) => Some(Vt::F64),
-            Self::Int | Self::Duration | Self::Choice(_) => Some(Vt::I64),
+            Self::Int | Self::Duration | Self::Choice(_) => Some(Repr::I64),
+            Self::Float | Self::Length(_) => Some(Repr::F64),
+            Self::Bool => Some(Repr::Bool),
             Self::Unit => None,
-            _ => Some(Vt::I32),
+            Self::Text
+            | Self::Actor
+            | Self::Date
+            | Self::Time
+            | Self::Identifier
+            | Self::RichText
+            | Self::Bytes
+            | Self::Response
+            | Self::Json
+            | Self::File
+            | Self::Record(_)
+            | Self::List(_)
+            | Self::Set(_)
+            | Self::Map(_)
+            | Self::Collection(_)
+            | Self::Option(_)
+            | Self::Result(_, _)
+            | Self::Filter(_)
+            | Self::Sort(_)
+            | Self::Enum(_)
+            | Self::Union(_)
+            | Self::Tuple(_)
+            | Self::Action
+            | Self::View
+            | Self::Error => Some(Repr::Handle),
+        }
+    }
+
+    #[must_use]
+    pub const fn repr(&self) -> Option<Vt> {
+        match self.abi_repr() {
+            Some(repr) => Some(repr.vt()),
+            None => None,
         }
     }
 
@@ -628,6 +693,86 @@ mod tests {
             for ty in unasked {
                 let parsed = Ty::parse_meta(ty, "t.forms").unwrap_or_else(|| panic!("{ty} parses"));
                 assert!(!parsed.asked_by_form(), "no form asks for {ty}");
+            }
+        }
+
+        phase every_type_maps_to_one_abi_repr_and_matching_vt;
+        {
+            use super::{LengthUnit, Repr, TypeKey, Vt};
+            let key = || TypeKey {
+                app: "t.x".into(),
+                name: "Item".into(),
+            };
+            let cases: &[(Ty, Option<Repr>, Option<Vt>)] = &[
+                (Ty::Int, Some(Repr::I64), Some(Vt::I64)),
+                (Ty::Duration, Some(Repr::I64), Some(Vt::I64)),
+                (Ty::Choice("weekday"), Some(Repr::I64), Some(Vt::I64)),
+                (Ty::Float, Some(Repr::F64), Some(Vt::F64)),
+                (Ty::Length(LengthUnit::Rem), Some(Repr::F64), Some(Vt::F64)),
+                (Ty::Bool, Some(Repr::Bool), Some(Vt::I32)),
+                (Ty::Unit, None, None),
+                (Ty::Text, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Actor, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Date, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Time, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Identifier, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::RichText, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Bytes, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Response, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Json, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::File, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Record(key()), Some(Repr::Handle), Some(Vt::I32)),
+                (
+                    Ty::List(Box::new(Ty::Duration)),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (
+                    Ty::Set(Box::new(Ty::Int)),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (
+                    Ty::Map(Box::new(Ty::Text)),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (
+                    Ty::Collection(Box::new(Ty::Record(key()))),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (
+                    Ty::Option(Box::new(Ty::Duration)),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (
+                    Ty::Result(Box::new(Ty::Duration), Box::new(Ty::Text)),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (Ty::Filter(key()), Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Sort(key()), Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Enum(key()), Some(Repr::Handle), Some(Vt::I32)),
+                (
+                    Ty::Union(vec![key(), key()]),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (
+                    Ty::Tuple(vec![Ty::Duration]),
+                    Some(Repr::Handle),
+                    Some(Vt::I32),
+                ),
+                (Ty::Action, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::View, Some(Repr::Handle), Some(Vt::I32)),
+                (Ty::Error, Some(Repr::Handle), Some(Vt::I32)),
+            ];
+            for (ty, expected_repr, expected_vt) in cases {
+                assert_eq!(ty.abi_repr(), *expected_repr, "abi_repr of {ty:?}");
+                assert_eq!(ty.repr(), *expected_vt, "repr of {ty:?}");
+                assert_eq!(ty.abi_repr().map(Repr::vt), ty.repr(), "derived vt of {ty:?}");
             }
         }
     }

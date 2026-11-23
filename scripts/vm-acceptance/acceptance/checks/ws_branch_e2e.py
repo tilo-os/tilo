@@ -11,7 +11,7 @@ agent started in a branch's environment works in that branch alone.
 
 Everything goes through the production paths, as `agents_e2e` does: the shell's own actions
 (`new-workspace`, `switch-workspace`, `workspace.branch`), the apps' own actions (Notes'
-`new-note` and `read`, Terminal's `create-environment`, `open-in`, `run`, `read`), the person's
+`new_note` and `read`, Terminal's `create-environment`, `open-in`, `run`, `read`), the person's
 `tilo` command, the sheet's own answers, and a scripted MCP client configured as Claude Code
 (`guest/mcp_agent.sh`). The harness reads the workspaces' trees through the account's own account
 (`tilo-vm account exec`).
@@ -224,17 +224,17 @@ def note_rows(ctx, operation: str) -> list[dict]:
 def ensure_notes(ctx, ws: dict) -> None:
     """Notes open in `ws`, in front: the one the branch brought on its shell, else a new one."""
     ae.select_workspace(ctx, ws)
-    if wait_until(lambda: len(note_rows(ctx, "new-note")) == 1 or None, 10, interval=1.0):
+    if wait_until(lambda: len(note_rows(ctx, "new_note")) == 1 or None, 10, interval=1.0):
         return
     ctx.open_app(ae.NOTES, timeout=TERMINAL_S)
     # A Notes started on the busy, software-drawn box publishes its actions once it has drawn.
-    if not wait_until(lambda: len(note_rows(ctx, "new-note")) == 1 or None, TERMINAL_S, interval=1.0):
+    if not wait_until(lambda: len(note_rows(ctx, "new_note")) == 1 or None, TERMINAL_S, interval=1.0):
         everything = ctx.vm.root_exec(
             "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'notes' "
             "| grep -avE 'FRAME-LIFECYCLE|paint-stats|andlock|DBUS_SESSION|optional service' "
             "| tail -n 80 | cut -c1-500", timeout=180, check=False)
         names = sorted({str(t.get("name")) for t in ctx.vm.targets() if "/" not in str(t.get("name"))})
-        raise Unobservable(f"{ws.get('name')}: Notes in front offers no single new-note; it offers "
+        raise Unobservable(f"{ws.get('name')}: Notes in front offers no single new_note; it offers "
                            f"{offered(ctx, ae.NOTES)}; the shell names {names[:60]}; what was said of Notes: "
                            f"{everything[-9000:]}")
 
@@ -272,7 +272,7 @@ def new_note(ctx, ws: dict, title: str) -> None:
         kept = ctx.vm.exec(f'cd "$HOME/{WORKSPACE_DATA}/{ws.get("id")}/{ae.NOTES}" 2>/dev/null && '
                            "find . -type f -printf '%s %p\\n' | sort -k2 | head -n 80", check=False)
         ctx.write(f"{ws.get('name')}-notes-said.txt", everything + "\n---\n" + kept)
-        raise CheckFailed(f"{ws.get('name')}: Notes' new-note {title!r} did not succeed: {exc.reason()}; "
+        raise CheckFailed(f"{ws.get('name')}: Notes' new_note {title!r} did not succeed: {exc.reason()}; "
                           f"it ended {ended}; Notes keeps here {kept.split(chr(10))[:80]}; "
                           f"Notes said: {everything[-9000:]}") from exc
 
@@ -1382,7 +1382,7 @@ def after_restart(ctx, res):
     # offers its apps a little later, and a busy one later still.
     deadline = time.monotonic() + 300
     asked = None
-    while not note_rows(ctx, "new-note"):
+    while not note_rows(ctx, "new_note"):
         awake(ctx)
         if time.monotonic() > deadline:
             raise CheckFailed(f"Notes did not open after the restart ({asked or 'never offered'}): it offers "

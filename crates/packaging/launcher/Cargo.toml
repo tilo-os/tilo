@@ -44,9 +44,9 @@ browser-continuity = { workspace = true, features = ["native"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Kernel-authenticated ownership of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
-tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { path = "../../platform/bounded-command" }
 blake3.workspace = true
 sha2.workspace = true
 hex.workspace = true
@@ -57,9 +57,11 @@ tilo-paths.workspace = true
 tilo-process = { path = "../../platform/tilo-process" }
 # Where the files a person chose for the app are served (the paths only).
 tilo-documents.workspace = true
-fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# Where no session serves the clipboard, this process serves the same wire from
+# the OS clipboard, so an app on a person's own desktop still copies and pastes.
+tilo-clipboard = { path = "../../platform/tilo-clipboard", features = ["os"] }
 # Launch phase marks, handed to the app so its startup file covers the time
 # before its own `main` (run.rs, `splice_startup_marks`).
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
@@ -90,8 +92,8 @@ package-store = { path = "../package-store", features = ["lease"] }
 # the compositor and the filesystem use — a launcher-local permission
 # type would be a second vocabulary to drift out of sync.
 collab-types = { path = "../../collab/collab-types" }
-wire-frame = { path = "../../system/wire-frame" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+wire-frame = { path = "../../platform/wire-frame" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds
 # the connection (`system_stats`).
 tilo-system-stats = { path = "../../system/system-stats" }
@@ -109,7 +111,7 @@ settings-store = { path = "../../system/settings-store" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 # Landlock ruleset construction and the baseline seccomp filter. A leaf
 # crate, so the launcher still depends on nothing in the compositor.
-tilo-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 # The egress proxy and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
@@ -133,7 +135,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 package-store = { path = "../package-store", features = ["store"] }
 ed25519-dalek.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
-tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
+tilo-sandbox-core = { path = "../../platform/sandbox-core", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # A sandboxed app's real AT-SPI bridge behind the launcher's AT-SPI proxy

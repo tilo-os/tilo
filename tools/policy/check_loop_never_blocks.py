@@ -40,6 +40,17 @@ BLOCKING = re.compile(
 )
 
 WINDOW_CODE = ("apps", "crates/session")
+# Crates of the same kind that live in other groups.
+WINDOW_CODE += (
+    "crates/os/console-control",
+    "crates/os/greetd-client",
+    "crates/os/greeter",
+    "crates/os/install-plan",
+    "crates/os/install-profile-model",
+    "crates/integrations/messaging-service",
+    "crates/os/tilo-ntfs-helper",
+    "crates/os/tilo-ntfs-protocol",
+)
 WAITING_OPEN = re.compile(r"\bSessionResource::open\s*\(")
 OFF_UI_THREAD = re.compile(r"\boff_ui_thread\s*\(\s*\)")
 FUNCTION = re.compile(r"\bfn\s+\w+")

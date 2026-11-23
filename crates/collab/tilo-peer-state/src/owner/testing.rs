@@ -46,6 +46,7 @@ pub fn own_host_hint(
         label: String::new(),
         cloud: false,
         moderates: false,
+        origin: None,
         workspace_id: workspace,
         endpoint_addr: endpoint,
         user_public_key: certificate.user_public_key,
@@ -247,6 +248,12 @@ pub fn member_key() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
 }
 
+/// The person whose root key certifies [`member_key`]'s device.
+#[must_use]
+pub fn member_person() -> [u8; 32] {
+    SigningKey::from_bytes(&[64; 32]).verifying_key().to_bytes()
+}
+
 /// A governor's workspace, seeded, and a member's verified invitation into
 /// it, not yet admitted.
 struct Seeded {
@@ -289,6 +296,7 @@ fn seeded(now: SystemTime) -> Seeded {
         label: String::new(),
         cloud: false,
         moderates: false,
+        origin: None,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
@@ -348,7 +356,12 @@ fn seeded(now: SystemTime) -> Seeded {
     };
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
-    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
+    collab_types::CommitNamed::commit_edit(
+        &mut chat,
+        "chat",
+        "channels",
+        &governor.user_public_key,
+    );
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(
@@ -478,7 +491,7 @@ pub fn late_admission_at(now: SystemTime) -> LateAdmission {
     } = seeded(now);
     let mut chat = AutoCommit::new();
     chat.put(ROOT, "said", "hello").unwrap();
-    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "said");
+    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "said", &governor.user_public_key);
     let record = peer
         .publication_mut()
         .publish_document(APP, "", chat.save(), &governor_key, now)

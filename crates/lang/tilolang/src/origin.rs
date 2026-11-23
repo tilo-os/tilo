@@ -75,6 +75,18 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          holds: (the account's key, the mailbox's key). They come in as the server's changes do.",
     ),
     (
+        "imap.search",
+        "Searches a mail account's server for the text: (the account's key, the text). What it \
+         finds comes in as the account's mail, so what the workspace does not hold is read here \
+         from then on.",
+    ),
+    (
+        "imap.save_draft",
+        "Keeps a draft in a mail account's Drafts folder on its server: (the account's key, to, \
+         cc, subject, body, the Message-ID it answers, the References it continues, the calendar \
+         invitation or nothing), so another mail client of the account sees it.",
+    ),
+    (
         "imap.purge",
         "Deletes messages of a mail account from its server for good, its trash emptied of them: \
          (the account's key, the keys of its messages). A message the account no longer holds is \
@@ -82,8 +94,9 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "youtube.search",
-        "Searches YouTube's catalogue for the query, as typed: (the query). The channels, \
-         playlists and videos it answers are written where the search's field says.",
+        "Searches YouTube's catalogue for the query, as typed: (the query, the kinds it shows, \
+         how long its videos run, how recent they are). The channels, playlists and videos it \
+         answers are written where the search's field says.",
     ),
     (
         "youtube.channel",
@@ -106,8 +119,29 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "youtube.stream",
-        "Asks YouTube where a video's bytes play from: (the video's key). The address is written \
-         into the video's `stream`, which the player opens.",
+        "Asks YouTube where a video's bytes play from, at a quality: (the video's key, the \
+         tallest picture the person wants or `auto`). The address is written into the video's \
+         `stream`, which the player opens.",
+    ),
+    (
+        "youtube.comments",
+        "Asks YouTube for a video's comments, most liked first: (the video's key). They are \
+         written where the client reads them, keyed by the comment's own id.",
+    ),
+    (
+        "youtube.segments",
+        "Asks SponsorBlock for the segments it marks in a video: (the video's key). They are \
+         written where the client reads them, keyed by where each stands.",
+    ),
+    (
+        "youtube.branding",
+        "Asks DeArrow for the community's title and picture of a video: (the video's key). They \
+         are written into the video.",
+    ),
+    (
+        "youtube.votes",
+        "Asks Return YouTube Dislike how many people disliked a video: (the video's key). The \
+         count is written into the video.",
     ),
 ];
 
@@ -523,6 +557,12 @@ pub const KINDS: &[OriginKind] = &[
             field("received", "Time", "When it arrived."),
             field("snippet", "Text", "The start of what it says."),
             field("body", "Text", "What it says, as text."),
+            field(
+                "html",
+                "Text",
+                "What it says as its sender formatted it: its HTML part, each picture it shows in \
+                 place at the address of its content. Empty for a message of plain text.",
+            ),
             field("message_id", "Text", "Its Message-ID header."),
             field(
                 "references",
@@ -531,8 +571,9 @@ pub const KINDS: &[OriginKind] = &[
             ),
             field(
                 "attachments",
-                "Text",
-                "The names of its attachments, one per line.",
+                "List<File>",
+                "The files it came with, each kept in the workspace's content; one whose bytes \
+                 did not come with it is named with no content.",
             ),
             people("unread", "Bool", "Whether it is unread."),
             people("flagged", "Bool", "Whether it is flagged."),
@@ -589,13 +630,66 @@ pub const KINDS: &[OriginKind] = &[
             field("duration", "Int", "How long it runs, in seconds."),
             field("description", "Text", "What its page says about it."),
             field("likes", "Int", "How many people liked it."),
+            field(
+                "dislikes",
+                "Int",
+                "How many people disliked it, as Return YouTube Dislike estimates it.",
+            ),
             field("thumbnail", "Text", "The address of its still."),
+            field(
+                "dearrow_title",
+                "Text",
+                "The community's title for it, empty when it has none.",
+            ),
+            field(
+                "dearrow_thumbnail",
+                "Text",
+                "The address of the picture the community frames it with, empty for none.",
+            ),
             field(
                 "stream",
                 "Text",
                 "The address its bytes play from, empty until the service is asked.",
             ),
             field("live", "Bool", "Whether it is a live stream."),
+        ],
+    },
+    OriginKind {
+        name: "youtube.comment",
+        doc: "A comment someone left on a video, as the service says it is.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The comment's id."),
+            field("video_key", "Text", "The id of the video it was left on."),
+            field("author", "Text", "Who wrote it."),
+            field(
+                "avatar",
+                "Text",
+                "The address of the writer's picture, empty for none.",
+            ),
+            field("text", "Text", "What it says."),
+            field("likes", "Int", "How many people liked it."),
+            field("published", "Time", "When it was written."),
+            field("pinned", "Bool", "Whether the video's maker pinned it."),
+            field(
+                "hearted",
+                "Bool",
+                "Whether the video's maker marked it with a heart.",
+            ),
+            field("replies", "Int", "How many replies it has on YouTube."),
+        ],
+    },
+    OriginKind {
+        name: "youtube.segment",
+        doc: "One SponsorBlock segment of a video, as the community placed it.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "Where the segment stands in the video."),
+            field("video_key", "Text", "The id of the video it belongs to."),
+            field("category", "Text", "Its kind, as SponsorBlock names it."),
+            field("start", "Int", "Where it starts, in whole seconds."),
+            field("end", "Int", "Where it ends, in whole seconds."),
+            field("votes", "Int", "The community votes that place it."),
         ],
     },
     OriginKind {

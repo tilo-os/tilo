@@ -1,0 +1,2011 @@
+//! `MediaTransport`: what is playing and the controls that steer it, as one band of real controls —
+//! art and song, like and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber,
+//! the queue and the volume.
+//!
+//! Playback belongs to the window, not to the page open, so the transport is meant for
+//! [`NavShell::bottom_band`](crate::widget::NavShell::bottom_band): it spans the window under every
+//! column.
+//!
+//! The app's player is the one truth. It declares what plays through a [`TransportFeed`]
+//! ([`TransportFeed::show`], cheap when nothing changed) and hands in the actions the controls
+//! invoke ([`TransportActions`]): each one runs one of the app's own resource actions, as an agent
+//! invoking it would, so what the person presses is never a callback beside the app's actions. A
+//! control the app hands no action for is not there. What only changes what the window shows (the
+//! queue, the lyrics, the compact form's More menu, the art) and a swipe across the band come back
+//! as [`TransportEvent`]s ([`TransportFeed::take_events`]). The transport keeps nothing of its own
+//! but where the knob is while a finger or the pointer holds it.
+//!
+//! Two forms, chosen by width: **wide** puts the song on the left, the transport centred over the
+//! scrubber, the queue and volume on the right; **compact** (narrower than two large media cards)
+//! puts the song beside previous, play and next, with the volume and a More button the app answers
+//! with a menu. The volume is reachable at every width, a slider where it fits and else a speaker
+//! button whose popover holds it; the art opens what plays when the app says what that is
+//! ([`TransportState::opens`]), and a horizontal swipe across the band skips a song. A control the
+//! app leaves out (a local file can't be liked) is not there at all, and everything rests disabled
+//! while nothing can play.
+//! ```ignore
+//! let transport = TransportFeed::new();
+//! let actions = TransportActions { play_pause: Some(play_pause), ..TransportActions::default() };
+//! let shell = NavShell::new().bottom_band(Box::new(MediaTransport::new(&transport, actions)));
+//! // each sync:
+//! transport.show(TransportState { title, playing, .. });
+//! for event in transport.take_events() { /* show the queue, the lyrics, a menu */ }
+//! ```
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use taffy::{NodeId, Size, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::ImageData;
+
+use crate::component::Event;
+use crate::icons::Icon;
+use crate::paint::PaintCtx;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::media_card::MediaSize;
+use crate::widget::now_playing::{Song, SongFace};
+use tilo_actions::ActionBinding;
+
+use crate::widget::{
+    Button, ButtonFace, ControlSize, Element, Manual, ManualContext, PanelAlign, PopoverSide,
+    Slider, SliderFace, TaffyTreeExt, TransportControl, TransportFace, When, Widget,
+    WidgetLayoutError,
+};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+/// The song's art in the transport.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum TransportArt {
+    #[default]
+    None,
+    Placeholder,
+    Image(ImageData),
+    Picture(crate::widget::PictureSource),
+}
+
+/// What a repeat control repeats.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransportRepeat {
+    #[default]
+    Off,
+    All,
+    One,
+}
+
+crate::component::choice!(TransportRepeat, "TransportRepeat", {
+    Off => "off",
+    All => "all",
+    One => "one",
+});
+
+/// What plays, as the app's player has it: everything the transport shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TransportState {
+    pub title: String,
+    /// Who it is by, or why it can't play.
+    pub subtitle: String,
+    /// The subtitle says why it can't play: it reads as an error.
+    pub error: bool,
+    pub art: TransportArt,
+    pub art_name: String,
+    pub opens: Option<String>,
+    pub playing: bool,
+    pub idle: bool,
+    pub position_ms: f64,
+    pub duration_ms: f64,
+    pub volume: f64,
+    pub shuffle: Option<bool>,
+    pub repeat: Option<TransportRepeat>,
+    pub liked: Option<bool>,
+    pub lyrics: Option<bool>,
+    pub queue: Option<bool>,
+    pub more: bool,
+}
+
+/// The app's actions the transport's controls invoke, each through the resource/action
+/// API.
+#[derive(Clone, Default)]
+pub struct TransportActions {
+    pub play_pause: Option<ActionBinding<()>>,
+    pub previous: Option<ActionBinding<()>>,
+    pub next: Option<ActionBinding<()>>,
+    pub shuffle: Option<ActionBinding<()>>,
+    pub repeat: Option<ActionBinding<()>>,
+    pub like: Option<ActionBinding<()>>,
+    pub mute: Option<ActionBinding<()>>,
+    /// Go to a fraction (`0..=1`) of the song, once the scrubber is let go.
+    pub seek: Option<ActionBinding<f64>>,
+    pub volume: Option<ActionBinding<f64>>,
+}
+
+/// What the person asked for that changes what the window shows, rather than what plays
+/// ([`TransportActions`]), and the swipe across the band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TransportEvent {
+    Previous,
+    Next,
+    Lyrics,
+    Queue,
+    More(Rect),
+    OpenPlaying,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Form {
+    Compact,
+    /// Wide, with the volume a mute toggle only.
+    #[default]
+    Wide,
+    WideWithVolume,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Metrics {
+    control: f64,
+    play: f64,
+    skip: f64,
+    caption: f64,
+    song: f64,
+    time: f64,
+    large: f64,
+    small: f64,
+    group: f64,
+    section: f64,
+    sibling: f64,
+    related: f64,
+    tight: f64,
+    swipe: f64,
+}
+
+impl Metrics {
+    fn of(theme: &Theme) -> Self {
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let line = |role| f64::from(theme.text(role).line_height_px());
+        Self {
+            control: ButtonFace::height(ControlSize::Regular, theme),
+            play: TransportFace::side(TransportControl::PlayPause { playing: false }, theme),
+            skip: TransportFace::side(TransportControl::Next, theme),
+            caption: line(TextRole::Caption),
+            song: line(TextRole::Body) + line(TextRole::Caption),
+            time: 0.0,
+            large: MediaSize::Large.extent(theme),
+            small: MediaSize::Small.extent(theme),
+            group: f64::from(rhythm.group),
+            section: f64::from(rhythm.section),
+            sibling: f64::from(rhythm.sibling),
+            related: f64::from(rhythm.related),
+            tight: f64::from(rhythm.tight),
+            swipe: 2.0 * f64::from(theme.tokens.metrics.min_pointer_target),
+        }
+    }
+
+    /// The scrubber's row: a caption line, never under a comfortable
+    /// pointer target.
+    fn scrub(&self) -> f64 {
+        self.caption.max(self.section + self.related)
+    }
+
+    fn form(&self, width: f64) -> Form {
+        if width < 2.0 * self.large {
+            Form::Compact
+        } else if width < 3.0 * self.large {
+            Form::Wide
+        } else {
+            Form::WideWithVolume
+        }
+    }
+
+    fn top(&self, form: Form) -> f64 {
+        let control = self.control.max(self.play);
+        if form == Form::Compact {
+            control.max(self.song)
+        } else {
+            control
+        }
+    }
+
+    fn height(&self, form: Form) -> f64 {
+        2.0 * self.sibling + self.top(form) + self.tight + self.scrub()
+    }
+}
+
+#[derive(Default)]
+struct Shared {
+    state: RefCell<TransportState>,
+    revision: Cell<u64>,
+    events: RefCell<Vec<TransportEvent>>,
+    metrics: Cell<Metrics>,
+    form: Cell<Form>,
+    more: Cell<Rect>,
+    origin: Cell<Point>,
+    placed: Cell<[Rect; CHILDREN]>,
+    handed: Cell<[bool; CHILDREN]>,
+    song: RefCell<SongFace>,
+    scrub: Cell<Option<f64>>,
+    art_lent: Cell<bool>,
+}
+
+impl Shared {
+    fn push(&self, event: TransportEvent) {
+        self.events.borrow_mut().push(event);
+    }
+
+    fn follow_song(&self, theme: &Theme, now: crate::time::Instant) {
+        let song = song_of(&self.state.borrow());
+        self.song.borrow_mut().show(&song, theme.motion(), now);
+    }
+
+    /// Asked while a frame lays out, so it reads at the frame's instant, as every motion that sizes
+    /// or places what it moves does.
+    fn song_moving(&self) -> bool {
+        self.song.borrow().is_moving(crate::motion::frame_now())
+    }
+
+    fn follow_art(&self) -> bool {
+        let picture = match &self.state.borrow().art {
+            TransportArt::Picture(picture) => picture.clone(),
+            _ => return false,
+        };
+        let Some(image) = crate::pictures::Pictures::window().get(&picture) else {
+            return false;
+        };
+        self.state.borrow_mut().art = TransportArt::Image(image.clone());
+        self.song.borrow_mut().stand_art(TransportArt::Image(image));
+        self.revision.set(self.revision.get().wrapping_add(1));
+        true
+    }
+
+    fn caption(&self, side: Caption) -> String {
+        let state = self.state.borrow();
+        if state.idle {
+            return String::new();
+        }
+        match side {
+            Caption::Elapsed => time(
+                self.scrub
+                    .get()
+                    .map_or(state.position_ms, |held| held * state.duration_ms),
+            ),
+            Caption::Total => time(state.duration_ms),
+        }
+    }
+}
+
+fn song_of(state: &TransportState) -> Song {
+    Song {
+        title: state.title.clone(),
+        subtitle: state.subtitle.clone(),
+        detail: String::new(),
+        error: state.error,
+        art: state.art.clone(),
+        art_name: state.art_name.clone(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Caption {
+    Elapsed,
+    Total,
+}
+
+/// Where an app declares what plays and takes what the person asked for.
+#[derive(Clone, Default)]
+pub struct TransportFeed(Rc<Shared>);
+
+impl TransportFeed {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Show `state`.
+    pub fn show(&self, state: TransportState) {
+        if *self.0.state.borrow() == state {
+            return;
+        }
+        *self.0.state.borrow_mut() = state;
+        self.0.revision.set(self.0.revision.get().wrapping_add(1));
+    }
+
+    /// What the transport shows.
+    #[must_use]
+    pub fn shown(&self) -> TransportState {
+        self.0.state.borrow().clone()
+    }
+
+    /// What the person asked for since the last call, in order.
+    #[must_use]
+    pub fn take_events(&self) -> Vec<TransportEvent> {
+        std::mem::take(&mut *self.0.events.borrow_mut())
+    }
+
+    /// Where the art stands in the window, while it is there: what a page showing the song
+    /// large zooms from and back to.
+    #[must_use]
+    pub fn art_rect(&self) -> Option<Rect> {
+        let art = self.0.placed.get()[ART];
+        (art.width() > 0.0).then(|| art + self.0.origin.get().to_vec2())
+    }
+
+    /// The corners of the band's art.
+    #[must_use]
+    pub fn art_radius(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.radii.control)
+    }
+
+    /// The song as the band shows it.
+    #[must_use]
+    pub fn song(&self) -> Song {
+        song_of(&self.0.state.borrow())
+    }
+
+    /// Whether a page has the cover in flight to or from it: while it does, the band leaves
+    /// the art's place empty, so one cover moves, not two.
+    pub fn lend_art(&self, lent: bool) {
+        if self.0.art_lent.replace(lent) != lent {
+            self.0.revision.set(self.0.revision.get().wrapping_add(1));
+        }
+    }
+}
+
+struct Follow<W> {
+    widget: W,
+    shared: Rc<Shared>,
+    seen: Option<u64>,
+    fresh: bool,
+    apply: fn(&mut W, &TransportState) -> bool,
+}
+
+impl<W: Widget + 'static> Follow<W> {
+    fn new(widget: W, shared: &Rc<Shared>, apply: fn(&mut W, &TransportState) -> bool) -> Self {
+        let mut follow = Self {
+            widget,
+            shared: shared.clone(),
+            seen: None,
+            fresh: false,
+            apply,
+        };
+        follow.follow();
+        follow
+    }
+
+    fn follow(&mut self) -> bool {
+        let revision = self.shared.revision.get();
+        if self.seen == Some(revision) {
+            return false;
+        }
+        self.seen = Some(revision);
+        self.fresh |= (self.apply)(&mut self.widget, &self.shared.state.borrow());
+        true
+    }
+}
+
+impl<W: Widget + 'static> crate::widget::Decorator for Follow<W> {
+    type Inner = W;
+
+    fn inner(&self) -> &W {
+        &self.widget
+    }
+
+    fn inner_mut(&mut self) -> &mut W {
+        &mut self.widget
+    }
+
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.follow();
+        self.widget.sync(state, path);
+    }
+
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        let followed = self.follow();
+        self.widget.update(state, path) | followed
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.fresh || (self.widget.needs_redraw() || self.widget.needs_animation_frame())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.fresh = false;
+        self.widget.mark_drawn();
+    }
+}
+
+struct Art {
+    shared: Rc<Shared>,
+    report: Option<Rc<dyn Fn()>>,
+    seen: Option<u64>,
+    rect: Rect,
+    dirty: bool,
+    pressed: bool,
+    focused: bool,
+    cursor: Point,
+}
+
+impl Art {
+    fn opens(&self) -> Option<String> {
+        self.shared.state.borrow().opens.clone()
+    }
+
+    fn open(&self) {
+        if let Some(report) = &self.report {
+            report();
+        }
+        if self.opens().is_some() {
+            self.shared.push(TransportEvent::OpenPlaying);
+        }
+    }
+}
+
+impl Widget for Art {
+    /// The band it stands in places it: it asks for no layout of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    /// The album art: a page's own picture where its address loads, its paint otherwise.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let state = self.shared.state.borrow();
+        let alt = state.art_name.clone();
+        if let TransportArt::Picture(picture) = &state.art
+            && let Some(src) = crate::composition::web_picture(&picture.src)
+        {
+            cx.element("img");
+            cx.attr("src", src.to_owned());
+            cx.attr("alt", alt);
+            return;
+        }
+        cx.element("span");
+        if !alt.is_empty() {
+            cx.attr("aria-label", alt);
+        }
+        cx.picture();
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = crate::widget::layout_rect(taffy, node, origin);
+        self.dirty |= rect != self.rect;
+        self.rect = rect;
+    }
+
+    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+        let followed = self.shared.follow_art();
+        let revision = self.shared.revision.get();
+        if self.seen == Some(revision) {
+            return followed;
+        }
+        self.seen = Some(revision);
+        self.dirty = true;
+        true
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 {
+            return;
+        }
+        let now = crate::motion::frame_now();
+        self.shared.follow_song(theme, now);
+        if self.shared.art_lent.get() {
+            return;
+        }
+        let radius = TransportFeed::art_radius(theme);
+        let ctx = &mut PaintCtx::new(scene, transform, text, theme);
+        self.shared
+            .song
+            .borrow()
+            .paint_art(ctx, self.rect, radius, now);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.shared.song_moving()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.shared.song_moving()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "TransportArt"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("transport.art")
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.opens().is_none() {
+            self.pressed = false;
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => self.cursor = ctx.logical(position),
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let inside = self.rect.contains(self.cursor);
+                match state {
+                    ElementState::Pressed => {
+                        self.pressed = inside;
+                        if inside {
+                            *ctx.focus_target = Some(ctx.node_id);
+                            *ctx.handled = true;
+                        }
+                    }
+                    ElementState::Released => {
+                        if std::mem::take(&mut self.pressed) && inside {
+                            self.open();
+                            *ctx.handled = true;
+                        }
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused => {
+                self.open();
+                *ctx.handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.opens().is_some() && self.rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.opens().is_some()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.focused != focused;
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
+        _root: &crate::widget::ModelPath,
+    ) -> bool {
+        if *action == crate::a11y::Action::Activate && self.opens().is_some() {
+            self.open();
+            return true;
+        }
+        false
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self.opens()?;
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_state(AccessState::new().focusable(true).focused(self.focused)),
+        )
+    }
+}
+
+struct SongLines {
+    shared: Rc<Shared>,
+    seen: Option<u64>,
+    rect: Rect,
+    dirty: bool,
+}
+
+impl Widget for SongLines {
+    /// The band it stands in places it: it asks for no layout of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    /// What is playing: its title over its artist.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::TextLook;
+        let theme = cx.theme();
+        let state = self.shared.state.borrow();
+        cx.element("div");
+        let title = theme.text(TextRole::Body).strong();
+        let caption = theme.text(TextRole::Caption);
+        let title_h = f64::from(title.line_height_px());
+        let caption_h = f64::from(caption.line_height_px());
+        let mut y = self.rect.y0;
+        if !state.title.is_empty() {
+            let look = TextLook::new(state.title.clone(), &title, Some(theme.text_primary))
+                .with_max_lines(Some(1));
+            cx.words(
+                "title",
+                "h3",
+                Rect::new(self.rect.x0, y, self.rect.x1, y + title_h),
+                look,
+            );
+            y += title_h;
+        }
+        if !state.subtitle.is_empty() {
+            let ink = if state.error {
+                theme.tokens.colors.semantic.danger
+            } else {
+                theme.text_dim
+            };
+            let look =
+                TextLook::new(state.subtitle.clone(), &caption, Some(ink)).with_max_lines(Some(1));
+            cx.words(
+                "subtitle",
+                "p",
+                Rect::new(self.rect.x0, y, self.rect.x1, y + caption_h),
+                look,
+            );
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = crate::widget::layout_rect(taffy, node, origin);
+        self.dirty |= rect != self.rect;
+        self.rect = rect;
+    }
+
+    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+        let revision = self.shared.revision.get();
+        if self.seen == Some(revision) {
+            return false;
+        }
+        self.seen = Some(revision);
+        self.dirty = true;
+        true
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.shared.song_moving()
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 {
+            return;
+        }
+        let now = crate::motion::frame_now();
+        self.shared.follow_song(theme, now);
+        let ctx = &mut PaintCtx::new(scene, transform, text, theme);
+        self.shared
+            .song
+            .borrow()
+            .paint_lines(ctx, self.rect, None, now);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        crate::widget::Widget::mark_children_drawn(self);
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.shared.song_moving()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "TransportSong"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("transport.song")
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        let state = self.shared.state.borrow();
+        let song = song_of(&state);
+        let spoken = crate::widget::TextStackFace::new(&song.title)
+            .secondary(&song.subtitle)
+            .spoken();
+        Some(AccessNode::new(Role::StaticText).with_name(spoken))
+    }
+}
+
+fn triggered_children(
+    shared: &Rc<Shared>,
+    triggers: &TransportTriggers,
+    open: Option<Event>,
+) -> Vec<Element> {
+    let mut parts: Vec<Element> = children(shared, &TransportActions::default());
+    parts[ART] = Box::new(Art {
+        shared: shared.clone(),
+        report: open.map(event_report),
+        seen: None,
+        rect: Rect::ZERO,
+        dirty: true,
+        pressed: false,
+        focused: false,
+        cursor: Point::ZERO,
+    });
+    if let Some(event) = &triggers.like {
+        parts[LIKE] = Box::new(Follow::new(
+            event_button(
+                "transport.like",
+                Icon::Heart,
+                &crate::i18n::widget_format("media-like", &[]),
+                Some(event),
+            ),
+            shared,
+            like_face,
+        ));
+    }
+    if let Some(event) = &triggers.lyrics {
+        parts[LYRICS] = Box::new(Follow::new(
+            event_button(
+                "transport.lyrics",
+                Icon::Captions,
+                &crate::i18n::widget_format("media-lyrics", &[]),
+                Some(event),
+            ),
+            shared,
+            |b, state| toggle(b, state.lyrics, false),
+        ));
+    }
+    if let Some(event) = &triggers.shuffle {
+        parts[SHUFFLE] = Box::new(Follow::new(
+            event_button(
+                "transport.shuffle",
+                Icon::Shuffle,
+                &crate::i18n::widget_format("media-shuffle", &[]),
+                Some(event),
+            ),
+            shared,
+            |b, state| toggle(b, state.shuffle, state.idle),
+        ));
+    }
+    if let Some(event) = &triggers.previous {
+        parts[PREVIOUS] = Box::new(Follow::new(
+            event_transport(
+                "transport.previous",
+                TransportControl::Previous,
+                Some(event),
+            ),
+            shared,
+            |b, state| {
+                b.set_enabled(!state.idle);
+                false
+            },
+        ));
+    }
+    if let Some(event) = &triggers.play_pause {
+        parts[PLAY] = Box::new(Follow::new(
+            event_transport(
+                "transport.play",
+                TransportControl::PlayPause { playing: false },
+                Some(event),
+            ),
+            shared,
+            |b, state| {
+                b.set_transport(TransportControl::PlayPause {
+                    playing: state.playing,
+                });
+                b.set_enabled(!state.idle);
+                false
+            },
+        ));
+    }
+    if let Some(event) = &triggers.next {
+        parts[NEXT] = Box::new(Follow::new(
+            event_transport("transport.next", TransportControl::Next, Some(event)),
+            shared,
+            |b, state| {
+                b.set_enabled(!state.idle);
+                false
+            },
+        ));
+    }
+    if let Some(event) = &triggers.repeat {
+        parts[REPEAT] = Box::new(Follow::new(
+            event_button(
+                "transport.repeat",
+                Icon::Repeat,
+                &crate::i18n::widget_format("media-repeat", &[]),
+                Some(event),
+            ),
+            shared,
+            |b, state| {
+                let repeat = state.repeat.unwrap_or_default();
+                let (icon, key) = match repeat {
+                    TransportRepeat::One => (Icon::Repeat1, "media-repeat-one"),
+                    TransportRepeat::All => (Icon::Repeat, "media-repeat-all"),
+                    TransportRepeat::Off => (Icon::Repeat, "media-repeat"),
+                };
+                let name = crate::i18n::widget_format(key, &[]);
+                b.set_icon(icon);
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
+                toggle(b, Some(repeat != TransportRepeat::Off), state.idle)
+            },
+        ));
+    }
+    let seek = triggers.seek.clone();
+    parts[SCRUBBER] = Box::new(Scrubber {
+        slider: Follow::new(
+            event_slider(
+                Slider::from_state(&crate::LocalState::new(0.0))
+                    .with_id("transport.position")
+                    .with_accessible_name(&crate::i18n::widget_format("media-position", &[]))
+                    .value_text({
+                        let shared = shared.clone();
+                        move |fraction| time(fraction * shared.state.borrow().duration_ms)
+                    })
+                    .reads_out_while_held()
+                    .commits_on_release(),
+                seek.as_ref(),
+            ),
+            shared,
+            |slider, state| {
+                let before = (slider.value(), slider.is_enabled());
+                slider.set_enabled(!state.idle);
+                if !slider.is_held() {
+                    let fraction = if state.duration_ms > 0.0 {
+                        (state.position_ms / state.duration_ms).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    slider.set_value(fraction);
+                }
+                (before.0 - slider.value()).abs() > f64::EPSILON || before.1 != slider.is_enabled()
+            },
+        ),
+    });
+    if let Some(event) = &triggers.queue {
+        parts[QUEUE] = Box::new(Follow::new(
+            event_button(
+                "transport.queue",
+                Icon::ListMusic,
+                &crate::i18n::widget_format("media-queue", &[]),
+                Some(event),
+            ),
+            shared,
+            |b, state| toggle(b, state.queue, false),
+        ));
+    }
+    if let Some(event) = &triggers.mute {
+        parts[MUTE] = Box::new(Follow::new(
+            event_button(
+                "transport.mute",
+                Icon::Volume2,
+                &crate::i18n::widget_format("media-mute", &[]),
+                Some(event),
+            ),
+            shared,
+            |b, state| {
+                let muted = state.volume <= 0.0;
+                b.set_icon(speaker(state.volume));
+                let name = crate::i18n::widget_format(
+                    if muted { "media-unmute" } else { "media-mute" },
+                    &[],
+                );
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
+                false
+            },
+        ));
+    }
+    let volume = triggers.volume.clone();
+    parts[VOLUME] = Box::new(Follow::new(
+        event_slider(
+            Slider::from_state(&crate::LocalState::new(1.0))
+                .with_id("transport.volume")
+                .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+            volume.as_ref(),
+        ),
+        shared,
+        follow_volume,
+    ));
+    parts[VOLUME_MENU] = Box::new(Follow::new(
+        Button::icon_only(
+            "transport.volume-menu",
+            Icon::Volume2,
+            &crate::i18n::widget_format("media-volume", &[]),
+        )
+        .control_size(ControlSize::Regular)
+        .with_popover(VolumePanel {
+            slider: event_slider(
+                Slider::from_state(&crate::LocalState::new(1.0))
+                    .with_id("transport.volume-menu.slider")
+                    .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                volume.as_ref(),
+            ),
+        })
+        .side(PopoverSide::Above)
+        .aligned(PanelAlign::Trailing),
+        shared,
+        |menu, state| {
+            menu.button_mut().set_icon(speaker(state.volume));
+            follow_volume(&mut menu.popover_mut().content_mut().slider, state)
+        },
+    ));
+    let shared_for_presence = shared.clone();
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let shared = shared_for_presence.clone();
+            Box::new(When::new(part, move || {
+                present(
+                    index,
+                    &shared.state.borrow(),
+                    shared.form.get(),
+                    &shared.handed.get(),
+                )
+            })) as Element
+        })
+        .collect()
+}
+
+fn event_report(event: Event) -> Rc<dyn Fn()> {
+    let run: std::cell::RefCell<Box<dyn FnMut()>> = std::cell::RefCell::new(match event {
+        Event::Action(binding) => {
+            let mut emitter = crate::widget::ActionEmitter::new(binding);
+            Box::new(move || {
+                if let Err(error) = emitter.emit(()) {
+                    tracing::warn!(%error, "a transport control's action refused its arguments");
+                }
+            })
+        }
+        Event::View(intent) => {
+            let sender = intent.sender();
+            Box::new(sender)
+        }
+        Event::None => Box::new(|| {}),
+    });
+    Rc::new(move || {
+        if let Ok(mut run) = run.try_borrow_mut() {
+            (*run)();
+        }
+    })
+}
+
+struct TimeLabel {
+    shared: Rc<Shared>,
+    side: Caption,
+    rect: Rect,
+    drawn: Option<String>,
+}
+
+impl Widget for TimeLabel {
+    /// The band it stands in places it: it asks for no layout of its own.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    /// Where playback is, either side of the scrubber.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let label = self.shared.caption(self.side);
+        if label.is_empty() {
+            return;
+        }
+        let theme = cx.theme();
+        let style = theme.text(crate::TextRole::Caption).numeric();
+        cx.element("span");
+        cx.text(
+            crate::composition::TextLook::new(label, &style, Some(theme.text_dim))
+                .with_max_lines(Some(1)),
+        );
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = crate::widget::layout_rect(taffy, node, origin);
+        if rect != self.rect {
+            self.drawn = None;
+        }
+        self.rect = rect;
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let label = self.shared.caption(self.side);
+        if !label.is_empty() {
+            let style = theme.text(TextRole::Caption).numeric();
+            let (width, height) = text.measure_style(&label, None, &style);
+            let x = match self.side {
+                Caption::Elapsed => self.rect.x1 - f64::from(width),
+                Caption::Total => self.rect.x0,
+            };
+            let y = self.rect.y0 + (self.rect.height() - f64::from(height)) / 2.0;
+            text.draw_style(
+                scene,
+                &label,
+                theme.text_dim,
+                transform.pre_translate((x, y).into()),
+                None,
+                &style,
+            );
+        }
+        self.drawn = Some(label);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.drawn.as_deref() != Some(self.shared.caption(self.side).as_str())
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "TransportTime"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        let label = self.shared.caption(self.side);
+        (!label.is_empty()).then(|| AccessNode::new(Role::StaticText).with_name(label))
+    }
+}
+
+struct Scrubber {
+    slider: Follow<Slider>,
+}
+
+impl crate::widget::Decorator for Scrubber {
+    type Inner = Follow<Slider>;
+
+    fn inner(&self) -> &Follow<Slider> {
+        &self.slider
+    }
+
+    fn inner_mut(&mut self) -> &mut Follow<Slider> {
+        &mut self.slider
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        Widget::handle_event(&mut self.slider, event, ctx);
+        let slider = &self.slider.widget;
+        self.slider
+            .shared
+            .scrub
+            .set(slider.is_held().then(|| slider.value()));
+    }
+}
+
+const ART: usize = 0;
+const SONG: usize = 1;
+const LIKE: usize = 2;
+const LYRICS: usize = 3;
+const SHUFFLE: usize = 4;
+const PREVIOUS: usize = 5;
+const PLAY: usize = 6;
+const NEXT: usize = 7;
+const REPEAT: usize = 8;
+const ELAPSED: usize = 9;
+const SCRUBBER: usize = 10;
+const TOTAL: usize = 11;
+const QUEUE: usize = 12;
+const MUTE: usize = 13;
+const VOLUME: usize = 14;
+const MORE: usize = 15;
+const VOLUME_MENU: usize = 16;
+const CHILDREN: usize = 17;
+
+fn handed(actions: &TransportActions) -> [bool; CHILDREN] {
+    std::array::from_fn(|index| match index {
+        PLAY => actions.play_pause.is_some(),
+        PREVIOUS => actions.previous.is_some(),
+        NEXT => actions.next.is_some(),
+        SHUFFLE => actions.shuffle.is_some(),
+        REPEAT => actions.repeat.is_some(),
+        LIKE => actions.like.is_some(),
+        MUTE => actions.mute.is_some(),
+        SCRUBBER => actions.seek.is_some(),
+        VOLUME | VOLUME_MENU => actions.volume.is_some(),
+        _ => true,
+    })
+}
+
+fn present(index: usize, state: &TransportState, form: Form, handed: &[bool; CHILDREN]) -> bool {
+    if !handed[index] {
+        return false;
+    }
+    let wide = form != Form::Compact;
+    match index {
+        ART => state.art != TransportArt::None,
+        LIKE => wide && state.liked.is_some(),
+        LYRICS => wide && state.lyrics.is_some(),
+        SHUFFLE => wide && state.shuffle.is_some(),
+        REPEAT => wide && state.repeat.is_some(),
+        QUEUE => wide && state.queue.is_some(),
+        VOLUME | MUTE => form == Form::WideWithVolume,
+        VOLUME_MENU => form != Form::WideWithVolume,
+        MORE => !wide && state.more,
+        _ => true,
+    }
+}
+
+const HOUR_MS: f64 = 3_600_000.0;
+
+fn time(ms: f64) -> String {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a song's position in whole seconds, clamped at zero"
+    )]
+    let seconds = (ms.max(0.0) / 1000.0) as u64;
+    crate::format::timecode(seconds)
+}
+
+fn bound(button: Button, action: Option<&ActionBinding<()>>) -> Button {
+    match action {
+        Some(action) => button.on_action(action.clone()),
+        None => button,
+    }
+}
+
+fn button(id: &str, icon: Icon, name: &str, action: Option<&ActionBinding<()>>) -> Button {
+    bound(
+        Button::icon_only(id, icon, name).control_size(ControlSize::Regular),
+        action,
+    )
+}
+
+fn view_button(
+    id: &str,
+    icon: Icon,
+    name: &str,
+    shared: &Rc<Shared>,
+    event: TransportEvent,
+) -> Button {
+    let shared = shared.clone();
+    Button::icon_only(id, icon, name)
+        .control_size(ControlSize::Regular)
+        .on_open(move || shared.push(event))
+}
+
+fn event_button(id: &str, icon: Icon, name: &str, event: Option<&Event>) -> Button {
+    let button = Button::icon_only(id, icon, name).control_size(ControlSize::Regular);
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            button.on_open(move || event.fire(None))
+        }
+        None => button,
+    }
+}
+
+fn event_transport(id: &str, control: TransportControl, event: Option<&Event>) -> Button {
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            Button::transport(id, control).on_open(move || event.fire(None))
+        }
+        None => Button::transport(id, control),
+    }
+}
+
+fn event_slider(slider: Slider, event: Option<&Event>) -> Slider {
+    match event {
+        Some(event) => {
+            let event = event.clone();
+            slider.on_change(move |value| {
+                event.fire(Some(crate::component::Value::Float(value)));
+            })
+        }
+        None => slider,
+    }
+}
+
+fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
+    match action {
+        Some(action) => slider.on_action(action.clone()),
+        None => slider,
+    }
+}
+
+/// A toggle that is on while `on` holds, rests while idle.
+/// The heart says whether the song is liked by its own fill, never by a
+/// ground behind it: a filled heart is a liked song, an outline one is not.
+fn like_face(button: &mut Button, state: &TransportState) -> bool {
+    let liked = state.liked == Some(true) && !state.idle;
+    let name = crate::i18n::widget_format(if liked { "media-unlike" } else { "media-like" }, &[]);
+    button.set_accessible_name(&name);
+    button.set_icon(if liked {
+        Icon::HeartFilled
+    } else {
+        Icon::Heart
+    });
+    button.set_toggled(false);
+    button.set_enabled(!state.idle);
+    false
+}
+
+fn toggle(button: &mut Button, on: Option<bool>, idle: bool) -> bool {
+    button.set_toggled(on == Some(true) && !idle);
+    button.set_enabled(!idle);
+    false
+}
+
+struct VolumePanel {
+    slider: Slider,
+}
+
+impl crate::widget::Decorator for VolumePanel {
+    type Inner = Slider;
+
+    fn inner(&self) -> &Slider {
+        &self.slider
+    }
+
+    fn inner_mut(&mut self) -> &mut Slider {
+        &mut self.slider
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.slider.build_layout(taffy, theme, node_map);
+        if let Ok(style) = taffy.style(node) {
+            let mut style = style.clone();
+            style.size.width =
+                taffy::Dimension::length(crate::num::f32_of_f64(MediaSize::Large.extent(theme)));
+            let _ = taffy.set_style(node, style);
+        }
+        node
+    }
+}
+
+/// Set a volume slider from the declared volume, unless it is held.
+fn follow_volume(slider: &mut Slider, state: &TransportState) -> bool {
+    let before = slider.value();
+    if !slider.is_held() {
+        slider.set_value(state.volume.clamp(0.0, 1.0));
+    }
+    (before - slider.value()).abs() > f64::EPSILON
+}
+
+fn speaker(volume: f64) -> Icon {
+    if volume <= 0.0 {
+        Icon::VolumeX
+    } else {
+        Icon::Volume2
+    }
+}
+
+/// What each of a band's controls does, as a view gives them: the band reports what the
+/// person pressed, and the view's action does the rest.
+#[derive(Clone, Default)]
+pub struct TransportTriggers {
+    pub play_pause: Option<Event>,
+    pub previous: Option<Event>,
+    pub next: Option<Event>,
+    pub shuffle: Option<Event>,
+    pub repeat: Option<Event>,
+    pub like: Option<Event>,
+    pub mute: Option<Event>,
+    pub seek: Option<Event>,
+    pub volume: Option<Event>,
+    pub lyrics: Option<Event>,
+    pub queue: Option<Event>,
+    pub open: Option<Event>,
+}
+
+fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
+    let parts: [Element; CHILDREN] = [
+        Box::new(Art {
+            shared: shared.clone(),
+            report: None,
+            seen: None,
+            rect: Rect::ZERO,
+            dirty: true,
+            pressed: false,
+            focused: false,
+            cursor: Point::ZERO,
+        }),
+        Box::new(SongLines {
+            shared: shared.clone(),
+            seen: None,
+            rect: Rect::ZERO,
+            dirty: true,
+        }),
+        Box::new(Follow::new(
+            button(
+                "transport.like",
+                Icon::Heart,
+                &crate::i18n::widget_format("media-like", &[]),
+                actions.like.as_ref(),
+            ),
+            shared,
+            like_face,
+        )),
+        Box::new(Follow::new(
+            view_button(
+                "transport.lyrics",
+                Icon::Captions,
+                &crate::i18n::widget_format("media-lyrics", &[]),
+                shared,
+                TransportEvent::Lyrics,
+            ),
+            shared,
+            |b, state| toggle(b, state.lyrics, false),
+        )),
+        Box::new(Follow::new(
+            button(
+                "transport.shuffle",
+                Icon::Shuffle,
+                &crate::i18n::widget_format("media-shuffle", &[]),
+                actions.shuffle.as_ref(),
+            ),
+            shared,
+            |b, state| toggle(b, state.shuffle, state.idle),
+        )),
+        Box::new(Follow::new(
+            bound(
+                Button::transport("transport.previous", TransportControl::Previous),
+                actions.previous.as_ref(),
+            ),
+            shared,
+            |b, state| {
+                b.set_enabled(!state.idle);
+                false
+            },
+        )),
+        Box::new(Follow::new(
+            bound(
+                Button::transport(
+                    "transport.play",
+                    TransportControl::PlayPause { playing: false },
+                ),
+                actions.play_pause.as_ref(),
+            ),
+            shared,
+            |b, state| {
+                b.set_transport(TransportControl::PlayPause {
+                    playing: state.playing,
+                });
+                b.set_enabled(!state.idle);
+                false
+            },
+        )),
+        Box::new(Follow::new(
+            bound(
+                Button::transport("transport.next", TransportControl::Next),
+                actions.next.as_ref(),
+            ),
+            shared,
+            |b, state| {
+                b.set_enabled(!state.idle);
+                false
+            },
+        )),
+        Box::new(Follow::new(
+            button(
+                "transport.repeat",
+                Icon::Repeat,
+                &crate::i18n::widget_format("media-repeat", &[]),
+                actions.repeat.as_ref(),
+            ),
+            shared,
+            |b, state| {
+                let repeat = state.repeat.unwrap_or_default();
+                let (icon, key) = match repeat {
+                    TransportRepeat::One => (Icon::Repeat1, "media-repeat-one"),
+                    TransportRepeat::All => (Icon::Repeat, "media-repeat-all"),
+                    TransportRepeat::Off => (Icon::Repeat, "media-repeat"),
+                };
+                let name = crate::i18n::widget_format(key, &[]);
+                b.set_icon(icon);
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
+                toggle(b, Some(repeat != TransportRepeat::Off), state.idle)
+            },
+        )),
+        Box::new(TimeLabel {
+            shared: shared.clone(),
+            side: Caption::Elapsed,
+            rect: Rect::ZERO,
+            drawn: None,
+        }),
+        Box::new(Scrubber {
+            slider: Follow::new(
+                bound_slider(
+                    Slider::from_state(&crate::LocalState::new(0.0))
+                        .with_id("transport.position")
+                        .with_accessible_name(&crate::i18n::widget_format("media-position", &[]))
+                        .value_text({
+                            let shared = shared.clone();
+                            move |fraction| time(fraction * shared.state.borrow().duration_ms)
+                        })
+                        .reads_out_while_held()
+                        .commits_on_release(),
+                    actions.seek.as_ref(),
+                ),
+                shared,
+                |slider, state| {
+                    let before = (slider.value(), slider.is_enabled());
+                    slider.set_enabled(!state.idle);
+                    if !slider.is_held() {
+                        let fraction = if state.duration_ms > 0.0 {
+                            (state.position_ms / state.duration_ms).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        slider.set_value(fraction);
+                    }
+                    (before.0 - slider.value()).abs() > f64::EPSILON
+                        || before.1 != slider.is_enabled()
+                },
+            ),
+        }),
+        Box::new(TimeLabel {
+            shared: shared.clone(),
+            side: Caption::Total,
+            rect: Rect::ZERO,
+            drawn: None,
+        }),
+        Box::new(Follow::new(
+            view_button(
+                "transport.queue",
+                Icon::ListMusic,
+                "Queue",
+                shared,
+                TransportEvent::Queue,
+            ),
+            shared,
+            |b, state| toggle(b, state.queue, false),
+        )),
+        Box::new(Follow::new(
+            button(
+                "transport.mute",
+                Icon::Volume2,
+                "Mute",
+                actions.mute.as_ref(),
+            ),
+            shared,
+            |b, state| {
+                let muted = state.volume <= 0.0;
+                b.set_icon(speaker(state.volume));
+                let name = crate::i18n::widget_format(
+                    if muted { "media-unmute" } else { "media-mute" },
+                    &[],
+                );
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
+                false
+            },
+        )),
+        Box::new(Follow::new(
+            bound_slider(
+                Slider::from_state(&crate::LocalState::new(1.0))
+                    .with_id("transport.volume")
+                    .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                actions.volume.as_ref(),
+            ),
+            shared,
+            follow_volume,
+        )),
+        Box::new({
+            let shared = shared.clone();
+            Button::icon_only(
+                "transport.more",
+                Icon::MoreHorizontal,
+                &crate::i18n::widget_format("media-more-controls", &[]),
+            )
+            .control_size(ControlSize::Regular)
+            .on_open(move || {
+                let origin = shared.origin.get().to_vec2();
+                shared.push(TransportEvent::More(shared.more.get() + origin));
+            })
+        }),
+        Box::new(Follow::new(
+            Button::icon_only(
+                "transport.volume-menu",
+                Icon::Volume2,
+                &crate::i18n::widget_format("media-volume", &[]),
+            )
+            .control_size(ControlSize::Regular)
+            .with_popover(VolumePanel {
+                slider: bound_slider(
+                    Slider::from_state(&crate::LocalState::new(1.0))
+                        .with_id("transport.volume-menu.slider")
+                        .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                    actions.volume.as_ref(),
+                ),
+            })
+            .side(PopoverSide::Above)
+            .aligned(PanelAlign::Trailing),
+            shared,
+            |menu, state| {
+                menu.button_mut().set_icon(speaker(state.volume));
+                follow_volume(&mut menu.popover_mut().content_mut().slider, state)
+            },
+        )),
+    ];
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| {
+            let shared = shared.clone();
+            Box::new(When::new(part, move || {
+                present(
+                    index,
+                    &shared.state.borrow(),
+                    shared.form.get(),
+                    &shared.handed.get(),
+                )
+            })) as Element
+        })
+        .collect()
+}
+
+fn square(x: f64, mid: f64, side: f64) -> Rect {
+    Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0)
+}
+
+struct Run<'a> {
+    rects: &'a mut [Rect; CHILDREN],
+    on: [bool; CHILDREN],
+    x: f64,
+    mid: f64,
+}
+
+impl Run<'_> {
+    fn push(&mut self, index: usize, side: f64, gap: f64) {
+        if self.on[index] {
+            self.rects[index] = square(self.x, self.mid, side);
+            self.x += side + gap;
+        }
+    }
+
+    fn push_back(&mut self, index: usize, width: f64, side: f64, gap: f64) {
+        if self.on[index] {
+            self.rects[index] = Rect::new(
+                self.x - width,
+                self.mid - side / 2.0,
+                self.x,
+                self.mid + side / 2.0,
+            );
+            self.x -= width + gap;
+        }
+    }
+}
+
+fn place_song(
+    rects: &mut [Rect; CHILDREN],
+    on: [bool; CHILDREN],
+    m: &Metrics,
+    span: (f64, f64),
+    art: f64,
+    mid: f64,
+) {
+    let (mut x0, x1) = span;
+    if on[ART] {
+        rects[ART] = square(x0, mid, art);
+        x0 += art + m.sibling;
+    }
+    rects[SONG] = Rect::new(x0, mid - m.song / 2.0, x1.max(x0), mid + m.song / 2.0);
+}
+
+fn place_scrub(rects: &mut [Rect; CHILDREN], m: &Metrics, x0: f64, x1: f64, y: f64) {
+    let row = Rect::new(x0, y, x1, y + m.scrub());
+    let text = |a: f64, b: f64| {
+        Rect::new(
+            a,
+            row.center().y - m.caption / 2.0,
+            b,
+            row.center().y + m.caption / 2.0,
+        )
+    };
+    rects[ELAPSED] = text(row.x0, row.x0 + m.time);
+    rects[TOTAL] = text(row.x1 - m.time, row.x1);
+    let gap = m.related + SliderFace::overhang();
+    let knob0 = row.x0 + m.time + gap;
+    let knob1 = (row.x1 - m.time - gap).max(knob0);
+    rects[SCRUBBER] = Rect::new(knob0, row.y0, knob1, row.y1);
+}
+
+fn layout(
+    state: &TransportState,
+    handed: &[bool; CHILDREN],
+    m: &Metrics,
+    width: f64,
+) -> (Form, [Rect; CHILDREN], f64) {
+    let form = m.form(width);
+    let on = std::array::from_fn(|index| present(index, state, form, handed));
+    let mut rects = [Rect::ZERO; CHILDREN];
+    let height = m.height(form);
+    let (x0, x1) = (m.section, (width - m.section).max(m.section));
+    let y0 = m.sibling;
+    let top = m.top(form);
+    let mid = y0 + top / 2.0;
+    let scrub_y = y0 + top + m.tight;
+    if form == Form::Compact {
+        let mut run = Run {
+            rects: &mut rects,
+            on,
+            x: x1,
+            mid,
+        };
+        run.push_back(MORE, m.control, m.control, m.sibling);
+        run.push_back(VOLUME_MENU, m.control, m.control, m.sibling);
+        run.push_back(NEXT, m.skip, m.skip, m.related);
+        run.push_back(PLAY, m.play, m.play, m.related);
+        run.push_back(PREVIOUS, m.skip, m.skip, m.sibling);
+        let end = run.x;
+        place_song(&mut rects, on, m, (x0, end), top, mid);
+        place_scrub(&mut rects, m, x0, x1, scrub_y);
+        return (form, rects, height);
+    }
+    let inner = x1 - x0;
+    let middle = (y0 + height - m.sibling) / 2.0;
+    let left = x0 + (inner * 0.36).min(m.large);
+    let mut run = Run {
+        rects: &mut rects,
+        on,
+        x: left,
+        mid: middle,
+    };
+    run.push_back(LYRICS, m.control, m.control, m.tight);
+    run.push_back(LIKE, m.control, m.control, m.related);
+    let song_end = run.x;
+    place_song(&mut rects, on, m, (x0, song_end), m.play, middle);
+    let mut run = Run {
+        rects: &mut rects,
+        on,
+        x: x1,
+        mid: middle,
+    };
+    run.push_back(VOLUME, m.small / 2.0, m.control, m.tight);
+    run.push_back(MUTE, m.control, m.control, m.related);
+    run.push_back(VOLUME_MENU, m.control, m.control, m.related);
+    run.push_back(QUEUE, m.control, m.control, m.related);
+    let right = run.x + m.related;
+    let (c0, c1) = (left + m.group, (right - m.group).max(left + m.group));
+    let flank = |index: usize| {
+        if on[index] {
+            m.control + m.sibling
+        } else {
+            0.0
+        }
+    };
+    let row = flank(SHUFFLE) + flank(REPEAT) + 2.0 * m.skip + m.play + 2.0 * m.related;
+    let mut run = Run {
+        rects: &mut rects,
+        on,
+        x: f64::midpoint(c0, c1) - row / 2.0,
+        mid,
+    };
+    run.push(SHUFFLE, m.control, m.sibling);
+    run.push(PREVIOUS, m.skip, m.related);
+    run.push(PLAY, m.play, m.related);
+    run.push(NEXT, m.skip, m.sibling);
+    run.push(REPEAT, m.control, 0.0);
+    place_scrub(&mut rects, m, c0, c1, scrub_y);
+    (form, rects, height)
+}
+
+fn policy(shared: &Shared, ctx: &mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError> {
+    let metrics = shared.metrics.get();
+    let width = f64::from(ctx.available().width);
+    let width = if width.is_finite() {
+        width.max(0.0)
+    } else {
+        0.0
+    };
+    let (form, rects, height) = layout(
+        &shared.state.borrow(),
+        &shared.handed.get(),
+        &metrics,
+        width,
+    );
+    shared.form.set(form);
+    shared.more.set(rects[MORE]);
+    shared.placed.set(rects);
+    for (index, rect) in rects.into_iter().enumerate() {
+        ctx.place(index, rect)?;
+    }
+    Ok(Size {
+        width: crate::num::f32_of_f64(width),
+        height: crate::num::f32_of_f64(height),
+    })
+}
+
+#[crate::component::not_a_component(
+    part,
+    "the band `ui.MediaTransport` is built from, its controls reporting the view's events"
+)]
+pub struct MediaTransport {
+    content: Manual,
+    shared: Rc<Shared>,
+    theme: Option<Theme>,
+    built_form: Form,
+    structure_dirty: bool,
+    swipe: Option<Point>,
+    cursor: Point,
+}
+
+impl MediaTransport {
+    fn swipes_from(&self, point: Point) -> bool {
+        let rect = self.content.get_rect();
+        if !rect.contains(point) || self.shared.state.borrow().idle {
+            return false;
+        }
+        let local = point - rect.origin().to_vec2();
+        !self
+            .shared
+            .placed
+            .get()
+            .iter()
+            .enumerate()
+            .any(|(index, placed)| index != ART && index != SONG && placed.contains(local))
+    }
+
+    fn end_swipe(&mut self) -> bool {
+        let Some(start) = self.swipe.take() else {
+            return false;
+        };
+        let (dx, dy) = (self.cursor.x - start.x, self.cursor.y - start.y);
+        if dx.abs() < self.shared.metrics.get().swipe || dx.abs() <= dy.abs() {
+            return false;
+        }
+        self.shared.push(if dx < 0.0 {
+            TransportEvent::Next
+        } else {
+            TransportEvent::Previous
+        });
+        true
+    }
+    /// The transport showing what `feed` declares, its controls invoking the app's
+    /// `actions`.
+    #[must_use]
+    pub fn new(feed: &TransportFeed, actions: TransportActions) -> Self {
+        let shared = feed.0.clone();
+        shared.handed.set(handed(&actions));
+        let placing = shared.clone();
+        let mut content = Manual::new(move |ctx| policy(&placing, ctx));
+        for child in children(&shared, &actions) {
+            content = content.child(child);
+        }
+        Self {
+            content,
+            built_form: shared.form.get(),
+            shared,
+            theme: None,
+            structure_dirty: false,
+            swipe: None,
+            cursor: Point::ZERO,
+        }
+    }
+
+    /// The transport showing what `feed` declares, its controls reporting the view's
+    /// `triggers`: what the person pressed reaches the view's action, which changes what
+    /// plays or what the window shows.
+    #[must_use]
+    pub fn triggered(feed: &TransportFeed, triggers: TransportTriggers) -> Self {
+        let shared = feed.0.clone();
+        let handed: [bool; CHILDREN] = std::array::from_fn(|index| match index {
+            PLAY => triggers.play_pause.is_some(),
+            PREVIOUS => triggers.previous.is_some(),
+            NEXT => triggers.next.is_some(),
+            SHUFFLE => triggers.shuffle.is_some(),
+            REPEAT => triggers.repeat.is_some(),
+            LIKE => triggers.like.is_some(),
+            MUTE => triggers.mute.is_some(),
+            SCRUBBER => triggers.seek.is_some(),
+            VOLUME | VOLUME_MENU => triggers.volume.is_some(),
+            LYRICS => triggers.lyrics.is_some(),
+            QUEUE => triggers.queue.is_some(),
+            _ => true,
+        });
+        shared.handed.set(handed);
+        let placing = shared.clone();
+        let mut content = Manual::new(move |ctx| policy(&placing, ctx));
+        let open = triggers.open.clone();
+        for child in triggered_children(&shared, &triggers, open) {
+            content = content.child(child);
+        }
+        Self {
+            content,
+            built_form: shared.form.get(),
+            shared,
+            theme: None,
+            structure_dirty: false,
+            swipe: None,
+            cursor: Point::ZERO,
+        }
+    }
+}
+
+impl crate::widget::decorator::concrete::Decorator for MediaTransport {
+    type Inner = Manual;
+
+    fn inner(&self) -> &Manual {
+        &self.content
+    }
+
+    fn inner_mut(&mut self) -> &mut Manual {
+        &mut self.content
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        if self.theme.as_ref() != Some(theme) {
+            let time = self.shared.metrics.get().time;
+            self.shared.metrics.set(Metrics {
+                time,
+                ..Metrics::of(theme)
+            });
+            self.theme = Some(theme.clone());
+        }
+        self.built_form = self.shared.form.get();
+        Widget::build_layout(&mut self.content, taffy, theme, node_map)
+    }
+
+    /// The time labels are as wide as the longest time the track can show.
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) {
+        Widget::size_before_solve(&mut self.content, taffy, node, text);
+        if let Some(theme) = &self.theme {
+            let style = theme.text(TextRole::Caption).numeric();
+            let widest = if self.shared.state.borrow().duration_ms >= HOUR_MS {
+                "00:00:00"
+            } else {
+                "00:00"
+            };
+            let time = f64::from(text.measure_style(widest, None, &style).0).ceil();
+            let metrics = self.shared.metrics.get();
+            if (metrics.time - time).abs() > f64::EPSILON {
+                self.shared.metrics.set(Metrics { time, ..metrics });
+                self.content.invalidation().invalidate();
+            }
+        }
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        Widget::adjust_layout_style(&mut self.content, taffy, node, text)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        Widget::apply_layout(&mut self.content, taffy, node, origin);
+        self.shared.origin.set(self.content.get_rect().origin());
+        if self.shared.form.get() != self.built_form {
+            self.built_form = self.shared.form.get();
+            self.structure_dirty = true;
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => self.cursor = ctx.logical(position),
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.swipes_from(self.cursor) => self.swipe = Some(self.cursor),
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.end_swipe() => {
+                *ctx.handled = true;
+                return;
+            }
+            _ => {}
+        }
+        Widget::handle_event(&mut self.content, event, ctx);
+    }
+
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if self.swipes_from(point) {
+            crate::interaction::TouchClaim::Drag
+        } else {
+            Widget::touch_claim(&self.content, point)
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.swipe.is_some() || Widget::wants_pointer_capture(&self.content)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        Widget::take_structure_dirty(&mut self.content) | own
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.structure_dirty || Widget::needs_redraw(&self.content)
+    }
+
+    fn name(&self) -> &str {
+        "MediaTransport"
+    }
+}
+
+#[cfg(test)]
+#[path = "media_transport_tests.rs"]
+mod tests;

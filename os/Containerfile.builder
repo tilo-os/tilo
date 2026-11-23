@@ -185,7 +185,9 @@ ENV ANDROID_NDK_HOME=/opt/android-ndk \
     AR_aarch64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
     CC_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang \
     CXX_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android29-clang++ \
-    AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+    AR_x86_64_linux_android=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
+    BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot \
+    BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android=--sysroot=/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot
 
 # Windows, cross-compiled from Linux: Rust's MSVC
 # targets and cargo-xwin, which drives clang-cl and lld-link (already here
@@ -302,7 +304,7 @@ RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-n
         "$target" "$target" > /.cargo/config.toml \
     && bash /tmp/verify-native-mold.sh
 
-# Every pinned font (crates/sdk/ui-core/assets/fonts/artifacts.json), laid out by digest as
+# Every pinned font (crates/ui/ui-core/assets/fonts/artifacts.json), laid out by digest as
 # tools/font-catalog.py's artifact cache reads it (IMAGE_SEED). A job builds and tests with these
 # instead of fetching 56 MB from the release store on every run. The seed is checked against the
 # pins here, every file by size and SHA-256 and nothing beside them, and read-only. The seed is
@@ -310,9 +312,9 @@ RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-n
 # made readable here: the tests read the seed with the account they run as.
 RUN --mount=type=bind,from=font-artifacts,source=/,target=/tmp/font-seed,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tmp/fonts/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tmp/fonts/crates/sdk/ui-core/assets/fonts,ro \
+    --mount=type=bind,source=crates/ui/ui-core/assets/fonts,target=/tmp/fonts/crates/ui/ui-core/assets/fonts,ro \
     mkdir -p /usr/share/tilo \
     && cp -r /tmp/font-seed /usr/share/tilo/font-artifacts \
-    && python3 -I /tmp/fonts/tools/font-catalog.py seed /tmp/fonts/crates/sdk/ui-core/assets/fonts \
+    && python3 -I /tmp/fonts/tools/font-catalog.py seed /tmp/fonts/crates/ui/ui-core/assets/fonts \
          /usr/share/tilo/font-artifacts --offline \
     && chmod -R a-w,a+rX /usr/share/tilo/font-artifacts

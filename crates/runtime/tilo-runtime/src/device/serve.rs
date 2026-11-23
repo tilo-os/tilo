@@ -1,27 +1,29 @@
 //! This computer's one daemon as it serves the device: the `tilo mcp` connections every agent
 //! of the login makes to it, the workspace commands of the login, and the person's workspaces'
-//! folders, all over the one session it holds with the workspace.
+//! folders.
 //!
-//! The host keeps one session per device, so two processes entering as the same device cut each
-//! other off, over and over: each agent's calls then fail as "not connected to the host" or go
-//! unanswered. Every `tilo mcp` therefore reaches this daemon over a socket in the device's
-//! directory and relays its agent's stdio to it; the daemon serves each connection as its own
-//! agent run over the one session ([`hold`]).
+//! Every `tilo mcp` reaches this daemon over a socket in the device's directory and relays its
+//! agent's stdio to it; the daemon answers each connection from its own workspace, as a run of
+//! the agent the login was made for ([`hold`]). One process keeps the device: the host keeps one
+//! session per device, and two processes entering as it would cut each other off.
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
 
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, BufReader};
 
-use tilo_api::daemon::{Claim, DaemonPlace, Program, naming};
+use tilo_api::daemon::{DaemonPlace, PEER_STATUS};
 
-use super::{Connection, Enter, Shared, answer};
+use super::presence::Presence;
+use super::services::{Daemon, RuntimeActionProvider};
 
+/// How long the person's part waits once this computer logged in with a ticket before it stops:
+/// the login's answer reaches the program that asked for it first.
+const ANSWERED: Duration = Duration::from_secs(2);
 /// How long a holder starting waits for one that is leaving to let go.
 const TAKING_OVER: Duration = Duration::from_secs(20);
 /// How long a holder that has the lock waits for the last one's stores to let go: the lock is
@@ -35,10 +37,6 @@ const OPENING_POLL: Duration = Duration::from_millis(100);
 const RELEASING: Duration = Duration::from_secs(3);
 /// How often a daemon starting looks whether the one leaving let go of the lock.
 const POLL: Duration = Duration::from_millis(50);
-/// How often the service's holder, waiting for a newer program's holder to end, looks for its lock.
-const STANDBY_POLL: Duration = Duration::from_secs(1);
-/// How often the service's holder, waiting so, asks the holder there again to step down.
-const STANDBY_ASK: Duration = Duration::from_secs(30);
 /// How long a holder's process waits for its runtime's threads once it ended. A step that walks
 /// a whole folder tree runs on its thread to its end and cannot be interrupted; a stop leaves it
 /// behind rather than hanging until it finishes.
@@ -50,10 +48,6 @@ pub(crate) const UNMOUNTING: Duration = Duration::from_secs(3);
 /// disk, all of them together: a tree's changes made here are saved, and a step still running
 /// is left behind rather than waited for.
 const STOPPING: Duration = Duration::from_secs(16);
-/// How often a holder looks whether the login it serves is still the one under its device
-/// directory: a login made again makes another device, and the holder it replaced steps down so
-/// one computer runs one holder.
-const LOGIN_LOOK: Duration = Duration::from_secs(3);
 
 /// The most a holder's log keeps: a holder that takes the device empties a log grown past it.
 const LOG_KEPT: u64 = 8 << 20;
@@ -85,57 +79,32 @@ fn bridge_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
-/// One agent's connection, served as its own run until its input ends: each
-/// request answered as it comes, so a long call holds up no other.
-///
-/// `session_name` is what the agent's harness calls this session, when the process serving it
-/// knows: the initialize the client sends then says it ([`tilo_mcp::session_api::SESSION_NAME`]),
-/// and the workspace shows the agent by that name rather than by its product's name.
-async fn converse<E: Enter>(
-    shared: Arc<Shared<E>>,
-    read: impl AsyncRead + Unpin,
-    write: impl AsyncWrite + Unpin + Send + 'static,
-    session_name: Option<&str>,
-) {
-    let connection = Arc::new(Connection::new(shared));
-    let write = Arc::new(tokio::sync::Mutex::new(write));
-    let mut lines = BufReader::new(read).lines();
-    let mut replying = tokio::task::JoinSet::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let line = naming(line, session_name);
-        let (connection, write) = (Arc::clone(&connection), Arc::clone(&write));
-        replying.spawn(async move {
-            if let Some(answer) = answer(&connection, &line).await {
-                let mut write = write.lock().await;
-                let _ = write.write_all(format!("{answer}\n").as_bytes()).await;
-                let _ = write.flush().await;
-                drop(write);
-            }
-        });
-        while replying.try_join_next().is_some() {}
-    }
-    while replying.join_next().await.is_some() {}
+/// What the device's socket serves: the agents' endpoint, and the daemon's own requests.
+pub(crate) struct Socket {
+    presence: Arc<Presence>,
+    agents: crate::daemon::Endpoint<RuntimeActionProvider>,
 }
 
-/// The claim this process makes on the device: its program, and whether the user service
-/// started it.
-fn claim() -> Claim {
-    Claim {
-        program: Program::running(),
-        service: tilo_api::daemon::running_as_service(),
+impl Socket {
+    /// `daemon`'s socket.
+    ///
+    /// # Errors
+    /// The daemon's API cannot be built.
+    pub(crate) fn new(daemon: &Arc<Daemon>) -> std::io::Result<Arc<Self>> {
+        let presence = Presence::new(daemon)?;
+        Ok(Arc::new(Self {
+            agents: crate::daemon::agents_endpoint(daemon, Arc::clone(&presence)),
+            presence,
+        }))
     }
 }
 
-/// Take the lock that makes this process the device's one daemon, as [`take_lock`] does for
-/// this process's claim.
+/// Take the lock that makes this process the device's one daemon, as [`take_lock`] does.
 ///
 /// # Errors
 /// Another daemon keeps the device, or the lock cannot be opened.
 pub(crate) fn lock_device(place: &DaemonPlace) -> std::io::Result<advisory_lock::FileLock> {
-    take_lock(place, TAKING_OVER, claim())
+    take_lock(place, TAKING_OVER)
         .map_err(std::io::Error::other)?
         .ok_or_else(|| {
             let owner = advisory_lock::owner_pid(place.lock())
@@ -148,68 +117,14 @@ pub(crate) fn lock_device(place: &DaemonPlace) -> std::io::Result<advisory_lock:
         })
 }
 
-/// This computer as the person's peer: the device's session held for every connection at
-/// `place` for as long as this process runs, while it holds the device's lock
-/// ([`lock_device`]), and the person's workspaces' files shown below `home` over it
+/// This computer as the person's peer: `daemon`'s device served to every connection at its
+/// place until `stop` is told or this computer logs in with a ticket, while it has the device's
+/// lock ([`lock_device`]), and the person's workspaces' files shown below `home`
 /// ([`super::peer`]).
-pub(crate) fn hold<E: Enter>(
-    place: &DaemonPlace,
-    shared: Arc<Shared<E>>,
-    home: PathBuf,
-) -> Result<ExitCode> {
-    let device_dir = place.device_dir();
-    held(
-        place,
-        shared,
-        Holding::Peer {
-            home,
-            state: device_dir,
-        },
-        claim(),
-    )
-}
-
-/// How long a holder holds, and what else it does.
-enum Holding {
-    /// Until no connection came for this long.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "a holder that lingers out is a test's")
-    )]
-    Linger(Duration),
-    /// For as long as it runs, as the peer that shows the workspaces' files
-    /// below `home`, keeping their state in `state`.
-    Peer { home: PathBuf, state: PathBuf },
-}
-
-/// [`hold`], holding as `holding` says, as a holder claiming `claim`, and waiting up to
-/// `taking_over` for a holder that is leaving, or that `claim` asked to step down.
-#[cfg(test)]
-fn hold_for<E: Enter>(
-    place: &DaemonPlace,
-    shared: Arc<Shared<E>>,
-    holding: Holding,
-    taking_over: Duration,
-    claim: Claim,
-) -> Result<ExitCode> {
-    let Some(_lock) = take_lock(place, taking_over, claim)? else {
-        tracing::error!("this holder ends: another holder of this device's session keeps it");
-        return Ok(ExitCode::SUCCESS);
-    };
-    held(place, shared, holding, claim)
-}
-
-/// [`hold`], holding as `holding` says, as a holder claiming `claim`, while the device's lock is
-/// held.
-fn held<E: Enter>(
-    place: &DaemonPlace,
-    shared: Arc<Shared<E>>,
-    holding: Holding,
-    claim: Claim,
-) -> Result<ExitCode> {
+pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<super::Ended> {
     say_panics();
     trim_log();
-    let _ = shared.held_as.set(claim);
+    let place = daemon.place();
     let runtime = bridge_runtime()?;
     // A holder that stops answering for seconds says what it was doing, with every thread's
     // stack, long before [`WEDGED`] ends it: a person's `ls` that waits has a reason in the log.
@@ -217,7 +132,7 @@ fn held<E: Enter>(
     tilo_rt::stall::heartbeat(runtime.handle());
     runtime.spawn(beating());
     let watching = watch_workers();
-    let served = runtime.block_on(serve_held(place, shared, holding));
+    let served = runtime.block_on(serve_device(place, daemon, home, stop));
     // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
@@ -226,7 +141,8 @@ fn held<E: Enter>(
     drop(watching);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
     // before this process ends: let go of them first, or it finds them still open.
-    if let Some(peer) = PEER.get() {
+    let peer = PEER.lock_recover().take();
+    if let Some(peer) = peer {
         let releasing = bridge_runtime()?;
         // The timer is made inside the runtime: one made outside it has no clock to tick on.
         if releasing
@@ -240,8 +156,55 @@ fn held<E: Enter>(
     if let Err(error) = &served {
         tracing::error!(%error, "this holder ends: it could not serve");
     }
-    served?;
-    Ok(ExitCode::SUCCESS)
+    served
+}
+
+/// What tells a daemon running in this process to stop ([`crate::daemon::Running::stop`]): heard
+/// by its holder's loop, and by its wait for a person to claim the device.
+#[derive(Clone, Default)]
+pub(crate) struct Stop(Arc<StopState>);
+
+#[derive(Default)]
+struct StopState {
+    told: std::sync::Mutex<bool>,
+    waiting: std::sync::Condvar,
+    heard: tokio::sync::Notify,
+}
+
+impl Stop {
+    /// Tell the daemon to stop.
+    pub(crate) fn tell(&self) {
+        *self.0.told.lock_recover() = true;
+        self.0.waiting.notify_all();
+        self.0.heard.notify_waiters();
+    }
+
+    /// Wait up to `within` for the daemon to be told to stop: whether it was.
+    pub(crate) fn wait(&self, within: Duration) -> bool {
+        let told = self.0.told.lock_recover();
+        *self
+            .0
+            .waiting
+            .wait_timeout_while(told, within, |told| !*told)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+    }
+
+    /// Whether the daemon was told to stop.
+    pub(crate) fn told(&self) -> bool {
+        *self.0.told.lock_recover()
+    }
+
+    /// Return once the daemon is told to stop.
+    async fn heard(&self) {
+        loop {
+            let heard = self.0.heard.notified();
+            if self.told() {
+                return;
+            }
+            heard.await;
+        }
+    }
 }
 
 /// Say every panic in the holder's log at error level before it unwinds or aborts: a holder
@@ -260,30 +223,18 @@ fn say_panics() {
     }));
 }
 
-/// The lock that makes this process the device's one holder, once one that is leaving let go of
-/// it; `None` when another holds it still. A holder this one's `claim` takes over from (an older
-/// program's, or one an agent started where this is the user service's) is asked to step down,
-/// and waited for: a CLI command that found no holder running starts one from the program it
-/// is, and Tilo updated since must not leave that one serving the old program's answers while
-/// the new one's holder gives up.
-///
-/// The user service's holder never gives up: while a newer program's holder keeps the device it
-/// waits for the lock, and holds the device the moment that one ends. A service that ended
-/// beside a holder some agent started left the person's folders to that agent's lifetime.
+/// The lock that makes this process the device's one daemon, once one that is leaving (the
+/// service restarting it) let go of it within `taking_over`; `None` when another keeps it still.
+/// Only the service starts this computer's daemon, so a second one is never asked to make way.
 fn take_lock(
     place: &DaemonPlace,
     taking_over: Duration,
-    claim: Claim,
 ) -> Result<Option<advisory_lock::FileLock>> {
     use advisory_lock::{FileLock, TryLockError};
     let path = place.lock();
-    let mut deadline = Instant::now()
+    let deadline = Instant::now()
         .checked_add(taking_over)
         .unwrap_or_else(Instant::now);
-    // When the holder there last answered: it is asked until it does, once (again and again, by
-    // the service's holder waiting for it).
-    let mut answered_at: Option<Instant> = None;
-    let mut waiting = false;
     loop {
         // A lock that is not this user's own private file (a link to another file, one others
         // may write) is refused rather than taken: whoever holds it serves the person.
@@ -300,44 +251,10 @@ fn take_lock(
                 return Err(error).with_context(|| format!("open {}", path.display()));
             }
         }
-        // The service's holder asks again now and then: the holder that refused may have been
-        // replaced by one that would step down.
-        if claim.service && answered_at.is_some_and(|at: Instant| at.elapsed() >= STANDBY_ASK) {
-            answered_at = None;
-        }
-        let stepping_down = if answered_at.is_some() {
-            None
-        } else {
-            place.ask_to_step_down(claim)
-        };
-        if stepping_down.is_some() {
-            answered_at = Some(Instant::now());
-        }
-        if stepping_down == Some(true) {
-            tracing::info!("the holder of this device steps down for this one");
-            // Stepping down unmounts the folders and closes the stores: it is waited for.
-            deadline = deadline.max(
-                Instant::now()
-                    .checked_add(TAKING_OVER)
-                    .unwrap_or_else(Instant::now),
-            );
-        }
         if Instant::now() >= deadline {
-            if claim.service {
-                if !waiting {
-                    waiting = true;
-                    tracing::info!(
-                        lock = %path.display(),
-                        "a holder of a newer Tilo keeps this device; the service holds it once \
-                         that one ends"
-                    );
-                }
-                std::thread::sleep(STANDBY_POLL);
-                continue;
-            }
             tracing::warn!(
                 lock = %path.display(),
-                "another holder of this device's session keeps it; this one ends"
+                "another daemon of this device keeps it; this one ends"
             );
             return Ok(None);
         }
@@ -345,81 +262,78 @@ fn take_lock(
     }
 }
 
-/// Listen at `place` and serve each connection, while the lock is held.
-async fn serve_held<E: Enter>(
+/// Listen at `place` and serve each connection as `daemon`, while the lock is held, until `stop`
+/// is told, the daemon is told to stop by a signal, or this computer logs in with a ticket.
+async fn serve_device(
     place: &DaemonPlace,
-    shared: Arc<Shared<E>>,
-    holding: Holding,
-) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    // A socket left by a holder that ended without removing it.
-    let _ = std::fs::remove_file(place.socket());
-    let listener = tilo_files::native::socket::bind(place.socket())
-        .with_context(|| format!("listen at {}", place.socket().display()))?;
-    std::fs::set_permissions(place.socket(), std::fs::Permissions::from_mode(0o600))?;
-    serve_api(place, &shared)?;
-    let linger = match holding {
-        Holding::Linger(linger) => {
-            // Enter the workspace while the first agent starts, not at its first call.
-            let entering = Arc::clone(&shared);
-            tokio::spawn(async move {
-                let _ = entering.session(false, super::Ask::Sync).await;
-            });
-            Some(linger)
-        }
-        Holding::Peer { home, state } => {
-            tokio::spawn(keep_peer(Arc::clone(&shared), home, state));
-            None
-        }
-    };
-    let (count, mut live) = tokio::sync::watch::channel(0_usize);
-    let count = Arc::new(count);
-    let mut accepting = accepting(listener, Arc::clone(&shared), Arc::clone(&count))?;
+    daemon: &Arc<Daemon>,
+    home: PathBuf,
+    stop: &Stop,
+) -> Result<super::Ended> {
+    let socket = Socket::new(daemon)?;
+    let mut accepting = listen(place, &socket)?;
+    super::serving(Some(Arc::clone(&socket.presence)));
+    tokio::spawn(keep_peer(Arc::clone(daemon), home, place.device_dir()));
     let mut ended = ending(STOPPED_WITHIN)?;
-    let mut login = tokio::time::interval(LOGIN_LOOK);
-    // A computer that logs in, or out, while its daemon runs has another device to be: the
-    // daemon ends, and the next one serves the login as it is now.
-    let logged_in = place.logged_in();
-    // Whether the login this holder serves was replaced: a holder on its way out then unmounts
-    // nothing, since the holder of the new login shows the folders again.
-    let mut replaced = false;
-    // Why this holder ends, said in its log at error level whatever it is: a holder that ended
+    // A computer that logs in with a ticket while its daemon runs is another device now, perhaps
+    // of another person: the person's part ends, and starts again as that device.
+    let mut logged_in = daemon.logged_in();
+    // A server the person's own workspace names after this part started (one they set up, or
+    // the first the copy took in) is entered through at once: the part starts again through it.
+    let home_source = daemon.home_source();
+    // Why this daemon ends, said in its log at error level whatever it is: one that ended
     // without its log saying why left the person's folders unmounted with nothing to read.
-    let why = loop {
-        tokio::select! {
-            () = idle(&mut live, linger) => break "no connection came for as long as it lingers".to_owned(),
-            _ = login.tick() => if !place.serves_current_login() || place.logged_in() != logged_in {
-                replaced = true;
-                break "this computer logged in again; the holder of the new login takes over"
-                    .to_owned();
-            },
-            Some(signal) = ended.recv() => break format!("it was told to stop ({signal})"),
-            () = shared.stepping_down.notified() => {
-                break "a holder of a newer Tilo, or the user service's, takes this device over \
-                       now that its folders are quiet"
-                    .to_owned();
-            },
-        }
+    let (why, held) = tokio::select! {
+        Ok(device) = async { logged_in.wait_for(Option::is_some).await.map(|device| device.clone()) } => {
+            let device = device.map_or(super::Ended::Stopped, super::Ended::LoggedIn);
+            // The login's answer is the asking program's before this part stops.
+            tokio::time::sleep(ANSWERED).await;
+            ("this computer logged in with a ticket; it starts again as that device".to_owned(), device)
+        },
+        device = home_source.moved() => (
+            "its person's own workspace names a server it does not enter through yet; it starts \
+             again through it".to_owned(),
+            super::Ended::LoggedIn(Box::new(device)),
+        ),
+        Some(signal) = ended.recv() => (format!("it was told to stop ({signal})"), super::Ended::Stopped),
+        () = stop.heard() => ("it was told to stop".to_owned(), super::Ended::Stopped),
     };
-    tracing::error!("this holder ends: {why}");
+    tracing::error!("this daemon's person's part ends: {why}");
     // No connection from here on: the socket is shut down rather than left queuing clients that
-    // would be told a holder is there by the kernel and wait in vain for it.
+    // would be told a daemon is there by the kernel and wait in vain for it.
     accepting.stop();
-    if !replaced && let Some(peer) = PEER.get() {
+    super::serving(None);
+    if let Some(peer) = peer() {
         // Unmounting and keeping the trees wait for the mounts' and trees' own steps, which
         // cannot be interrupted; both are bounded, so a stop ends inside the unit's timeout.
         peer.stop(STOPPING).await;
     }
     let _ = std::fs::remove_file(place.socket());
     let _ = std::fs::remove_file(place.api());
-    shared.leaving().await;
-    Ok(())
+    socket.presence.close().await;
+    Ok(held)
+}
+
+/// Listen at `place`: `socket` for agents and the daemon's own requests, and Tilo's API as this
+/// computer's device beside it.
+///
+/// # Errors
+/// Either cannot be listened at.
+fn listen(place: &DaemonPlace, socket: &Arc<Socket>) -> Result<Accepting> {
+    // Replaces a socket left by a daemon that ended without removing it.
+    let listener = tilo_files::native::private::bind_socket(place.socket())
+        .with_context(|| format!("listen at {}", place.socket().display()))?;
+    std::fs::set_permissions(
+        place.socket(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(place.socket_mode()),
+    )?;
+    serve_api(place, socket.presence.api())?;
+    Ok(accepting(listener, Arc::clone(socket))?)
 }
 
 /// The thread that takes connections: on one of its own, so a client asking (a person's `tilo
 /// status`, an agent's `tilo mcp`) is taken the moment it does, however busy the runtime that
-/// answers it is with another client's work. Each connection is served on that runtime, whose
-/// workers a bulk write's steps never occupy: those go to the blocking pool.
+/// answers it is with another client's work.
 struct Accepting {
     /// A duplicate of the listening socket: shutting it down wakes the thread's accept.
     socket: std::os::unix::net::UnixListener,
@@ -441,13 +355,12 @@ impl Drop for Accepting {
     }
 }
 
-/// Take the connections at `listener` on a thread of its own, serving each on this runtime.
-fn accepting<E: Enter>(
+/// Take the connections at `listener` on a thread of its own, serving each on one of its own.
+fn accepting(
     listener: std::os::unix::net::UnixListener,
-    shared: Arc<Shared<E>>,
-    count: Arc<tokio::sync::watch::Sender<usize>>,
+    socket: Arc<Socket>,
 ) -> std::io::Result<Accepting> {
-    let socket = listener.try_clone()?;
+    let listening = listener.try_clone()?;
     let runtime = tokio::runtime::Handle::current();
     let thread = std::thread::Builder::new()
         .name("tilo-accept".to_owned())
@@ -455,87 +368,86 @@ fn accepting<E: Enter>(
             loop {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        count.send_modify(|live| *live = live.saturating_add(1));
-                        let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
-                        let runtime = runtime.clone();
+                        if !admitted(&stream) {
+                            continue;
+                        }
+                        let (socket, runtime) = (Arc::clone(&socket), runtime.clone());
                         // Its first request is read on a thread of its own: `tilo status` is
-                        // answered there whether or not the runtime's workers are free, and
-                        // anything else goes on to the runtime as before.
+                        // answered there whether or not the runtime's workers are free.
                         let started = std::thread::Builder::new()
                             .name("tilo-connection".to_owned())
-                            .spawn(move || first_request(stream, shared, &runtime, count));
+                            .spawn(move || first_request(stream, &socket, &runtime));
                         if let Err(error) = started {
-                            tracing::warn!(%error, "a connection to this holder could not be served");
+                            tracing::warn!(%error, "a connection to this daemon could not be served");
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    // The holder stopped listening: the socket was shut down.
+                    // The daemon stopped listening: the socket was shut down.
                     Err(_) => break,
                 }
             }
         })?;
     Ok(Accepting {
-        socket,
+        socket: listening,
         thread: Some(thread),
     })
 }
 
+/// Whether the account at the other end of `stream` is one this daemon serves
+/// ([`tilo_api::daemon::admission`]); one it does not is told why, and closed.
+fn admitted(stream: &UnixStream) -> bool {
+    use std::io::Write as _;
+    let admission = tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw());
+    let served = crate::seats::peer_uid(stream).is_ok_and(|uid| admission.admit(uid).served());
+    if !served {
+        let refusal = json!({"jsonrpc": "2.0", "id": null,
+            "error": {"code": -32000, "message": tilo_api::daemon::admission::NOT_SIGNED_IN}});
+        let mut writing = stream;
+        let _ = writeln!(writing, "{refusal}");
+    }
+    served
+}
+
 /// Serve `stream`, a connection [`accepting`] took: its first request is read here, and one
-/// asking how the peer stands ([`super::PEER_STATUS`]) is answered here too, from
-/// [`status_answer`]; the connection is served on `runtime` from there on.
-fn first_request<E: Enter>(
-    stream: UnixStream,
-    shared: Arc<Shared<E>>,
-    runtime: &tokio::runtime::Handle,
-    count: Arc<tokio::sync::watch::Sender<usize>>,
-) {
+/// asking how the peer stands ([`PEER_STATUS`]) is answered here; any other is an agent's, served by `socket`'s agents'
+/// endpoint from there on.
+fn first_request(stream: UnixStream, socket: &Socket, runtime: &tokio::runtime::Handle) {
     use std::io::{BufRead as _, Write as _};
-    let ended = || count.send_modify(|live| *live = live.saturating_sub(1));
     let Ok(reading) = stream.try_clone() else {
-        ended();
         return;
     };
     let mut reader = std::io::BufReader::new(reading);
     let mut first = String::new();
     if reader.read_line(&mut first).unwrap_or(0) == 0 {
-        ended();
         return;
     }
     let request = serde_json::from_str::<Value>(&first).ok();
-    if let Some(request) = &request
-        && request.get("method").and_then(Value::as_str) == Some(super::PEER_STATUS)
-    {
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let answer = json!({"jsonrpc": "2.0", "id": id, "result": status_answer(&shared, runtime)});
+    let method = request
+        .as_ref()
+        .and_then(|request| request.get("method")?.as_str());
+    let result = match method {
+        Some(PEER_STATUS) => Some(status_answer(&socket.presence, runtime)),
+        _ => None,
+    };
+    if let Some(result) = result {
+        let id = request
+            .as_ref()
+            .and_then(|request| request.get("id").cloned())
+            .unwrap_or(Value::Null);
         let mut writing = &stream;
-        let _ = writeln!(writing, "{answer}");
+        let _ = writeln!(
+            writing,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": id, "result": result})
+        );
         let _ = writing.flush();
-        ended();
         return;
     }
     // What the thread read past the first line is the connection's too.
     let mut read = first.into_bytes();
     read.extend_from_slice(reader.buffer());
     drop(reader);
-    let Ok(()) = stream.set_nonblocking(true) else {
-        ended();
-        return;
-    };
-    let guard = runtime.enter();
-    let stream = tokio::net::UnixStream::from_std(stream);
-    drop(guard);
-    let Ok(stream) = stream else {
-        ended();
-        return;
-    };
-    runtime.spawn(async move {
-        use tokio::io::AsyncReadExt as _;
-        let (rest, write) = stream.into_split();
-        // This process is no agent's: the name comes in each connection's own initialize,
-        // which the connection that reached it wrote.
-        converse(shared, std::io::Cursor::new(read).chain(rest), write, None).await;
-        count.send_modify(|live| *live = live.saturating_sub(1));
-    });
+    socket.agents.serve(stream, read, None);
 }
 
 /// How long `tilo status` waits for the runtime to say how the peer stands before it is answered
@@ -548,9 +460,9 @@ static LAST_STATUS: std::sync::Mutex<Option<(Instant, Value)>> = std::sync::Mute
 /// How the peer stands: asked of the runtime and waited for at most [`STATUS_FRESH`]. When the
 /// runtime's workers do not answer in that time, what the peer last said, with how long ago
 /// (`answered_ago_s`), so `tilo status` answers whatever the peer is busy with and says it is.
-fn status_answer<E: Enter>(shared: &Arc<Shared<E>>, runtime: &tokio::runtime::Handle) -> Value {
+fn status_answer(presence: &Arc<Presence>, runtime: &tokio::runtime::Handle) -> Value {
     let (told, answered) = std::sync::mpsc::sync_channel(1);
-    let asked = Arc::clone(shared);
+    let asked = Arc::clone(presence);
     runtime.spawn(async move {
         let _ = told.send(super::peer_status(&asked).await);
     });
@@ -673,42 +585,32 @@ impl Drop for Watching {
     }
 }
 
-/// Serve Tilo's API at `place` as this computer's device, over the one session it holds: every
-/// workspace command of this login (`tilo do`, `ls`, `read`, `workspace`, `keys`) is a call here,
-/// one round trip over a session already in the workspace, rather than a session of its own that
-/// would cut this one off at the server. While the device is not in the workspace, each call
-/// answers why.
-fn serve_api<E: Enter>(place: &DaemonPlace, shared: &Arc<Shared<E>>) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let _ = std::fs::remove_file(place.api());
-    let listener = tilo_files::native::socket::bind(place.api())
+/// Serve Tilo's API at `place` as this computer's device, `api`: every workspace command of this
+/// login (`tilo do`, `ls`, `read`, `workspace`, `keys`) is a call here, answered by the daemon's
+/// own workspaces, rather than a session of its own that would cut the device's off at the
+/// server.
+fn serve_api(place: &DaemonPlace, api: Arc<tilo_api::direct::Direct>) -> Result<()> {
+    let listener = tilo_files::native::private::bind_socket(place.api())
         .and_then(|listener| {
             listener.set_nonblocking(true)?;
             tokio::net::UnixListener::from_std(listener)
         })
         .with_context(|| format!("listen at {}", place.api().display()))?;
-    std::fs::set_permissions(place.api(), std::fs::Permissions::from_mode(0o600))?;
-    let shared = Arc::clone(shared);
+    std::fs::set_permissions(
+        place.api(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(place.socket_mode()),
+    )?;
     tokio::spawn(tilo_api::direct::serve_current(listener, move || {
-        let shared = Arc::clone(&shared);
-        async move {
-            let fallback = shared.fallback_api();
-            match shared.session(false, super::Ask::Agent).await {
-                Ok(session) => session.api.clone().or(fallback).ok_or_else(|| {
-                    "this computer's login does not reach Tilo's API here; log in again".to_owned()
-                }),
-                Err(why) => fallback.ok_or(why),
-            }
-        }
+        std::future::ready(Ok(Arc::clone(&api)))
     }));
     Ok(())
 }
 
-/// How long a holder told to stop takes at most to end: every wait of its stop together (the
+/// How long a daemon told to stop takes at most to end: every wait of its stop together (the
 /// folders and trees, the session closing, the runtime's threads, the stores closing). Less than
 /// the user service gives a stop, so the service never has to kill it.
 const STOPPED_WITHIN: Duration = STOPPING
-    .saturating_add(super::CLOSING)
+    .saturating_add(super::presence::CLOSING)
     .saturating_add(SHUTDOWN)
     .saturating_add(RELEASING)
     .saturating_add(SHUTDOWN);
@@ -777,13 +679,15 @@ fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'sta
     Ok(ended)
 }
 
-/// The peer this holder runs, once it does.
-pub(crate) static PEER: std::sync::OnceLock<Arc<super::peer::Peer>> = std::sync::OnceLock::new();
+/// The peer this holder runs, once it does, until it ends.
+static PEER: std::sync::Mutex<Option<Arc<super::peer::Peer>>> = std::sync::Mutex::new(None);
+
+/// The peer this process's holder runs, while it runs one.
+pub(crate) fn peer() -> Option<Arc<super::peer::Peer>> {
+    PEER.lock_recover().clone()
+}
 /// Why this holder's device is not in the workspace, while it is not.
 pub(crate) static NOT_IN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-/// How often the peer looks whether its session is still the device's.
-const PEER_LOOK: Duration = Duration::from_secs(5);
 
 /// Open the peer's stores at `state`, waiting while another holder still has them open: the one
 /// that held the lock before this one let go of it before its process ended, and the databases it
@@ -795,7 +699,7 @@ async fn open_peer(state: &Path, home: &Path) -> anyhow::Result<super::peer::Pee
         .unwrap_or_else(Instant::now);
     let mut waiting = false;
     loop {
-        match super::peer::Peer::open(state, home, true).await {
+        match super::peer::Peer::open(state, home).await {
             Ok(peer) => return Ok(peer),
             Err(error) if tilo_fs::ContentStore::held_elsewhere(&error) => {
                 if Instant::now() >= deadline {
@@ -818,10 +722,10 @@ async fn open_peer(state: &Path, home: &Path) -> anyhow::Result<super::peer::Pee
     }
 }
 
-/// Run the peer: enter the workspace, and show the person's workspaces' folders
-/// over the session, mounted again whenever the session is a new one, and as
-/// `tilo folders` changes them.
-async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathBuf) {
+/// Run the peer: the person's workspaces' folders, as their server lists them to `daemon`'s
+/// account and its own workspace service keeps them ([`super::peer::Peer::keep`]). A computer
+/// with no login shows none here, and says why.
+async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
     let peer = match open_peer(&state, &home).await {
         Ok(peer) => Arc::new(peer),
         Err(error) => {
@@ -836,204 +740,136 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
             return;
         }
     };
-    let _ = PEER.set(Arc::clone(&peer));
-    let mut shown: Option<Arc<super::Session>> = None;
-    // What the host sends this session: the person's workspaces as they are
-    // now, and a wake when one arrives.
-    let mut personal: Option<tilo_session_client::PersonalWorkspaces> = None;
-    let woken = Arc::new(tokio::sync::Notify::new());
-    loop {
-        match shared.session(false, super::Ask::Sync).await {
-            Ok(session) => {
-                *NOT_IN
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                follow_session(&peer, &session, &mut shown, &mut personal, &woken).await;
-            }
-            Err(why) => {
-                *NOT_IN
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
-            }
-        }
-        tokio::select! {
-            // The host sent a list: the folders follow now, rather than at the
-            // next look, and the session is looked at again as it changes.
-            () = woken.notified() => {}
-            () = tokio::time::sleep(PEER_LOOK) => {}
-        }
-    }
-}
-
-/// Follow one session of the person's device: the folders as `tilo folders`
-/// set them, and the person's workspaces as the host sends them. A session
-/// this holder did not hold before asks for the list once, so a workspace made
-/// while the computer was away is not missed; after that every list the host
-/// sends is kept.
-async fn follow_session(
-    peer: &super::peer::Peer,
-    session: &Arc<super::Session>,
-    shown: &mut Option<Arc<super::Session>>,
-    personal: &mut Option<tilo_session_client::PersonalWorkspaces>,
-    woken: &Arc<tokio::sync::Notify>,
-) {
-    if shown
-        .as_ref()
-        .is_none_or(|shown| !Arc::ptr_eq(shown, session))
-    {
-        peer.close().await;
-        shown.replace(Arc::clone(session));
-        peer.forget_personal().await;
-        let followed = tilo_session_client::PersonalWorkspaces::follow(session.device.session());
-        let woken = Arc::clone(woken);
-        session
-            .device
-            .session()
-            .on_event(followed.sent(), Arc::new(move || woken.notify_one()));
-        *personal = Some(followed);
-    }
-    if let Some(followed) = personal {
-        peer.take_personal(&session.device, followed).await;
-    }
-    // The device's own service holds what the session takes part in, so the keys its key service
-    // settles over the member copies are there for the folders, and again once the folders
-    // entered more of the person's workspaces.
-    if let Some(own) = &session.own {
-        own.hold(&session.device).await;
-    }
-    peer.reconcile(&session.device, session.own.as_deref())
-        .await;
-    if let Some(own) = &session.own {
-        own.hold(&session.device).await;
-    }
-}
-
-/// Once no connection has been open for `linger`; never without one.
-async fn idle(live: &mut tokio::sync::watch::Receiver<usize>, linger: Option<Duration>) {
-    let Some(linger) = linger else {
-        return std::future::pending().await;
+    *PEER.lock_recover() = Some(Arc::clone(&peer));
+    let Some(account) = daemon.account() else {
+        *NOT_IN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(tilo_api::daemon::enter::NOT_LOGGED_IN.to_owned());
+        return;
     };
-    loop {
-        if *live.borrow_and_update() == 0 {
-            if tokio::time::timeout(linger, live.changed()).await.is_err() {
-                return;
-            }
-        } else if live.changed().await.is_err() {
-            return;
-        }
-    }
+    let own = Arc::clone(daemon.serving());
+    drop(daemon);
+    peer.keep(own, account).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RuntimeServices as _;
     use std::io::{BufRead as _, Write as _};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A holder an agent's or a command's `tilo` started, of `program`.
-    const fn agents(program: Program) -> Claim {
-        Claim {
-            program,
-            service: false,
-        }
+    const AGENT_TEST: &str =
+        "device::serve::tests::an_agent_on_the_device_socket_acts_in_the_daemons_workspace";
+
+    /// One agent connection to the device's socket, as `tilo mcp` relays it.
+    struct Agent {
+        writing: UnixStream,
+        reading: std::io::BufReader<UnixStream>,
+        asked: u64,
+        /// The run the daemon answers this connection as.
+        run: Value,
     }
 
-    /// The user service's holder, of `program`.
-    const fn services(program: Program) -> Claim {
-        Claim {
-            program,
-            service: true,
+    impl Agent {
+        fn connect(place: &DaemonPlace) -> Self {
+            let writing = UnixStream::connect(place.socket()).unwrap();
+            writing
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let reading = std::io::BufReader::new(writing.try_clone().unwrap());
+            let mut agent = Self {
+                writing,
+                reading,
+                asked: 0,
+                run: Value::Null,
+            };
+            let init = agent.ask(
+                "initialize",
+                &json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "Claude Code", "version": "1"}}),
+            );
+            assert_eq!(init["serverInfo"]["name"], "tilo-runtime", "{init}");
+            agent.run = init["capabilities"]["experimental"]["so.tilo.mcp"]["session"].clone();
+            assert!(agent.run.is_string(), "{init}");
+            agent
         }
-    }
 
-    /// The user service's holder starting while one an agent started holds the device (the
-    /// service was restarted, or the agent came first): the agent's steps down and the service's
-    /// holds the device, so the session and the folders live as long as the login, not as long
-    /// as some agent. A newer program's holder an agent started is waited for instead, and the
-    /// service holds the device once it ends; the service never ends beside it.
-    #[test]
-    fn the_services_holder_takes_over_from_one_an_agent_started() {
-        let program = Program {
-            file: 1,
-            modified_ns: 1_000,
-        };
-        let newer = Program {
-            file: 2,
-            modified_ns: 2_000,
-        };
-        assert!(services(program).takes_over(&agents(program)));
-        assert!(!agents(program).takes_over(&services(program)));
-        assert!(!agents(program).takes_over(&agents(program)));
-        assert!(!services(program).takes_over(&services(program)));
-        assert!(!services(program).takes_over(&agents(newer)));
-        assert!(agents(newer).takes_over(&services(program)));
-
-        let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
-        let hold_waiting = |name: &'static str, claim: Claim, taking_over: Duration| {
-            let place = place.clone();
-            std::thread::spawn(move || {
-                let shared = Arc::new(Shared::new(Named(name), Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_secs(60)),
-                    taking_over,
-                    claim,
-                )
-                .unwrap()
-            })
-        };
-        let hold = |name: &'static str, claim: Claim| hold_waiting(name, claim, TAKING_OVER);
-        let program_of = |file: u64| Program {
-            file,
-            modified_ns: u128::from(file).saturating_mul(1_000),
-        };
-        let held_by = |name: &str| {
-            let started = Instant::now();
+        /// The result of `method` with `params`.
+        fn ask(&mut self, method: &str, params: &Value) -> Value {
+            self.asked = self.asked.saturating_add(1);
+            let id = self.asked;
+            writeln!(
+                self.writing,
+                "{}",
+                json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+            )
+            .unwrap();
             loop {
-                if let Ok(mut stream) = UnixStream::connect(place.socket())
-                    && initialize(&mut stream).contains(&format!("held by the {name} Tilo"))
-                {
-                    return;
-                }
+                let mut line = String::new();
                 assert!(
-                    started.elapsed() < TAKING_OVER,
-                    "the {name} holder did not hold the device"
+                    self.reading.read_line(&mut line).unwrap() > 0,
+                    "the daemon hung up"
                 );
-                std::thread::sleep(POLL);
+                let answer: Value = serde_json::from_str(&line).unwrap();
+                if answer["id"] == json!(id) {
+                    return answer["result"].clone();
+                }
             }
+        }
+
+        /// The text `tool` answers with `arguments`, and whether it failed.
+        fn tool(&mut self, tool: &str, arguments: &Value) -> (String, bool) {
+            let called = self.ask("tools/call", &json!({"name": tool, "arguments": arguments}));
+            let text = called["content"][0]["text"].as_str().unwrap_or_default();
+            (text.to_owned(), called["isError"] == json!(true))
+        }
+    }
+
+    /// An agent's `tilo mcp` reaches the device's socket and acts in the daemon's workspace, as
+    /// the apps on this computer do: it lists what the workspace holds and the person's
+    /// workspaces through their account. A second connection is a run of its own beside it.
+    #[test]
+    fn an_agent_on_the_device_socket_acts_in_the_daemons_workspace() {
+        let Some(root) = super::super::services::tests::isolated_root(AGENT_TEST) else {
+            return;
         };
+        let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+        let runtime = bridge_runtime().unwrap();
+        let place = daemon.place().clone();
+        let (socket, accepting) = runtime.block_on(async {
+            let socket = Socket::new(&daemon).unwrap();
+            let accepting = listen(&place, &socket).unwrap();
+            (socket, accepting)
+        });
 
-        let agent = hold("agent's", agents(program));
-        held_by("agent's");
-        let service = hold("service's", services(program));
-        agent.join().unwrap();
-        held_by("service's");
-        assert_eq!(
-            place.ask_to_step_down(agents(program)),
-            Some(false),
-            "an agent's holder never takes the device from the service's"
-        );
-
-        // A newer program's holder takes over from the service's...
-        let newer_agent = hold("newer agent's", agents(newer));
-        service.join().unwrap();
-        held_by("newer agent's");
-        // ...and the service's holder started again waits for it rather than ending, even past
-        // the wait a holder of an agent's gives up after.
-        let service = hold_waiting("service's", services(program), Duration::ZERO);
-        std::thread::sleep(Duration::from_secs(2));
+        let mut first = Agent::connect(&place);
+        let tools = first.ask("tools/list", &json!({}));
         assert!(
-            !service.is_finished(),
-            "the service's holder waits for the device"
+            tools["tools"]
+                .as_array()
+                .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "tilo_do")),
+            "{tools}"
         );
-        assert_eq!(place.ask_to_step_down(agents(program_of(3))), Some(true));
-        newer_agent.join().unwrap();
-        held_by("service's");
-        assert_eq!(place.ask_to_step_down(agents(program_of(4))), Some(true));
-        service.join().unwrap();
+        let (listed, failed) = first.tool("tilo_ls", &json!({"path": ""}));
+        assert!(!failed && listed.contains("devices"), "{listed}");
+        let (actions, failed) = first.tool("tilo_ls", &json!({"path": "devices"}));
+        assert!(!failed && actions.contains("#issue"), "{actions}");
+        let (workspaces, failed) =
+            first.tool("tilo_do", &json!({"path": "account/workspaces#list"}));
+        assert!(!failed, "{workspaces}");
+        assert!(workspaces.contains(daemon.workspace()), "{workspaces}");
+
+        let mut second = Agent::connect(&place);
+        assert_ne!(first.run, second.run, "each connection is a run of its own");
+        let (listed, failed) = second.tool("tilo_ls", &json!({"path": ""}));
+        assert!(!failed && listed.contains("devices"), "{listed}");
+
+        drop((first, second, accepting));
+        runtime.block_on(socket.presence.close());
+        let _ = std::fs::remove_file(place.socket());
+        let _ = std::fs::remove_file(place.api());
     }
 
     /// A stop ends by itself inside the user service's timeout: every wait it makes, added
@@ -1129,27 +965,6 @@ mod tests {
         );
     }
 
-    /// A computer's login made again makes another device, with a holder of its own place at the
-    /// server; one computer still runs one holder, so the two never hold a second endpoint under
-    /// a device key at the same time.
-    #[test]
-    fn a_device_directory_has_one_holder_however_its_login_changed() {
-        let dir = Path::new("/state/tilo/device");
-        let first = DaemonPlace::at(dir, dir, &[1; 32]);
-        let second = DaemonPlace::at(dir, dir, &[2; 32]);
-        assert_eq!(
-            first.lock(),
-            second.lock(),
-            "one holder per device directory"
-        );
-        assert_ne!(
-            first.socket(),
-            second.socket(),
-            "each login's connections reach its own holder"
-        );
-        assert_ne!(first.log(), second.log());
-    }
-
     /// Names the lock file a child process takes and then ends still holding.
     const CHILD_LOCK: &str = "TILO_TEST_HOLDER_LOCK";
 
@@ -1177,14 +992,12 @@ mod tests {
     #[test]
     fn a_holder_that_ended_holds_no_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[3; 32]);
+        let place = DaemonPlace::at(dir.path(), dir.path());
         let lock = place.lock().to_path_buf();
-        let held = take_lock(&place, Duration::ZERO, agents(Program::running())).unwrap();
+        let held = take_lock(&place, Duration::ZERO).unwrap();
         assert!(held.is_some());
         assert!(
-            take_lock(&place, Duration::ZERO, agents(Program::running()))
-                .unwrap()
-                .is_none(),
+            take_lock(&place, Duration::ZERO).unwrap().is_none(),
             "a lock its owner holds keeps the next holder out"
         );
         drop(held);
@@ -1206,9 +1019,7 @@ mod tests {
             "the child never took the lock"
         );
         assert!(
-            take_lock(&place, Duration::ZERO, agents(Program::running()))
-                .unwrap()
-                .is_some(),
+            take_lock(&place, Duration::ZERO).unwrap().is_some(),
             "the lock of a process that ended wedges the next holder"
         );
     }
@@ -1218,9 +1029,9 @@ mod tests {
     #[test]
     fn a_holders_liveness_is_seen_from_its_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[5; 32]);
+        let place = DaemonPlace::at(dir.path(), dir.path());
         assert!(!place.alive(), "nothing holds the device");
-        let held = take_lock(&place, Duration::ZERO, agents(Program::running()))
+        let held = take_lock(&place, Duration::ZERO)
             .unwrap()
             .expect("the lock is free");
         assert!(place.alive(), "the holder's lock says it is there");
@@ -1235,11 +1046,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = bridge_runtime().unwrap();
         let first = runtime
-            .block_on(super::super::peer::Peer::open(
-                dir.path(),
-                dir.path(),
-                false,
-            ))
+            .block_on(super::super::peer::Peer::open(dir.path(), dir.path()))
             .expect("the first holder opens the files");
         let (started, starting) = std::sync::mpsc::channel();
         let (opened, opening) = std::sync::mpsc::channel();
@@ -1266,538 +1073,5 @@ mod tests {
             .expect("the second holder opens the files once the first lets go")
             .unwrap();
         waiter.join().unwrap();
-    }
-
-    /// A device that cannot enter, saying how many times it was asked: the
-    /// holder asks it again for each connection, so the count says which
-    /// holder answered.
-    struct Counting(AtomicUsize);
-
-    impl Enter for Arc<Counting> {
-        async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
-            let asked = self.0.fetch_add(1, Ordering::SeqCst).saturating_add(1);
-            Err(format!("asked {asked}"))
-        }
-    }
-
-    fn initialize(stream: &mut UnixStream) -> String {
-        stream
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")
-            .unwrap();
-        let mut answer = String::new();
-        std::io::BufReader::new(stream.try_clone().unwrap())
-            .read_line(&mut answer)
-            .unwrap();
-        let answer: Value = serde_json::from_str(&answer).unwrap();
-        answer["result"]["instructions"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    }
-
-    /// Two agents' `tilo mcp` on one computer are two connections to the one
-    /// holder of the device's session, not two sessions that cut each other
-    /// off; a second holder started meanwhile leaves the first in place.
-    #[test]
-    fn every_connection_of_a_device_reaches_its_one_holder() {
-        let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
-        let counting = Arc::new(Counting(AtomicUsize::new(0)));
-        let shared = Arc::new(Shared::new(Arc::clone(&counting), Err("unused".to_owned())));
-        let linger = Duration::from_millis(300);
-        let holding = {
-            let (place, shared) = (place.clone(), Arc::clone(&shared));
-            std::thread::spawn(move || {
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(linger),
-                    Duration::ZERO,
-                    agents(Program::running()),
-                )
-                .unwrap()
-            })
-        };
-        let mut first = loop {
-            if let Ok(stream) = UnixStream::connect(place.socket()) {
-                break stream;
-            }
-            std::thread::sleep(POLL);
-        };
-        let mut second = UnixStream::connect(place.socket()).unwrap();
-        // The holder enters as it starts, before anyone asks.
-        while counting.0.load(Ordering::SeqCst) == 0 {
-            std::thread::sleep(POLL);
-        }
-        let said = [initialize(&mut first), initialize(&mut second)];
-        // Both connections are the same holder's, and it asks the device to enter once: a call
-        // never waits on an entry retry, so both hear why at once.
-        assert_eq!(said[0], said[1]);
-        assert!(
-            said[0].contains("Tilo keeps trying in the background"),
-            "{}",
-            said[0]
-        );
-        assert_eq!(
-            counting.0.load(Ordering::SeqCst),
-            1,
-            "the device is asked to enter once, not once per connection"
-        );
-        // A second holder (another agent's `tilo mcp` starting one at the same moment) finds
-        // the device held and ends, leaving the first listening.
-        let second_holder = hold_for(
-            &place,
-            Arc::clone(&shared),
-            Holding::Linger(linger),
-            Duration::ZERO,
-            agents(Program::running()),
-        );
-        assert!(second_holder.is_ok());
-        let mut third = UnixStream::connect(place.socket()).unwrap();
-        assert_eq!(initialize(&mut third), said[0]);
-        assert_eq!(counting.0.load(Ordering::SeqCst), 1);
-        drop((first, second, third));
-        holding.join().unwrap();
-        assert!(
-            !place.socket().exists(),
-            "a holder whose connections all ended stops listening"
-        );
-    }
-
-    /// An entry that answers which holder asked it: what tells two holders' answers apart.
-    /// What keeps both of the runtime's workers in a step that does not let go of them for
-    /// [`Self::FOR`], each time the device is entered: a step stuck where it should not be.
-    struct Wedging;
-
-    impl Wedging {
-        const FOR: Duration = Duration::from_secs(12);
-    }
-
-    impl Enter for Wedging {
-        async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
-            // Spawned from outside the runtime, so the other worker takes it at once: one spawned
-            // from this worker would wait in its own queue for this step to end.
-            let runtime = tokio::runtime::Handle::current();
-            std::thread::spawn(move || {
-                runtime.spawn(async { std::thread::sleep(Wedging::FOR) });
-            })
-            .join()
-            .unwrap();
-            std::thread::sleep(Wedging::FOR);
-            Err("wedged".to_owned())
-        }
-    }
-
-    /// `tilo status` is answered while every worker of the holder's runtime is stuck in a step:
-    /// within seconds, with what the peer last said and how long ago, rather than not at all,
-    /// which the command reads as a holder busy with a large change and waits on.
-    #[test]
-    fn a_status_is_answered_while_the_workers_are_stuck() {
-        let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
-        let holding = {
-            let place = place.clone();
-            std::thread::spawn(move || {
-                let shared = Arc::new(Shared::new(Wedging, Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_millis(100)),
-                    TAKING_OVER,
-                    agents(Program::running()),
-                )
-                .unwrap()
-            })
-        };
-        let started = Instant::now();
-        let mut agent = loop {
-            if let Ok(stream) = UnixStream::connect(place.socket()) {
-                break stream;
-            }
-            assert!(started.elapsed() < TAKING_OVER, "no holder listened");
-            std::thread::sleep(POLL);
-        };
-        // An agent's first call enters the workspace, which takes both workers.
-        agent
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(500));
-
-        let asked = Instant::now();
-        let mut status = UnixStream::connect(place.socket()).unwrap();
-        status
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        writeln!(
-            status,
-            "{}",
-            json!({"jsonrpc": "2.0", "id": 1, "method": tilo_api::daemon::PEER_STATUS})
-        )
-        .unwrap();
-        let mut answer = String::new();
-        let read = std::io::BufReader::new(status).read_line(&mut answer);
-        let took = asked.elapsed();
-        assert!(
-            read.is_ok_and(|read| read > 0),
-            "no status answered in {took:?} while the workers were stuck"
-        );
-        assert!(took < Duration::from_secs(4), "the status took {took:?}");
-        let answer: Value = serde_json::from_str(&answer).unwrap();
-        assert_eq!(answer["result"]["pid"], json!(std::process::id()));
-        assert!(
-            answer["result"]["answered_ago_s"].is_u64(),
-            "it says the answer is not a fresh one: {answer}"
-        );
-
-        drop(agent);
-        holding.join().unwrap();
-    }
-
-    struct Named(&'static str);
-
-    impl Enter for Named {
-        async fn enter(&self) -> Result<Arc<super::super::Session>, String> {
-            Err(format!("held by the {} Tilo", self.0))
-        }
-    }
-
-    /// Tilo updated while a holder of the old program still holds the device (one a CLI command
-    /// started while the service was stopped): the holder the new program starts asks it to step
-    /// down, and holds the device from then on, so the next command is the new program's to
-    /// answer. A holder of the same program never takes over: two agents starting one at once keep
-    /// the first.
-    #[test]
-    fn a_holder_of_a_newer_tilo_takes_over_from_one_of_an_older() {
-        let dir = tempfile::tempdir().unwrap();
-        let place = DaemonPlace::at(dir.path(), dir.path(), &[7; 32]);
-        let older = Program {
-            file: 1,
-            modified_ns: 1_000,
-        };
-        let newer = Program {
-            file: 2,
-            modified_ns: 2_000,
-        };
-        assert!(newer.replaces(&older));
-        assert!(!older.replaces(&newer), "an older program never takes over");
-        assert!(!older.replaces(&older), "nor does the same one");
-
-        let hold = |name: &'static str, program: Program| {
-            let place = place.clone();
-            std::thread::spawn(move || {
-                let shared = Arc::new(Shared::new(Named(name), Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_secs(60)),
-                    TAKING_OVER,
-                    agents(program),
-                )
-                .unwrap()
-            })
-        };
-        let first = hold("older", older);
-        let mut asking = loop {
-            if let Ok(stream) = UnixStream::connect(place.socket()) {
-                break stream;
-            }
-            std::thread::sleep(POLL);
-        };
-        assert!(initialize(&mut asking).contains("held by the older Tilo"));
-        drop(asking);
-
-        // A holder of the same program finds the device held, and ends at once.
-        let same = std::thread::spawn({
-            let place = place.clone();
-            move || {
-                let shared = Arc::new(Shared::new(Named("same"), Err("unused".to_owned())));
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_secs(60)),
-                    Duration::ZERO,
-                    agents(older),
-                )
-                .unwrap()
-            }
-        });
-        same.join().unwrap();
-
-        let started = Instant::now();
-        let second = hold("newer", newer);
-        first.join().unwrap();
-        let mut asking = loop {
-            if let Ok(mut stream) = UnixStream::connect(place.socket()) {
-                let said = initialize(&mut stream);
-                if said.contains("held by the newer Tilo") {
-                    break stream;
-                }
-            }
-            assert!(
-                started.elapsed() < TAKING_OVER,
-                "the newer Tilo's holder did not take over"
-            );
-            std::thread::sleep(POLL);
-        };
-        assert!(initialize(&mut asking).contains("held by the newer Tilo"));
-        drop(asking);
-        // Its connections gone, it lingers no longer once asked by an even newer one.
-        let newest = Program {
-            file: 3,
-            modified_ns: 3_000,
-        };
-        assert_eq!(place.ask_to_step_down(agents(newest)), Some(true));
-        second.join().unwrap();
-    }
-
-    /// A certificate `root` gives `key`, as a login's is.
-    fn certified(
-        root: &ed25519_dalek::SigningKey,
-        key: &ed25519_dalek::SigningKey,
-    ) -> tilo_user_identity::DeviceCert {
-        let now = tilo_clock::unix_now_ns();
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
-        cert
-    }
-
-    /// On a logged-in computer, a workspace command (`tilo do`, `ls`, `read`, `workspace`) is a
-    /// call to the one process with the device's session: every call reaches it, and none enters
-    /// the workspace as the device on its own, which would cut that session off at the server. A
-    /// key someone handed over (`--key-file`) still acts as that key, in process, and never
-    /// reaches that process.
-    #[test]
-    fn a_logged_in_computers_workspace_commands_are_calls_to_its_one_session() {
-        let state = tempfile::tempdir().unwrap();
-        let runtime_dir = tempfile::tempdir().unwrap();
-        let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let mut env = tilo_test_env::ScopedEnv::new();
-        let key = log_in(&mut env, state.path(), &root);
-        env.set("XDG_RUNTIME_DIR", runtime_dir.path())
-            .remove(tilo_api::client::KEY_ENV)
-            .remove(tilo_api::client::DESKTOP_ENV);
-        let place = DaemonPlace::of(
-            tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
-                .unwrap()
-                .dir(),
-            &key.verifying_key().to_bytes(),
-        )
-        .unwrap();
-        assert_eq!(
-            tilo_device_identity::login::held_api(tilo_api::client::device_keys()).unwrap(),
-            Some(place.api().to_path_buf()),
-            "the login's commands reach where its holder serves"
-        );
-        let counting = Arc::new(Counting(AtomicUsize::new(0)));
-        let shared = Arc::new(Shared::new(Arc::clone(&counting), Err("unused".to_owned())));
-        let holding = {
-            let (place, shared) = (place.clone(), Arc::clone(&shared));
-            std::thread::spawn(move || {
-                hold_for(
-                    &place,
-                    shared,
-                    Holding::Linger(Duration::from_millis(300)),
-                    Duration::ZERO,
-                    agents(Program::running()),
-                )
-                .unwrap()
-            })
-        };
-        // An agent's connection keeps the holder up meanwhile.
-        let agent = loop {
-            if let Ok(stream) = UnixStream::connect(place.socket()) {
-                break stream;
-            }
-            std::thread::sleep(POLL);
-        };
-        while counting.0.load(Ordering::SeqCst) == 0 {
-            std::thread::sleep(POLL);
-        }
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let as_login = || {
-            tilo_api::client::Client::open(tilo_api::client::Reach {
-                api: None,
-                key_file: None,
-                json: false,
-            })
-            .unwrap()
-        };
-        for _ in 0..3 {
-            let refused = runtime
-                .block_on(as_login().workspaces())
-                .expect_err("this device is not in the workspace");
-            let refusal = tilo_api::client::Refusal::of(&refused).expect("the holder's answer");
-            assert_eq!(refusal.code(), "not_in_workspace", "{refused}");
-            assert!(refused.to_string().contains("asked 1"), "{refused}");
-        }
-        // A key file naming the device's own key is the device: it goes to the holder too.
-        let own = state.path().join("own.json");
-        std::fs::write(
-            &own,
-            serde_json::to_vec(&tilo_api::client::login_key(None).unwrap().unwrap()).unwrap(),
-        )
-        .unwrap();
-        let refused = runtime
-            .block_on(
-                tilo_api::client::Client::open(tilo_api::client::Reach {
-                    api: None,
-                    key_file: Some(&own),
-                    json: false,
-                })
-                .unwrap()
-                .workspaces(),
-            )
-            .expect_err("this device is not in the workspace");
-        assert_eq!(
-            tilo_api::client::Refusal::of(&refused).map(tilo_api::client::Refusal::code),
-            Some("not_in_workspace"),
-            "{refused}"
-        );
-        assert_eq!(
-            counting.0.load(Ordering::SeqCst),
-            1,
-            "the device entered once, for the holder; no command entered on its own"
-        );
-
-        assert!(
-            a_key_file_asks_its_own_server(state.path(), &root, &runtime),
-            "a key handed over acts as itself, against its own server, in process"
-        );
-        assert_eq!(counting.0.load(Ordering::SeqCst), 1, "the holder was not");
-
-        drop(agent);
-        holding.join().unwrap();
-        assert!(!place.api().exists(), "a holder that ended serves no API");
-        drop(env);
-    }
-
-    /// Whether a call with a key file `root` certified (`--key-file`) dials the host it names.
-    fn a_key_file_asks_its_own_server(
-        dir: &Path,
-        root: &ed25519_dalek::SigningKey,
-        runtime: &tokio::runtime::Runtime,
-    ) -> bool {
-        let script = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-        runtime.block_on(async {
-            let server = test_server::direct_endpoint().await;
-            let host = ed25519_dalek::SigningKey::from_bytes(&server.secret_key().to_bytes());
-            let origin = "https://eu1.tilo.test";
-            let key_file = dir.join("script.json");
-            std::fs::write(
-                &key_file,
-                serde_json::to_vec(
-                    &tilo_api::direct::KeyFile::new(
-                        origin,
-                        None,
-                        "Nightly build",
-                        &script,
-                        &certified(root, &script),
-                    )
-                    .reaching_at(tilo_server_protocol::web::ServerInfo {
-                        server_cert: certified(root, &host),
-                        address: Some(tilo_server_protocol::web::ServerAddress {
-                            endpoint_addr: server.addr(),
-                            relay_url: None,
-                            web: None,
-                        }),
-                        origin: Some(origin.to_owned()),
-                    }),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            let as_key = tilo_api::client::Client::open(tilo_api::client::Reach {
-                api: None,
-                key_file: Some(&key_file),
-                json: false,
-            })
-            .unwrap();
-            // The server takes no session, so the call keeps asking: what counts is that it
-            // dialled there.
-            tilo_test_env::within("the key's call dials its server or ends", async {
-                tokio::select! {
-                    dialled = server.accept() => dialled.is_some(),
-                    _ = as_key.workspaces() => false,
-                }
-            })
-            .await
-        })
-    }
-
-    /// This computer logged in under `dir`, as `env` names it, as a device `root` certified: its
-    /// key.
-    fn log_in(
-        env: &mut tilo_test_env::ScopedEnv,
-        dir: &Path,
-        root: &ed25519_dalek::SigningKey,
-    ) -> ed25519_dalek::SigningKey {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let cert = certified(root, &key);
-        let login = tilo_device_identity::login::Device {
-            site: "https://tilo.test/".into(),
-            host_origin: "https://eu1.tilo.test".into(),
-            workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
-            workspace_name: Some("Studio".into()),
-            agent: "Claude Code".into(),
-            server_cert: cert.clone(),
-            cert,
-            server_address: None,
-        };
-        env.set("XDG_STATE_HOME", dir.join("state"))
-            .set("TILO_IDENTITY_ROOT", dir.join("identity"));
-        let place =
-            tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
-        tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
-        tilo_device_identity::login::store(&place, &login).unwrap();
-        key
-    }
-
-    tilo_test_env::scenario! {
-        fn a_devices_holder_listens_at_a_place_of_its_own;
-
-        phase each_device_has_its_own_holder;
-        // A device logged in anew is another device: its connections reach a
-        // holder of their own.
-        {
-            let dir = Path::new("/state/tilo/device");
-            assert_ne!(
-                DaemonPlace::at(dir, dir, &[1; 32]).socket(),
-                DaemonPlace::at(dir, dir, &[2; 32]).socket()
-            );
-        }
-
-        phase a_deep_home_still_listens_in_a_private_directory;
-        // A home however deep still has a socket short enough to listen at:
-        // its holder listens in the account's own directory, which nobody else
-        // may enter.
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let home = tempfile::tempdir().unwrap();
-            let deep = home.path().join("a".repeat(120)).join("state/tilo/device");
-            std::fs::create_dir_all(&deep).unwrap();
-            let place = DaemonPlace::of(&deep, &[3; 32]).unwrap();
-            assert!(
-                place.socket().as_os_str().len() < 100,
-                "{}",
-                place.socket().display()
-            );
-            let sockets = place.socket().parent().unwrap();
-            let mode = std::fs::metadata(sockets).unwrap().permissions().mode();
-            assert_eq!(mode & 0o077, 0, "{} is {mode:o}", sockets.display());
-            assert!(place.lock().starts_with(&deep));
-        }
     }
 }

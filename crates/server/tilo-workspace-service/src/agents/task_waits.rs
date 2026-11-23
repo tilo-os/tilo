@@ -142,7 +142,7 @@ async fn resume(
     workspaces
         .author_application(
             workspace,
-            workspaces.governor(),
+            workspaces.device_cert(),
             &tilo_agent_session::AppCatalogue::native(),
             TASKS,
             document,

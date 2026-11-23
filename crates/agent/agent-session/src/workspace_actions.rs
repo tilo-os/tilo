@@ -54,6 +54,7 @@ mod asked_in_turn;
 mod bounded;
 mod call_wait;
 mod canonical;
+mod canvas;
 mod carried;
 mod catalogue;
 mod catch_up;
@@ -367,9 +368,18 @@ impl WorkspaceActions {
         let _ = self.submit(Job::Landed(workspace_id, route));
     }
 
-    /// Stop the service thread; later requests are refused as unavailable.
+    /// Stop the service's threads: each finishes the request it serves and
+    /// ends, and this returns once they have. Later requests are refused as
+    /// unavailable.
+    ///
+    /// Call it while the runtime the service works on is still running: a
+    /// thread left in a request there would finish it on a runtime that is
+    /// stopping, which has no timer or read to give it.
     pub fn shutdown(&self) {
-        self.shared.jobs.lock_recover().take();
+        let jobs = self.shared.jobs.lock_recover().take();
+        if let Some(jobs) = jobs {
+            jobs.stop();
+        }
     }
 
     /// Whether `caller` is the host's own person, or an agent one of their
@@ -406,9 +416,6 @@ impl WorkspaceActions {
         else {
             return Ok(());
         };
-        if caller.is_session_delegated() {
-            return Ok(());
-        }
         let revocations = self
             .shared
             .link
@@ -1396,16 +1403,15 @@ fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionCallError::UnknownAction)
 }
 
-/// Whether `caller` is `person`, or an agent a device of theirs handed its
-/// session to.
+/// Whether `caller` is `person`, or an agent a device of theirs runs under a key they
+/// certified for it.
 fn acts_for(caller: &Caller, person: &str) -> bool {
     if let Some(id) = caller.acting().person_id() {
         return id == person;
     }
-    caller.acting().is_agent()
-        && caller
-            .delegating_person()
-            .is_some_and(|delegating| delegating.acting().person_id() == Some(person))
+    caller.is_device_agent()
+        && caller.acting().acted_for_person() == Some(person)
+        && caller.user_public_key().map(hex::encode).as_deref() == Some(person)
 }
 
 /// What a held record publishes that its API runs now.
@@ -2481,6 +2487,8 @@ impl joining::Holder for Worker {
     }
 }
 
+#[cfg(test)]
+mod jobs_tests;
 #[cfg(test)]
 mod tests;
 

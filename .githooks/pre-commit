@@ -91,16 +91,20 @@ python3 "$root/tools/policy/check_too_many_arguments.py" --staged || fail=1
 # A commit may not add a name core.md's table rejects. Judged on what the
 # commit adds, so names already on main do not block it.
 python3 "$root/tools/policy/check_words_that_go.py" --staged || fail=1
+# A commit may not add a word its translation lacks: the catalogue a lane edits
+# is judged whole, its source key beside every line the commit leaves in each
+# translation of the same unit.
+python3 "$root/tools/policy/check_catalogue_coverage.py" --staged || fail=1
 # A wire enum keeps every variant it had, in its place: bytes already written
 # keep meaning what they meant (docs/policies.md). Judged against HEAD, so a
 # merge is charged only with what its resolution changed.
 python3 "$root/tools/policy/check_wire_enums.py" staged || fail=1
-# Checks whose verdict compares files across the tree are not here. Catalogue
-# coverage, app copy resolution, the session loop's blocking rules, wire
-# attributes and interface versions each read many files to answer, so they
-# judge the whole tree in the policy suite, which t applies as its
-# `policy/{step}` checks on every new head of main. They are as strict there as they were
-# here; a commit no longer reads the tree to learn what it already knows.
+# Checks whose verdict compares files across the tree are not here. App copy
+# resolution, the session loop's blocking rules, wire attributes and interface
+# versions each read many files to answer, so they judge the whole tree in the
+# policy suite, which t applies as its `policy/{step}` checks on every new head
+# of main. They are as strict there as they were here; a commit no longer reads
+# the tree to learn what it already knows.
 # The suite manifest (`tools/ci/suites.py check`) is one of them: it holds every
 # test-shaped file and every cross-package reader in the tree against
 # tools/ci/suites.toml, so it is applied with them.
@@ -327,7 +331,7 @@ if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; th
   fi
 fi
 
-# The component catalogue (`crates/dev/ui-graph/components.json`) is the toolkit's described
+# The component catalogue (`crates/ui/ui-graph/components.json`) is the toolkit's described
 # widgets as data: each widget's doc text and props, generated from the widget itself. The
 # crates below the toolkit read it at build time (tilo-view builds a builder per component from
 # it, tilolang its `ui` package), so it is committed, and a widget whose description changed
@@ -335,12 +339,12 @@ fi
 # generator and stage what it wrote. The toolkit's test holds the same invariant, so a tree
 # that cannot build now leaves the file as it is rather than holding up the commit.
 # The crates of widgets a window builds by name (tilo-app-window's `components`).
-widget_dirs=(crates/sdk/ui-core/src crates/sdk/tilo-rich-edit/src)
+widget_dirs=(crates/ui/ui-core/src crates/ui/tilo-rich-edit/src)
 widget_pattern="^($(IFS='|'; echo "${widget_dirs[*]}"))/.*\.rs$"
 widget_sources=$(grep -vE '(_tests\.rs|/tests\.rs|/tests/)' <<< "$lock_staged_names" \
   | grep -E "$widget_pattern" || true)
 if [ -n "$widget_sources" ]; then
-  catalogue=crates/dev/ui-graph/components.json
+  catalogue=crates/ui/ui-graph/components.json
   # The generator reads the tree, so a widget source with unstaged edits would be generated
   # into this commit: it is left alone, as rustfmt leaves such a file alone. Unstaged means
   # against the whole index: in a merge GIT_INDEX_FILE is the copy with the merged-in side's
@@ -364,7 +368,10 @@ and commit again, or regenerate it with 'cargo run -p tilo-app-window --example 
       fi
       cat_generated=""
       if [ "${#cat_run[@]}" -gt 0 ]; then
-        cat_generated=$("${cat_run[@]}" 2>/dev/null || true)
+        # A commit lands work, so its build ranks as a person's, not behind the agents' test
+        # backlog: the same per-checkout human: session the push lint uses.
+        cat_generated=$(T_SESSION="human:commit.$(hostname).$(basename "$root" | tr -c 'A-Za-z0-9_.-\n' _)" \
+          "${cat_run[@]}" 2>/dev/null || true)
       fi
       if [ -n "$cat_generated" ]; then
         if [ "$cat_generated" != "$(cat "$root/$catalogue")" ]; then

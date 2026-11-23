@@ -52,7 +52,7 @@ use crate::session::{self, Peer};
 /// The sources of the tilolang runtime binary: what a rebuild of it is watched on.
 const RUNTIME_SOURCES: [&str; 4] = [
     "apps/tilolang",
-    "crates/platform/tilolang-tilo",
+    "crates/lang/tilolang-tilo",
     "crates/lang/tilolang-runtime",
     "crates/lang/tilolang",
 ];
@@ -125,7 +125,7 @@ const MISSING_WAIT: Duration = Duration::from_secs(2);
 const TOOL_SOURCES: [&str; 4] = [
     "crates/lang/tilolang/src",
     "crates/lang/tilolang-runtime/src",
-    "crates/platform/tilolang-tilo/src",
+    "crates/lang/tilolang-tilo/src",
     "apps/tilolang/src",
 ];
 
@@ -262,6 +262,8 @@ struct Local {
     session: PathBuf,
     package: String,
     child: Option<Child>,
+    /// The window's stdin: it ends when this closes ([`crate::run::lifeline`]).
+    lifeline: Option<std::io::PipeWriter>,
 }
 
 impl Local {
@@ -283,6 +285,7 @@ impl Local {
             session,
             package: String::new(),
             child: None,
+            lifeline: None,
         })
     }
 
@@ -335,14 +338,11 @@ impl Local {
             .env(PACKAGE_ID_ENV, &self.package)
             .env(UPDATES_ENV, &self.updates)
             .env("TILO_DEV_SESSION", &self.session)
-            .env("TILO_RUNTIME_STANDALONE", "1")
-            .stdin(Stdio::null());
+            .env("TILO_RUNTIME_STANDALONE", "1");
+        let lifeline = crate::run::lifeline(&mut command)
+            .map_err(|error| format!("running {}: {error}", runtime.display()))?;
         attach_loader_path(&mut command, runtime, loaders)?;
         bounded_command::without_console_window(&mut command);
-        // The window ends with the loop: a signal to the tool
-        // must not leave it running, on the store the next run
-        // opens.
-        crate::run::end_with_this_process(&mut command);
         let child = command
             .spawn()
             .map_err(|error| format!("running {}: {error}", runtime.display()))?;
@@ -353,6 +353,7 @@ impl Local {
             child.id()
         );
         self.child = Some(child);
+        self.lifeline = Some(lifeline);
         Ok(())
     }
 
@@ -394,12 +395,8 @@ impl Local {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        #[cfg(unix)]
-        if let Ok(pid) = i32::try_from(child.id())
-            && let Some(pid) = rustix::process::Pid::from_raw(pid)
-        {
-            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
-        }
+        // Its stdin closing asks it to stop, as SIGTERM does.
+        drop(self.lifeline.take());
         let _ = bounded_command::wait_or_kill(&mut child, STOP_GRACE);
     }
 }

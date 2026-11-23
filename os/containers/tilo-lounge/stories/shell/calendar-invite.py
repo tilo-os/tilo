@@ -7,7 +7,7 @@ she keeps there. She makes an event, invites Grace by her address, and Grace's
 calendar on the server receives the invitation.
 
 The calendar is a real Nextcloud's CalDAV, the one the check's server starts
-(crates/system/cloud-source-dav/tests/servers.sh), and Grace is a second person on
+(crates/integrations/cloud-source-dav/tests/servers.sh), and Grace is a second person on
 it, with a calendar of her own. Grace's receipt is looked for where an invitation
 could arrive: her calendar on that server. Every step is decided off the shell
 itself (the controls it draws, the event it shows) or off the server.

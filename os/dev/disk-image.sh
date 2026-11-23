@@ -434,7 +434,7 @@ if [ "$COMPOSEFS" = yes ]; then BOOT_IS_ESP=yes; else BOOT_IS_ESP=no; fi
 #               + slack for the bootloader and filesystem overhead
 #
 # retained_generations is tilo-rollback's window (`Config::default()` in
-# crates/system/tilo-rollback/src/lib.rs, default 3 — "this generation plus the two
+# crates/os/tilo-rollback/src/lib.rs, default 3 — "this generation plus the two
 # before it"). RETAINED_NEWER_GENERATIONS (2, retention.rs) covers a staged update
 # whose kernel is already written before it has ever booted, plus a second staged
 # behind it. At the defaults that is 5 * 160 MiB + 64 MiB = 864 MiB.
@@ -474,7 +474,7 @@ if [ "$kernels_have" -lt "$kernels_need" ]; then
     needs $kernels_need MiB = ($RETAIN retained + $RETAINED_NEWER staged + $REPAIR_UKI repair) x $UKI_BUDGET + $KERNEL_FS_SLACK_MIB MiB slack
   Raise it, or lower --retain to at most $(( (kernels_have - KERNEL_FS_SLACK_MIB) / uki_mib - RETAINED_NEWER - REPAIR_UKI )).
   --retain must match tilo-rollback's retained_generations
-  (crates/system/tilo-rollback/src/lib.rs); os/tests/esp_capacity.sh checks that."
+  (crates/os/tilo-rollback/src/lib.rs); os/tests/esp_capacity.sh checks that."
 fi
 
 # The disk has to be big enough for the partitions asked for; growing it is free

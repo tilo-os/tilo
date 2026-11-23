@@ -336,6 +336,105 @@ impl Checker<'_> {
         self.err("E068", span, format!("`{}` has {what}: an entry fills the action's one `Text` parameter with the words nothing else takes, so the entry needs an action with exactly one", c.name));
     }
 
+    /// Whether the action the template `t` takes as `param` is what an entry submits: an `on
+    /// submit` in its body runs it, or it passes it on to a template that does. Any other action a
+    /// view takes is a callback, whatever its parameters are.
+    fn fills_entry(&self, t: &Template, param: &str, depth: usize) -> bool {
+        const DEPTH: usize = 16;
+        depth < DEPTH && self.fills_entry_in(t, &t.decl.body, vec![param.to_owned()], depth)
+    }
+
+    fn fills_entry_in(
+        &self,
+        t: &Template,
+        body: &[UiStmt],
+        mut names: Vec<String>,
+        depth: usize,
+    ) -> bool {
+        let next = depth.saturating_add(1);
+        for s in body {
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let carries = |e: &ast::Expr| super::native::mentions(e, &refs).is_some();
+            let found = match &s.kind {
+                UiKind::On { event, action, .. } => event.name == "submit" && carries(action),
+                UiKind::Let { name, value, .. } => {
+                    if carries(value) {
+                        names.push(name.name.clone());
+                    }
+                    false
+                }
+                UiKind::IfLet { binds, then, els } => {
+                    let mut inner = names.clone();
+                    inner.extend(
+                        binds
+                            .iter()
+                            .filter(|b| carries(&b.value))
+                            .map(|b| b.name.name.clone()),
+                    );
+                    self.fills_entry_in(t, then, inner, depth)
+                        || els
+                            .as_ref()
+                            .is_some_and(|b| self.fills_entry_in(t, b, names.clone(), depth))
+                }
+                UiKind::Call(c) => {
+                    let passed = match &c.call.kind {
+                        ExprKind::Call { callee, args, .. } => {
+                            self.template_called(t, callee).is_some_and(|inner| {
+                                args.iter().enumerate().any(|(i, a)| {
+                                    carries(&a.value)
+                                        && match &a.name {
+                                            Some(n) => Some(&n.name),
+                                            None => inner.decl.params.get(i).map(|p| &p.name.name),
+                                        }
+                                        .is_some_and(|n| self.fills_entry(inner, n, next))
+                                })
+                            })
+                        }
+                        _ => false,
+                    };
+                    passed
+                        || c.block
+                            .as_ref()
+                            .is_some_and(|b| self.fills_entry_in(t, b, names.clone(), depth))
+                }
+                UiKind::For { body, .. } | UiKind::Part { body, .. } => {
+                    self.fills_entry_in(t, body, names.clone(), depth)
+                }
+                UiKind::If { then, els, .. } => {
+                    self.fills_entry_in(t, then, names.clone(), depth)
+                        || els
+                            .as_ref()
+                            .is_some_and(|b| self.fills_entry_in(t, b, names.clone(), depth))
+                }
+                UiKind::Match { arms, .. } => arms
+                    .iter()
+                    .any(|a| self.fills_entry_in(t, &a.body, names.clone(), depth)),
+                UiKind::State(_) | UiKind::Fact { .. } => false,
+            };
+            if found {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The template a call in the body of `t` names: one of its own package's by its plain name,
+    /// or one of an imported package's through its alias.
+    fn template_called(&self, t: &Template, callee: &ast::Expr) -> Option<&Template> {
+        match &callee.kind {
+            ExprKind::Ident(name) => self.env.template(t.ns.as_deref(), name),
+            ExprKind::Field { base, name } => {
+                let ExprKind::Ident(alias) = &base.kind else {
+                    return None;
+                };
+                let app = &self.env.find_import(alias)?.app;
+                let ns = (*app != self.env.app).then_some(app.as_str());
+                self.env.template(ns, &name.name)
+            }
+            _ => None,
+        }
+    }
+
     /// Expand the template `t` where the UI call `c` stands: its nodes under `parent`, or, at a
     /// view's top, the one node it makes.
     pub(crate) fn expand(
@@ -484,7 +583,9 @@ impl Checker<'_> {
                     {
                         self.mark_shown(&a.value);
                     }
-                    if matches!(&want, Ty::Option(inner) if **inner == Ty::Action) {
+                    if matches!(&want, Ty::Option(inner) if **inner == Ty::Action)
+                        && self.fills_entry(t, &p.name.name, 0)
+                    {
                         self.entry_action(a.value.span, &a.value);
                     }
                     let v = self.expr(&a.value, (!want.is_error()).then_some(&want));

@@ -141,7 +141,7 @@ sign-in screen:
 2. Input reaches it: the kiosk compositor gave the greeter's window a
    keyboard or a touch screen. It advertises on its seat the keyboard and
    touch devices it has opened, and the greeter records the first one in
-   `/run/tilo-greeter/input` (`crates/session/greeter/src/seat_input.rs`); a
+   `/run/tilo-greeter/input` (`crates/os/greeter/src/seat_input.rs`); a
    mouse alone records nothing, so a machine with only a mouse falls back. A
    person signed in through greetd settles this as well, whichever comes
    first. A boot where neither happens within the

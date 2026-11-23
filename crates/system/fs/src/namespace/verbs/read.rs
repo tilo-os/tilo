@@ -5,7 +5,7 @@
 //! a workspace's server while every device of its people is off. A path is read as the verbs
 //! read one ([`super`]): it starts at the workspace's folder and stays in it.
 
-use fuser::FileType;
+use crate::node::FileType;
 
 use super::{join, names};
 use crate::namespace::{Namespace, NodeKind, ROOT_ID};

@@ -122,7 +122,8 @@ struct Saved {
     name: String,
     /// How to start it again, when this machine still has it.
     start: Option<Start>,
-    /// The item its window opened on, as its tab's view keeps it on every device.
+    /// The item its window opened on, as its workspace's layout keeps it beside the tab: what
+    /// the app is asked to open on, on every device.
     shows: String,
 }
 
@@ -164,12 +165,15 @@ impl Restore {
     /// the rest in the order the person left them. Whether this is that first time, in which case
     /// what it took is all of them and no window is one that arrived.
     /// `under_way` says which of this device's places a launch of this session holds for the window
-    /// it started: the person may open an app before the first layout is laid out.
+    /// it started: the person may open an app before the first layout is laid out. `items` is the
+    /// item each window was opened on, by tab, as the workspaces' layouts hold it: a window that
+    /// showed a conversation opens there again.
     pub(crate) fn start(
         &mut self,
         before: &Layout,
         tree: &mut Layout,
         under_way: &dyn Fn(TabId) -> bool,
+        items: &std::collections::BTreeMap<TabId, String>,
     ) -> bool {
         if self.seeded {
             return false;
@@ -188,7 +192,7 @@ impl Restore {
             .flat_map(|workspace| workspace.tabs())
             .map(|tab| tab.id)
             .collect();
-        let mut saved: Vec<(WorkspaceId, Saved)> = waiting_in(tree, |_| true)
+        let mut saved: Vec<(WorkspaceId, Saved)> = waiting_in(tree, items, |_| true)
             .into_iter()
             .filter(|(_, saved)| !here.contains(&saved.tab))
             .collect();
@@ -208,9 +212,14 @@ impl Restore {
 
     /// Ask, after what is waiting already, for the windows of the workspace `workspace_id` of `tree` that
     /// wait for their apps: a workspace put on the shell with windows to open, as a branch is.
-    pub(crate) fn add(&mut self, tree: &Layout, workspace_id: WorkspaceId) {
+    pub(crate) fn add(
+        &mut self,
+        tree: &Layout,
+        workspace_id: WorkspaceId,
+        items: &std::collections::BTreeMap<TabId, String>,
+    ) {
         self.waiting.extend(
-            waiting_in(tree, |workspace| workspace == workspace_id)
+            waiting_in(tree, items, |workspace| workspace == workspace_id)
                 .into_iter()
                 .map(|(_, saved)| saved),
         );
@@ -219,13 +228,18 @@ impl Restore {
     /// Ask, after what is waiting already, for the windows `after` waits for that `before` did
     /// not: the windows someone else in a workspace opened, which this device opens its own
     /// instance of, each in the tab the workspace put it in.
-    pub(crate) fn arrived(&mut self, before: &Layout, after: &Layout) {
-        let known: std::collections::HashSet<TabId> = waiting_in(before, |_| true)
+    pub(crate) fn arrived(
+        &mut self,
+        before: &Layout,
+        after: &Layout,
+        items: &std::collections::BTreeMap<TabId, String>,
+    ) {
+        let known: std::collections::HashSet<TabId> = waiting_in(before, items, |_| true)
             .into_iter()
             .map(|(_, saved)| saved.tab)
             .collect();
         self.waiting.extend(
-            waiting_in(after, |_| true)
+            waiting_in(after, items, |_| true)
                 .into_iter()
                 .map(|(_, saved)| saved)
                 .filter(|saved| !known.contains(&saved.tab)),
@@ -910,8 +924,13 @@ fn same_workspace(desktop: &ShellDesktop, a: TabId, b: TabId) -> bool {
 }
 
 /// The windows of the workspaces of `tree` that `wanted` names, each waiting for its app to open
-/// it, by the workspace it stands in.
-fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(WorkspaceId, Saved)> {
+/// it, by the workspace it stands in. A window that showed an item opens again on it, from
+/// `items`: the item is not the tab's view, which is what a place shows and is no window.
+fn waiting_in(
+    tree: &Layout,
+    items: &std::collections::BTreeMap<TabId, String>,
+    wanted: impl Fn(WorkspaceId) -> bool,
+) -> Vec<(WorkspaceId, Saved)> {
     let mut saved = Vec::new();
     for workspace in tree
         .workspaces
@@ -956,7 +975,7 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
                                 })
                         })
                     },
-                    shows: tab.view.clone(),
+                    shows: items.get(&tab.id).cloned().unwrap_or_default(),
                 },
             ));
         }
@@ -1096,7 +1115,7 @@ mod tests {
         let before = layout(vec![mine.clone(), waiting.clone()]);
         let after = layout(vec![mine, waiting, window(6, notes())]);
         let mut restore = Restore::default();
-        restore.arrived(&before, &after);
+        restore.arrived(&before, &after, &std::collections::BTreeMap::new());
         let asked: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
         assert_eq!(asked, [6]);
     }
@@ -1141,6 +1160,7 @@ mod tests {
                 person: Some("ada"),
                 mine: &|_| true,
                 records: device::Writer::NOTHING_NOTED,
+                items: device::Writer::NOTHING_ITEMED,
             },
         )
         .unwrap();
@@ -1157,7 +1177,7 @@ mod tests {
             &device::Kept::NOTHING,
         ));
         let mut restore = Restore::default();
-        restore.arrived(&before, &after);
+        restore.arrived(&before, &after, &std::collections::BTreeMap::new());
         let asked: Vec<(u64, &str)> = restore
             .waiting
             .iter()
@@ -1284,7 +1304,12 @@ mod tests {
         });
         let mut restore = Restore::default();
         restore.begin();
-        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
+        assert!(restore.start(
+            &Layout::default(),
+            &mut tree,
+            &|_| false,
+            &std::collections::BTreeMap::new()
+        ));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
         restore.kept = vec![kept(&[
             ("w2", Some("999")),
@@ -1344,7 +1369,12 @@ mod tests {
         });
         let mut restore = Restore::default();
         restore.begin();
-        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
+        assert!(restore.start(
+            &Layout::default(),
+            &mut tree,
+            &|_| false,
+            &std::collections::BTreeMap::new()
+        ));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
         let mut cube = kept(&[("w1", Some("44"))]);
         cube.windows[0].app_id = None;
@@ -1400,7 +1430,12 @@ mod tests {
         assert!(restore.next_deadline().is_some(), "for a bounded time");
 
         let mut tree = kept_layout();
-        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
+        assert!(restore.start(
+            &Layout::default(),
+            &mut tree,
+            &|_| false,
+            &std::collections::BTreeMap::new()
+        ));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
         assert_eq!(
             tabs(&desktop),
@@ -1440,7 +1475,12 @@ mod tests {
         partly.begin();
         let mut first = kept_layout();
         first.workspaces.truncate(1);
-        assert!(partly.start(&Layout::default(), &mut first, &|_| false));
+        assert!(partly.start(
+            &Layout::default(),
+            &mut first,
+            &|_| false,
+            &std::collections::BTreeMap::new()
+        ));
         partly.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
         partly.kept_since = Some(std::time::Instant::now());
         assert!(
@@ -1454,7 +1494,12 @@ mod tests {
         late.kept_since = std::time::Instant::now().checked_sub(super::KEPT_WAIT);
         assert_eq!(late.claim_kept(&desktop), [50], "it waited long enough");
         let mut tree = kept_layout();
-        assert!(late.start(&Layout::default(), &mut tree, &|_| false));
+        assert!(late.start(
+            &Layout::default(),
+            &mut tree,
+            &|_| false,
+            &std::collections::BTreeMap::new()
+        ));
         let saved: Vec<u64> = tree
             .workspaces
             .iter()
@@ -1548,7 +1593,12 @@ mod tests {
         });
         let mut restore = Restore::default();
         restore.begin();
-        assert!(restore.start(&Layout::default(), &mut tree, &|_| false));
+        assert!(restore.start(
+            &Layout::default(),
+            &mut tree,
+            &|_| false,
+            &std::collections::BTreeMap::new()
+        ));
         desktop.with_policy(|policy| policy.handle().replace_tree(tree));
         assert_eq!(
             restore

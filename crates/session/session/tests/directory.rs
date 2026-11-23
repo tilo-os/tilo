@@ -1041,6 +1041,7 @@ fn shared_layout(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
             ..tilo_desktop_model::Layout::default()
         },
         records: Vec::new(),
+        items: Vec::new(),
         authors,
         opened_by: std::collections::BTreeMap::new(),
     }

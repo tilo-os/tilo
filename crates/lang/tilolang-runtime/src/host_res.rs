@@ -72,7 +72,9 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
         Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
         Ty::Option(_) => Value::none(),
-        Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
+        // A map reads as the map it is, here as where a field's store gives one.
+        Ty::Map(_) => Value::Map(Vec::new()),
+        Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => Value::List(Vec::new()),
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
         Ty::Unit => Value::Unit,
         Ty::Actor
@@ -530,6 +532,10 @@ impl Core {
                 })
                 .collect::<Result<Vec<_>, String>>()
                 .map(Value::List),
+            // A map or a set the resource was made without holds nothing, as its type's fields
+            // start that way: a record written before the field existed reads as it would start.
+            (FieldKind::Set, FieldValue::Absent) => Ok(Value::List(Vec::new())),
+            (FieldKind::Map, FieldValue::Absent) => Ok(Value::Map(Vec::new())),
             (kind, other) => Err(format!(
                 "field `{}` of kind {kind:?} holds {other:?}",
                 field.name
@@ -655,7 +661,10 @@ impl Core {
                 // record before its reading came runs again when it does.
                 let key = crate::foreign::reading_key(target);
                 match self.read_value(target, f, Some(author)) {
-                    Ok(value) => (value, None, Some(key)),
+                    // A map field reads as the map it is, from a reading as from the store: a
+                    // view that hands it to a component hands one shape wherever the record is
+                    // kept, and `keys()` and `get(key)` are asked of it the same way.
+                    Ok(value) => (whole_map(f.kind, value), None, Some(key)),
                     Err(why) => {
                         drop(frames);
                         self.note_reading(key);

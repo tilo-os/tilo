@@ -671,7 +671,7 @@ impl WorkspaceEvents {
         asked: SetUp,
     ) -> Result<EventView, ActionCallError> {
         if kept.len() >= MAX_EVENTS {
-            return Err(refused(format!(
+            return Err(ActionCallError::refused(format!(
                 "a workspace keeps at most {MAX_EVENTS} events"
             )));
         }
@@ -682,19 +682,22 @@ impl WorkspaceEvents {
             only_if: asked.only_if,
             every: asked.every,
             instruction: asked.instruction,
-            told_as: told_as_of(asked.told_as.as_deref().unwrap_or_default()).map_err(refused)?,
+            told_as: told_as_of(asked.told_as.as_deref().unwrap_or_default())
+                .map_err(ActionCallError::refused)?,
             set_up_at_ms: tilo_clock::unix_now_ms_i64(),
         }
         .checked()
-        .map_err(refused)?;
-        watched_address(&definition).map_err(refused)?;
+        .map_err(ActionCallError::refused)?;
+        watched_address(&definition).map_err(ActionCallError::refused)?;
         let id = definition.id.clone();
         let stored = Stored {
             definition,
             by: theirs.by.clone(),
             person: hex::encode(theirs.person),
         };
-        let event = self.begin(&theirs.workspace, stored).map_err(unavailable)?;
+        let event = self
+            .begin(&theirs.workspace, stored)
+            .map_err(ActionCallError::unavailable)?;
         let note = NoteChange {
             instruction: asked.purpose,
             style: asked.style,
@@ -738,10 +741,10 @@ impl WorkspaceEvents {
             definition.instruction = instruction;
         }
         if let Some(said) = asked.told_as {
-            definition.told_as = told_as_of(&said).map_err(refused)?;
+            definition.told_as = told_as_of(&said).map_err(ActionCallError::refused)?;
         }
-        let definition = definition.checked().map_err(refused)?;
-        watched_address(&definition).map_err(refused)?;
+        let definition = definition.checked().map_err(ActionCallError::refused)?;
+        watched_address(&definition).map_err(ActionCallError::refused)?;
         let note = NoteChange {
             instruction: asked.purpose,
             style: asked.style,
@@ -768,7 +771,7 @@ impl WorkspaceEvents {
                         ..author
                     },
                 )
-                .map_err(unavailable)?;
+                .map_err(ActionCallError::unavailable)?;
             kept.insert(asked.event.clone(), event);
         }
         kept.get(&asked.event).map(view).ok_or_else(no_such_event)
@@ -781,7 +784,7 @@ fn runtime() -> Option<tokio::runtime::Handle> {
 }
 
 fn no_runtime() -> ActionCallError {
-    unavailable("this server is not running its workspaces".to_owned())
+    ActionCallError::unavailable("this server is not running its workspaces")
 }
 
 /// Who asks, as the events answer a person and their assistant; none for a
@@ -792,9 +795,7 @@ fn asker_of(caller: &Caller) -> Option<Asker> {
         None
     } else if acting.is_person() {
         Some(Asker::Person)
-    } else if acting.is_agent()
-        && (caller.is_session_delegated() || caller.roster_created_at().is_some())
-    {
+    } else if caller.is_device_agent() || caller.roster_created_at().is_some() {
         Some(Asker::Assistant)
     } else {
         None
@@ -935,22 +936,14 @@ fn view(event: &Running) -> EventView {
     }
 }
 
-fn refused(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
-}
-
-fn unavailable(reason: String) -> ActionCallError {
-    ActionCallError::Unavailable { reason }
-}
-
 fn no_such_event() -> ActionCallError {
-    refused("the workspace keeps no such event".to_owned())
+    ActionCallError::refused("the workspace keeps no such event")
 }
 
 fn step_error(error: HostStepError) -> ActionCallError {
     match error {
-        HostStepError::Refused(reason) => refused(reason),
-        HostStepError::Unavailable(reason) => unavailable(reason),
+        HostStepError::Refused(reason) => ActionCallError::refused(reason),
+        HostStepError::Unavailable(reason) => ActionCallError::unavailable(reason),
     }
 }
 
@@ -970,7 +963,7 @@ fn argument<T: serde::de::DeserializeOwned>(
 }
 
 fn said<T: serde::Serialize>(answer: &T) -> Result<Value, ActionCallError> {
-    serde_json::to_value(answer).map_err(|error| refused(error.to_string()))
+    serde_json::to_value(answer).map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
 /// One action as the events' rows offer it.

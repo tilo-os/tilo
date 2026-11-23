@@ -245,10 +245,6 @@ impl Env {
             .or_else(|| self.types.iter().find(|t| matches_name(t, false)))
     }
 
-    pub fn imported_types(&self) -> impl Iterator<Item = &TypeInfo> {
-        self.types.iter().filter(|t| t.key.app != self.app)
-    }
-
     pub fn add_toolkit(&mut self) {
         self.imports.push(Import {
             alias: crate::toolkit::UI_ALIAS.to_string(),
@@ -449,7 +445,6 @@ impl Env {
                 group: a.group.clone(),
                 did: a.did.clone(),
                 opens: a.opens.clone(),
-                moderates: a.moderates,
             };
             add(
                 CKind::Action,
@@ -721,34 +716,37 @@ impl Resolver<'_> {
         }
     }
 
-    /// A type that says who reads its records names a field of them holding those people: a
-    /// `List<Actor>`.
+    /// A type that says who reads its records names fields it has: a `Bool` its author hands the
+    /// record to every member by (`readers: author until sent`), or a `Set<Actor>` of the members
+    /// who read it (`readers: members`).
     fn check_readers(&mut self, decls: &[&ast::TypeDecl]) {
+        use crate::meta::ReaderRule;
         for t in decls {
-            let Some(readers) = &t.readers else {
-                continue;
+            let Some(readers) = &t.readers else { continue };
+            let (field, wanted, ty) = match &readers.rule {
+                ReaderRule::Author { until: None } => continue,
+                ReaderRule::Author { until: Some(field) } => (field, "a `Bool`", Ty::Bool),
+                ReaderRule::Field { field } => {
+                    (field, "a `Set<Actor>`", Ty::Set(Box::new(Ty::Actor)))
+                }
             };
-            let Some(info) = self
+            let held = self
                 .env
                 .types
                 .iter()
                 .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
-            else {
-                continue;
-            };
-            let why = match info.field(&readers.field.name) {
-                Some(field) if field.ty == Ty::List(Box::new(Ty::Actor)) => continue,
-                Some(field) => format!("`{}` is `{}`", field.name, field.ty),
-                None => format!("no field of it is `{}`", readers.field.name),
-            };
-            self.err(
-                "E144",
-                readers.field.span,
-                format!(
-                    "`{}` says `{}` holds who reads its records, and {why}; its readers are a `List<Actor>` field: `people: List<Actor>`",
-                    t.name.name, readers.field.name
-                ),
-            );
+                .and_then(|info| info.field(field))
+                .map(|f| f.ty.clone());
+            if held.as_ref() != Some(&ty) {
+                self.err(
+                    "E144",
+                    readers.span,
+                    format!(
+                        "`{}` is read by its `author`, or by the members a `Set<Actor>` field names; `{field}` is to be {wanted} field of it",
+                        t.name.name
+                    ),
+                );
+            }
         }
     }
 
@@ -824,6 +822,7 @@ impl Resolver<'_> {
             "Int" => *have == Ty::Int,
             "Time" => *have == Ty::Time,
             "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
+            "List<File>" => *have == Ty::List(Box::new(Ty::File)),
             _ => false,
         }
     }
@@ -1836,7 +1835,6 @@ impl Resolver<'_> {
             group: None,
             did: None,
             opens: Vec::new(),
-            moderates: false,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1946,18 +1944,10 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`opens:` takes a list of the kinds of file the action opens, each a media type in quotes or an extension with a dot: `opens: [\"text/markdown\", .md, .markdown]`",
                 ),
-                // `moderates: true`: the action acts on other people's content, which the
-                // workspace's roles decide as moderation.
-                ("moderates", ExprKind::Bool(on)) => out.moderates = *on,
-                ("moderates", _) => self.err(
-                    "E090",
-                    opt.value.span,
-                    "`moderates:` is `true` for an action only moderators may run: `moderates: true`",
-                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `opens:` and `moderates:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:` and `opens:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

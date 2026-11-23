@@ -237,12 +237,15 @@ pub(crate) struct TakenBack {
     pub(crate) killed: Vec<tilo_app_launch::kept::KeptLaunch>,
 }
 
-/// What starts the process of `launch`'s app. A hosted app's file reaches its window's instance as
-/// content, never its command line: the process it starts is the app's, and the file rides with
-/// the instance.
+/// What starts the process of `launch`'s app. What a hosted window opens — a file's content or a
+/// link — reaches its instance, never its command line: the process it starts is the app's, and
+/// the window's open rides with its instance.
 fn process_launch(launch: &Launch, hosted: bool) -> Launch {
     match (hosted, launch) {
-        (true, Launch::Content { app, .. }) => Launch::Package {
+        // What a hosted window opens — a file's content or a link — rides its instance's
+        // connection to the host ([`InstanceRequest::open`]), never its process's command line:
+        // the process runs every window of the app in the workspace.
+        (true, Launch::Content { app, .. } | Launch::Package { app, .. }) => Launch::Package {
             app: app.clone(),
             open: None,
         },
@@ -815,6 +818,14 @@ impl Apps {
                 .map(|content| runtime_portal::process_link::OpenedFile {
                     hash: content.hash,
                     name: content.name,
+                })
+                .map(runtime_portal::process_link::OpenRequest::File)
+                .or_else(|| {
+                    hosted
+                        .opens
+                        .link
+                        .clone()
+                        .map(runtime_portal::process_link::OpenRequest::Uri)
                 }),
             locale: Self::person_locale(),
             link_home,
@@ -994,6 +1005,13 @@ impl Apps {
             ended: std::mem::take(&mut state.ended_away),
             killed: std::mem::take(&mut state.stopped_away),
         }
+    }
+
+    /// End the app whose process is `pid`, as the person's own quit does, when one of this
+    /// session's launches runs it: its end is theirs, so no notice says it stopped working.
+    /// Whether one did.
+    pub(crate) fn end_by_pid(&self, pid: u32) -> bool {
+        self.state.borrow().spawner.end_pid(pid)
     }
 
     /// Tell each kept window's keeper the tab it stands in now (`placements`), where that changed:
@@ -2257,7 +2275,15 @@ fn window_opens(
     reveal: Option<&str>,
     hosted: bool,
 ) -> Result<tilo_app_launch::Opens, String> {
-    if hosted && matches!(launch, Launch::Package { open: Some(_), .. }) {
+    if hosted
+        && matches!(
+            launch,
+            Launch::Package {
+                open: Some(tilo_app_launch::Open::File(_)),
+                ..
+            }
+        )
+    {
         return Err(format!(
             "{} opens no file of this device's: its windows show its records and their content",
             launch.app()
@@ -2274,10 +2300,19 @@ fn window_opens(
                 open: Some(tilo_app_launch::Open::File(path)),
                 ..
             } => Some(path.display().to_string()),
+            // A hosted window is handed a link as the text its `open-link` shows; a native app
+            // takes it as the one argument its window opens with.
             Launch::Package {
                 open: Some(tilo_app_launch::Open::Uri(uri)),
                 ..
-            } => Some(uri.clone()),
+            } if !hosted => Some(uri.clone()),
+            _ => None,
+        },
+        link: match launch {
+            Launch::Package {
+                open: Some(tilo_app_launch::Open::Uri(uri)),
+                ..
+            } if hosted => Some(uri.clone()),
             _ => None,
         },
         content: match launch {

@@ -248,8 +248,11 @@ def held_by_the_tree(baseline: dict) -> set[str]:
     return held
 
 
-def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
-    """The text each of `relatives` held in the tree before this commit."""
+def head_texts(
+    root: Path, relatives: list[Path], renamed_from=lambda relative: relative
+) -> dict[Path, str]:
+    """The text each of `relatives` held in the tree before this commit: a moved file's is
+    the text HEAD holds under its old name (`renamed_from`), so a move adds no names."""
     wanted = [relative for relative in relatives if "\n" not in relative.as_posix()]
     if not wanted:
         return {}
@@ -258,7 +261,10 @@ def head_texts(root: Path, relatives: list[Path]) -> dict[Path, str]:
         root,
         "cat-file",
         "--batch",
-        input=b"".join(b"HEAD:" + os.fsencode(relative.as_posix()) + b"\n" for relative in wanted),
+        input=b"".join(
+            b"HEAD:" + os.fsencode(renamed_from(relative).as_posix()) + b"\n"
+            for relative in wanted
+        ),
         empty=(128,),
     )
     texts = {}
@@ -291,7 +297,9 @@ def staged_problems(root: Path, rows: list[dict], held: set[str]) -> list[str]:
     added: Counter[str] = Counter()
     added_texts: Counter[str] = Counter()
     sources = judged_sources(root, staged)
-    before_texts = head_texts(root, [relative for relative, _ in sources])
+    before_texts = head_texts(
+        root, [relative for relative, _ in sources], staged.renamed_from
+    )
     for relative, text in sources:
         language = LANGUAGES[relative.suffix]
         body, named = code(text, language)

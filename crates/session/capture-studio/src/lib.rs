@@ -489,4 +489,45 @@ mod tests {
             "there is no file to open"
         );
     }
+
+    /// The markup editor's tools are exported with the place the toolbar
+    /// draws them: the session offers a control by its place, so a tool read
+    /// without one is one a screen reader and an agent cannot press.
+    #[test]
+    fn the_markup_editor_publishes_its_tools_where_it_draws_them() {
+        use crate::link::MarkupImage;
+
+        let state = Studio::new();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(state.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        state.presentation().open(false);
+        state.link().open_markup(MarkupImage {
+            path: std::path::PathBuf::from("/pictures/Screenshot 1.png"),
+            width: 2,
+            height: 1,
+            rgba: std::sync::Arc::from([10u8, 20, 30, 255]),
+        });
+        frame.poll_frame().expect("the editor draws");
+        frame.relayout();
+
+        let labels: Vec<String> = frame
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        for name in ["Save copy", "Pen tools"] {
+            let id = frame
+                .a11y_node_named(name)
+                .unwrap_or_else(|| panic!("{name} is in the editor's tree: {labels:?}"));
+            let bounds = frame.a11y_node(id).and_then(|node| node.bounds());
+            assert!(
+                bounds.is_some_and(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0),
+                "{name} stands where the toolbar draws it: {bounds:?}"
+            );
+        }
+    }
 }

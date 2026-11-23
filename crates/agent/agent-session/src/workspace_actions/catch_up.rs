@@ -550,15 +550,17 @@ impl Worker {
     /// what was written since it was last used merged in, and the parts of
     /// its chains and what its app keeps for the workspace handed to it.
     pub(super) fn brought_up_to_date(&mut self, holder: &DocumentRoute, state: &WorkspaceState) {
-        let kept = self.kept_held(kept_untold(holder, self.mounted.get(holder)));
         let Some(mounted) = self.mounted.get_mut(holder) else {
             return;
         };
         if let Some(behind) = mounted.behind.take() {
             catch_up(holder, mounted, state, Some(&behind));
         }
-        // The parts of its chains, those the workspace still has to send among them.
+        // The parts of its chains, those the workspace still has to send among them, and
+        // what its app keeps for the workspace.
         self.hold_chains(&Writer::Mounted(holder.clone()), holder, state);
+        // What the wait above left untold, as the workspace answers for it now.
+        let kept = self.kept_held(kept_untold(holder, self.mounted.get(holder)));
         let Some(mounted) = self.mounted.get_mut(holder) else {
             return;
         };
@@ -698,8 +700,9 @@ impl Worker {
 
     /// Hand the replica `at`, the document at `holder`, the parts of its chains: those the
     /// workspace lists ([`hold_parts`]), and those its view reads that the workspace has
-    /// not sent here, which it is asked for and waited on, bounded ([`CHAIN_WAIT`]). A
-    /// chain the workspace holds none of is told so, and starts its first part.
+    /// not sent here, which it is asked for and waited on, bounded ([`CHAIN_WAIT`]), and so
+    /// are the documents its app keeps for the workspace ([`kept_untold`]). A chain the
+    /// workspace holds none of is told so, and starts its first part.
     ///
     /// A service that restarted holds only the parts it was sent since: without asking for
     /// the others, a tracker of thousands of issues listed the newest part's few dozen and
@@ -741,7 +744,13 @@ impl Worker {
                     hold(route, saved, mounted);
                 }
             }
-            for route in missing {
+            // What the app keeps for the whole workspace (Chat's skills, emoji and moderation)
+            // is waited for like a part: a record answered before the workspace said whether
+            // it holds them offered none of their actions, and its first caller was told so.
+            for route in missing
+                .into_iter()
+                .chain(kept_untold(holder, Some(&*mounted)))
+            {
                 if !untold.contains(&route) {
                     untold.push(route);
                 }

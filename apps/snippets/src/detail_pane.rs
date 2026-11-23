@@ -110,7 +110,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             }),
         )
         .role(ButtonRole::Primary)
-        .on_own_device_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
+        .on_click(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
     };
 
     Box::new(
@@ -209,7 +209,7 @@ fn empty_library(requests: &Requests) -> Element {
             .with_message(tr("snippets-empty-library-message"))
             .with_action(tr("snippets-new"))
             .with_action_id("snippets.library.new-snippet")
-            .on_view(move || requests.borrow_mut().push(Action::NewSnippet)),
+            .on_open(move || requests.borrow_mut().push(Action::NewSnippet)),
     )
 }
 
@@ -303,7 +303,7 @@ fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String
             ),
         )
         .control_size(ControlSize::Small)
-        .on_own_device_effect(move || {
+        .on_click(move || {
             requests
                 .borrow_mut()
                 .push(Action::RemoveTag(removed.clone(), name.clone()));

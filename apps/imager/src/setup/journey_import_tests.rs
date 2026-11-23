@@ -5,7 +5,7 @@ thread_local! {
 struct JourneyImportFlow;
 impl ui::framework::ResourceApp for JourneyImportFlow {
     type Resource = Imager;
-    const ID: &'static str = "so.tilo.imager";
+    const ID: &'static str = crate::resource::APP_ID;
     const TITLE: &'static str = "Disk Imager";
     fn view(cx: &mut ViewCx<Imager>) -> Element {
         import_window(

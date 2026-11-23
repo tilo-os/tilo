@@ -5,10 +5,7 @@
 //! ([`AppActionConsentPrompter`]): the same sheet family that admitted the agent, naming it as the
 //! shell names it ("Claude Code"), the step and what it would do. The person allows it
 //! once, allows the agent every such step for as long as the session lasts, or denies it, with
-//! Deny or Escape. An agent from another of the person's devices is asked about on the device it
-//! drives, where its session is — unless the person let such agents act without asking on this
-//! device (Settings > Devices & Sync, beside letting them in without asking): then the setting
-//! allows the step once in the person's place, and no sheet goes up.
+//! Deny or Escape.
 //!
 //! An app that takes another app's action is asked about on the same sheet: Today's "Morning
 //! cleanup" deleting the finished tasks in Tasks puts "Today wants to change Tasks" to the person,
@@ -26,8 +23,6 @@ use tilo_workspace_service::apps::app_actions::{
     AGENT_SESSION_ASK, APP_ACTION_ASK, AppActionAnswer, AppActionConsentPrompter,
     AppActionConsentRequest,
 };
-
-use crate::agent_sessions::AgentSessions;
 
 /// The kind the session's sheet reads an agent session's or an app's question as.
 pub(crate) const KIND: &str = "session.step-question";
@@ -57,27 +52,18 @@ pub(crate) struct StepQuestion {
 /// The shell's sheet, as the broker asks it.
 pub(crate) struct Sheet {
     questions: Questions,
-    /// The MCP server's agent sessions: which of them came from the person's other devices.
-    sessions: Arc<AgentSessions>,
-    /// Whether the person lets such agents act without asking here, as this device's settings
-    /// say when a step asks.
-    unasked: fn() -> bool,
     /// The shell's workspaces, which name the workspace an agent's question is asked in.
     workspaces: Option<Arc<dyn tilo_broker_core::services::WorkspaceAuthority>>,
 }
 
 impl Sheet {
-    /// The sheet over `questions`, knowing the agent sessions `sessions` and the shell's
-    /// `workspaces`.
+    /// The sheet over `questions`, knowing the shell's `workspaces`.
     pub(crate) fn new(
         questions: Questions,
-        sessions: Arc<AgentSessions>,
         workspaces: Option<Arc<dyn tilo_broker_core::services::WorkspaceAuthority>>,
     ) -> Self {
         Self {
             questions,
-            sessions,
-            unasked: crate::device_agents::acts_without_asking,
             workspaces,
         }
     }
@@ -97,29 +83,6 @@ impl Sheet {
             });
         }
         named
-    }
-
-    /// The setting's answer to `request` in the person's place: allowed once, with no sheet, when
-    /// an agent session from the person's other devices asks and they let such agents act without
-    /// asking here. `None` asks the person.
-    fn allowed_unasked(&self, request: &AppActionConsentRequest) -> Option<AppActionAnswer> {
-        if !asked_by_agent(request) {
-            return None;
-        }
-        let agent = self
-            .sessions
-            .own_device_session(&request.workspace, request.agent_session.as_deref()?)?;
-        if !(self.unasked)() {
-            return None;
-        }
-        tracing::info!(
-            %agent,
-            action = %request.action_label,
-            app = %request.target_app,
-            "MCP server: the person's setting lets agents from their other devices act without \
-             asking here, so it allowed this step"
-        );
-        Some(AppActionAnswer::unedited(Some(Lifetime::Once)))
     }
 
     /// Ask the person `ask` in the agent's own words, as `request` names the
@@ -198,11 +161,6 @@ impl AppActionConsentPrompter for Sheet {
         // A Store disclosure is shown on its own sheet, which this one is not.
         if request.moderation.is_some() {
             return None;
-        }
-        if let Some(allowed) = self.allowed_unasked(&request) {
-            let (answer, answered) = tokio::sync::oneshot::channel();
-            let _ = answer.send(allowed);
-            return Some(answered);
         }
         let runtime = tokio::runtime::Handle::try_current().ok()?;
         let asked = self.questions.ask(question(&request));
@@ -310,7 +268,7 @@ mod tests {
 
     async fn answered(choice: Option<usize>, scope: Option<&str>) -> Option<AppActionAnswer> {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
+        let sheet = Sheet::new(questions.clone(), None);
         let answer = sheet.ask(request(scope)).expect("asked");
         let pending = questions.pending();
         assert_eq!(pending.len(), 1, "the sheet is up");
@@ -371,7 +329,7 @@ mod tests {
             (&["Applicant: Jane Doe"][..], ""),
         ] {
             let questions = Questions::new();
-            let sheet = Sheet::new(questions.clone(), AgentSessions::new(), Some(shell(names)));
+            let sheet = Sheet::new(questions.clone(), Some(shell(names)));
             let mut question = request(Some("Claude Code"));
             question.handle = "agent-ask:i1".into();
             question.workspace = tilo_desktop_model::WorkspaceId::from_u128(1).to_string();
@@ -393,7 +351,7 @@ mod tests {
     async fn an_agents_question_is_asked_with_its_choices_and_answered_with_what_they_pick() {
         async fn asked(answer: tilo_service::Answer) -> Option<AppActionAnswer> {
             let questions = Questions::new();
-            let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
+            let sheet = Sheet::new(questions.clone(), None);
             let mut question = request(Some("Claude Code"));
             question.handle = "agent-ask:i1".into();
             question.ask = Some(tilo_actions::remote::PersonAsk {
@@ -441,7 +399,7 @@ mod tests {
 
         // Declining (or Escape) is no answer at all.
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
+        let sheet = Sheet::new(questions.clone(), None);
         let mut question = request(Some("Claude Code"));
         question.handle = "agent-ask:i2".into();
         question.ask = Some(tilo_actions::remote::PersonAsk {
@@ -475,79 +433,12 @@ mod tests {
         assert_eq!(denied.map(|answer| answer.lifetime), Some(None));
     }
 
-    /// Two sessions of `agent`: one from another of the person's devices, one of a program of
-    /// this login, in that order.
-    fn sessions_of(agent: &str) -> (Arc<AgentSessions>, [String; 2]) {
-        let sessions = AgentSessions::new();
-        let consent = tilo_mcp::session_api::Consent::Admit {
-            workspace: "w1".to_owned(),
-            agent: agent.to_owned(),
-            person: "p".to_owned(),
-            name: "Claude Code #1".to_owned(),
-        };
-        let laptop = tilo_actions::InvokerDevice::certified([0x4c; 32], "Laptop");
-        let remote = sessions.joining(None, Some(laptop));
-        sessions.admit(&remote, &consent, "claude-code", "Studio");
-        let local = sessions.joining(None, None);
-        sessions.admit(&local, &consent, "claude-code", "Studio");
-        (sessions, [remote.0, local.0])
-    }
-
-    /// With the person's setting on, the step an agent session from another of their devices
-    /// asks about is allowed once with no sheet; with it off, or for a session of a program of
-    /// this login (even of the same agent) or an app, they are asked.
-    #[tokio::test]
-    async fn the_setting_allows_an_agent_from_another_device_its_step_unasked() {
-        let (sessions, [remote, local]) = sessions_of("claude-code");
-        let sheet = |unasked: fn() -> bool| {
-            let questions = Questions::new();
-            let sheet = Sheet {
-                questions: questions.clone(),
-                sessions: Arc::clone(&sessions),
-                unasked,
-                workspaces: None,
-            };
-            (sheet, questions)
-        };
-        let asked_by = |session: &str| AppActionConsentRequest {
-            agent_session: Some(session.to_owned()),
-            ..request(Some("Claude Code #1"))
-        };
-
-        let (on, questions) = sheet(|| true);
-        let answer = on.ask(asked_by(&remote)).expect("answered");
-        assert!(questions.pending().is_empty(), "no sheet goes up");
-        assert_eq!(
-            answer.await.ok().map(|answer| answer.lifetime),
-            Some(Some(Lifetime::Once)),
-            "allowed once, in the person's place"
-        );
-
-        let (off, questions) = sheet(|| false);
-        let _waiting = off.ask(asked_by(&remote)).expect("asked");
-        assert_eq!(questions.pending().len(), 1, "the person is asked");
-
-        let (on, questions) = sheet(|| true);
-        let _waiting = on.ask(asked_by(&local)).expect("asked");
-        assert_eq!(
-            questions.pending().len(),
-            1,
-            "a program of this login is asked about"
-        );
-
-        let (on, questions) = sheet(|| true);
-        let mut app = request(None);
-        app.handle = "app-action:i1".into();
-        let _waiting = on.ask(app).expect("asked");
-        assert_eq!(questions.pending().len(), 1, "an app is asked about");
-    }
-
     /// A question nobody waits for any more is taken down; anything but a step's question is not
     /// asked here at all.
     #[tokio::test]
     async fn a_question_nobody_waits_for_leaves_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
+        let sheet = Sheet::new(questions.clone(), None);
         let answer = sheet.ask(request(None)).expect("asked");
         assert_eq!(questions.pending().len(), 1);
         drop(answer);
@@ -585,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn an_apps_change_of_another_app_is_asked_on_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
+        let sheet = Sheet::new(questions.clone(), None);
         for (handle, always) in [("app-action:i1", true), ("confirm:i2", false)] {
             let mut asked = request(None);
             asked.handle = handle.into();

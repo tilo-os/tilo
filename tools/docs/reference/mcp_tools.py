@@ -41,7 +41,6 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tilo_put_begin", "tilo_put_append", "tilo_put_finish", "tilo_put_many", "tilo_put_have",
         "tilo_get",
     )),
-    ("Devices", ("tilo_devices",)),
 )
 
 LEAD = """\

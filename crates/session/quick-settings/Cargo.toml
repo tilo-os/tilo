@@ -43,13 +43,13 @@ audio = { package = "tilo-audio-service", path = "../audio-service", default-fea
 # service publishes them.
 connectivity = { package = "tilo-connectivity-service", path = "../connectivity-service" }
 os-actions = { path = "../../system/os-actions" }
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 # What the battery and the sleep policy are, as the power service publishes them.
 power = { package = "tilo-session-power", path = "../power-service", default-features = false }
 serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # Battery snapshot, state and time-remaining types shown by the panel.
-tilo-power-mgmt = { path = "../../system/power", default-features = false }
+tilo-power-mgmt = { path = "../../os/power", default-features = false }
 # What the system update is, as the system service publishes it.
 tilo-system-resources = { path = "../../platform/tilo-system-resources" }
 # The one now-playing reading, which the shell's music widget, the lock

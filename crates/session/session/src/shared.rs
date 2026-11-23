@@ -58,6 +58,10 @@ impl Shared {
         }
         self.activity
             .keep_shown(None, || self.handle.read(Clone::clone));
+        // What each window was opened on reaches the layout with the windows, so the session that
+        // follows opens them there.
+        let named = self.desktop.with_policy(|policy| policy.window_items());
+        self.desktops.note_items(named);
         // What this device changed of its workspaces' layouts reaches them before the session ends.
         if let Some(engine) = &self.engine {
             self.desktops.finish_writes(
@@ -94,16 +98,24 @@ impl Shared {
         }
         // What each window shows is the workspace's layout's, not this device's reading of it: a
         // window carried by its bar names it, and a window let go over here finds the place that
-        // shows it.
+        // shows it. So is the item each window was opened on: what a send landed in, which its bar
+        // and the next restart read.
         self.handle
             .set_window_resources(self.layout.borrow().window_resources());
+        let named = self.desktop.with_policy(|policy| policy.window_items());
+        self.desktops.note_items(named);
+        let items = self.desktops.window_items();
+        self.handle.set_window_items(items.clone());
+        self.desktop
+            .with_policy(|policy| policy.set_window_items(items));
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
-        if self.desktops.settled(
-            crate::layout::EngineVersion::of(engine),
-            &self.handle.read(Clone::clone),
-        ) {
+        let version = self.desktops.version(engine);
+        if self
+            .handle
+            .read(|tree| self.desktops.settled(version, tree))
+        {
             return;
         }
         // What the records hold, folded into a copy of the shell: what this device opened or moved
@@ -139,8 +151,11 @@ impl Shared {
                 // workspace is one this device shows through its own instance of the app, on the
                 // same record, and its app is asked for it as a window this device left open is.
                 let under_way = |tab| self.desktop.with_policy(|policy| policy.on_its_way(tab));
-                if !restore.start(&before, &mut tree, &under_way) {
-                    restore.arrived(&before, &tree);
+                // The item each window was opened on, as the layouts just read hold it: the
+                // window a send landed in opens there again.
+                let items = self.desktops.window_items();
+                if !restore.start(&before, &mut tree, &under_way, &items) {
+                    restore.arrived(&before, &tree, &items);
                 }
             }
             self.handle.replace_tree(tree.clone());
@@ -494,6 +509,7 @@ impl Shared {
             &self.workspace_settings_feed(),
         );
         self.follow_invite();
+        self.follow_nearby_shares();
         self.follow_pair_device();
         self.follow_delete_workspace();
         self.follow_owner_deletions();
@@ -512,10 +528,7 @@ impl Shared {
             );
         }
         self.tell_agent_bindings_lost();
-        let pairing_open = self.pair_device_open();
-        self.asker.follow(&self.notifications, |question| {
-            pairing_open && question.kind == crate::enrollment::KIND
-        });
+        self.asker.follow(&self.notifications);
         self.follow_reach();
         self.shortcut_guide.follow();
         self.app_sheets.follow(self.downloaded_apps().as_ref());
@@ -541,30 +554,16 @@ impl Shared {
         // no page lends nothing, and a copy link there is refused with the system's words.
         let directory = std::rc::Rc::clone(&self.directory_store);
         launch.lend_link_home(std::rc::Rc::new(move |workspace: &str| {
-            let listed = directory.listing(workspace)?;
-            let origin = listed.entry_url.as_ref()?.origin().ascii_serialization();
-            let web_entry = crate::platform::directory::community_site()
-                .map_or_else(|| format!("{origin}/"), |site| site.to_string());
-            let home = tilolang_tilo::share::LinkHome {
-                origin,
-                workspace: workspace.to_owned(),
-                host_device: String::new(),
-                web_entry,
-            };
-            match home.json() {
-                Ok(home) => Some(home),
-                Err(error) => {
-                    // Every field is text, so this cannot fail short of a bug: the window's
-                    // links are refused, and the log says why.
-                    tracing::warn!(
-                        %error,
-                        "a workspace's page does not write as JSON: its windows' resources have \
-                         no link"
-                    );
-                    None
-                }
-            }
+            link_home_json(&directory, workspace)
         }));
+    }
+
+    /// Where `workspace`'s resources open on the web, as JSON
+    /// (`tilolang_tilo::share::LinkHome`), as its directory entry says: what the session's own
+    /// services and a tilolang window's host mint a resource's link under. `None` where the
+    /// workspace's host serves no page.
+    pub(crate) fn link_home_json(&self, workspace: &str) -> Option<String> {
+        link_home_json(&self.directory_store, workspace)
     }
 
     /// One anchored surface at a time, whichever side opened it.
@@ -626,4 +625,35 @@ fn search_finished(
         .flatten()
         .filter_map(|(_, value)| value.as_str())
         .any(|text| text == "searching")
+}
+
+/// Where `workspace`'s resources open on the web, as JSON (`tilolang_tilo::share::LinkHome`), as
+/// `directory` lists it: the entry the workspace's host announces, and the page its community
+/// site serves. `None` where the host serves no page.
+pub(crate) fn link_home_json(
+    directory: &crate::directory::Store,
+    workspace: &str,
+) -> Option<String> {
+    let listed = directory.listing(workspace)?;
+    let origin = listed.entry_url.as_ref()?.origin().ascii_serialization();
+    let web_entry = crate::platform::directory::community_site()
+        .map_or_else(|| format!("{origin}/"), |site| site.to_string());
+    let home = tilolang_tilo::share::LinkHome {
+        origin,
+        workspace: workspace.to_owned(),
+        host_device: String::new(),
+        web_entry,
+    };
+    match home.json() {
+        Ok(home) => Some(home),
+        Err(error) => {
+            // Every field is text, so this cannot fail short of a bug: the resources' links are
+            // refused, and the log says why.
+            tracing::warn!(
+                %error,
+                "a workspace's page does not write as JSON: its resources have no link"
+            );
+            None
+        }
+    }
 }

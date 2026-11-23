@@ -1,5 +1,5 @@
 //! A joined workspace's files, held as a replica of the workspace's own Files
-//! record and shown as a plain folder.
+//! record and shown through the platform's file provider at a folder.
 //!
 //! A workspace's file truth is its Files app's record: the tree, one Automerge
 //! document ([`tilo_fs::namespace`]), held in this device's own workspace
@@ -17,10 +17,10 @@
 //! Here this device is the Files app's windowless endpoint for the workspace,
 //! as the files daemon is for a desktop: the runtime attests its own process
 //! for the app and workspace. The tree lives in the profile beside
-//! the profile's own workspace files; a folder mirrors it both ways
-//! ([`tilo_fs::sync_folder`]), so a program that knows nothing of Tilo (a
-//! command in a workspace's environment that mounts the folder) makes files
-//! the workspace's members see, and sees theirs.
+//! the profile's own workspace files; the folder shows it through the platform's
+//! file provider, so a program that knows nothing of Tilo (a command in a
+//! workspace's environment that mounts the folder) makes files the workspace's
+//! members see, and sees theirs.
 //!
 //! The bytes a file is made of reach the other members as record content of
 //! the workspace's Files app: whatever this device holds of the tree's content
@@ -38,10 +38,9 @@ use std::{
 
 use iroh_blobs::Hash;
 use tilo_fs::{
-    hydration::Hydrator,
+    hydration::{FileKeys, Hydrator},
     identity::PeerCredentials,
     namespace::Namespace,
-    sync_folder::Watch,
     tree_sync::{FILES_APP, TreeSync},
 };
 use tilo_lock::MutexRecover as _;
@@ -50,12 +49,16 @@ use tilo_workspace_service::content::RouteContent;
 use tilo_workspace_service::files::WorkspaceSource;
 use tilo_workspace_service::workspaces::Workspaces;
 
-use super::{Author, Files, INTERVAL, NamespaceFile};
+use super::{Author, INTERVAL};
+use crate::device::peer::mount;
 
 /// How long a read waits for content the workspace's members are asked for.
 /// A folder pass waiting longer holds every other path behind it; the next
 /// pass asks again.
 const CONTENT_WAIT: Duration = Duration::from_secs(10);
+
+/// How long a write waits for the workspace's content keys before it fails.
+const KEY_WAIT: Duration = Duration::from_secs(120);
 
 /// How long a dropped replica waits for the writes it had under way: content
 /// being offered, and the tree being kept. Both are short; a write still
@@ -68,26 +71,27 @@ pub(crate) struct ReplicaParts<'a> {
     pub(crate) workspace: &'a str,
     /// Where the profile keeps this workspace's tree and folder baseline.
     pub(crate) state: &'a Path,
-    /// The folder that mirrors the workspace.
+    /// The folder that shows the workspace.
     pub(crate) folder: &'a Path,
     /// The profile's content store, the one its record content is kept in.
     pub(crate) store: Arc<tilo_fs::ContentStore>,
     pub(crate) author: &'a Author,
+    /// Who each write into the folder is made by, from the process that made it.
+    pub(crate) writers: Arc<tilo_fs::writer::WriterResolver>,
     /// This device's key and its person's, as the workspace knows them.
     pub(crate) keys: ([u8; 32], [u8; 32]),
     pub(crate) admission: Arc<tilo_fs::admission::FileAdmission>,
     /// The service whose member copy holds the workspace's tree.
     pub(crate) workspaces: Workspaces,
-    /// The profile's identity service, which hands over the record's keys.
-    pub(crate) identity: PathBuf,
     /// The profile's record-content service.
     pub(crate) content: Arc<RouteContent>,
 }
 
-/// One joined workspace's files, synced while this value lives.
+/// One joined workspace's files, shown while this value lives.
 pub(crate) struct ReplicaFiles {
-    folder: PathBuf,
-    _watch: Watch,
+    /// The folder's presentation, which names the folder. Dropped first when this closes, so its
+    /// requests are answered and its bytes kept before the tree stops.
+    showing: Option<mount::Showing>,
     /// Held until this replica drops: its drop stops the tree and waits for its last keep, so no
     /// write lands in the tree's state after the replica has gone.
     tree: Option<TreeSync>,
@@ -99,7 +103,8 @@ impl Drop for ReplicaFiles {
         // What a replica had under way writes into the tree's state: content being offered for a
         // file, and the tree's own documents being kept. They are stopped and waited for here, so
         // a daemon whose replicas are dropped has finished writing, not merely stopped asking.
-        // The folder's thread is joined as its field drops.
+        let showing = self.showing.take();
+        drop(showing);
         let (keeper, tree) = (self.keeper.take(), self.tree.take());
         if let Some(keeper) = &keeper {
             keeper.abort();
@@ -123,13 +128,13 @@ impl Drop for ReplicaFiles {
 impl ReplicaFiles {
     /// Hold `parts.workspace`'s files: the tree kept in `parts.state`,
     /// converged with the workspace's Files records in the member copy, and
-    /// mirrored at `parts.folder`.
+    /// shown through the platform's file provider at `parts.folder`.
     ///
     /// # Errors
-    /// The state or the folder cannot be opened.
+    /// The state cannot be opened, or the folder cannot be shown.
     pub(crate) fn start(parts: ReplicaParts<'_>) -> io::Result<Self> {
         let route = CrdtRoute::app(FILES_APP, parts.workspace);
-        let source = Arc::new(WorkspaceSource::new(
+        let source: Arc<dyn tilo_fs::hydration::ContentSource> = Arc::new(WorkspaceSource::new(
             Arc::clone(&parts.content),
             parts.workspace,
             CONTENT_WAIT,
@@ -137,7 +142,8 @@ impl ReplicaFiles {
         let workspace = collab_types::WorkspaceId::parse(parts.workspace).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid Files workspace")
         })?;
-        crate::host::private_directory(parts.state)?;
+        tilo_files::native::private::directory(parts.state)?;
+        let key_copies = parts.workspaces.clone();
         let tree = crate::device::workspaces::block_on_owned({
             let (copies, kept_at) = (parts.workspaces, parts.state.join(super::NAMESPACE));
             let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));
@@ -153,35 +159,75 @@ impl ReplicaFiles {
                 .await
             }
         })?;
-        let keys = tilo_fs::hydration::FileKeys::new(workspace, parts.identity);
-        let files = Files::open(
-            parts.state,
-            NamespaceFile::of_tree(&tree),
-            parts.store,
-            parts.author,
-            Some((source, keys)),
-        );
+        let keys = {
+            let route = tilo_peer_state::document_frame::DocumentRoute {
+                cluster_id: parts.workspace.to_owned(),
+                app_id: FILES_APP.to_owned(),
+                document: fs_protocol::tree::document_id(),
+            };
+            let runtime = tilo_rt::app().handle().clone();
+            FileKeys::from_session(workspace, move || {
+                // The keys arrive as the member copy syncs; a write waits for them, as the mirror did.
+                let until = std::time::Instant::now().checked_add(KEY_WAIT);
+                let over = || until.is_some_and(|until| std::time::Instant::now() >= until);
+                loop {
+                    match runtime.block_on(key_copies.own_route_keys(&route, false)) {
+                        Some(Ok(keys)) => return Ok(keys),
+                        Some(Err(why)) if over() => {
+                            anyhow::bail!("cannot read the workspace's files: {why}")
+                        }
+                        None if over() => anyhow::bail!("the Files content keys are not ready"),
+                        _ => std::thread::sleep(Duration::from_millis(100)),
+                    }
+                }
+            })
+        };
+        let mounted = mount::Parts {
+            keys: keys.clone(),
+            replica: &tree,
+            store: Arc::clone(&parts.store),
+            content: Arc::clone(&source),
+            actor: fs_protocol::FileActor {
+                person: collab_types::Ed25519PublicKey(parts.author.person),
+                device: collab_types::Ed25519PublicKey(parts.author.device),
+            },
+            writers: Arc::clone(&parts.writers),
+            admission: parts.admission,
+            state: parts.state,
+        };
         std::fs::create_dir_all(parts.folder)?;
-        let watch = files
-            .sync_folder(parts.folder, Some(parts.admission))?
-            .watch(INTERVAL)?;
+        let hydrator = {
+            let _entered = tilo_rt::app().handle().enter();
+            Arc::new(
+                Hydrator::new(Arc::clone(&parts.store))
+                    .with_source(source)
+                    .with_file_keys(keys),
+            )
+        };
+        let showing = {
+            let _entered = tilo_rt::app().handle().enter();
+            mount::show(
+                || mount::filesystem(&mounted),
+                parts.folder,
+                &parts.state.join("folder"),
+            )?
+        };
         let keeper = tilo_rt::app().spawn(keep_content(
             Arc::clone(&tree.namespace),
-            Arc::clone(&files.hydrator),
+            hydrator,
             parts.content,
             route,
         ));
         Ok(Self {
-            folder: parts.folder.to_path_buf(),
-            _watch: watch,
+            showing: Some(showing),
             tree: Some(tree),
             keeper: Some(keeper),
         })
     }
 
-    /// The folder that mirrors the workspace.
-    pub(crate) fn folder(&self) -> &Path {
-        &self.folder
+    /// The folder that shows the workspace, while it is shown.
+    pub(crate) fn folder(&self) -> Option<&Path> {
+        self.showing.as_ref().map(|showing| showing.at.as_path())
     }
 
     /// Where the folder's sync stands.
@@ -206,8 +252,9 @@ pub(crate) struct ReplicaHost {
     pub(crate) own_folder: Option<PathBuf>,
     pub(crate) store: Arc<tilo_fs::ContentStore>,
     pub(crate) author: Author,
+    /// Who each write into a folder is made by: the resolver both kinds of folder use.
+    pub(crate) writers: Arc<tilo_fs::writer::WriterResolver>,
     pub(crate) credentials: Credentials,
-    pub(crate) identity: PathBuf,
     pub(crate) content: Arc<RouteContent>,
     /// Attests this process as each workspace's Files endpoint.
     pub(crate) apps: Arc<crate::apps::Apps>,
@@ -233,7 +280,7 @@ impl Replicas {
     }
 
     /// Hold the files of `workspace`, called `name`, unless they are held
-    /// already: the folder that mirrors them.
+    /// already: the folder that shows them.
     ///
     /// # Errors
     /// This device's credentials for the workspace, its state or its folder
@@ -244,13 +291,15 @@ impl Replicas {
     )]
     pub(crate) fn hold(&self, workspace: &str, name: &str) -> io::Result<PathBuf> {
         let mut held = self.held.lock_recover();
-        if let Some(replica) = held.get(workspace) {
-            return Ok(replica.folder().to_path_buf());
+        if let Some(folder) = held.get(workspace).and_then(ReplicaFiles::folder) {
+            return Ok(folder.to_path_buf());
         }
         let folder = {
             let taken = |folder: &Path| {
                 self.host.own_folder.as_deref() == Some(folder)
-                    || held.values().any(|replica| replica.folder() == folder)
+                    || held
+                        .values()
+                        .any(|replica| replica.folder() == Some(folder))
             };
             let plain = super::folder_in(&self.host.home, name);
             if taken(&plain) {
@@ -291,13 +340,13 @@ impl Replicas {
             folder: &folder,
             store: Arc::clone(&self.host.store),
             author: &self.host.author,
+            writers: Arc::clone(&self.host.writers),
             keys: (
                 credentials.device_public_key(),
                 credentials.user_public_key(),
             ),
             admission: Arc::new(admission),
             workspaces: service.copies().clone(),
-            identity: self.host.identity.clone(),
             content: Arc::clone(&self.host.content),
         });
         match started {
@@ -312,12 +361,12 @@ impl Replicas {
         }
     }
 
-    /// The folder mirroring `workspace`'s files, while they are held.
+    /// The folder showing `workspace`'s files, while they are shown.
     pub(crate) fn folder(&self, workspace: &str) -> Option<PathBuf> {
         self.held
             .lock_recover()
             .get(workspace)
-            .map(|replica| replica.folder().to_path_buf())
+            .and_then(|replica| replica.folder().map(Path::to_path_buf))
     }
 
     /// Where the sync of `workspace`'s folder stands, while its files are held.

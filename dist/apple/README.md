@@ -31,7 +31,6 @@ Sources/TiloPhone    the iPhone app
 Sources/TiloShare    the share extension of both
 Sources/TiloLive     Tilo inside a native app: Tilo's page as the client behind a Swift
                      interface, and the view that shows one live Tilo thing
-Sources/TiloLiveProbe  the same with nothing on screen, for a check to drive
 Sources/AssistantTilo  Tilo Assistant's source on Tilo itself: the app as a device of its
                      person, through the engine
 Sources/AssistantCore  Tilo Assistant: what its window shows, and the one interface it all
@@ -420,14 +419,11 @@ What it leans on, until Tilo's page offers each: a second mount is made through 
 own `host.mjs` and `peer.mjs`, where the page has no `tiloOpen`; and the person's own
 providers are reached only on a page that hands a native app its device's entry.
 
-`TiloLiveProbe` is the engine with no window, driven over its standard input: it pairs, prints
-Chat's messages as they arrive, sends through Chat's own send, and shows a document in a
-window that is never put on a screen, with real key presses. A store it keeps holds a device
-key that only the very program that made it reads again. `AssistantMac --drive` is Tilo
-Assistant with no window (`Drive.swift`): the same source and the same model its window's
-views read and call, driven the same way. Of each reply that grew it says when it drew the
-first change of its words, when the last and how many (`grew`): with no window, it counts
-what a person would have seen. Both end when whoever drives them is gone.
+`AssistantMac --drive` is Tilo Assistant with no window (`Drive.swift`), driven over its
+standard input: the same source and the same model its window's views read and call. Of each
+reply that grew it says when it drew the first change of its words, when the last and how many
+(`grew`): with no window, it counts what a person would have seen. It ends when whoever drives
+it is gone.
 
 ## Tilo Assistant
 
@@ -915,21 +911,6 @@ own providers behind a device that answers carelessly (no key and no secret come
 frame gets none of it). `AssistantTilo` is checked the same way, call by call of the frame's
 interface.
 
-Against a real site, with throwaway people and nothing on a screen, the real programs did
-this ten times of ten, on the page build `b341b6ba19b3be4cc4d7` (an older tree than this one).
-`TiloLiveProbe` paired from a link and came back as the same device; printed a message the same
-person typed elsewhere, told by the page and never asked for on a clock; sent through Chat's
-own send; and showed a live document that took an edit made elsewhere and typed keys that
-landed in the record. `AssistantMac --drive`, the app's own program with no window, signed in,
-filled its conversation, took a message typed elsewhere and sent one. No real program has yet
-used the person's own providers, answered a question that waits or kept a secret from the
-protected field: that tree has none of the three, and they wait for a site of this tree.
-
-In a simulator `TiloLivePhoneProbe`, an iPhone app with the engine unseen in its root view,
-paired as a new device with the code compared four times of four and kept its device's key,
-and came back as the same device with nobody asked three times of three; a device nobody
-paired was stopped while joining. No simulator offers a page a graphics adapter, so there the
-page is let in and never opens: reading, a change, sending and the live view have not run on
-an iPhone's system, and only a phone shows them. A simulator program needs a keychain group
-of its own for any of this (`build.sh` gives the apps theirs): without one a web view cannot
-keep the key that wraps a page's keys, and the page stops while joining.
+Against a real site, with throwaway people and nothing on a screen, `AssistantMac --drive`,
+the app's own program with no window, signed in, filled its conversation, took a message typed
+elsewhere and sent one, on the page build `b341b6ba19b3be4cc4d7` (an older tree than this one).

@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tilo_vm_protocol::manifest::Component;
+use tilo_device_protocol::manifest::Component;
 
 use crate::build;
 use crate::error::CliError;
@@ -41,9 +41,6 @@ pub struct Packed {
     /// An explicit cache result; its framed stream must contain zero archive bytes.
     #[serde(default)]
     pub reused: bool,
-    /// Raw bounded chunks instead of base64 data lines.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub binary: bool,
 }
 
 pub fn remote_command(builder: &[String], component: &Component, extra: &[String]) -> CommandLine {
@@ -79,7 +76,7 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
 }
 
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
-    pack_with_source(name, profile, extra, None, &[], false, None)
+    pack_with_source(name, profile, extra, None, &[], None)
 }
 
 #[expect(
@@ -92,7 +89,6 @@ pub(crate) fn pack_with_source(
     extra: &[String],
     inventory: Option<&Path>,
     cached: &[String],
-    binary: bool,
     incoming: Option<&Path>,
 ) -> Result<(), CliError> {
     if cached.len() > 8 || cached.iter().any(|hash| !valid_hash(hash)) {
@@ -105,7 +101,7 @@ pub(crate) fn pack_with_source(
         .map(|path| crate::source_inputs::verify(&root, path))
         .transpose()?;
     let manifest_path = root.join("os/components.toml");
-    let manifest = tilo_vm_protocol::Manifest::load(&manifest_path)
+    let manifest = tilo_device_protocol::Manifest::load(&manifest_path)
         .map_err(|e| CliError::Config {
             path: manifest_path.display().to_string(),
             detail: e.to_string(),
@@ -189,7 +185,6 @@ pub(crate) fn pack_with_source(
     }
     let packed = Packed {
         component: component.name,
-        binary,
         target: facts.target,
         toolchain: facts.toolchain,
         source_digest,
@@ -310,23 +305,13 @@ pub(crate) fn write_layer(
     cached: &[String],
     out: &mut impl Write,
 ) -> Result<(), CliError> {
-    let hash = tilo_vm_protocol::layer_hash::tree_hash(tree)
+    let hash = tilo_device_protocol::layer_hash::tree_hash(tree)
         .map_err(CliError::io("hash assembled remote layer"))?;
     packed.reused = cached.contains(&hash);
     packed.layer_hash = Some(hash);
     let header =
         serde_json::to_string(&packed).map_err(|e| CliError::InvalidInput(e.to_string()))?;
     writeln!(out, "{BEGIN}{header}").map_err(CliError::io("write the layer"))?;
-    if packed.binary {
-        let mut binary = tilo_vm_protocol::binary::Encoder::new(out);
-        if !packed.reused {
-            build::pack_into(tree, &mut binary)?;
-        }
-        binary
-            .finish()
-            .map_err(CliError::io("write binary layer"))?;
-        return Ok(());
-    }
     let mut lines = Lines::new(out);
     if !packed.reused {
         build::pack_into(tree, &mut lines)?;
@@ -418,7 +403,6 @@ pub struct Stream<R: BufRead> {
     hasher: Sha256,
     bytes: u64,
     done: bool,
-    binary: Option<tilo_vm_protocol::binary::Decoder>,
 }
 
 impl<R: BufRead> Stream<R> {
@@ -441,7 +425,6 @@ impl<R: BufRead> Stream<R> {
             hasher: Sha256::new(),
             bytes: 0,
             done: false,
-            binary: None,
         }
     }
 
@@ -465,12 +448,7 @@ impl<R: BufRead> Stream<R> {
                 ));
             }
             if let Some(json) = line.trim_end().strip_prefix(BEGIN) {
-                let value: serde_json::Value =
-                    serde_json::from_str(json).map_err(std::io::Error::other)?;
-                if value.get("binary").and_then(serde_json::Value::as_bool) == Some(true) {
-                    self.binary = Some(tilo_vm_protocol::binary::Decoder::default());
-                }
-                return serde_json::from_value(value).map_err(std::io::Error::other);
+                return serde_json::from_str(json).map_err(std::io::Error::other);
             }
             passthrough.write_all(line.as_bytes())?;
         }
@@ -479,9 +457,6 @@ impl<R: BufRead> Stream<R> {
 
 impl<R: BufRead> Read for Stream<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if let Some(binary) = &mut self.binary {
-            return binary.read(&mut self.input, buf);
-        }
         if buf.is_empty() {
             return Ok(0);
         }
@@ -590,7 +565,7 @@ mod tests {
 
         phase the_remote_run_packs_on_the_builder;
         {
-            let component = tilo_vm_protocol::Manifest::parse(
+            let component = tilo_device_protocol::Manifest::parse(
                 "[[component]]\nname = \"shell\"\npackages = [\"shell\"]\n",
             )
             .unwrap()
@@ -605,36 +580,5 @@ mod tests {
                 "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod binary_tests {
-    use super::*;
-    #[test]
-    fn binary_builder_footer_is_checked_before_eof() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/probe"), vec![71; 2 << 20]).unwrap();
-        let mut framed = Vec::new();
-        write_layer(
-            dir.path(),
-            Packed {
-                binary: true,
-                ..Packed::default()
-            },
-            &[],
-            &mut framed,
-        )
-        .unwrap();
-        let mut stream = Stream::new(framed.as_slice());
-        assert!(stream.header(&mut Vec::new()).unwrap().binary);
-        let mut archive = Vec::new();
-        stream.read_to_end(&mut archive).unwrap();
-        assert!(archive.len() > 2 << 20);
-        *framed.last_mut().unwrap() ^= 1;
-        let mut stream = Stream::new(framed.as_slice());
-        stream.header(&mut Vec::new()).unwrap();
-        assert!(stream.read_to_end(&mut Vec::new()).is_err());
     }
 }

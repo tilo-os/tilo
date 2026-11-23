@@ -4,7 +4,7 @@
 # page. The final sandbox smoke-load is the ABI compatibility check.
 set -euo pipefail
 
-repo="$(git rev-parse --show-toplevel)"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 out="${1:-$repo/dist/tilo-imager}"
 arch="$(flatpak --default-arch)"
 case "$arch" in
@@ -26,14 +26,15 @@ fi
 
 if [ "${TILO_REQUIRE_SIGNING:-0}" = 1 ]; then export TILO_REQUIRE_CAPTURE=1; fi
 source "$repo/apps/imager/packaging/build-capture-host.sh" --features flatpak-media-writer
+binary="${TILO_IMAGER_BINARY:-${CARGO_TARGET_DIR:-$repo/target}/release/imager}"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 stage="$work/manifest"
 mkdir -p "$stage" "$out"
 cp "$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml" "$stage/"
-cp "$repo/target/release/imager" "$stage/tilo-imager-bin"
-"$repo/apps/imager/packaging/stage-capture-sidecar.sh" "$repo/target/release/imager" "$stage/capture-prefix" "$stage/tilo-imager-bin"
+cp "$binary" "$stage/tilo-imager-bin"
+"$repo/apps/imager/packaging/stage-capture-sidecar.sh" "$binary" "$stage/capture-prefix" "$stage/tilo-imager-bin"
 if [ -d "$stage/capture-prefix/share/tilo-imager/capture" ]; then
   tar -C "$stage/capture-prefix" -cf "$stage/tilo-capture-sidecar.tar" share/tilo-imager/capture
 else

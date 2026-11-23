@@ -29,14 +29,9 @@ async fn a_device_joining_the_live_session_is_told_to_the_others() {
     let (b, _) = certified_device(&root, user.public_key, "b");
     let id = WorkspaceId::from_u128(12);
     let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    runtime.admit_device(a.device_public_key).unwrap();
-    runtime.admit_device(b.device_public_key).unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(tmp.path(), id).unwrap();
+    runtime.list_environment(a.device_public_key, true);
+    runtime.list_environment(b.device_public_key, true);
     let (atx, mut arx) = mpsc::channel(8);
     let (adisconnect, _adisconnect_rx) = mpsc::channel(1);
     let (btx, mut brx) = mpsc::channel(8);

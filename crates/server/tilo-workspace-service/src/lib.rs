@@ -57,6 +57,8 @@ pub mod content_work;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod device_tickets;
 /// Holding one workspace's documents: what a device reads of them and the writes it authors,
 /// over the replica and keys whichever holder keeps them.
 pub mod documents;
@@ -73,9 +75,6 @@ pub mod handshake;
 pub mod history_move;
 #[cfg(not(target_arch = "wasm32"))]
 mod i18n;
-#[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub mod membership_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]

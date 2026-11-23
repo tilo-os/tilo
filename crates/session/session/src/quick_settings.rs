@@ -613,6 +613,33 @@ fn quick_settings_resource() -> tilo_actions::ResourceSpec {
     )
 }
 
+/// Which controls the panel shows, as a view of another language reads it
+/// (`device.quick_settings`): the controls, in the order they stand, each named as the actions
+/// below name them.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct QuickSettingsView {
+    #[serde(default)]
+    pub controls: Vec<String>,
+}
+
+/// The panel's controls as a view of another language reads them (`device.quick_settings`).
+#[must_use]
+pub(crate) fn controls_surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<QuickSettingsView, LayoutAction>(
+        "quick-settings",
+        "Quick settings",
+    )
+}
+
 /// Which controls the panel shows, as the panel reads them: the person's choice of controls on this
 /// device, kept in its settings document.
 #[derive(Default)]
@@ -621,8 +648,10 @@ pub(crate) struct QuickSettingsService {
     shown: std::cell::RefCell<settings_store::hardware::QuickSettingsConfig>,
     /// Whether the settings document was read at all, and the version that was read: one that did
     /// not move is not read again.
-    seen: bool,
-    stamp: Option<settings_store::SettingsStamp>,
+    settings: settings_store::SettingsFollower,
+    /// Whether an action this service took changed the controls, so the reading it answers with
+    /// and the one it published are told apart once: what a press changed is published too.
+    changed: std::cell::Cell<bool>,
 }
 
 impl QuickSettingsService {
@@ -636,12 +665,9 @@ impl QuickSettingsService {
     /// Read the person's controls, and say the resource changed when they are not what was
     /// published.
     fn follow(&mut self) -> bool {
-        let stamp = settings_store::stamp();
-        if !settings_store::document_changed(self.seen, self.stamp, stamp) {
+        if !self.settings.changed(settings_store::stamp()) {
             return false;
         }
-        self.seen = true;
-        self.stamp = stamp;
         let config = settings_store::hardware::QuickSettingsConfig::load().normalised();
         let changed = *self.shown.borrow() != config;
         *self.shown.borrow_mut() = config;
@@ -672,7 +698,8 @@ impl QuickSettingsService {
             ))
         })?;
         *self.shown.borrow_mut() = config;
-        self.stamp = settings_store::stamp();
+        self.settings.changed(settings_store::stamp());
+        self.changed.set(true);
         Ok(true)
     }
 }
@@ -684,14 +711,14 @@ impl tilo_service::Service for QuickSettingsService {
 
     fn read(&self, resource: &str) -> Option<serde_json::Value> {
         (resource == QUICK_SETTINGS).then(|| {
-            serde_json::json!({
-                "controls": self
+            tilo_service::reading(&QuickSettingsView {
+                controls: self
                     .shown
                     .borrow()
                     .controls
                     .iter()
-                    .map(|control| tilo_quick_settings::control_id(*control))
-                    .collect::<Vec<_>>(),
+                    .map(|control| tilo_quick_settings::control_id(*control).to_owned())
+                    .collect(),
             })
         })
     }
@@ -711,7 +738,8 @@ impl tilo_service::Service for QuickSettingsService {
     }
 
     fn poll(&mut self) -> bool {
-        self.follow()
+        let changed = self.changed.replace(false);
+        changed | self.follow()
     }
 }
 

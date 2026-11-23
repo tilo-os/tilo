@@ -25,7 +25,7 @@ preflight fails records nothing.
 
 | Job | When | What it checks |
 |---|---|---|
-| Counters | By hand, on changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw check's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw check's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
+| Counters | By hand, on changes to `crates/ui/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw check's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw check's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
 | The performance run's `render` group (`tools/ci/perf-scheduled.sh render`) | When the performance run is run | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events), then the same counters. |
 
 Both jobs run on the shared `runner` class, which has no GPU. Lavapipe

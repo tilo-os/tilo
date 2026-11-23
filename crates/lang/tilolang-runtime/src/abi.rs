@@ -307,7 +307,14 @@ imports! {
     (FileOfBytes, "file_of_bytes", "ii", "i"),
     (FileAt, "file_at", "ii", "i"),
     (FileZip, "file_zip", "ii", "i"),
+    (FileImageInfo, "file_image_info", "i", "i"),
+    (FileCrop, "file_crop", "iffff", "i"),
+    (FileTurn, "file_turn", "il", "i"),
+    (FileResize, "file_resize", "ill", "i"),
+    (FileEncode, "file_encode", "iil", "i"),
+    (FileThumbnail, "file_thumbnail", "il", "i"),
     (ActChoose, "act_choose", "ii", "i"),
+    (ActChooseFolder, "act_choose_folder", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
 
     // The clipboard: text or an image offered as the person's copy, and what is on it now.

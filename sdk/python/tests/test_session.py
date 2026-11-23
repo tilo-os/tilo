@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import re
+
 import httpx
 import pytest
 
+import tilo as tilo_sdk
 from tilo import (
     AsyncTilo,
+    HttpTransport,
     KeyExpired,
     KeyRefused,
     KeyRevoked,
     ProtocolError,
     Refused,
+    Unreachable,
     UnsupportedVersion,
 )
 
@@ -120,6 +126,68 @@ async def test_an_unreachable_server_is_asked_again_as_the_same_call(api):
     assert created.name == "Applicant: Jane Doe"
     assert len(seen) == 2
     assert seen[0] == seen[1]
+
+
+async def test_an_unreachable_endpoint_raises_exported_unreachable(api):
+    assert "Unreachable" in tilo_sdk.__all__
+    assert tilo_sdk.Unreachable is Unreachable
+
+    async def down(_: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(down), base_url=URL)
+    transport = HttpTransport(URL, api.key, http=http)
+    made = AsyncTilo(key=api.key, url=URL, http=http, retry_deadline=0)
+    try:
+        with pytest.raises(Unreachable) as direct:
+            await transport.request("GET", "/v1")
+        with pytest.raises(Unreachable) as raised:
+            await made.workspaces.list()
+    finally:
+        await made.aclose()
+        await http.aclose()
+
+    assert type(direct.value) is tilo_sdk.Unreachable
+    assert isinstance(direct.value, ProtocolError)
+    assert type(raised.value) is tilo_sdk.Unreachable
+    assert isinstance(raised.value, ProtocolError)
+
+
+def _typescript_value_exports(index_ts: Path) -> set[str]:
+    """Value names re-exported from `sdk/typescript/src/index.ts`."""
+    text = re.sub(r"//[^\n]*|/\*.*?\*/", "", index_ts.read_text(encoding="utf-8"), flags=re.S)
+    exports: set[str] = set()
+    for match in re.finditer(r"\bexport\s*\{([^}]*)\}", text):
+        for entry in match.group(1).split(","):
+            item = entry.strip()
+            if not item or item.startswith("type "):
+                continue
+            if " as " in item:
+                _, item = item.split(" as ", 1)
+            exports.add(item.strip())
+    return exports
+
+
+def test_both_sdks_export_the_shared_error_classes():
+    shared_errors = {
+        "Refused",
+        "SurfaceChanged",
+        "AskPending",
+        "ProtocolError",
+        "KeyRefused",
+        "KeyRevoked",
+        "KeyExpired",
+        "UnsupportedVersion",
+        "Unreachable",
+    }
+
+    assert shared_errors <= set(tilo_sdk.__all__)
+    for name in ("ProtocolError", "UnsupportedVersion", "Unreachable"):
+        assert issubclass(getattr(tilo_sdk, name), ProtocolError)
+
+    ts_index = Path(__file__).resolve().parents[2] / "typescript" / "src" / "index.ts"
+    ts_exports = _typescript_value_exports(ts_index)
+    assert shared_errors <= ts_exports
 
 
 async def test_a_new_logical_call_names_an_idempotency_key_of_its_own(tilo, api):

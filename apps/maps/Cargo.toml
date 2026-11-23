@@ -28,7 +28,7 @@ lru.workspace = true
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
-runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resources the app draws: their types, verbs and typed action arguments.
 maps-model = { path = "../maps-model" }

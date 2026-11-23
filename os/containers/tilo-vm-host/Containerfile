@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# A host of hosted workspace VMs (crates/runtime/linux-vm/src/hosted): the
+# A host of hosted workspace VMs (crates/vm/linux-vm/src/hosted): the
 # service that owns every VM on its machine, the privileged helper that jails
 # each one, Firecracker and its jailer, pasta for their network, and skopeo to
 # fetch the signed guest. One runs per VM-host node, privileged (KVM, a
@@ -69,7 +69,6 @@ RUN groupadd --system --gid 10001 tilo-hosted \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/tilo-hosted --shell /usr/sbin/nologin tilo-hosted
 COPY bin/tilo-linux-vm /usr/local/bin/tilo-linux-vm
 COPY bin/tilo /usr/local/bin/tilo
-COPY bin/tilo-device-admin /usr/local/bin/tilo-device-admin
 # The member that takes the server's runs for the workspaces on this host.
 COPY bin/tilo-runtime /usr/local/bin/tilo-runtime
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail

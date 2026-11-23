@@ -13,8 +13,8 @@ test-support = ["dep:tilo-test-env", "dep:tilo-resource"]
 [dependencies]
 # The turn every agent works through: what a turn asks of these tools, and how the model reads
 # their answers.
-tilo-agent-turn = { path = "../../agent/agent-turn" }
-agent-provider-config = { path = "../../agent/provider-config" }
+tilo-agent-turn = { path = "../../integrations/agent-turn" }
+agent-provider-config = { path = "../../integrations/provider-config" }
 # What every Tilo app publishes (its surface), for the apps a hosted workspace's programs compile
 # against: data only, no app links the server that serves them.
 app-fleet = { path = "../../packaging/app-fleet", features = ["surfaces"] }
@@ -27,7 +27,7 @@ libc.workspace = true
 # A task's programs run in a tilolang host started for them: its api, and the sealed blob its apps
 # arrive in.
 runtime-portal = { path = "../../runtime/runtime-portal" }
-tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }

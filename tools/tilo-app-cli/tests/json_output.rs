@@ -467,14 +467,14 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
     let dir = tempfile::tempdir().unwrap();
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(3)
+        .nth(2)
         .unwrap();
     let app = dir.path().join("demo");
     let new = Command::new(tilo_test_env::package_binary!("tilo-app"))
         .args(["new", "demo", "--id", "org.example.demo", "--directory"])
         .arg(&app)
         .arg("--ui-path")
-        .arg(checkout.join("crates/sdk/ui-core"))
+        .arg(checkout.join("crates/ui/ui-core"))
         .current_dir(dir.path())
         .env_remove("TILO_UI_PATH")
         .output_locked()

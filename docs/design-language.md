@@ -1,6 +1,6 @@
 # Tilo design language
 
-This is the single source of truth for how Tilo looks. `crates/sdk/ui-core/HIG.md`
+This is the single source of truth for how Tilo looks. `crates/ui/ui-core/HIG.md`
 says how to build screens; this document says what they look like and why.
 Where the two disagree, this document wins and the HIG is corrected.
 
@@ -190,7 +190,7 @@ pixel in from the bezel, so its ground reaches the edge in one colour.
 ## Type
 
 The UI face is Tilo Sans, one face for the whole system (why, and its
-provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). It sets Latin,
+provenance: `crates/ui/ui-core/assets/fonts/PROVENANCE.md`). It sets Latin,
 Vietnamese and Greek; Cyrillic falls back to Onest, matched to its x-height
 and stem weight, and every other script to Noto. A
 theme or the accessibility layer may choose the built-in Hyperlegible face
@@ -327,7 +327,7 @@ the theme: you pick it once and every device and member sees the same.
 
 ## Icons
 
-One icon set (`ui::icons`), one SVG per icon in `crates/sdk/ui-core/assets/icons`
+One icon set (`ui::icons`), one SVG per icon in `crates/ui/ui-core/assets/icons`
 (its README has the drawing rules): a 24 grid, a 1.5 px round stroke at every
 size, in ink colours: 16 in rows and controls, 20 as a bar's leading app icon.
 Apps and tilolang name icons (`icon: .layout_grid`), never files. A filled

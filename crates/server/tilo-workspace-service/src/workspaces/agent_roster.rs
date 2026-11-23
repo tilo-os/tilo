@@ -88,13 +88,40 @@ impl Workspaces {
             return Ok(0);
         }
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let governor = self.governor().clone();
+        let governor = self.device_cert().clone();
         let home = workspace.to_owned();
         Box::pin(self.author_workspace_document(
             workspace,
             &governor,
             (tilo_workspace_agent::OWNER, &list),
             move |doc| copy_agents(&old, &home, doc),
+        ))
+        .await
+        .map_err(|error| error.to_string())
+    }
+
+    /// Write `change` into Assistant's list of the agents of `workspace` as this host, onto the
+    /// list as the workspace holds it. Where it holds none yet the list starts with the genesis
+    /// every device makes of it ([`started`]): the identity every reader checks before it opens
+    /// the list, the same change as an Assistant that founds it elsewhere, so the two merge as
+    /// one list.
+    ///
+    /// # Errors
+    /// The genesis could not be made, or as [`Self::author_workspace_document_from`].
+    pub async fn author_agents<R>(
+        &self,
+        workspace: &str,
+        change: impl FnOnce(&mut AutoCommit) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        Box::pin(self.author_workspace_document_from(
+            (workspace, self.device_cert()),
+            (tilo_workspace_agent::OWNER, &list),
+            // What is written onto it is this host's own change, never the genesis actor's.
+            Some(Box::new(
+                started(workspace)?.with_actor(automerge::ActorId::random()),
+            )),
+            change,
         ))
         .await
         .map_err(|error| error.to_string())
@@ -198,12 +225,19 @@ fn copy_object(
     match from.object_type(source)? {
         ObjType::Map | ObjType::Table => {
             for key in from.keys(source).collect::<Vec<_>>() {
-                match from.get(source, key.as_str())? {
+                // Chat's lists were written under the old field name for the
+                // person an agent acts for.
+                let (from_key, into_key) = if key == "keeper" {
+                    ("keeper", "acts_for")
+                } else {
+                    (key.as_str(), key.as_str())
+                };
+                match from.get(source, from_key)? {
                     Some((Value::Scalar(scalar), _)) => {
-                        to.put(target, key.as_str(), scalar.into_owned())?;
+                        to.put(target, into_key, scalar.into_owned())?;
                     }
                     Some((Value::Object(kind), child)) => {
-                        let copy = to.put_object(target, key.as_str(), kind)?;
+                        let copy = to.put_object(target, into_key, kind)?;
                         copy_object(from, &child, to, &copy)?;
                     }
                     None => {}

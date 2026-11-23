@@ -625,19 +625,19 @@ def _workspaces_named(row: dict, envs) -> set[str]:
 
 
 def person_note(ctx, env: dict, title: str) -> None:
-    """The person makes a note titled `title` in `env`'s workspace, through Notes' own new-note
+    """The person makes a note titled `title` in `env`'s workspace, through Notes' own new_note
     there, as its window offers it."""
     select_workspace(ctx, env["workspace"])
 
     # The shell lists the apps of the workspace in front: its Notes is the one Notes listed.
     def offered():
         rows = [r for r in ctx.vm.actions(NOTES)
-                if r.get("app_id") == NOTES and address(r)[1] == "new-note"]
+                if r.get("app_id") == NOTES and address(r)[1] == "new_note"]
         return rows if len(rows) == 1 else None
 
     rows = wait_until(offered, 30, interval=1.0)
     if not rows:
-        raise Unobservable(f"{env['name']}: its Notes offers no single new-note in front")
+        raise Unobservable(f"{env['name']}: its Notes offers no single new_note in front")
     try:
         invoke(ctx, rows[0]["provider"], *address(rows[0]), {"title": title},
                name=f"{env['name']}-person-note")
@@ -761,8 +761,8 @@ def own_change(ctx, res):
         opened = settled(agent, opened)
         e["opened_app"] = closed
         made, asked = tool_answering(
-            ctx, agent, "tilo_do", {"path": "notes#new-note", "args": {"title": titles[e["name"]]}},
-            f"{e['name']}-new-note")
+            ctx, agent, "tilo_do", {"path": "notes#new_note", "args": {"title": titles[e["name"]]}},
+            f"{e['name']}-new_note")
         e["opened"], e["new_note"], e["asked_for_note"] = opened, made, asked
         agent.keep()
     res.metrics["opened"] = {e["name"]: text_of(e["opened"])[:300] for e in envs}
@@ -778,7 +778,7 @@ def own_change(ctx, res):
             problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
                             f"{text_of(e['opened'])[:300]} (journal: {journal(ctx, e['opened_app'])})")
         if is_error(e["new_note"]) is not False:
-            problems.append(f"{e['name']}: new-note was refused: {text_of(e['new_note'])[:300]}")
+            problems.append(f"{e['name']}: new_note was refused: {text_of(e['new_note'])[:300]}")
             continue
         found = tool_until(agent, "tilo_find", {"query": titles[e["name"]]},
                            lambda t: not t.startswith("nothing matches") and titles[e["name"]] in t)

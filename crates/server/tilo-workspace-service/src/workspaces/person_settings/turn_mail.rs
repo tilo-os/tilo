@@ -139,10 +139,6 @@ fn on_one_line(value: &str) -> String {
     line
 }
 
-fn refused(reason: String) -> ActionCallError {
-    ActionCallError::Refused { reason }
-}
-
 /// Where the message begun as `send` waits under `root` while its person is
 /// asked, for the workspace whose id is `workspace`.
 fn asked_dir(root: &Path, workspace: &str, send: &str) -> Result<PathBuf, String> {
@@ -287,7 +283,7 @@ impl Workspaces {
         let rows = Staged::read(dir.clone(), beginning)
             .and_then(|staged| staged.shown())
             .map(|shown| shown.rows().to_vec())
-            .map_err(refused)?;
+            .map_err(ActionCallError::refused)?;
         let asked = AskedSend {
             send: sending.send,
             account,
@@ -296,7 +292,7 @@ impl Workspaces {
             rows,
         };
         self.forget_unasked_sends(&root, &using.workspace, &asked.workspace);
-        set_apart(&root, &dir, &asked).map_err(refused)?;
+        set_apart(&root, &dir, &asked).map_err(ActionCallError::refused)?;
         Ok(TurnMail::Asks(Box::new(asked)))
     }
 

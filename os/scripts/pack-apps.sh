@@ -72,7 +72,7 @@
 #
 # The store keeps each package once, as its installed tree and signed record
 # (pkgs/<root>.pkg/). Whoever needs the archive itself rebuilds it from those
-# (the dev VM daemon, crates/dev/tilo-vmd/src/cohort.rs): the same signed root
+# (the dev VM daemon, crates/os/tilo-device-steps/src/cohort.rs): the same signed root
 # and the same bytes, without a second copy of every app in the image.
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
@@ -251,6 +251,9 @@ fi
 export TILO_LAUNCHER_PATH="${TILO_LAUNCHER_PATH:-/usr/libexec/tilo/tilo-launcher}"
 
 export TILO_APPS_DATA_DIR="$STORE"
+# An image build has no device, identity or package service, so each install
+# below names the store it writes (`--offline-store`) and tilo-install makes the
+# package service's install action in its own process.
 
 # --- pack + install every manifest -----------------------------------------
 shipped=(); missing=(); failed=()
@@ -298,7 +301,7 @@ if [ "$prebuilt" = 1 ]; then
             failed+=("$(basename "$tapp"): collection mixes publisher identities")
             continue
         fi
-        if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
+        if ! "$INSTALL_BIN" --offline-store "$STORE" install "$tapp" --allow-self-signed \
                 >"$STAGE/$(basename "$tapp").install.log" 2>&1; then
             failed+=("$(basename "$tapp"): install failed")
             continue
@@ -409,7 +412,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     # Self-signed is what this is: the image publisher signed it, and no
     # third-party attestor vouched for it. Saying so explicitly is honest,
     # and it is the same flag a user passes for their own local package.
-    if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
+    if ! "$INSTALL_BIN" --offline-store "$STORE" install "$tapp" --allow-self-signed \
             >"$STAGE/$id.install.log" 2>&1; then
         failed+=("$app ($id): install failed — $(tail -3 "$STAGE/$id.install.log" | tr '\n' ' ')")
         continue
@@ -477,7 +480,7 @@ PY
                 failed+=("$tl_name ($tl_id): verify failed — $(tail -3 "$STAGE/$tl_id.verify.log" | tr '\n' ' ')")
                 continue
             fi
-            if ! "$INSTALL_BIN" install "$tl_tapp" --allow-self-signed \
+            if ! "$INSTALL_BIN" --offline-store "$STORE" install "$tl_tapp" --allow-self-signed \
                     >"$STAGE/$tl_id.install.log" 2>&1; then
                 failed+=("$tl_name ($tl_id): install failed — $(tail -3 "$STAGE/$tl_id.install.log" | tr '\n' ' ')")
                 continue

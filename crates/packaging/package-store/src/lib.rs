@@ -11,6 +11,7 @@ pub mod lease;
 pub mod mounts;
 pub mod registry;
 pub mod size_limit;
+pub mod state;
 
 #[cfg(feature = "store")]
 mod content;
@@ -25,8 +26,6 @@ pub mod runtime_blobs;
 #[cfg(feature = "store")]
 pub mod shim;
 #[cfg(feature = "store")]
-pub mod state;
-#[cfg(feature = "store")]
 mod store;
 
 pub use catalog::{
@@ -37,7 +36,7 @@ pub use catalog::{
 pub use image::{
     FleetSource, HOST_SOURCES_FILE, ImageShelf, ImageTrust, MaterializeError,
     SYSTEM_IMAGE_PUBLISHERS_FILE, Store, check_tool_runtime, local_materialized_tree,
-    materialized_tree, tool_runtime,
+    materialized_tree, serves_in_place, tool_runtime,
 };
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError, TakenOver};

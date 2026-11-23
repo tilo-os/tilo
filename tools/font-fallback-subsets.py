@@ -6,7 +6,7 @@
 """Rebuild the catalog's matched script fallback from its pinned upstream font.
 
 Tilo Sans, as shipped, has no Cyrillic, which falls back to a face chosen to
-match it (see crates/sdk/ui-core/assets/fonts/PROVENANCE.md). Only the script
+match it (see crates/ui/ui-core/assets/fonts/PROVENANCE.md). Only the script
 the face serves ships, plus the punctuation, digits and marks its runs need,
 so the catalog does not carry a second Latin.
 
@@ -32,7 +32,7 @@ from fontTools.ttLib import TTFont
 
 GOOGLE_FONTS = "9710da1eacb3be272583c3224dcb70f9da6eadbb"
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG = ROOT / "crates/sdk/ui-core/assets/fonts"
+CATALOG = ROOT / "crates/ui/ui-core/assets/fonts"
 
 # What every fallback run carries besides its own script: space, ASCII
 # punctuation and digits, Latin-1 punctuation and signs, the apostrophe

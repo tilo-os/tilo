@@ -3,15 +3,15 @@
 //!
 //! The host keeps one session per device, so two processes entering as the same device cut each
 //! other off, over and over: each agent's calls then fail as "not connected to the host" or go
-//! unanswered. Every `tilo mcp` therefore reaches the daemon over a socket in the device's
-//! directory ([`reach`], starting `tilo-runtime` when none listens) and relays its agent's
+//! unanswered. Every `tilo mcp` therefore reaches the daemon over its socket ([`reach`], its
+//! service started when none listens) and relays its agent's
 //! stdio to it ([`relay`]). The daemon serves each connection as its own agent run over the one
 //! session.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -20,14 +20,9 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 /// How long a connection waits for a daemon to listen.
 const REACHING: Duration = Duration::from_secs(10);
-/// How long a connection waits for the user service it asked to start a daemon that listens,
-/// before it starts one itself.
-const SERVICE_STARTING: Duration = Duration::from_secs(5);
-/// How often a connection looks for a daemon that has not started listening.
-const POLL: Duration = Duration::from_millis(50);
 
-/// Start this computer's daemon unless one listens already: what `tilo login` and `tilo mount`
-/// leave running.
+/// Start this computer's daemon's service unless the daemon listens already: what `tilo login`
+/// and `tilo mount` leave running.
 ///
 /// # Errors
 /// It did not start, or did not listen in time.
@@ -35,83 +30,14 @@ pub(crate) fn ensure(place: &DaemonPlace) -> Result<(), String> {
     reach(place).map(drop)
 }
 
-/// A connection to this computer's daemon, starting it when none listens.
+/// A connection to this computer's daemon, its service started when none listens.
 pub(crate) fn reach(place: &DaemonPlace) -> Result<UnixStream, String> {
-    reach_starting(place, |via_service| start_daemon(place, via_service))
-}
-
-/// How a daemon was started.
-enum Started {
-    /// As a process of this one's, waited for and started again if it ended without listening.
-    Process(std::process::Child),
-    /// As the user service, which keeps it from then on: asked at this instant.
-    Service(Instant),
-}
-
-/// [`reach`], with `start` starting a daemon (through the user service where it may); what it
-/// started is waited for, and started again if it ended without listening (one that was leaving
-/// held the lock). A service that started no daemon listening within half the wait is not asked
-/// again: this command starts one itself.
-fn reach_starting(
-    place: &DaemonPlace,
-    start: impl Fn(bool) -> std::io::Result<Started>,
-) -> Result<UnixStream, String> {
-    let deadline = Instant::now()
-        .checked_add(REACHING)
-        .unwrap_or_else(Instant::now);
-    let mut started: Option<Started> = None;
-    let mut via_service = true;
-    loop {
-        match tilo_files::native::socket::connect(place.socket()) {
-            Ok(stream) => return Ok(stream),
-            Err(error) if Instant::now() >= deadline => {
-                // Where it listens and what it logged: for whoever keeps this
-                // computer's logs, not for the agent's sentence.
-                tracing::debug!(
-                    socket = %place.socket().display(),
-                    log = %place.log().display(),
-                    %error,
-                    "Tilo's background sync did not answer"
-                );
-                return Err(
-                    "Tilo's background sync isn't answering on this computer. Run `tilo status` \
-                     to see how it stands, then try again."
-                        .to_owned(),
-                );
-            }
-            Err(_) => {}
-        }
-        let ended = match started.as_mut() {
-            None => true,
-            Some(Started::Process(child)) => child.try_wait().ok().flatten().is_some(),
-            Some(Started::Service(asked)) => {
-                let given_up = asked.elapsed() >= SERVICE_STARTING;
-                via_service &= !given_up;
-                given_up
-            }
-        };
-        if ended {
-            started = Some(start(via_service).map_err(|error| {
-                tracing::debug!(%error, "Tilo's background sync did not start");
-                "Tilo's background sync didn't start on this computer. Run `tilo status` to see \
-                 how it stands, then try again."
-                    .to_owned()
-            })?);
-        }
-        std::thread::sleep(POLL);
-    }
-}
-
-/// Start the daemon (`tilo-runtime`): as the user service where it is installed, so the
-/// one daemon of the device lives where the person's login keeps it, never inside the agent or
-/// command that happened to need it first (and ends with it). Elsewhere on its own: in a process
-/// group of its own, so the agent that ends this connection does not end it with the others',
-/// and adding what it says to its log.
-fn start_daemon(place: &DaemonPlace, via_service: bool) -> std::io::Result<Started> {
-    if via_service && crate::service::start_installed() {
-        return Ok(Started::Service(Instant::now()));
-    }
-    place.start().map(Started::Process)
+    place.reach(REACHING).map_err(|why| {
+        tracing::debug!(socket = %place.socket().display(), %why, "Tilo's daemon did not answer");
+        "Tilo's background sync isn't answering on this computer. Run `tilo status` to see how \
+         it stands, then try again."
+            .to_owned()
+    })
 }
 
 /// Serve this connection's stdio alone, every call answered with `problem`: with no login to

@@ -195,11 +195,16 @@ fn provision(parts: &Path) -> Result<(), String> {
     if parts.is_dir() {
         return Ok(());
     }
+    #[cfg(unix)]
     tilo_files::native::atomic::provision_directory(
         parts,
         tilo_files::native::atomic::Privacy::OwnerOnly,
     )
     .map_err(|error| error.into_io_error().to_string())?;
+    // Windows has no durable directory provisioning; the private directory carries the same
+    // owner-only access through its ACL.
+    #[cfg(not(unix))]
+    tilo_files::native::private::directory(parts).map_err(|error| error.to_string())?;
     Ok(())
 }
 

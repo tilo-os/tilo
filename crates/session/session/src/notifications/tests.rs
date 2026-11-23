@@ -1581,3 +1581,252 @@ fn a_device_on_another_version_is_named_on_the_shell() {
         "and it waits in the centre"
     );
 }
+
+/// The centre's reading says how long ago each notice arrived and whether its body may show, so a
+/// view can write "3 min ago" and a banner can keep a secret: the rest of the reading is the
+/// centre's own, which a reader that knows those fields reads as before.
+#[test]
+fn the_reading_says_how_long_ago_each_notice_arrived_and_whether_it_may_show() {
+    let rig = rig();
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+    assert!(served.poll(), "what the centre keeps is a reading");
+    let reading = served.read(RESOURCE).expect("the centre is published");
+    let notice = reading
+        .get("notices")
+        .and_then(Value::as_array)
+        .and_then(|notices| notices.first())
+        .expect("the notice it keeps");
+    assert!(
+        notice.get("age_seconds").and_then(Value::as_u64).is_some(),
+        "the notice says how long ago it arrived: {notice}"
+    );
+    assert_eq!(
+        notice.get("preview").and_then(Value::as_bool),
+        Some(true),
+        "a sender that asked for a preview says so: {notice}"
+    );
+    // What the panel reads is unchanged: it knows neither field.
+    let centre: NotificationCentre =
+        serde_json::from_value(reading).expect("the centre still reads");
+    assert_eq!(centre.count, 1);
+}
+
+/// Invoke one of the banners' verbs with `arguments`, as the shell's banner does.
+fn invoke_banner(served: &mut Served, action: &str, arguments: serde_json::Value) {
+    let arguments: Map<String, Value> =
+        serde_json::from_value(arguments).expect("the verb's arguments");
+    served
+        .invoke(BANNERS, action, &arguments)
+        .expect("the banners answer their own verbs");
+}
+
+/// A banner on screen offering `actions`, and the service publishing it.
+fn banner_rig(actions: &[(&str, &str)]) -> (Rig, Served, u64) {
+    let rig = rig();
+    let mut note = sent(rig.daemon.alloc_id());
+    note.actions = actions
+        .iter()
+        .map(|(key, label)| ((*key).to_owned(), (*label).to_owned()))
+        .collect();
+    rig.daemon.push(note);
+    rig.step();
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+    assert!(served.poll(), "what the banners show is a reading");
+    let id = rig
+        .feed()
+        .banners
+        .last()
+        .expect("the notification is on screen")
+        .notification
+        .id;
+    (rig, served, id)
+}
+
+/// The banner closes and opens through its published actions, each naming the row it read.
+#[test]
+fn a_banner_dismisses_and_opens_through_its_published_actions() {
+    let (rig, mut served, id) = banner_rig(&[("open", "Open")]);
+    invoke_banner(
+        &mut served,
+        "dismiss",
+        serde_json::json!({ "banner": id.to_string() }),
+    );
+    rig.step();
+    assert!(
+        rig.feed().banners.is_empty(),
+        "the banner left when it was dismissed"
+    );
+
+    let (rig, mut served, id) = banner_rig(&[("open", "Open")]);
+    invoke_banner(
+        &mut served,
+        "open-banner",
+        serde_json::json!({ "banner": id.to_string() }),
+    );
+    rig.step();
+    let taken = rig.heard.taken.lock().unwrap().clone();
+    assert!(
+        taken.iter().any(|(_, said)| said == "action open"),
+        "opening ran the action the sender offered: {taken:?}"
+    );
+}
+
+/// A choice is named by its label as a person reads it, and a reply reaches the sender.
+#[test]
+fn a_banner_chooses_by_label_and_replies() {
+    let (rig, mut served, id) = banner_rig(&[
+        ("snooze", "Snooze"),
+        (tilo_notification_banners::INLINE_REPLY, "Reply"),
+    ]);
+    invoke_banner(
+        &mut served,
+        "act",
+        serde_json::json!({ "banner": id.to_string(), "choice": "Snooze" }),
+    );
+    rig.step();
+    let taken = rig.heard.taken.lock().unwrap().clone();
+    assert!(
+        taken.iter().any(|(_, said)| said == "action snooze"),
+        "the label chose the key it names: {taken:?}"
+    );
+
+    let (rig, mut served, id) = banner_rig(&[(tilo_notification_banners::INLINE_REPLY, "Reply")]);
+    invoke_banner(
+        &mut served,
+        "reply",
+        serde_json::json!({ "banner": id.to_string(), "text": "On it" }),
+    );
+    rig.step();
+    let taken = rig.heard.taken.lock().unwrap().clone();
+    assert!(
+        taken.iter().any(|(_, said)| said == "reply On it"),
+        "the reply reached the sender: {taken:?}"
+    );
+}
+
+/// Snoozing runs the sender's snooze, reading takes the banner to the centre, and focusing says
+/// which banner the keys act on.
+#[test]
+fn a_banner_snoozes_reads_and_focuses() {
+    let (rig, mut served, id) = banner_rig(&[("snooze", "Snooze")]);
+    invoke_banner(
+        &mut served,
+        "snooze",
+        serde_json::json!({ "banner": id.to_string() }),
+    );
+    rig.step();
+    let taken = rig.heard.taken.lock().unwrap().clone();
+    assert!(
+        taken.iter().any(|(_, said)| said == "action snooze"),
+        "the snooze ran: {taken:?}"
+    );
+
+    let (_rig, mut served, id) = banner_rig(&[("open", "Open")]);
+    invoke_banner(&mut served, "focus-newest", serde_json::json!({}));
+    let reading = served.read(RESOURCE).expect("the centre is published");
+    assert_eq!(
+        reading.get("focused").and_then(Value::as_u64),
+        Some(id),
+        "the newest banner took the keyboard: {reading}"
+    );
+
+    let (rig, mut served, id) = banner_rig(&[("open", "Open")]);
+    invoke_banner(
+        &mut served,
+        "read",
+        serde_json::json!({ "banner": id.to_string() }),
+    );
+    rig.step();
+    assert!(
+        rig.feed().banners.is_empty(),
+        "reading it took it off the screen into the centre"
+    );
+}
+
+/// A ringing call is answered or declined from its banner: the key the caller offered runs.
+/// A refusal — what the session posts when an action could not run — is a notice of its own kind,
+/// and the centre's published dismiss takes it away like any other.
+#[test]
+fn a_refusal_is_dismissed_through_the_centres_published_action() {
+    let rig = rig();
+    rig.bridge.borrow().post(
+        "Settings did not open",
+        "It was not installed",
+        "Session",
+        "error",
+    );
+    rig.step();
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+    assert!(served.poll());
+    let reading = served.read(RESOURCE).expect("the centre is published");
+    let notice = reading
+        .get("notices")
+        .and_then(Value::as_array)
+        .and_then(|notices| notices.first())
+        .expect("the refusal is kept");
+    assert_eq!(
+        notice.get("kind").and_then(Value::as_str),
+        Some("error"),
+        "it reads as a failure: {notice}"
+    );
+    let number = notice
+        .get("number")
+        .and_then(Value::as_u64)
+        .expect("the refusal has a number");
+    invoke(
+        &mut served,
+        "dismiss",
+        serde_json::json!({ "notification": number }),
+    );
+    rig.step();
+    assert!(served.poll(), "the centre changed");
+    let kept = served.read(RESOURCE).expect("the centre is published");
+    assert!(
+        kept.get("notices")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty),
+        "the dismissal took it away: {kept}"
+    );
+}
+
+#[test]
+fn a_call_is_answered_and_declined_from_its_banner() {
+    for (verb, key) in [("answer-call", "answer"), ("decline-call", "decline")] {
+        let rig = rig();
+        let mut call = sent(rig.daemon.alloc_id());
+        call.incoming_call = true;
+        call.sender_name = Some("Mia".to_owned());
+        call.contact_endpoint = Some("mia".to_owned());
+        call.actions = [("answer", "Answer"), ("decline", "Decline")]
+            .iter()
+            .map(|(key, label)| ((*key).to_owned(), (*label).to_owned()))
+            .collect();
+        rig.daemon.push(call);
+        rig.step();
+        let mut served = Served::new(Rc::clone(&rig.bridge));
+        assert!(served.poll());
+        let id = rig
+            .feed()
+            .banners
+            .last()
+            .expect("the call rings on screen")
+            .notification
+            .id;
+        invoke_banner(
+            &mut served,
+            verb,
+            serde_json::json!({ "banner": id.to_string() }),
+        );
+        rig.step();
+        let taken = rig.heard.taken.lock().unwrap().clone();
+        assert!(
+            taken
+                .iter()
+                .any(|(_, said)| said == &format!("action {key}")),
+            "{verb} ran the caller's {key}: {taken:?}"
+        );
+    }
+}

@@ -253,15 +253,13 @@ pub struct ProgressView {
     stage: Option<String>,
 }
 
+#[must_use]
 pub fn human_size(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
-        let tenths = bytes / 100_000_000;
-        format!("{}.{} GB", tenths / 10, tenths % 10)
-    } else if bytes >= 1_000_000 {
-        format!("{} MB", bytes / 1_000_000)
-    } else {
-        format!("{} kB", bytes / 1000)
-    }
+    tilo_formats::ByteFormat::decimal()
+        .min_unit(tilo_formats::ByteUnit::Kilo)
+        .decimal_from(tilo_formats::ByteUnit::Giga)
+        .rounding(tilo_formats::ByteRounding::Truncate)
+        .format(bytes)
 }
 
 impl ProgressView {
@@ -722,6 +720,29 @@ mod tests {
                 "{note}"
             );
             assert!(note.contains("passphrase"), "{note}");
+        }
+    }
+
+    #[test]
+    fn human_size_formats_table() {
+        let cases = [
+            (0, "0 kB"),
+            (1, "0 kB"),
+            (999, "0 kB"),
+            (1_000, "1 kB"),
+            (1_023, "1 kB"),
+            (1_024, "1 kB"),
+            (1_500, "1 kB"),
+            (999_999, "999 kB"),
+            (1_000_000, "1 MB"),
+            (1_048_576, "1 MB"),
+            (1_500_000, "1 MB"),
+            (1_073_741_824, "1.0 GB"),
+            (5_000_000_000, "5.0 GB"),
+            (u64::MAX, "18446744073.7 GB"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(human_size(input), expected, "input={input}");
         }
     }
 }

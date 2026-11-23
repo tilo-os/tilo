@@ -242,6 +242,7 @@ session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
 
+session-nearby-send = In der Nähe senden
 session-windows = Fenster
 session-tray = Statusleiste
 session-invite = Einladen
@@ -355,6 +356,9 @@ session-answer-ask = Antworten
 session-ask-later = Später fragen
 session-tray-open = Öffnen
 session-agents-stop = Stoppen
+session-agents-other-devices = Ob Agenten von meinen anderen Geräten hier arbeiten
+session-agents-accept-other-devices = Agenten von meinen anderen Geräten annehmen
+session-agents-act-without-asking = Ohne Rückfrage handeln lassen
 session-people = Personen
 
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
@@ -429,9 +433,6 @@ session-agent-name = Assistent
 style-failed-app-name = Shell
 style-failed-title = Dein Stil konnte nicht angezeigt werden
 style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt die Shell Streifen. Deine Wahl bleibt erhalten.
-
-## A turn whose agent stopped before it answered the person's message.
-turn-unanswered = Der Agent hat aufgehört, bevor er antwortete
 
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
@@ -539,6 +540,8 @@ so-tilo-desktop-overlays-show-surface = Bereich ein- oder ausblenden
 so-tilo-desktop-overlays-walk-switcher = Fenster wechseln
 so-tilo-desktop-overlays-select-switcher = Fenster im Umschalter wählen
 so-tilo-desktop-overlays-commit-switcher = Zum gewählten Fenster wechseln
+so-tilo-desktop-overlays-pick-emoji = Das gewählte Emoji in das Feld schreiben, in das die Person tippt, und die Auswahl schließen.
+so-tilo-desktop-overlays-close-emoji = Die Emoji-Auswahl schließen, ohne etwas zu schreiben
 
 ## Actions
 
@@ -578,12 +581,6 @@ so-tilo-desktop-overlays-open-surface = Eine Oberfläche öffnen
 so-tilo-desktop-window-menu-choose = Eine Zeile wählen
 so-tilo-desktop-window-menu-close = Das Fenstermenü schließen
 so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen
-machines-waiting-source = Deine Geräte
-machines-waiting-title = Gerät bestätigen
-machines-waiting-body = { $machine } möchte beitreten. Vergleiche Code { $code } auf beiden Geräten.
-machines-waiting-review = Anfrage ansehen
-machines-waiting-approve = { $code } bestätigen
-machines-waiting-decline = Ablehnen
 
 ## Die Beschreibung eines Parameters wird als `<Label>-<Argument>` gelesen.
 
@@ -610,3 +607,15 @@ airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger
 
 so-tilo-session-notifications-reply = In einer Benachrichtigung mit Antwortfeld antworten
 session-osd = Anzeige
+## Banners
+
+session-banners = Hinweise
+so-tilo-session-banners-open-banner = Die Benachrichtigung öffnen
+so-tilo-session-banners-dismiss = Die Benachrichtigung schließen
+so-tilo-session-banners-act = Auf der Benachrichtigung wählen
+so-tilo-session-banners-reply = Auf die Benachrichtigung antworten
+so-tilo-session-banners-snooze = Die Benachrichtigung später erneut zeigen
+so-tilo-session-banners-focus-newest = Den neuesten Hinweis fokussieren
+so-tilo-session-banners-read = Ganz lesen
+so-tilo-session-banners-answer-call = Den Anruf annehmen
+so-tilo-session-banners-decline-call = Den Anruf ablehnen

@@ -34,37 +34,158 @@ use crate::render::OutputRenderElement;
 use settings_store::hardware::HdrUnavailable;
 use tilo_color_pipeline::hdr_surface::HdrLayer;
 
-/// Grid points a side of the calibration lookup table.
-pub(crate) const GRID: u32 = 33;
+/// Grid points a side of the calibration lookup table: the fewest at which profiles that keep sRGB
+/// inside the panel's gamut stay within one code value of qcms; at 33 they reach 2.
+pub(crate) const GRID_POINTS: u32 = 65;
+
+/// The grid is even in `linear^(1 / GRID_GAMMA)`, which puts more of its points near black, where
+/// a panel's curves bend hardest.
+const GRID_GAMMA: f32 = 2.2;
+
+/// Blue slices a row of the atlas holds.
+const SLICES_ACROSS: u32 = 8;
+
+/// The calibration lookup table, as the final pass reads it from one RGBA8 texture.
+///
+/// qcms takes 8-bit input only, so the grid points are 8-bit codes, spaced evenly in a gamma-2.2
+/// domain rather than in code values. Each blue grid point is a slice of `points²` texels, red
+/// across and green down; the slices go [`SLICES_ACROSS`] to a row. The last row maps each input
+/// code 0..=255 to its position on the grid: the cell in red, and how far across that cell it lies
+/// in green (high byte) and blue (low byte), in 65535ths. The shader reads every texel at its
+/// centre without filtering and interpolates tetrahedrally itself, so the result does not depend
+/// on the GPU's filter precision.
+pub(crate) struct LutAtlas {
+    /// Grid points a side.
+    pub points: u32,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8 rows of `width` texels.
+    pub pixels: Vec<u8>,
+}
 
 /// The calibration lookup table for `transform` (RGBA8 in, RGBA8 out): the grid's colours run
-/// through it, laid out as `GRID` blue slices side by side, red across each slice, green down.
-/// RGBA8 rows, `GRID * GRID` pixels wide, `GRID` high.
-pub(crate) fn lut_atlas(transform: impl Fn(&mut [u8])) -> Vec<u8> {
-    let step = |index: u32| -> u8 {
-        u8::try_from(
-            index
-                .saturating_mul(255)
-                .checked_div(GRID.saturating_sub(1))
-                .unwrap_or(0),
-        )
-        .unwrap_or(u8::MAX)
-    };
-    let mut atlas = Vec::with_capacity(usize::try_from(GRID.pow(3).saturating_mul(4)).unwrap_or(0));
-    for green in 0..GRID {
-        for blue in 0..GRID {
-            for red in 0..GRID {
-                atlas.extend_from_slice(&[step(red), step(green), step(blue), 255]);
+/// through it ([`LutAtlas`]).
+pub(crate) fn lut_atlas(transform: impl Fn(&mut [u8])) -> LutAtlas {
+    let codes = grid_codes();
+    let points = u32::try_from(codes.len()).unwrap_or(1);
+    let mut samples = Vec::with_capacity(codes.len().saturating_pow(3).saturating_mul(4));
+    for &blue in &codes {
+        for &green in &codes {
+            for &red in &codes {
+                samples.extend_from_slice(&[red, green, blue, u8::MAX]);
             }
         }
     }
-    transform(&mut atlas);
-    atlas
+    transform(&mut samples);
+    let width = SLICES_ACROSS.saturating_mul(points);
+    let height = points
+        .div_ceil(SLICES_ACROSS)
+        .saturating_mul(points)
+        .saturating_add(1);
+    let texel_at = |x: u32, y: u32| -> usize {
+        usize::try_from(y.saturating_mul(width).saturating_add(x).saturating_mul(4))
+            .unwrap_or(usize::MAX)
+    };
+    let mut pixels = vec![0_u8; texel_at(0, height)];
+    let mut index = 0_u32;
+    for texel in samples.chunks_exact(4) {
+        let rem = |value: u32, by: u32| value.checked_rem(by).unwrap_or(0);
+        let div = |value: u32, by: u32| value.checked_div(by).unwrap_or(0);
+        let (red, green, blue) = (
+            rem(index, points),
+            rem(div(index, points), points),
+            div(index, points.saturating_mul(points)),
+        );
+        let x = rem(blue, SLICES_ACROSS)
+            .saturating_mul(points)
+            .saturating_add(red);
+        let y = div(blue, SLICES_ACROSS)
+            .saturating_mul(points)
+            .saturating_add(green);
+        let at = texel_at(x, y);
+        if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
+            slot.copy_from_slice(texel);
+        }
+        index = index.saturating_add(1);
+    }
+    let last_cell = f32::from(u16::try_from(points.saturating_sub(2)).unwrap_or(0));
+    let row = texel_at(0, height.saturating_sub(1));
+    for (code, position) in grid_coordinates(&codes).into_iter().enumerate() {
+        let cell = position.floor().clamp(0.0, last_cell);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "both are clamped into the u8 and u16 ranges first"
+        )]
+        let (cell_code, fraction) = (
+            cell as u8,
+            ((position - cell).clamp(0.0, 1.0) * 65535.0).round() as u16,
+        );
+        let [high, low] = fraction.to_be_bytes();
+        let at = row.saturating_add(code.saturating_mul(4));
+        if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
+            slot.copy_from_slice(&[cell_code, high, low, u8::MAX]);
+        }
+    }
+    LutAtlas {
+        points,
+        width,
+        height,
+        pixels,
+    }
+}
+
+/// `code` in the domain the grid is even in.
+fn grid_domain(code: u8) -> f32 {
+    let encoded = f32::from(code) / 255.0;
+    let linear = if encoded <= 0.040_45 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    };
+    linear.powf(GRID_GAMMA.recip())
+}
+
+/// The 8-bit codes nearest to [`GRID_POINTS`] even steps of [`grid_domain`], from 0 to 255.
+fn grid_codes() -> Vec<u8> {
+    let last = f32::from(u16::try_from(GRID_POINTS.saturating_sub(1)).unwrap_or(u16::MAX));
+    let mut codes: Vec<u8> = (0..GRID_POINTS)
+        .map(|point| {
+            let target = f32::from(u16::try_from(point).unwrap_or(u16::MAX)) / last;
+            (0..=u8::MAX)
+                .min_by(|a, b| {
+                    (grid_domain(*a) - target)
+                        .abs()
+                        .total_cmp(&(grid_domain(*b) - target).abs())
+                })
+                .unwrap_or(0)
+        })
+        .collect();
+    codes.dedup();
+    codes
+}
+
+/// The grid position of every 8-bit code: the index of the cell it falls in plus how far across
+/// that cell it lies, in [`grid_domain`].
+fn grid_coordinates(codes: &[u8]) -> Vec<f32> {
+    let mut coordinates = vec![0.0_f32; 256];
+    for (cell, pair) in (0_u8..=u8::MAX).zip(codes.windows(2)) {
+        let &[low, high] = pair else {
+            continue;
+        };
+        let (start, end) = (grid_domain(low), grid_domain(high));
+        for code in low..=high {
+            if let Some(slot) = coordinates.get_mut(usize::from(code)) {
+                *slot = f32::from(cell) + (grid_domain(code) - start) / (end - start);
+            }
+        }
+    }
+    coordinates
 }
 
 /// The lookup table of the ICC profile at `path` (perceptual, from sRGB);
 /// `None` when qcms cannot read it.
-pub(crate) fn icc_atlas(path: &Path) -> Option<Vec<u8>> {
+pub(crate) fn icc_atlas(path: &Path) -> Option<LutAtlas> {
     let input = qcms::Profile::new_sRGB();
     let output = qcms::Profile::new_from_path(path.to_str()?)?;
     let transform = qcms::Transform::new(
@@ -339,6 +460,85 @@ pub(crate) struct ColorPass {
     commit: CommitCounter,
 }
 
+/// The final pass's shader, compiled on `gles`.
+fn compile_program(gles: &mut GlesRenderer) -> Result<GlesTexProgram, String> {
+    let mut names = vec![
+        UniformName::new("lut", UniformType::_1i),
+        UniformName::new("use_lut", UniformType::_1f),
+        UniformName::new("lut_points", UniformType::_1f),
+        UniformName::new("lut_extent", UniformType::_2f),
+        UniformName::new("pq", UniformType::_1f),
+        UniformName::new("sdr_white", UniformType::_1f),
+        UniformName::new("filter_row_r", UniformType::_3f),
+        UniformName::new("filter_row_g", UniformType::_3f),
+        UniformName::new("filter_row_b", UniformType::_3f),
+        UniformName::new("filter_offset", UniformType::_3f),
+        UniformName::new("use_filter", UniformType::_1f),
+        UniformName::new("scene_size", UniformType::_2f),
+        UniformName::new("layer_count", UniformType::_1f),
+    ];
+    names.extend(hdr_layers::uniform_names());
+    gles.compile_custom_texture_shader(SHADER, &names)
+        .map_err(|error| format!("colour shader: {error:?}"))
+}
+
+/// `atlas` uploaded as the texture the shader reads its calibration from.
+fn lut_texture(gles: &mut GlesRenderer, atlas: &LutAtlas) -> Result<GlesTexture, String> {
+    let size = (
+        i32::try_from(atlas.width).map_err(|error| error.to_string())?,
+        i32::try_from(atlas.height).map_err(|error| error.to_string())?,
+    );
+    gles.import_memory(&atlas.pixels, Fourcc::Abgr8888, size.into(), false)
+        .map_err(|error| format!("lookup table: {error:?}"))
+}
+
+/// The uniforms that stay the same for every frame of a pass for `wanted` on an output of `size`,
+/// calibrated through `atlas` when there is one.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "an output's size and an atlas's are below 2^24 pixels, exactly representable as f32"
+)]
+fn pass_uniforms(
+    wanted: &Wanted,
+    atlas: Option<&LutAtlas>,
+    size: Size<i32, Physical>,
+) -> Vec<Uniform<'static>> {
+    // Unit 0 draws the scene; the calibration table, the weight pass's scene and the three layer
+    // planes take the units after it.
+    let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
+    let matrix = wanted.filter.matrix();
+    let mut uniforms = vec![
+        Uniform::new("lut", 1_i32),
+        Uniform::new("use_lut", flag(atlas.is_some())),
+        Uniform::new("lut_points", atlas.map_or(2.0, |atlas| atlas.points as f32)),
+        Uniform::new(
+            "lut_extent",
+            atlas.map_or([1.0, 1.0], |atlas| {
+                [atlas.width as f32, atlas.height as f32]
+            }),
+        ),
+        Uniform::new("pq", flag(wanted.hdr.is_some())),
+        Uniform::new(
+            "sdr_white",
+            wanted.hdr.as_ref().map_or(0.0, |hdr| hdr.sdr_white_nits),
+        ),
+        Uniform::new("filter_row_r", matrix.rows[0]),
+        Uniform::new("filter_row_g", matrix.rows[1]),
+        Uniform::new("filter_row_b", matrix.rows[2]),
+        Uniform::new("filter_offset", matrix.offset),
+        Uniform::new("use_filter", flag(!wanted.filter.is_off())),
+        Uniform::new("scene_size", [size.w as f32, size.h as f32]),
+        Uniform::new("lit_tex", 2_i32),
+    ];
+    for slot in 0..hdr_layers::LAYERS {
+        uniforms.push(Uniform::new(
+            format!("plane{slot}"),
+            hdr_layers::PLANE_UNIT.saturating_add(i32::try_from(slot).unwrap_or(0)),
+        ));
+    }
+    uniforms
+}
+
 impl ColorPass {
     pub(crate) fn wanted(&self) -> &Wanted {
         &self.wanted
@@ -357,66 +557,19 @@ impl ColorPass {
         let mode = output.current_mode().ok_or("no mode")?;
         let size = output.current_transform().transform_size(mode.size);
         let gles: &mut GlesRenderer = renderer.as_mut();
-        let mut names = vec![
-            UniformName::new("lut", UniformType::_1i),
-            UniformName::new("use_lut", UniformType::_1f),
-            UniformName::new("pq", UniformType::_1f),
-            UniformName::new("sdr_white", UniformType::_1f),
-            UniformName::new("filter_row_r", UniformType::_3f),
-            UniformName::new("filter_row_g", UniformType::_3f),
-            UniformName::new("filter_row_b", UniformType::_3f),
-            UniformName::new("filter_offset", UniformType::_3f),
-            UniformName::new("use_filter", UniformType::_1f),
-            UniformName::new("scene_size", UniformType::_2f),
-            UniformName::new("layer_count", UniformType::_1f),
-        ];
-        names.extend(hdr_layers::uniform_names());
-        let program = gles
-            .compile_custom_texture_shader(SHADER, &names)
-            .map_err(|error| format!("colour shader: {error:?}"))?;
-        let lut = match &wanted.profile {
-            Some(path) => {
-                let atlas = icc_atlas(path)
-                    .ok_or_else(|| format!("{}: not a readable ICC profile", path.display()))?;
-                let edge = i32::try_from(GRID).unwrap_or(1);
-                Some(
-                    gles.import_memory(
-                        &atlas,
-                        Fourcc::Abgr8888,
-                        (edge.saturating_mul(edge), edge).into(),
-                        false,
-                    )
-                    .map_err(|error| format!("lookup table: {error:?}"))?,
-                )
-            }
+        let program = compile_program(gles)?;
+        let atlas = match &wanted.profile {
+            Some(path) => Some(
+                icc_atlas(path)
+                    .ok_or_else(|| format!("{}: not a readable ICC profile", path.display()))?,
+            ),
             None => None,
         };
-        // Unit 0 draws the scene; the calibration table, the weight pass's scene and the three
-        // layer planes take the units after it.
-        let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
-        let matrix = wanted.filter.matrix();
-        let mut uniforms = vec![
-            Uniform::new("lut", 1_i32),
-            Uniform::new("use_lut", flag(lut.is_some())),
-            Uniform::new("pq", flag(wanted.hdr.is_some())),
-            Uniform::new(
-                "sdr_white",
-                wanted.hdr.as_ref().map_or(0.0, |hdr| hdr.sdr_white_nits),
-            ),
-            Uniform::new("filter_row_r", matrix.rows[0]),
-            Uniform::new("filter_row_g", matrix.rows[1]),
-            Uniform::new("filter_row_b", matrix.rows[2]),
-            Uniform::new("filter_offset", matrix.offset),
-            Uniform::new("use_filter", flag(!wanted.filter.is_off())),
-            Uniform::new("scene_size", [size.w as f32, size.h as f32]),
-            Uniform::new("lit_tex", 2_i32),
-        ];
-        for slot in 0..hdr_layers::LAYERS {
-            uniforms.push(Uniform::new(
-                format!("plane{slot}"),
-                hdr_layers::PLANE_UNIT.saturating_add(i32::try_from(slot).unwrap_or(0)),
-            ));
-        }
+        let lut = atlas
+            .as_ref()
+            .map(|atlas| lut_texture(gles, atlas))
+            .transpose()?;
+        let uniforms = pass_uniforms(&wanted, atlas.as_ref(), size);
         let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
         let texture = renderer
             .create_buffer(Fourcc::Abgr8888, buffer_size)
@@ -552,14 +705,22 @@ impl ColorPass {
         if !samplers.is_empty() {
             frame.with_context(|gl| {
                 for (unit, texture) in &samplers {
+                    // The calibration table is read texel by texel, at each centre, and
+                    // interpolated in the shader: filtering would blend neighbouring
+                    // slices and coordinates.
+                    let filter = if *unit == 1 {
+                        ffi::NEAREST
+                    } else {
+                        ffi::LINEAR
+                    };
                     // SAFETY: the renderer's context is current inside a frame;
                     // every unit is released again after the draw.
                     unsafe {
                         gl.ActiveTexture(ffi::TEXTURE0.saturating_add(*unit));
                         gl.BindTexture(ffi::TEXTURE_2D, *texture);
                         for (parameter, value) in [
-                            (ffi::TEXTURE_MIN_FILTER, ffi::LINEAR),
-                            (ffi::TEXTURE_MAG_FILTER, ffi::LINEAR),
+                            (ffi::TEXTURE_MIN_FILTER, filter),
+                            (ffi::TEXTURE_MAG_FILTER, filter),
                             (ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE),
                             (ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE),
                         ] {
@@ -724,6 +885,11 @@ pub(crate) fn signal_hdr(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    reason = "test fixtures over small grids and colour lists: an overflow is the failing test"
+)]
 mod tests {
     use super::*;
 
@@ -749,15 +915,44 @@ mod tests {
         phase the_identity_transform_gives_the_grid_itself;
         {
             let atlas = lut_atlas(|_| {});
-            let side = usize::try_from(GRID).unwrap();
-            assert_eq!(atlas.len(), side * side * side * 4);
-            let pixel = |red: usize, green: usize, blue: usize| {
-                let at = (green * side * side + blue * side + red) * 4;
-                [atlas[at], atlas[at + 1], atlas[at + 2], atlas[at + 3]]
+            let points = atlas.points as usize;
+            assert_eq!(atlas.points, GRID_POINTS, "65 distinct codes a side");
+            let width = atlas.width as usize;
+            let texel = |x: usize, y: usize| {
+                let at = (y * width + x) * 4;
+                [
+                    atlas.pixels[at],
+                    atlas.pixels[at + 1],
+                    atlas.pixels[at + 2],
+                    atlas.pixels[at + 3],
+                ]
             };
-            assert_eq!(pixel(0, 0, 0), [0, 0, 0, 255]);
-            assert_eq!(pixel(side - 1, side - 1, side - 1), [255, 255, 255, 255]);
-            assert_eq!(pixel(16, 0, 32), [127, 0, 255, 255]);
+            // Blue slices eight to a row, red across and green down each.
+            let point = |red: usize, green: usize, blue: usize| {
+                texel((blue % 8) * points + red, (blue / 8) * points + green)
+            };
+            assert_eq!(point(0, 0, 0), [0, 0, 0, 255]);
+            let last = points - 1;
+            assert_eq!(point(last, last, last), [255, 255, 255, 255]);
+            let codes = grid_codes();
+            assert_eq!(point(16, 0, 32), [codes[16], 0, codes[32], 255]);
+            assert!(
+                codes[1] - codes[0] < codes[last] - codes[last - 1],
+                "the grid is denser near black than near white: {codes:?}"
+            );
+            // The last row: each code's cell, and how far across it.
+            let row = atlas.height as usize - 1;
+            assert_eq!(texel(0, row), [0, 0, 0, 255], "black: the first corner");
+            assert_eq!(
+                texel(255, row),
+                [u8::try_from(points - 2).unwrap(), 255, 255, 255],
+                "white: the far side of the last cell"
+            );
+            assert_eq!(
+                texel(usize::from(codes[16]), row),
+                [16, 0, 0, 255],
+                "a grid code sits on its point"
+            );
         }
 
         phase a_colour_filter_asks_for_the_final_pass;
@@ -860,6 +1055,266 @@ mod tests {
             ];
             assert_eq!(colorspace_values(values), Some((0, 9)));
             assert_eq!(colorspace_values([(0, &b"Default"[..])]), None);
+        }
+    }
+
+    /// The pass drawn on a plain GLES renderer, as the headless backend makes one: the same
+    /// shader and draw as on a display, which the test reads back.
+    impl RenderElement<GlesRenderer> for ColorPass {
+        fn draw(
+            &self,
+            frame: &mut GlesFrame<'_, '_>,
+            src: Rectangle<f64, Buffer>,
+            dst: Rectangle<i32, Physical>,
+            damage: &[Rectangle<i32, Physical>],
+            opaque_regions: &[Rectangle<i32, Physical>],
+        ) -> Result<(), GlesError> {
+            self.draw_gles(frame, src, dst, damage, opaque_regions)
+        }
+    }
+
+    /// `colours` (sRGB) through the production final pass calibrated by `atlas`, on the GPU, as
+    /// the panel's 8-bit signals.
+    fn calibrate_on_gpu(
+        gles: &mut GlesRenderer,
+        atlas: &LutAtlas,
+        colours: &[[u8; 3]],
+    ) -> Vec<[u8; 3]> {
+        // One row: no question of which way up the readback is.
+        let width = i32::try_from(colours.len()).unwrap();
+        let size = Size::<i32, Physical>::from((width, 1));
+        let pixels: Vec<u8> = colours
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect();
+        let scene = gles
+            .import_memory(&pixels, Fourcc::Abgr8888, (width, 1).into(), false)
+            .unwrap();
+        let wanted = Wanted {
+            profile: Some(PathBuf::from("panel.icc")),
+            ..Wanted::default()
+        };
+        let pass = ColorPass {
+            uniforms: pass_uniforms(&wanted, Some(atlas), size),
+            wanted,
+            texture: scene,
+            size,
+            damage: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            age: 0,
+            program: compile_program(gles).unwrap(),
+            lut: Some(lut_texture(gles, atlas).unwrap()),
+            lit: None,
+            lit_damage: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            layers: Vec::new(),
+            planes: Lights::default(),
+            id: Id::new(),
+            commit: CommitCounter::default(),
+        };
+        let drawn = crate::capture::render_to_memory::<GlesRenderer, GlesTexture, _>(
+            gles,
+            size,
+            1.0,
+            Transform::Normal,
+            &[pass],
+            [0.0; 4],
+        )
+        .unwrap();
+        drawn
+            .chunks_exact(4)
+            .take(colours.len())
+            .map(|rgba| [rgba[0], rgba[1], rgba[2]])
+            .collect()
+    }
+
+    /// The calibration the old GPU pass made, on the CPU: qcms's samples on a 65-point grid even
+    /// in gamma 2.2 (red fastest, then green, then blue), each code placed on it by its
+    /// coordinate, interpolated over the tetrahedron that holds it. Profiles that keep sRGB inside
+    /// the panel's gamut land within one code value of qcms through it.
+    fn tetrahedral_reference(transform: &qcms::Transform, colours: &[[u8; 3]]) -> Vec<[u8; 3]> {
+        let codes = grid_codes();
+        let coordinates = grid_coordinates(&codes);
+        let points = codes.len();
+        let mut samples = Vec::new();
+        for &blue in &codes {
+            for &green in &codes {
+                for &red in &codes {
+                    samples.extend_from_slice(&[red, green, blue, 255]);
+                }
+            }
+        }
+        transform.apply(&mut samples);
+        let at = |[r, g, b]: [usize; 3]| -> [f32; 3] {
+            let index = ((b * points + g) * points + r) * 4;
+            [0, 1, 2].map(|channel| f32::from(samples[index + channel]) / 255.0)
+        };
+        colours
+            .iter()
+            .map(|colour| {
+                let position = colour.map(|code| coordinates[usize::from(code)]);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "grid positions are 0..=64"
+                )]
+                let cell = position.map(|p| (p.floor() as usize).min(points - 2));
+                let f = [0, 1, 2].map(|axis| position[axis] - cell[axis] as f32);
+                // Corners from the origin to the far corner, largest fraction first.
+                let mut order = [0_usize, 1, 2];
+                order.sort_by(|a, b| f[*b].total_cmp(&f[*a]));
+                let mut corner = cell;
+                let mut colour = at(corner).map(|value| value * (1.0 - f[order[0]]));
+                for (step, axis) in order.iter().enumerate() {
+                    corner[*axis] += 1;
+                    let weight = f[*axis] - order.get(step + 1).map_or(0.0, |next| f[*next]);
+                    let value = at(corner);
+                    for channel in 0..3 {
+                        colour[channel] += weight * value[channel];
+                    }
+                }
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to 0..=255 first"
+                )]
+                colour.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+            })
+            .collect()
+    }
+
+    /// Every colour on a lattice of step 15, every grey, and the primaries and secondaries.
+    fn known_colours() -> Vec<[u8; 3]> {
+        let lattice: Vec<u8> = (0..=u8::MAX).step_by(15).collect();
+        let mut colours = Vec::new();
+        for &b in &lattice {
+            for &g in &lattice {
+                for &r in &lattice {
+                    colours.push([r, g, b]);
+                }
+            }
+        }
+        colours.extend((0..=u8::MAX).map(|grey| [grey; 3]));
+        colours
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0..=1 first"
+    )]
+    fn to_u16(value: f64) -> u16 {
+        (value.clamp(0.0, 1.0) * 65535.0).round() as u16
+    }
+
+    fn xy((x, y): (f64, f64)) -> qcms::CIE_xyY {
+        qcms::CIE_xyY { x, y, Y: 1.0 }
+    }
+
+    /// Calibrated displays a desktop meets, sRGB to each as the pass maps it: a wide-gamut
+    /// matrix profile with a gamma curve, and one with a measured-looking table curve.
+    fn panels() -> Vec<(&'static str, qcms::Transform)> {
+        let d65 = (0.3127, 0.3290);
+        let adobe = qcms::CIE_xyYTRIPLE {
+            red: xy((0.64, 0.33)),
+            green: xy((0.21, 0.71)),
+            blue: xy((0.15, 0.06)),
+        };
+        let p3 = qcms::CIE_xyYTRIPLE {
+            red: xy((0.680, 0.320)),
+            green: xy((0.265, 0.690)),
+            blue: xy((0.150, 0.060)),
+        };
+        // Gamma 2.2 with a ripple, as a calibration tool measures a panel.
+        let ripple: Vec<u16> = (0..1024)
+            .map(|i| {
+                let signal = f64::from(i) / 1023.0;
+                let light = (signal.powf(2.2)
+                    * (1.0 + 0.04 * (signal * 12.0).sin() * signal * (1.0 - signal)))
+                    .clamp(0.0, 1.0);
+                to_u16(light)
+            })
+            .collect();
+        let profiles = [
+            ("sRGB", qcms::Profile::new_sRGB()),
+            (
+                "Adobe RGB, gamma 2.2",
+                qcms::Profile::new_rgb_with_gamma_set(xy(d65), adobe, 2.2, 2.2, 2.2).unwrap(),
+            ),
+            (
+                "Display P3, calibration table",
+                qcms::Profile::new_rgb_with_table(xy(d65), p3, &ripple).unwrap(),
+            ),
+        ];
+        let srgb = qcms::Profile::new_sRGB();
+        profiles
+            .into_iter()
+            .map(|(name, panel)| {
+                let transform = qcms::Transform::new(
+                    &srgb,
+                    &panel,
+                    qcms::DataType::RGBA8,
+                    qcms::Intent::Perceptual,
+                )
+                .unwrap();
+                (name, transform)
+            })
+            .collect()
+    }
+
+    /// The largest per-channel difference between two lists of colours, and where.
+    fn largest_difference(got: &[[u8; 3]], want: &[[u8; 3]]) -> (u8, usize) {
+        got.iter()
+            .zip(want)
+            .enumerate()
+            .map(|(index, (got, want))| {
+                let delta = (0..3).map(|c| got[c].abs_diff(want[c])).max().unwrap();
+                (delta, index)
+            })
+            .max()
+            .unwrap()
+    }
+
+    tilo_test_env::scenario! {
+        /// A calibrated output's colours on the GPU: the 65-point tetrahedral table the pass
+        /// had before, and within one code value of qcms.
+        fn a_calibrated_output_matches_qcms_within_one_code_value;
+
+        phase known_colours_land_on_the_tetrahedral_reference_and_on_qcms;
+        {
+            let display = crate::backend::headless::display().expect("an EGL display");
+            let context = smithay::backend::egl::EGLContext::new(&display).expect("an EGL context");
+            // SAFETY: the context is current on this thread, the one that draws.
+            let mut gles = unsafe { GlesRenderer::new(context) }.expect("a GLES renderer");
+            let colours = known_colours();
+            for (name, transform) in panels() {
+                let atlas = lut_atlas(|pixels| transform.apply(pixels));
+                let got = calibrate_on_gpu(&mut gles, &atlas, &colours);
+                let reference = tetrahedral_reference(&transform, &colours);
+                let (delta, at) = largest_difference(&got, &reference);
+                assert!(
+                    delta <= 1,
+                    "{name}: {:?} is {:?} on the GPU, {:?} by the tetrahedral reference",
+                    colours[at],
+                    got[at],
+                    reference[at]
+                );
+                let mut qcms_colours: Vec<u8> = colours
+                    .iter()
+                    .flat_map(|&[r, g, b]| [r, g, b, 255])
+                    .collect();
+                transform.apply(&mut qcms_colours);
+                let want: Vec<[u8; 3]> = qcms_colours
+                    .chunks_exact(4)
+                    .map(|rgba| [rgba[0], rgba[1], rgba[2]])
+                    .collect();
+                let (delta, at) = largest_difference(&got, &want);
+                assert!(
+                    delta <= 1,
+                    "{name}: {:?} is {:?} on the GPU, {:?} by qcms",
+                    colours[at],
+                    got[at],
+                    want[at]
+                );
+            }
         }
     }
 }

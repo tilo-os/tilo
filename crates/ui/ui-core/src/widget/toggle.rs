@@ -1,0 +1,1960 @@
+use super::bool_control::{
+    BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
+};
+use crate::i18n::widget_text;
+use crate::text_render::{TextRenderer, TextStyle};
+use crate::theme::Theme;
+use crate::widget::Interaction;
+use crate::widget::TaffyTreeExt;
+use crate::widget::Widget;
+use taffy::{NodeId, Size, Style, TaffyTree};
+
+#[path = "toggle_component.rs"]
+mod component;
+pub use component::ToggleProps;
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+pub struct Toggle {
+    semantic_id: String,
+    control: BoolControl,
+    switch: SwitchMotion,
+    hold: Option<KnobHold>,
+    pointer_x: f64,
+    /// The setting's name, drawn at the row's leading edge with the switch at its trailing one:
+    /// the whole row turns it.
+    label: Option<String>,
+    label_style: TextStyle,
+    /// The switch's width at the theme's scale, as the last layout read it.
+    track_width: f32,
+    /// Between a labelled switch's words and the switch, from the theme.
+    label_gap: f32,
+    drawn_track: Rect,
+    motion: Option<crate::tokens::EffectiveMotion>,
+    slop: f64,
+    painted: Option<Painted>,
+    drawing: Option<Painted>,
+    hand_on: crate::motion::HandOn<KeptSwitch>,
+}
+
+struct KeptSwitch {
+    switch: SwitchMotion,
+}
+
+type Painted = (bool, bool, bool, bool, u64, u32);
+
+#[derive(Clone, Copy, Debug)]
+struct KnobHold {
+    /// Whether the hand took the knob: a press on a labelled switch's words is a click, never a
+    /// drag of the knob.
+    on_knob: bool,
+    start_x: f64,
+    from: f64,
+    dragged: bool,
+    last: Option<(crate::time::Instant, f64)>,
+    previous: Option<(crate::time::Instant, f64)>,
+}
+
+const STILL_AFTER: crate::time::Duration = crate::time::Duration::from_millis(80);
+
+impl KnobHold {
+    fn new(x: f64, from: f64, on_knob: bool) -> Self {
+        Self {
+            on_knob,
+            start_x: x,
+            from,
+            dragged: false,
+            last: None,
+            previous: None,
+        }
+    }
+
+    fn sample(&mut self, at: crate::time::Instant, position: f64) {
+        self.previous = self.last.replace((at, position));
+    }
+
+    fn velocity(&self, now: crate::time::Instant) -> f64 {
+        match (self.previous, self.last) {
+            (Some((t0, p0)), Some((t1, p1)))
+                if now.saturating_duration_since(t1) <= STILL_AFTER =>
+            {
+                let dt = t1.saturating_duration_since(t0).as_secs_f64();
+                if dt > 0.0 { (p1 - p0) / dt } else { 0.0 }
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+impl Toggle {
+    /// A switch bound two-way to the boolean under `document_key` in the app document. The key
+    /// names a real path: a switch whose value comes from elsewhere is built with
+    /// [`Self::given`] or [`Self::from_state`], never an empty path here.
+    pub fn bound(id: &str, document_key: &str) -> Self {
+        Self::with_control(
+            id,
+            BoolControl::document(document_key, Some(crate::widget::humanize_control_id(id))),
+        )
+    }
+
+    /// A switch showing `on` and answering through its action, view or callback: it reads no
+    /// document path, so a sync never overwrites the value it was built with.
+    pub fn given(id: &str, on: bool) -> Self {
+        Self::with_control(
+            id,
+            BoolControl::given(on, Some(crate::widget::humanize_control_id(id))),
+        )
+    }
+
+    fn with_control(id: &str, control: BoolControl) -> Self {
+        Self {
+            semantic_id: id.to_string(),
+            control,
+            switch: SwitchMotion::default(),
+            hold: None,
+            pointer_x: 0.0,
+            label: None,
+            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            track_width: TRACK_WIDTH,
+            label_gap: crate::tokens::spacing::RhythmScale::BASE.sibling,
+            drawn_track: Rect::ZERO,
+            motion: None,
+            slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
+            painted: None,
+            drawing: None,
+            hand_on: crate::motion::HandOn::default(),
+        }
+    }
+
+    fn identity(&self) -> Option<&str> {
+        self.control
+            .id_override
+            .as_deref()
+            .or((self.semantic_id != "toggle").then_some(self.semantic_id.as_str()))
+    }
+
+    fn take_up(&mut self, kept: KeptSwitch) {
+        self.switch = kept.switch;
+        if self.switch.shown != Some(self.control.is_checked) {
+            self.switch.snap(self.control.is_checked);
+        }
+    }
+
+    fn painted_now(&self) -> Painted {
+        let (knob, tint) = self.switch.drawn(crate::motion::frame_now());
+        (
+            self.control.is_checked,
+            self.control.is_hovered,
+            self.control.is_focused,
+            self.control.effectively_enabled(),
+            knob.to_bits(),
+            tint.to_bits(),
+        )
+    }
+
+    fn effective_motion(&self) -> crate::tokens::EffectiveMotion {
+        self.motion.unwrap_or_else(|| {
+            crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+        })
+    }
+
+    /// How far the knob travels across the drawn pill, in px.
+    fn knob_travel(&self) -> f64 {
+        (self.drawn_track.width() - self.drawn_track.height()).max(1.0)
+    }
+
+    fn on_knob(&self, point: Point) -> bool {
+        if self.drawn_track.area() <= 0.0 {
+            return false;
+        }
+        // Where the pill is now: a scroll moves the switch without always
+        // drawing it again.
+        let track = self.drawn_track + self.control.rect.origin().to_vec2();
+        let knob = self.switch.knob(crate::motion::frame_now());
+        let centre = Point::new(
+            track.x0 + track.height() / 2.0 + knob * self.knob_travel(),
+            track.center().y,
+        );
+        centre.distance(point) <= track.height()
+    }
+
+    fn drag_to(&mut self, x: f64) {
+        let travel = self.knob_travel();
+        let Some(hold) = self.hold.as_mut().filter(|hold| hold.on_knob) else {
+            return;
+        };
+        if !hold.dragged {
+            if (x - hold.start_x).abs() < self.slop {
+                return;
+            }
+            hold.dragged = true;
+        }
+        let position = (hold.from + (x - hold.start_x) / travel).clamp(0.0, 1.0);
+        hold.sample(crate::time::now(), position);
+        self.switch.hold(position);
+    }
+
+    /// The hand lets go, and the value changes now, once, if at all. A
+    /// press that did not drag is a click: it flips the switch when let go
+    /// over it. A drag settles on the side its release heads for, with its
+    /// velocity, and asks for that side only if it is not the value: a
+    /// drag back to where it began changes nothing.
+    fn let_go(&mut self) {
+        let Some(hold) = self.hold.take() else {
+            return;
+        };
+        if !hold.dragged {
+            if self.control.is_hovered {
+                self.control.flip();
+            }
+            return;
+        }
+        let motion = self.effective_motion();
+        let now = crate::motion::frame_now();
+        let velocity = hold.velocity(crate::time::now());
+        let position = self.switch.knob(now);
+        let side = crate::motion::Snap::rest_for(position, velocity, motion) >= 0.5;
+        if side != self.control.is_checked {
+            self.control.choose(side);
+        }
+        self.switch.release(side, velocity, motion, now);
+    }
+
+    /// Create a true two-way binding to typed process-local boolean state.
+    ///
+    /// Pointer, keyboard, and accessibility activation update `state`;
+    /// mutations through any clone of `state` update this switch on the next
+    /// synchronization pass.
+    pub fn from_state(state: &crate::LocalState<bool>) -> Self {
+        Self::with_control("toggle", BoolControl::local(state, None))
+    }
+
+    /// Name the setting beside the switch: its words at the row's leading edge, the switch at the
+    /// trailing one, and a press anywhere on the row turns it. The words are its spoken name too.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.set_label(label.into());
+        self
+    }
+
+    /// Change the words beside the switch in place.
+    pub fn set_label(&mut self, label: String) {
+        self.control.accessible_name = Some(label.clone());
+        self.control.name_resolved = true;
+        self.label = Some(label);
+    }
+
+    #[must_use]
+    pub fn has_label(&self) -> bool {
+        self.label.is_some()
+    }
+
+    /// Where the switch stands inside `rect`: centred in a bare switch's target, at the trailing
+    /// edge of a labelled one's row.
+    fn switch_target(&self, rect: Rect, theme: &Theme) -> Rect {
+        if self.label.is_none() {
+            return rect;
+        }
+        let (track_w, _) = ToggleFace::size(theme);
+        Rect::new((rect.x1 - track_w).max(rect.x0), rect.y0, rect.x1, rect.y1)
+    }
+
+    bool_control_api!();
+}
+
+/// The switch's visual footprint: a 44×24 pill centred in whatever target
+/// rect layout assigns (32 px tall at a fine pointer, 48 at a coarse one), so
+/// the pill itself never stretches. Off the spacing scale on purpose: 24 is
+/// the 20 px knob plus [`KNOB_EDGE_GAP`] either side, and 44 gives the knob
+/// exactly one diameter of travel.
+const TRACK_WIDTH: f32 = 44.0;
+const TRACK_HEIGHT: f32 = 24.0;
+/// Gap between knob and track edge. The knob radius is derived from the
+/// track height and this gap, so a host painting a taller face keeps the
+/// same proportions.
+const KNOB_EDGE_GAP: f64 = 2.0;
+/// How much of a locked switch's knob shows: far brighter than the track's
+/// disabled dimming, so the knob still says where the switch stands (a knob
+/// dimmed as far as its track leaves no contrast to read it by).
+const LOCKED_KNOB_ALPHA: f32 = 0.72;
+/// The pill's rect inside a layout target: centred, never stretched, at
+/// the theme's size.
+fn track_rect(target: Rect, theme: &Theme) -> Rect {
+    Rect::from_center_size(target.center(), ToggleFace::size(theme))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToggleColors {
+    pub track: vello::peniko::Color,
+    pub knob: vello::peniko::Color,
+    pub knob_edge: Option<vello::peniko::Color>,
+    pub edge: vello::peniko::Color,
+    pub edge_width: f64,
+}
+
+impl ToggleColors {
+    /// What outlines the knob against the track: its ring where it has one,
+    /// otherwise its own fill.
+    pub fn knob_outline(&self) -> vello::peniko::Color {
+        self.knob_edge.unwrap_or(self.knob)
+    }
+
+    #[must_use]
+    pub fn between(off: Self, on: Self, tint: f32) -> Self {
+        if tint <= 0.0 {
+            return off;
+        }
+        if tint >= 1.0 {
+            return on;
+        }
+        let mix = |a, b| crate::tokens::colors::mix8(a, b, tint);
+        Self {
+            track: mix(off.track, on.track),
+            knob: mix(off.knob, on.knob),
+            knob_edge: match (off.knob_edge, on.knob_edge) {
+                (None, None) => None,
+                (from, to) => Some(mix(from.unwrap_or(off.knob), to.unwrap_or(on.knob))),
+            },
+            edge: mix(off.edge, on.edge),
+            edge_width: off.edge_width + (on.edge_width - off.edge_width) * f64::from(tint),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwitchPose {
+    pub knob: f64,
+    pub tint: f32,
+}
+
+impl SwitchPose {
+    #[must_use]
+    pub fn at_rest(on: bool) -> Self {
+        Self {
+            knob: if on { 1.0 } else { 0.0 },
+            tint: if on { 1.0 } else { 0.0 },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SwitchMotion {
+    knob: crate::motion::Thumb,
+    tint: crate::motion::Mark,
+    shown: Option<bool>,
+}
+
+impl SwitchMotion {
+    #[track_caller]
+    pub fn follow(
+        &mut self,
+        on: bool,
+        motion: crate::tokens::EffectiveMotion,
+        source: crate::tokens::MotionSource,
+        now: crate::time::Instant,
+    ) {
+        match self.shown {
+            Some(shown) if shown == on => {}
+            None => self.snap(on),
+            Some(_) => {
+                self.shown = Some(on);
+                self.knob.go(knob_end(on), motion, source, now);
+                self.tint.set(on, motion, source, now);
+            }
+        }
+    }
+
+    #[track_caller]
+    pub fn follow_input(
+        &mut self,
+        on: bool,
+        motion: crate::tokens::EffectiveMotion,
+        now: crate::time::Instant,
+    ) {
+        let source =
+            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Action);
+        self.follow(on, motion, source, now);
+    }
+
+    pub fn snap(&mut self, on: bool) {
+        self.shown = Some(on);
+        self.knob.snap(knob_end(on));
+        self.tint.snap(on);
+    }
+
+    pub fn hold(&mut self, knob: f64) {
+        self.knob.track(knob);
+    }
+
+    #[track_caller]
+    pub fn release(
+        &mut self,
+        on: bool,
+        velocity: f64,
+        motion: crate::tokens::EffectiveMotion,
+        now: crate::time::Instant,
+    ) {
+        self.shown = Some(on);
+        self.knob.release(knob_end(on), velocity, motion, now);
+        self.tint
+            .set(on, motion, crate::tokens::MotionSource::Gesture, now);
+    }
+
+    #[track_caller]
+    pub fn knob(&self, now: crate::time::Instant) -> f64 {
+        self.knob.get(now)
+    }
+
+    #[track_caller]
+    fn drawn(&self, now: crate::time::Instant) -> (f64, f32) {
+        (self.knob.get(now), self.tint.level(now))
+    }
+
+    #[track_caller]
+    #[must_use]
+    pub fn pose(
+        &self,
+        motion: crate::tokens::EffectiveMotion,
+        now: crate::time::Instant,
+    ) -> SwitchPose {
+        let knob = self.knob.get(now);
+        let tint = if motion.reduced() {
+            self.tint.level(now)
+        } else {
+            crate::motion::unit_opacity(knob)
+        };
+        SwitchPose { knob, tint }
+    }
+
+    #[track_caller]
+    pub fn is_moving(&self, now: crate::time::Instant) -> bool {
+        self.knob.is_moving(now) || self.tint.is_moving(now)
+    }
+}
+
+fn knob_end(on: bool) -> f64 {
+    if on { 1.0 } else { 0.0 }
+}
+
+/// Single source of truth for both the retained [`Toggle`]'s draw and
+/// [`Toggle::paint`], so every switch shares one palette per state.
+///
+/// On, the switch is an inverted control: the track is `intent.accent` and
+/// the knob its label colour (`intent.on_accent`). Off, the track is a lift
+/// of the ground (HIG §9.2, §9.5 "Rest edges"). On a light material the off
+/// knob is a raised white object with a derived ring, never a dark disc; on a
+/// dark one it is the secondary ink, and hover lifts it to the primary ink.
+/// Focus is your colour round the track.
+pub fn toggle_face_colors(theme: &Theme, on: bool, interact: Interaction) -> ToggleColors {
+    let colors = &theme.tokens.colors;
+    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    // A lift of the window ground: lighter on a dark material, darker on a
+    // light one, so a white knob always stands out from it.
+    let off_track = colors.lift_on(colors.surfaces.content, 1.0);
+    let track = if on {
+        colors.on_fill(!interact.disabled)
+    } else {
+        off_track
+    };
+    // Hover is the same knob pressed harder: one contrast step (1:1)
+    // further from the track, never across it.
+    let harder = |tone: vello::peniko::Color| {
+        let reached = worst_contrast(tone, &[track]);
+        ink_across(&[track], tone, reached + 1.0)
+    };
+    let (knob, knob_edge) = if on {
+        // The knob is white; at rest it holds back a touch so the pointer
+        // can make it fully white, never darker: a darker knob on the green
+        // track read as off.
+        let mark = colors.intent.on_state_mark;
+        let knob = if interact.hovered {
+            mark
+        } else {
+            crate::tokens::colors::mix8(track, mark, 0.9)
+        };
+        (ink_across(&[track], knob, floor), None)
+    } else if light_material(colors) {
+        let ring = ink_across(&[track], colors.text_tertiary, floor);
+        (
+            colors.surfaces.overlay,
+            Some(if interact.hovered { harder(ring) } else { ring }),
+        )
+    } else if interact.hovered {
+        (ink_across(&[track], colors.text_primary, floor), None)
+    } else {
+        (ink_across(&[track], colors.text_dim, floor), None)
+    };
+    let (edge, edge_width) = if interact.focused {
+        (colors.intent.accent_ink, 2.0)
+    } else {
+        (crate::surface::edge_on(track), 1.0)
+    };
+    ToggleColors {
+        track,
+        knob,
+        knob_edge,
+        edge,
+        edge_width,
+    }
+}
+
+pub(crate) fn light_material(colors: &crate::tokens::colors::Colors) -> bool {
+    crate::a11y::relative_luminance(colors.surfaces.content) > 0.5
+}
+
+pub(crate) fn worst_contrast(ink: vello::peniko::Color, grounds: &[vello::peniko::Color]) -> f64 {
+    grounds
+        .iter()
+        .map(|g| crate::a11y::contrast_ratio(ink, *g))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// One `tone` made legible on **every** ground it rides across — a knob
+/// over an off and an on track, a thumb over the filled and unfilled halves
+/// of a slider. `tone` comes back untouched when it already clears
+/// `min_ratio` everywhere; otherwise it is stepped toward the extreme whose
+/// *worst-case* contrast over all grounds is highest.
+///
+/// That choice is made over the whole set on purpose. A pair can straddle
+/// the light/dark line — a white off-track under a mid-blue on-track on the
+/// light preset — and [`crate::tokens::colors::Colors::ink_on_any`] picks
+/// its polarity from the hardest ground alone, which there is the blue, so
+/// it walks the knob toward white and straight into the other track. The
+/// extreme itself is theme-free: [`Colors::hairline_on`] at full alpha is
+/// white or black, whichever moves that ground more.
+pub(crate) fn ink_across(
+    grounds: &[vello::peniko::Color],
+    tone: vello::peniko::Color,
+    min_ratio: f64,
+) -> vello::peniko::Color {
+    use crate::tokens::colors::{Colors, mix8};
+    let Some(first) = grounds.first() else {
+        return tone;
+    };
+    if worst_contrast(tone, grounds) >= min_ratio {
+        return tone;
+    }
+    let one = Colors::hairline_on(*first, u8::MAX);
+    let other = Colors::hairline_on(one, u8::MAX);
+    let target = if worst_contrast(one, grounds) >= worst_contrast(other, grounds) {
+        one
+    } else {
+        other
+    };
+    for step in 1..=16 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "step ranges 1..=16, far below where f32 loses integer precision"
+        )]
+        let candidate = mix8(tone, target, step as f32 / 16.0);
+        if worst_contrast(candidate, grounds) >= min_ratio {
+            return candidate;
+        }
+    }
+    target
+}
+
+pub struct ToggleFace {
+    rect: Rect,
+    interact: Interaction,
+    pose: SwitchPose,
+}
+
+impl ToggleFace {
+    pub fn new(rect: Rect, on: bool) -> Self {
+        Self {
+            rect,
+            interact: Interaction::default(),
+            pose: SwitchPose::at_rest(on),
+        }
+    }
+    #[must_use]
+    pub fn pose(mut self, pose: SwitchPose) -> Self {
+        self.pose = pose;
+        self
+    }
+    #[must_use]
+    pub fn hovered(mut self, v: bool) -> Self {
+        self.interact.hovered = v;
+        self
+    }
+    #[must_use]
+    pub fn focused(mut self, v: bool) -> Self {
+        self.interact.focused = v;
+        self
+    }
+    #[must_use]
+    pub fn disabled(mut self, v: bool) -> Self {
+        self.interact.disabled = v;
+        self
+    }
+    pub fn colors(&self, theme: &Theme) -> ToggleColors {
+        let tint = self.pose.tint;
+        if tint >= 1.0 {
+            return toggle_face_colors(theme, true, self.interact);
+        }
+        if tint <= 0.0 {
+            return toggle_face_colors(theme, false, self.interact);
+        }
+        ToggleColors::between(
+            toggle_face_colors(theme, false, self.interact),
+            toggle_face_colors(theme, true, self.interact),
+            tint,
+        )
+    }
+    #[must_use]
+    pub fn size(theme: &Theme) -> (f64, f64) {
+        let scale = f64::from(theme.ui_scale);
+        (
+            f64::from(TRACK_WIDTH) * scale,
+            f64::from(TRACK_HEIGHT) * scale,
+        )
+    }
+}
+
+pub fn toggle_accessibility(
+    on: bool,
+    focused: bool,
+    enabled: bool,
+    accessible_name: Option<String>,
+) -> crate::a11y::AccessNode {
+    use crate::a11y::{AccessNode, AccessState, Role};
+    AccessNode::new(Role::Switch)
+        .with_optional_name(accessible_name.filter(|name| !name.is_empty()))
+        .with_state(
+            AccessState::new()
+                .focusable(enabled)
+                .focused(focused)
+                .disabled(!enabled)
+                .checked(on),
+        )
+}
+
+impl Toggle {
+    pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &ToggleFace) {
+        let colors = face.colors(theme);
+        let radius = face.rect.height() / 2.0;
+        let track_shape = RoundedRect::from_rect(face.rect, radius);
+        let dim = face.interact.disabled;
+        if dim {
+            crate::widget::paint_disabled(scene, transform, &track_shape);
+        }
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.track,
+            None,
+            &track_shape,
+        );
+        // Only the track dims as far as a disabled control does: the knob takes a much lighter
+        // dimming, so a switch nobody here can flip still shows where it stands instead of
+        // dissolving into its own track.
+        if dim {
+            scene.pop_layer();
+        }
+        // Knob radius follows the track: 10 px inside the 24 px default.
+        let kr = (radius - KNOB_EDGE_GAP).max(1.0);
+        let cy = face.rect.y0 + face.rect.height() / 2.0;
+        let (off_x, on_x) = (
+            face.rect.x0 + kr + KNOB_EDGE_GAP,
+            face.rect.x1 - kr - KNOB_EDGE_GAP,
+        );
+        let cx = match face.pose.knob {
+            knob if knob >= 1.0 => on_x,
+            knob if knob <= 0.0 => off_x,
+            knob => off_x + (on_x - off_x) * knob,
+        };
+        let knob = Circle::new(Point::new(cx, cy), kr);
+        if dim {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                LOCKED_KNOB_ALPHA,
+                transform,
+                &knob,
+            );
+        }
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.knob,
+            None,
+            &knob,
+        );
+        if let Some(ring) = colors.knob_edge {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                ring,
+                None,
+                &Circle::new(Point::new(cx, cy), kr - 0.5),
+            );
+        }
+        if dim {
+            scene.pop_layer();
+        }
+        // Rest edge and focus ring share one half-pixel-inset outline, drawn
+        // outside the disabled layer so a disabled switch keeps its bounds
+        // at full strength (HIG §9.5).
+        scene.stroke(
+            &Stroke::new(colors.edge_width),
+            transform,
+            colors.edge,
+            None,
+            &crate::surface::edge_outline(face.rect, radius),
+        );
+    }
+}
+
+impl Widget for Toggle {
+    /// A switch as a page's `<label>` around an `<input role=switch>`, holding
+    /// whether it is on.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{CheckStyle, Control};
+        cx.element("label");
+        // Its caption leads and the switch keeps the row's trailing edge, as painted.
+        let theme = cx.theme();
+        let ink = if self.control.effectively_enabled() {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        let label = self.label.as_ref().map(|label| {
+            crate::composition::TextLook::new(widget_text(label), &self.label_style, Some(ink))
+        });
+        cx.control(Control::Check {
+            style: CheckStyle::Switch,
+            checked: self.control.is_checked,
+            mixed: false,
+            label,
+        });
+    }
+
+    crate::described!();
+
+    bool_control_widget_methods!("toggle");
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.slop = f64::from(theme.tokens.metrics.click_slop);
+        let (track_w, track_h) = ToggleFace::size(theme);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a switch is a few dozen logical pixels, far inside f32"
+        )]
+        let (track_w, track_h) = (track_w as f32, track_h as f32);
+        let target = self.control.interaction.minimum_target();
+        self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        self.track_width = track_w;
+        self.label_gap = theme.tokens.spacing.rhythm.sibling;
+        let size = if self.label.is_some() {
+            Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
+            }
+        } else {
+            Size::from_lengths(track_w.max(target), track_h.max(target))
+        };
+        let style = Style {
+            size,
+            min_size: Size::from_lengths(track_w.max(target), track_h.max(target)),
+            // A switch is a fixed target, like a button: in a row that also
+            // holds a percent-width field it must not be the item that gives.
+            // With the default shrink factor and no measured minimum, taffy
+            // squeezed it to zero width beside a stretching text field.
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        let identity = self.identity().map(str::to_owned);
+        if let Some((kept, _)) = self.hand_on.build(identity.as_deref()) {
+            self.take_up(kept);
+        }
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    /// A labelled switch is as tall as its words, wrapped beside the switch, and never shorter than
+    /// its target.
+    fn measure(
+        &mut self,
+        known_dimensions: Size<Option<f32>>,
+        available_space: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let target = self.control.interaction.minimum_target();
+        let track = self.track_width;
+        let Some(label) = self.label.as_ref() else {
+            return Size {
+                width: known_dimensions.width.unwrap_or(target),
+                height: known_dimensions.height.unwrap_or(target),
+            };
+        };
+        let lead = track + self.label_gap;
+        let available = known_dimensions.width.or(match available_space.width {
+            taffy::AvailableSpace::Definite(width) => Some(width),
+            taffy::AvailableSpace::MinContent => Some(lead),
+            taffy::AvailableSpace::MaxContent => None,
+        });
+        let limit = available.map(|width| (width - lead).max(0.0));
+        let (label_width, label_height) =
+            text_renderer.measure_style(&widget_text(label), limit, &self.label_style);
+        Size {
+            width: known_dimensions
+                .width
+                .or(available)
+                .unwrap_or(lead + label_width),
+            height: known_dimensions
+                .height
+                .unwrap_or_else(|| label_height.max(target)),
+        }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        if let Some((kept, _)) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept);
+        }
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "widget rectangles are finite renderer coordinates already laid out as f32"
+    )]
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        let now = crate::motion::frame_now();
+        let motion = theme.motion();
+        self.motion = Some(motion);
+        // A knob under a dragging hand stays there; otherwise the switch
+        // goes to its value as the input that changed it asks.
+        if !self.hold.is_some_and(|hold| hold.dragged) {
+            self.switch
+                .follow_input(self.control.is_checked, motion, now);
+        }
+        self.drawing = Some(self.painted_now());
+        // One painter for the retained widget and immediate-mode hosts, so
+        // the two cannot drift: the pill is centred in the layout target and
+        // every state resolves through the same `ToggleFace`.
+        let track = track_rect(self.switch_target(self.control.rect, theme), theme);
+        let c = &self.control;
+        self.drawn_track = track - c.rect.origin().to_vec2();
+        Self::paint(
+            scene,
+            transform,
+            theme,
+            &ToggleFace::new(track, c.is_checked)
+                .pose(self.switch.pose(motion, now))
+                .hovered(c.is_hovered)
+                .focused(c.focus_visible())
+                .disabled(!c.effectively_enabled()),
+        );
+        if let Some(label) = self.label.as_ref() {
+            let label = widget_text(label);
+            let rect = self.control.rect;
+            let max_width = (track.x0 - f64::from(self.label_gap) - rect.x0).max(0.0);
+            let (_, height) =
+                text_renderer.measure_style(&label, Some(max_width as f32), &self.label_style);
+            let y = rect.y0 + ((rect.height() - f64::from(height)) / 2.0).max(0.0);
+            let ink = if self.control.effectively_enabled() {
+                theme.tokens.colors.text_primary
+            } else {
+                theme.tokens.colors.text_dim
+            };
+            text_renderer.draw_style(
+                scene,
+                &label,
+                ink,
+                transform.pre_translate((rect.x0, y).into()),
+                Some(max_width as f32),
+                &self.label_style,
+            );
+        }
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.control.rect == Rect::ZERO
+    }
+
+    fn name(&self) -> &'static str {
+        "Toggle"
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.painted != Some(self.painted_now())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.switch.is_moving(crate::motion::frame_now())
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if !self.control.effectively_enabled() {
+            if self.hold.take().is_some_and(|hold| hold.dragged) {
+                self.switch.snap(self.control.is_checked);
+            }
+            return;
+        }
+        let pointer_held = self.hold.is_some();
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = ctx.logical(position);
+                self.pointer_x = point.x;
+                if pointer_held {
+                    self.control.is_hovered = self.control.rect.contains(point);
+                    self.drag_to(point.x);
+                    *ctx.handled = true;
+                } else {
+                    self.control.handle_event(event, ctx);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.control.is_hovered => {
+                *ctx.handled = true;
+                self.control.pressed_into_focus |= !self.control.is_focused;
+                *ctx.focus_target = Some(ctx.node_id);
+                let drawn = self.switch.knob(crate::motion::frame_now());
+                let track = self.drawn_track + self.control.rect.origin().to_vec2();
+                let on_knob = self.label.is_none() || self.pointer_x >= track.x0 - self.slop;
+                self.hold = Some(KnobHold::new(self.pointer_x, drawn, on_knob));
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if pointer_held => {
+                *ctx.handled = true;
+                self.let_go();
+            }
+            _ => self.control.handle_event(event, ctx),
+        }
+    }
+
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if self.control.effectively_enabled() && self.on_knob(point) {
+            crate::interaction::TouchClaim::DragAcross
+        } else {
+            crate::interaction::TouchClaim::Pointer
+        }
+    }
+
+    /// A held knob keeps the hand that holds it, wherever it goes.
+    fn wants_pointer_capture(&self) -> bool {
+        self.hold.is_some()
+    }
+
+    /// A switch the frame left out (scrolled out of its view) shows nothing that could be stale:
+    /// it rests as it stands, and is drawn whole once it comes back into view.
+    fn mark_drawn(&mut self) {
+        self.painted = Some(self.drawing.take().unwrap_or_else(|| self.painted_now()));
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = toggle_accessibility(
+            self.control.is_checked,
+            self.is_focused(),
+            self.is_enabled(),
+            self.control.spoken_name(),
+        )
+        .with_semantic_key(&self.semantic_id);
+        if self.control.is_bare() {
+            node = node.with_action_target(self.control.test_id("toggle"));
+        }
+        Some(node)
+    }
+}
+
+bool_control_capabilities!(Toggle, "toggle");
+
+impl Drop for Toggle {
+    fn drop(&mut self) {
+        let switch = std::mem::take(&mut self.switch);
+        self.hand_on.leave(KeptSwitch { switch });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::Dispatch;
+    use crate::widget::Widget;
+    use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    tilo_test_env::scenario! {
+        fn a_switch_reports_and_paints_what_it_is;
+
+        phase toggle_identity_enabled_state_and_accessibility_are_reported;
+        {
+            {
+                let t = Toggle::bound("any", "path");
+                assert_eq!(Widget::test_id(&t), Some("toggle"));
+            }
+
+            {
+                let t = Toggle::bound("any", "path").with_id("airplane_mode");
+                assert_eq!(Widget::test_id(&t), Some("airplane_mode"));
+            }
+
+            {
+                let t = Toggle::bound("any", "path").with_enabled(false);
+                assert!(!Widget::is_enabled(&t));
+                assert!(
+                    Widget::is_enabled(&Toggle::bound("any", "path")),
+                    "default is enabled"
+                );
+            }
+
+            {
+                use crate::a11y::Role;
+                let mut t = Toggle::bound("any", "path");
+                let off = Widget::accessibility(&t).unwrap();
+                assert_eq!(off.role, Role::Switch);
+                assert_eq!(off.state.checked, Some(false));
+
+                t.control.is_checked = true; // same module → set the synced on-state directly
+                let on = Widget::accessibility(&t).unwrap();
+                assert_eq!(on.state.checked, Some(true));
+            }
+
+            {
+                let plain = Toggle::bound("any", "path");
+                assert_eq!(
+                    Widget::accessibility(&plain).unwrap().name.as_deref(),
+                    Some("Any")
+                );
+
+                let named = Toggle::bound("any", "path").with_accessible_name("Airplane mode");
+                assert_eq!(
+                    Widget::accessibility(&named).unwrap().name.as_deref(),
+                    Some("Airplane mode"),
+                );
+
+                // A row's caption is text, never a message id: naming a switch by
+                // the toolkit's own key says the caption, while the message-id
+                // setter resolves it in the catalogue.
+                let caption =
+                    Toggle::bound("any", "path").with_resolved_accessible_name("window-root-name");
+                assert_eq!(
+                    Widget::accessibility(&caption).unwrap().name.as_deref(),
+                    Some("window-root-name"),
+                );
+                let key = Toggle::bound("any", "path").with_accessible_name("window-root-name");
+                assert_eq!(
+                    Widget::accessibility(&key).unwrap().name.as_deref(),
+                    Some("Tilo application window"),
+                );
+            }
+        }
+
+        phase toggle_face_paints_documented_geometry_and_state_colours;
+        {
+            // Case `retained_draw_paints_the_documented_pill_geometry`.
+            // The retained widget paints exactly the documented switch — a 44×24
+            // pill centred in its layout target (never stretched to the 32/48 px
+            // target), a 10 px knob 2 px inside the pill's edge, the shared palette,
+            // and the disabled layer over the pill — spelled out here in literals so
+            // a change to the painter *or* its constants fails against this, not
+            // against itself.
+            {
+                let theme = Theme::dark();
+                let target = Rect::new(20.0, 30.0, 64.0, 62.0);
+                let pill = Rect::new(20.0, 34.0, 64.0, 58.0);
+                assert_eq!(
+                    track_rect(target, &theme),
+                    pill,
+                    "44×24 pill centred in the 44×32 target"
+                );
+                let pill_shape = RoundedRect::from_rect(pill, 12.0);
+
+                for (on, hovered, focused, enabled) in [
+                    (true, false, false, true),
+                    (false, true, false, true),
+                    (true, false, true, true),
+                    (false, false, false, false),
+                ] {
+                    let mut toggle = Toggle::bound("wifi", "wifi");
+                    toggle.control.is_checked = on;
+                    toggle.control.is_hovered = hovered;
+                    toggle.control.is_focused = focused;
+                    toggle.control.enabled = enabled;
+                    toggle.control.rect = target;
+                    let mut actual = Scene::new();
+                    let mut text = TextRenderer::new();
+                    toggle.draw(
+                        &mut actual,
+                        Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                        &crate::presence::PresenceCtx::default(),
+                    );
+
+                    let interact = Interaction {
+                        hovered,
+                        focused,
+                        disabled: !enabled,
+                        ..Interaction::default()
+                    };
+                    let colors = toggle_face_colors(&theme, on, interact);
+                    let mut expected = Scene::new();
+                    if !enabled {
+                        expected.push_layer(
+                            vello::peniko::Fill::NonZero,
+                            vello::peniko::BlendMode::default(),
+                            crate::widget::DISABLED_ALPHA,
+                            Affine::IDENTITY,
+                            &pill_shape,
+                        );
+                    }
+                    expected.fill(
+                        vello::peniko::Fill::NonZero,
+                        Affine::IDENTITY,
+                        colors.track,
+                        None,
+                        &pill_shape,
+                    );
+                    // Only the track rides the disabled layer: the knob keeps its own, much
+                    // lighter dimming so it still says where the switch stands.
+                    if !enabled {
+                        expected.pop_layer();
+                    }
+                    let knob_x = if on { pill.x1 - 12.0 } else { pill.x0 + 12.0 };
+                    let knob = Circle::new(Point::new(knob_x, 46.0), 10.0);
+                    if !enabled {
+                        expected.push_layer(
+                            vello::peniko::Fill::NonZero,
+                            vello::peniko::BlendMode::default(),
+                            LOCKED_KNOB_ALPHA,
+                            Affine::IDENTITY,
+                            &knob,
+                        );
+                    }
+                    expected.fill(
+                        vello::peniko::Fill::NonZero,
+                        Affine::IDENTITY,
+                        colors.knob,
+                        None,
+                        &knob,
+                    );
+                    if let Some(ring) = colors.knob_edge {
+                        expected.stroke(
+                            &Stroke::new(1.0),
+                            Affine::IDENTITY,
+                            ring,
+                            None,
+                            &Circle::new(Point::new(knob_x, 46.0), 9.5),
+                        );
+                    }
+                    if !enabled {
+                        expected.pop_layer();
+                    }
+                    // The edge (and the focus ring) ride the shared half-pixel-inset
+                    // outline, so a 1 px hairline covers the pill's outermost pixel
+                    // row instead of bleeding half onto the ground. It sits
+                    // outside the disabled layer, at full strength.
+                    expected.stroke(
+                        &Stroke::new(colors.edge_width),
+                        Affine::IDENTITY,
+                        colors.edge,
+                        None,
+                        &crate::surface::edge_outline(pill, 12.0),
+                    );
+
+                    let state =
+                        format!("on={on} hovered={hovered} focused={focused} enabled={enabled}");
+                    assert_eq!(
+                        actual.encoding().path_data,
+                        expected.encoding().path_data,
+                        "pill/knob geometry differs for {state}"
+                    );
+                    assert_eq!(
+                        actual.encoding().draw_data,
+                        expected.encoding().draw_data,
+                        "paint order or colours differ for {state}"
+                    );
+                }
+            }
+
+            {
+                let theme = Theme::dark();
+                let off = toggle_face_colors(&theme, false, Interaction::default());
+                let on = toggle_face_colors(&theme, true, Interaction::default());
+                assert_eq!(
+                    on.track, theme.tokens.colors.intent.on_state,
+                    "on-track is the on colour"
+                );
+                assert_eq!(
+                    off.track,
+                    theme
+                        .tokens
+                        .colors
+                        .lift_on(theme.tokens.colors.surfaces.content, 1.0),
+                    "off-track is the neutral lift off the window ground, not a ramp slot"
+                );
+                assert_ne!(on.track, off.track, "on and off tracks must differ");
+                let locked = toggle_face_colors(
+                    &theme,
+                    true,
+                    Interaction {
+                        disabled: true,
+                        ..Interaction::default()
+                    },
+                );
+                assert_ne!(
+                    locked.track, on.track,
+                    "a switch nobody here can flip is not painted in the on colour"
+                );
+                assert_ne!(locked.track, off.track, "and still reads as on");
+                // Only the track lies under the disabled layer: the knob keeps its own, much
+                // lighter dimming, and what a person sees still clears the contrast floor.
+                let ground = theme.tokens.colors.surfaces.content;
+                let dimmed_track = crate::tokens::colors::mix8(
+                    locked.track,
+                    ground,
+                    1.0 - crate::widget::DISABLED_ALPHA,
+                );
+                let dimmed_knob =
+                    crate::tokens::colors::mix8(locked.knob, ground, 1.0 - LOCKED_KNOB_ALPHA);
+                let ratio = crate::a11y::contrast_ratio(dimmed_knob, dimmed_track);
+                assert!(
+                    ratio >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    "a locked switch's knob is only {ratio:.2}:1 against its dimmed track: \
+                     knob {:?} on track {:?}, dimmed {dimmed_knob:?} on {dimmed_track:?}",
+                    locked.knob,
+                    locked.track
+                );
+            }
+
+            // Case `toggle_knob_is_white_on_and_a_raised_object_off_in_light`.
+            // On, the switch is the on colour with a white knob. Off, a light material shows a raised white knob with
+            // a derived ring (never a dark disc); a dark one the secondary ink.
+            // Legible on every material either way.
+            {
+                for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                    let colors = &theme.tokens.colors;
+                    let off = toggle_face_colors(&theme, false, Interaction::default());
+                    let on = toggle_face_colors(&theme, true, Interaction::default());
+                    let white = toggle_face_colors(
+                        &theme,
+                        true,
+                        Interaction {
+                            hovered: true,
+                            ..Interaction::default()
+                        },
+                    );
+                    assert_eq!(white.knob, colors.intent.on_state_mark, "{}", theme.name);
+                    assert!(
+                        crate::a11y::contrast_ratio(on.knob, on.track)
+                            >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                        "{}",
+                        theme.name
+                    );
+                    assert_eq!(on.knob_edge, None);
+                    if light_material(colors) {
+                        assert_eq!(off.knob, colors.surfaces.overlay, "{}", theme.name);
+                        assert!(
+                            crate::a11y::relative_luminance(off.knob)
+                                > crate::a11y::relative_luminance(off.track),
+                            "{}: the off knob is lighter than its track",
+                            theme.name
+                        );
+                    } else {
+                        assert_eq!(off.knob, colors.text_dim, "{}", theme.name);
+                        assert_eq!(off.knob_edge, None);
+                    }
+                    for (state, face) in [("off", off), ("on", on)] {
+                        let ratio = crate::a11y::contrast_ratio(face.knob_outline(), face.track);
+                        assert!(
+                            ratio >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                            "{} {state}: knob outline on its track is only {ratio:.2}:1",
+                            theme.name
+                        );
+                    }
+                    assert_eq!(
+                        off.edge,
+                        crate::surface::edge_on(off.track),
+                        "{}: rest edge derives from the track",
+                        theme.name
+                    );
+                }
+            }
+
+            {
+                let theme = Theme::high_contrast();
+                let rest = toggle_face_colors(&theme, true, Interaction::default());
+                let focused = toggle_face_colors(
+                    &theme,
+                    true,
+                    Interaction {
+                        focused: true,
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(
+                    focused.edge, theme.tokens.colors.intent.accent_ink,
+                    "focus is your colour"
+                );
+                assert_eq!(focused.edge_width, 2.0, "focused border is 2px");
+                assert_eq!(
+                    rest.edge,
+                    crate::surface::edge_on(rest.track),
+                    "rest edge is derived from the track it sits on"
+                );
+                assert_eq!(rest.edge_width, 1.0);
+            }
+
+            {
+                let theme = Theme::dark();
+                let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).hovered(true);
+                assert_eq!(
+                    face.colors(&theme),
+                    toggle_face_colors(
+                        &theme,
+                        true,
+                        Interaction {
+                            hovered: true,
+                            ..Default::default()
+                        }
+                    ),
+                );
+            }
+        }
+
+        phase a_switch_repaints_only_when_what_it_paints_changes;
+        {
+            let theme = Theme::dark();
+            let mut t = Toggle::bound("wifi", "wifi");
+            let frame = |t: &mut Toggle| {
+                t.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &theme,
+                    &crate::presence::PresenceCtx::empty(),
+                );
+                t.mark_drawn();
+            };
+            assert!(t.needs_redraw(), "never painted");
+            frame(&mut t);
+            assert!(!t.needs_redraw(), "painted and unchanged");
+            let mut damage = Vec::new();
+            t.collect_damage(&mut damage);
+            assert!(damage.is_empty(), "an idle switch adds no damage");
+            for change in [
+                |t: &mut Toggle| t.control.is_hovered = true,
+                |t: &mut Toggle| t.control.is_checked = true,
+                |t: &mut Toggle| t.control.is_focused = true,
+                |t: &mut Toggle| t.control.enabled = false,
+            ] {
+                change(&mut t);
+                assert!(t.needs_redraw(), "a changed switch repaints");
+                frame(&mut t);
+                assert!(!t.needs_redraw(), "and rests once drawn");
+            }
+            t.control.is_hovered = false;
+            t.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &crate::presence::PresenceCtx::empty(),
+            );
+            assert!(t.needs_redraw());
+        }
+
+        phase a_painted_switch_follows_its_motion_and_matches_the_widget_at_rest;
+        {
+            let theme = Theme::dark();
+            let rect = Rect::new(0.0, 0.0, 44.0, 24.0);
+            let on = ToggleFace::new(rect, true).colors(&theme);
+            let off = ToggleFace::new(rect, false).colors(&theme);
+            let half = ToggleFace::new(rect, true)
+                .pose(SwitchPose {
+                    knob: 0.5,
+                    tint: 0.5,
+                })
+                .colors(&theme);
+            assert_ne!(half.track, on.track);
+            assert_ne!(half.track, off.track);
+            assert_eq!(
+                ToggleFace::new(rect, false)
+                    .pose(SwitchPose::at_rest(true))
+                    .colors(&theme),
+                on,
+                "a pose at rest on is exactly the on face"
+            );
+            let now = crate::time::now();
+            let mut motion = SwitchMotion::default();
+            motion.follow(
+                false,
+                theme.motion(),
+                crate::tokens::MotionSource::Pointer,
+                now,
+            );
+            assert!(!motion.is_moving(now));
+            motion.follow(
+                true,
+                theme.motion(),
+                crate::tokens::MotionSource::Pointer,
+                now,
+            );
+            assert!(motion.is_moving(now));
+            let later = now + crate::time::Duration::from_secs(1);
+            assert_eq!(
+                motion.pose(theme.motion(), later),
+                SwitchPose::at_rest(true)
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_bindings_route_activation_unless_disabled() {
+        {
+            use crate::a11y::Action;
+
+            let state = crate::LocalState::new(false);
+            let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let captured = std::rc::Rc::clone(&changes);
+            let mut first = Toggle::from_state(&state)
+                .on_choose("toggle", move |checked| captured.borrow_mut().push(checked));
+            let mut second = Toggle::from_state(&state);
+            let mut document = AutoCommit::new();
+
+            state.set(true);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
+            assert!(first.is_checked());
+            assert!(second.is_checked());
+            assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+            assert!(Widget::perform_action(
+                &mut first,
+                &Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+            ));
+            assert!(!state.get(), "user activation publishes typed state");
+            assert_eq!(&*changes.borrow(), &[false]);
+
+            Widget::sync(&mut second, &document, &automerge::ROOT);
+            assert!(!second.is_checked(), "sibling follows the shared model");
+
+            second.set_checked(true);
+            assert!(state.get(), "programmatic mutation publishes typed state");
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            assert!(first.is_checked());
+            assert_eq!(
+                &*changes.borrow(),
+                &[false],
+                "programmatic mutation does not invoke the user callback"
+            );
+        }
+
+        {
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut toggle = Toggle::bound("any", "enabled");
+            doc.put(&root, "enabled", true).unwrap();
+            Widget::sync(&mut toggle, &doc, &root);
+            assert!(toggle.is_checked());
+
+            doc.delete(&root, "enabled").unwrap();
+            Widget::sync(&mut toggle, &doc, &root);
+            assert!(!toggle.is_checked(), "a removed path means off");
+
+            doc.put(&root, "enabled", "not-a-boolean").unwrap();
+            Widget::sync(&mut toggle, &doc, &root);
+            assert!(!toggle.is_checked(), "a mistyped path cannot stay stale");
+        }
+
+        {
+            let mut t = Toggle::bound("id", "on").with_enabled(false);
+
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            let node = t.build_layout(&mut tree, &theme, &mut node_map);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(60.0),
+                    height: taffy::AvailableSpace::Definite(40.0),
+                },
+            )
+            .unwrap();
+            t.apply_layout(&tree, node, Point::ZERO);
+
+            let device = winit::event::DeviceId::dummy();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut sender = Dispatch::new().doc(&mut doc).layout(&tree, node);
+            let moved = sender.send(
+                &mut t,
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (10.0, 10.0).into(),
+                },
+            );
+            let pressed = sender.send(
+                &mut t,
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            let focus = pressed.focus_target.or(moved.focus_target);
+            let handled = moved.handled || pressed.handled;
+
+            assert!(focus.is_none(), "disabled toggle must not request focus");
+            assert!(!handled, "disabled toggle must not swallow input");
+            assert!(
+                doc.get(&root, "on").unwrap().is_none(),
+                "disabled toggle must not write the CRDT path"
+            );
+        }
+
+        {
+            let mut toggle =
+                Toggle::bound("native", "on").on_action(crate::widget::test_bool_action_binding());
+            let mut doc = AutoCommit::new();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut toggle,
+                &std::collections::HashSet::new(),
+            );
+            assert!(!Widget::is_enabled(&toggle));
+            crate::widget::controls::refresh_control_action_availability(
+                &mut toggle,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            assert!(Widget::is_enabled(&toggle));
+            assert!(Widget::perform_action(
+                &mut toggle,
+                &crate::a11y::Action::ToggleCheck,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            assert!(doc.get(&automerge::ROOT, "on").unwrap().is_none());
+            assert_eq!(
+                crate::widget::controls::take_control_invocation(&mut toggle)
+                    .unwrap()
+                    .arguments["value"],
+                true
+            );
+        }
+    }
+
+    /// A switch whose value comes from an action rather than a document
+    /// path keeps the value it was built with: syncing never finds an empty
+    /// key to read and turn it off.
+    #[test]
+    fn a_switch_given_its_state_reads_it_and_an_empty_document_path_is_rejected() {
+        let mut doc = AutoCommit::new();
+        doc.put(&automerge::ROOT, "wifi", false).unwrap();
+        let mut toggle = Toggle::given("wifi", true);
+        Widget::sync(&mut toggle, &doc, &automerge::ROOT);
+        assert!(
+            toggle.is_checked(),
+            "a given switch keeps the value it was built with"
+        );
+
+        let mut action_switch =
+            Toggle::given("wifi", false).on_action(crate::widget::test_bool_action_binding());
+        crate::widget::controls::refresh_control_action_availability(
+            &mut action_switch,
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::perform_action(
+            &mut action_switch,
+            &crate::a11y::Action::Activate,
+            &[],
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert!(
+            action_switch.is_checked(),
+            "an action-owned switch shows the flip it asked for"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a bound control needs a document key")]
+    fn binding_a_switch_to_an_empty_document_path_is_rejected() {
+        let _ = Toggle::bound("wifi", "");
+    }
+
+    #[test]
+    fn the_switch_size_follows_the_ui_scale_and_layout_settles() {
+        let (w, h) = ToggleFace::size(&Theme::dark());
+        assert_eq!((w, h), (44.0, 24.0));
+        let (w2, _) = ToggleFace::size(&Theme::dark().with_ui_scale(1.5));
+        assert!((w2 - 66.0).abs() < 1e-9);
+        let mut toggle = Toggle::bound("t", "t");
+        assert!(Widget::is_layout_dirty(&toggle));
+        let mut tree = TaffyTree::new();
+        let node = toggle.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        toggle.apply_layout(&tree, node, Point::new(1.0, 1.0));
+        assert!(!Widget::is_layout_dirty(&toggle));
+    }
+
+    /// A hover change repaints but consumes nothing: leaving one switch for
+    /// its neighbour must still reach the neighbour.
+    #[test]
+    fn a_hover_change_leaves_the_move_for_the_next_control() {
+        let mut t = Toggle::bound("id", "on");
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = t.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        t.apply_layout(&tree, node, Point::ZERO);
+        let device = winit::event::DeviceId::dummy();
+        let mut sender = Dispatch::new().layout(&tree, node);
+        for position in [(10.0, 10.0), (500.0, 10.0)] {
+            let handled = sender
+                .send(
+                    &mut t,
+                    &WindowEvent::CursorMoved {
+                        device_id: device,
+                        position: position.into(),
+                    },
+                )
+                .handled;
+            assert!(!handled, "a move to {position:?} is not consumed");
+        }
+        assert!(!t.control.is_hovered);
+    }
+
+    /// A switch laid out at the origin: a 44×24 pill in a 44×32 target,
+    /// its knob 12 px in from either end (20 px of travel).
+    fn switch_at_origin(t: &mut Toggle) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = t.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        t.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    fn present(t: &mut Toggle, theme: &Theme) {
+        t.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        t.mark_drawn();
+    }
+
+    fn ms(t0: crate::time::Instant, ms: u64) -> crate::time::Instant {
+        t0 + crate::time::Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn a_click_slides_the_knob_and_a_second_click_reverses_it_mid_flight() {
+        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let theme = Theme::dark();
+        let state = crate::LocalState::new(false);
+        let mut t = Toggle::from_state(&state);
+        switch_at_origin(&mut t);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || present(&mut t, &theme));
+        assert!(!t.needs_animation_frame(), "the first paint rests");
+        assert_eq!(t.switch.knob(t0), 0.0);
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut t, &cursor_moved(30.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
+            assert!(state.get(), "the value changes once the click lets go");
+            present(&mut t, &theme);
+            assert!(t.needs_animation_frame(), "the knob slides");
+        });
+        let drawn = with_monotonic_time(ms(t0, 40), || {
+            assert!(t.needs_redraw(), "a sliding knob repaints each frame");
+            present(&mut t, &theme);
+            let pose = t.switch.pose(theme.motion(), ms(t0, 40));
+            assert!(pose.knob > 0.0 && pose.knob < 1.0, "on its way: {pose:?}");
+            assert!(
+                pose.tint > 0.0 && pose.tint < 1.0,
+                "the track turns with it"
+            );
+            pose.knob
+        });
+        with_monotonic_time(ms(t0, 40), || {
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
+            assert!(!state.get());
+            present(&mut t, &theme);
+            let now = ms(t0, 40);
+            assert!((t.switch.knob(now) - drawn).abs() < 1e-9, "no jump");
+        });
+        with_monotonic_time(ms(t0, 600), || {
+            assert_eq!(t.switch.knob(ms(t0, 600)), 0.0, "back off");
+            assert!(!t.needs_animation_frame(), "settled: no frames");
+            present(&mut t, &theme);
+            assert!(!t.needs_redraw(), "settled: no repaint");
+        });
+    }
+
+    #[test]
+    fn a_key_an_assistive_action_or_a_sync_lands_the_switch_at_once() {
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let theme = Theme::dark();
+        let state = crate::LocalState::new(false);
+        let mut t = Toggle::from_state(&state);
+        switch_at_origin(&mut t);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || present(&mut t, &theme));
+        let mut doc = AutoCommit::new();
+        for (source, on) in [
+            (MotionSource::Keyboard, true),
+            (MotionSource::Action, false),
+        ] {
+            with_monotonic_time(t0, || {
+                crate::motion::note_source(source);
+                assert!(Widget::perform_action(
+                    &mut t,
+                    &crate::a11y::Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ));
+                present(&mut t, &theme);
+                assert_eq!(t.switch.knob(t0), if on { 1.0 } else { 0.0 }, "{source:?}");
+                assert!(!t.needs_animation_frame(), "{source:?} lands");
+            });
+        }
+        with_monotonic_time(ms(t0, 2_000), || {
+            state.set(true);
+            Widget::sync(&mut t, &doc, &automerge::ROOT);
+            present(&mut t, &theme);
+            assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
+            assert!(!t.needs_animation_frame());
+        });
+    }
+
+    #[test]
+    fn reduced_motion_lands_the_knob_and_cross_fades_the_tint() {
+        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark().with_reduce_motion(true);
+        let state = crate::LocalState::new(false);
+        let mut t = Toggle::from_state(&state);
+        switch_at_origin(&mut t);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || {
+            present(&mut t, &theme);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut t, &cursor_moved(30.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
+            present(&mut t, &theme);
+        });
+        let pose = t.switch.pose(theme.motion(), ms(t0, 40));
+        assert_eq!(pose.knob, 1.0, "the knob lands");
+        assert!(
+            pose.tint > 0.0 && pose.tint < 1.0,
+            "the tint fades: {pose:?}"
+        );
+        assert!(!t.switch.is_moving(ms(t0, 400)));
+    }
+
+    fn counted(state: &crate::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {
+        let changes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = std::rc::Rc::clone(&changes);
+        let mut t =
+            Toggle::from_state(state).on_choose("toggle", move |_| count.set(count.get() + 1));
+        switch_at_origin(&mut t);
+        (t, changes)
+    }
+
+    #[test]
+    fn a_dragged_knob_follows_the_hand_one_to_one_and_settles_on_the_nearer_side() {
+        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark();
+        let state = crate::LocalState::new(false);
+        let (mut t, changes) = counted(&state);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || {
+            present(&mut t, &theme);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut t, &cursor_moved(12.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+        });
+        assert!(!state.get(), "a press changes nothing yet");
+        assert!(Widget::wants_pointer_capture(&t), "the hand holds the knob");
+        // Within the slop it is still a click; past it the knob is the
+        // hand's, 1:1 over its 20 px of travel from where the hand took
+        // it, wherever the pointer goes.
+        with_monotonic_time(ms(t0, 8), || dispatch(&mut t, &cursor_moved(14.0, 16.0)));
+        assert!(!t.hold.unwrap().dragged);
+        with_monotonic_time(ms(t0, 16), || dispatch(&mut t, &cursor_moved(20.0, 16.0)));
+        for (i, (x, knob)) in [(26.0, 0.7), (30.0, 0.9), (18.0, 0.3), (13.0, 0.05)]
+            .into_iter()
+            .enumerate()
+        {
+            let at = ms(t0, 24 + 8 * u64::try_from(i).unwrap());
+            with_monotonic_time(at, || {
+                dispatch(&mut t, &cursor_moved(x, 60.0));
+                present(&mut t, &theme);
+            });
+            assert!(
+                (t.switch.knob(at) - knob).abs() < 1e-9,
+                "at x {x}: {}",
+                t.switch.knob(at)
+            );
+            assert!(!t.switch.is_moving(at), "nothing runs under the hand");
+        }
+        assert_eq!(changes.get(), 0, "the knob moves; the value does not");
+        with_monotonic_time(ms(t0, 60), || dispatch(&mut t, &mouse_release()));
+        assert!(!state.get(), "left on the off side");
+        assert_eq!(changes.get(), 0, "a drag back to the start changes nothing");
+        assert!(!Widget::wants_pointer_capture(&t));
+        let rest = t.switch.knob.settles_at().map_or(ms(t0, 60), |at| at);
+        assert_eq!(t.switch.knob(rest), 0.0);
+
+        let state = crate::LocalState::new(false);
+        let (mut t, changes) = counted(&state);
+        with_monotonic_time(t0, || {
+            present(&mut t, &theme);
+            dispatch(&mut t, &cursor_moved(12.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &cursor_moved(16.0, 16.0));
+        });
+        with_monotonic_time(ms(t0, 10), || dispatch(&mut t, &cursor_moved(30.0, 16.0)));
+        assert_eq!(changes.get(), 0);
+        with_monotonic_time(ms(t0, 300), || dispatch(&mut t, &mouse_release()));
+        assert!(state.get(), "left on the on side");
+        assert_eq!(changes.get(), 1, "a drag across changes the value once");
+        assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
+
+        with_monotonic_time(ms(t0, 3_000), || {
+            dispatch(&mut t, &cursor_moved(30.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &cursor_moved(31.0, 90.0));
+            dispatch(&mut t, &mouse_release());
+        });
+        assert!(state.get());
+        assert_eq!(changes.get(), 1);
+    }
+
+    #[test]
+    fn a_vertical_swipe_on_a_knob_scrolls_and_a_horizontal_one_drags_it() {
+        use crate::widget::{Column, Scrollable};
+        use winit::event::TouchPhase::{Ended, Moved, Started};
+        let theme = Theme::dark();
+        let states: Vec<_> = (0..30).map(|_| crate::LocalState::new(false)).collect();
+        let mut column = Column::new();
+        for state in &states {
+            column = column.push(Box::new(Toggle::from_state(state)));
+        }
+        let mut frame = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(Box::new(column)),
+            (360, 300),
+            theme.clone(),
+        );
+        let offset = |frame: &crate::headless::FrameHarness| frame.root::<Scrollable>().offset_y();
+        let knob = |frame: &crate::headless::FrameHarness, index: usize| {
+            let column = frame.root::<Scrollable>().children()[0];
+            let track = track_rect(column.children()[index].get_rect(), &theme);
+            Point::new(track.x0 + track.height() / 2.0, track.center().y)
+        };
+        let at = knob(&frame, 1);
+        assert_eq!(
+            Widget::touch_claim(frame.root::<Scrollable>().children()[0].children()[1], at),
+            crate::interaction::TouchClaim::DragAcross
+        );
+
+        // A finger reports every 8 ms (120 Hz) however long the test takes
+        // to handle each report: a swipe's throw is read from those times,
+        // and a loaded host must not turn it into a slow drag.
+        let finger = |frame: &mut crate::headless::FrameHarness,
+                      start: crate::time::Instant,
+                      reports: &[(u64, winit::event::TouchPhase, f64, f64)]| {
+            let mut at = start;
+            for &(id, phase, x, y) in reports {
+                crate::time::testing::with_monotonic_time(at, || frame.touch(id, phase, x, y));
+                at += crate::time::Duration::from_millis(8);
+            }
+            at
+        };
+
+        let mut swipe = vec![(1, Started, at.x, at.y)];
+        for step in 1..=6 {
+            swipe.push((1, Moved, at.x + 2.0, at.y - 10.0 * f64::from(step)));
+        }
+        swipe.push((1, Ended, at.x + 2.0, at.y - 60.0));
+        let _ = finger(&mut frame, crate::time::now(), &swipe);
+        assert!(offset(&frame) > 0.0, "the page scrolled");
+        assert!(!states[1].get(), "the switch is untouched");
+        assert!(states.iter().all(|state| !state.get()));
+
+        assert!(frame.settle_for_capture(crate::time::Duration::from_secs(5)));
+        let scrolled = offset(&frame);
+        let at = knob(&frame, 6);
+        assert!(at.y > 0.0 && at.y < 300.0, "on screen: {at:?}");
+        let mut drag = vec![(2, Started, at.x, at.y)];
+        for step in 1..=5 {
+            drag.push((2, Moved, at.x + 5.0 * f64::from(step), at.y + 1.0));
+        }
+        drag.push((2, Ended, at.x + 25.0, at.y + 1.0));
+        let next = finger(&mut frame, crate::time::now(), &drag);
+        assert!(states[6].get(), "dragged on");
+        assert_eq!(states.iter().filter(|state| state.get()).count(), 1);
+        assert_eq!(offset(&frame), scrolled, "a drag across does not scroll");
+
+        let at = Point::new(at.x + 20.0, at.y);
+        let _ = finger(
+            &mut frame,
+            next,
+            &[(3, Started, at.x, at.y), (3, Ended, at.x, at.y)],
+        );
+        assert!(!states[6].get(), "a tap flips");
+        assert_eq!(offset(&frame), scrolled);
+    }
+}

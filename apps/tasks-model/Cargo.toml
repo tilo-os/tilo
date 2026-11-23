@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 # The rich text an issue's body is: the document model's own type, not the editor the toolkit
 # draws it with, so a model crate builds without the toolkit.
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-document = { path = "../../crates/sdk/tilo-document" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-app-id = { version = "0.1.0", path = "../../crates/platform/tilo-app-id" }

@@ -18,7 +18,7 @@ sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-agent-provider-config = { path = "../../crates/agent/provider-config" }
+agent-provider-config = { path = "../../crates/integrations/provider-config" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -207,7 +207,8 @@ fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
 }
 
 /// Every app compiles with the standard library and carries it: the package its declarations belong
-/// to is loaded wherever its code runs. Its views are the app's, so its module runs no code.
+/// to is loaded wherever its code runs. Its views are the app's, expanded where it calls them, so
+/// what its module carries is their text and its functions' code.
 fn every_payload_carries_the_standard_library(
     apps: &[package::BuiltApp],
     installed: &tilolang_tilo::bundle::Bundle,
@@ -228,15 +229,13 @@ fn every_payload_carries_the_standard_library(
         library.meta.views.is_empty(),
         "the library shows nothing itself"
     );
-    // Its views expand into the app's, so its module runs no code: what travels in it is metadata,
-    // the library's words and the source of its templates. Nothing else stands beside it.
-    let beside = library
-        .wasm
-        .len()
-        .saturating_sub(library.meta.to_json_bytes().len());
-    assert!(
-        beside < 1024,
-        "the library's module carries {beside} bytes beside its metadata"
+    // A view of it expands into the app's, so only its text travels beside the metadata; its
+    // functions are code the app calls, and its module carries that and nothing else.
+    let lines = tilolang::meta::lines_from_wasm(&library.wasm);
+    assert_eq!(
+        lines.len(),
+        library.meta.fns.len(),
+        "the library's module carries its functions and no other code: {lines:?}"
     );
 }
 
@@ -292,6 +291,7 @@ fn collab_types_surface(bytes: &[u8]) -> collab_types::surface::SurfaceFile {
     collab_types::surface::SurfaceFile::parse(bytes).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
     argv.windows(3)
         .find(|window| window[0] == "--setenv" && window[1] == key)
@@ -301,6 +301,7 @@ fn setenv<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
 /// The launcher runs a built app as the tilolang runtime's binary over the app's payload, under the
 /// app's own id, with its icon and its surface.
 #[test]
+#[cfg(target_os = "linux")]
 fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
     let scratch = tempfile::tempdir().unwrap();
     let dir = scratch.path().join("tl/counter");
@@ -583,4 +584,22 @@ fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
     // What the session reads to decide which app opens a link of a scheme.
     let view = tilo_app_package::view::ManifestView::from_toml_str(&text).unwrap();
     assert_eq!(view.opens_schemes, ["tube"]);
+    // A link reaches the app through the `open-link` its manifest offers, on the resource it
+    // names, whether or not a window of it is open.
+    let open_link = manifest
+        .offers
+        .iter()
+        .find(|offer| offer.action == "open-link")
+        .expect("the app offers the link it opens");
+    assert_eq!(open_link.resource, "tl:so.tilo.tube:root-thwdswkk");
+    assert_eq!(open_link.resource_kind(), "tl.so.tilo.tube.YouTube");
+    assert_eq!(
+        open_link.asks.as_deref(),
+        Some("link"),
+        "the parameter the link is handed in"
+    );
+    assert_eq!(
+        open_link.operation,
+        tilo_app_package::manifest::OfferOperation::View
+    );
 }

@@ -14,8 +14,9 @@
 //! makes the call with the key from the vault, as it does for the person's
 //! agents, and answers the turn.
 //!
-//! Local models are not here: they run on a device, which is where the pane
-//! that manages them lives.
+//! Local models are set up where they run, in a computer's own Agent models
+//! pane; the model chosen there is linked here as the workspace's
+//! ([`LINK_THIS_COMPUTER`]), so a workspace keeps one choice of model.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,12 @@ pub const SET_ASSIGNMENTS: &str = "set-assignments";
 /// the provider as a [`ProviderView`]. With no level the provider's own
 /// default holds again, and it is told nothing.
 pub const SET_REASONING: &str = "set-reasoning";
+
+/// Link the model this computer's Agent models pane chose as the workspace's: the providers
+/// it asks without a key (a model it runs itself, a server on its network) join the
+/// workspace's, and the workspace's work runs on that choice. Only a computer of the person's
+/// answers it, from its own pane; answers the providers as a [`ModelProviders`].
+pub const LINK_THIS_COMPUTER: &str = "link-this-computer";
 
 /// Ask the person's model for one turn, as the model they chose for a
 /// request (else their default) answers it, with the key their vault keeps.

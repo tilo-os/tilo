@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from ._errors import ProtocolError
+from ._errors import ProtocolError, Unreachable
 
 VERSION = "0.1.0"
 # Where a client goes when nothing says otherwise: the hosted API server.
@@ -33,10 +33,6 @@ def url_from(url: str | None) -> str:
 def key_from(key: str | None) -> str | None:
     """The key a client sends: `key`, or `TILO_API_KEY`."""
     return key if key is not None else os.environ.get("TILO_API_KEY")
-
-
-class Unreachable(ProtocolError):
-    """The server could not be reached: the call may be sent again as it is."""
 
 
 @dataclass

@@ -744,7 +744,7 @@ impl ResourceApp for ReadingApp {
             Column::new()
                 .push(Box::new(TextInput::from_state(&typed).with_id("typed")))
                 .push(Box::new(
-                    Button::new("open-pane", "Open the pane").on_view(move || opened.set(true)),
+                    Button::new("open-pane", "Open the pane").on_open(move || opened.set(true)),
                 ))
                 .push(pane)
                 .push(agents),

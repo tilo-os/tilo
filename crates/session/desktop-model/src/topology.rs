@@ -428,6 +428,14 @@ impl Layout {
         self.remove_tab_choosing(tab_id, Leaving::Closed)
     }
 
+    /// [`Self::close_tab`] for a tab whose window went away by itself (its
+    /// app closed it, or ended) while the tab was on the shell: remembered as
+    /// a close all the same, and as the place an app that stopped working says
+    /// so in ([`crate::Workspace::reopen_closed_tab`]).
+    pub fn window_went(&mut self, tab_id: TabId) -> Option<RemovedTab> {
+        self.remove_tab_choosing(tab_id, Leaving::WindowWent)
+    }
+
     fn remove_tab_choosing(&mut self, tab_id: TabId, leaving: Leaving) -> Option<RemovedTab> {
         let (ws_idx, strip_idx, group_idx, tab_idx) =
             self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
@@ -445,7 +453,7 @@ impl Layout {
                         })
                 })
             })?;
-        if leaving == Leaving::Closed {
+        if leaving.closes() {
             let display = self
                 .workspaces
                 .get(ws_idx)
@@ -454,7 +462,7 @@ impl Layout {
                 .and_then(|group| self.outputs.home_of(group.id))
                 .map(str::to_owned);
             if let Some(workspace) = self.workspaces.get_mut(ws_idx) {
-                workspace.note_close(strip_idx, group_idx, tab_idx, display);
+                workspace.note_close(strip_idx, group_idx, tab_idx, display, leaving);
             }
         }
         let strip = self.workspaces.get_mut(ws_idx)?.strips.get_mut(strip_idx)?;
@@ -464,7 +472,8 @@ impl Layout {
         let tab = group.tabs.remove(tab_idx);
         group.focus_history.retain(|candidate| *candidate != tab_id);
         if group.active_tab == tab_id {
-            let came_from = (leaving == Leaving::Closed)
+            let came_from = leaving
+                .closes()
                 .then(|| group.previously_active(tab_id))
                 .flatten();
             group.active_tab = came_from.unwrap_or_else(|| {
@@ -478,7 +487,7 @@ impl Layout {
         let group_removed = group.tabs.is_empty();
         if group_removed {
             strip.window_groups.remove(group_idx);
-            self.hand_focus_to_neighbour(strip_id, group_id, group_idx, leaving == Leaving::Closed);
+            self.hand_focus_to_neighbour(strip_id, group_id, group_idx, leaving.closes());
             // A window gone takes its place on the display with it; the
             // desktop shows its strip again.
             if self.fullscreen == Some(group_id) {

@@ -56,6 +56,7 @@ tilo-wake = { version = "0.1.0", path = "../../platform/tilo-wake" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tracing.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["alloc"] }

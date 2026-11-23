@@ -240,11 +240,6 @@ pub(crate) struct DispatchState {
     resource_label: LocalState<String>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<MemberId>,
-    /// A dispatcher lent to an admitted effect keeps its original ownership.
-    /// Clones cannot turn later work into the host member's invocation.
-    /// Share the immutable scope rather than embedding its owner/lease in every
-    /// view dispatcher: copying the full scope also inflates construction stacks.
-    ownership: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<Queued>>>,
@@ -320,7 +315,6 @@ impl Clone for DispatchCore {
             applied_as: self.applied_as,
             resource_label: self.resource_label.clone(),
             me: self.me.clone(),
-            ownership: self.ownership.clone(),
             queue: self.queue.clone(),
             asking: self.asking.clone(),
             opener: self.opener.clone(),
@@ -433,7 +427,6 @@ impl DispatchCore {
             label,
             resource_label: LocalState::new(label.to_owned()),
             me: me.cloned(),
-            ownership: None,
             queue: Rc::default(),
             asking: Rc::default(),
             opener: super::reference::Opener::default(),
@@ -471,7 +464,6 @@ impl DispatchCore {
         Self::of(DispatchState {
             app_id: self.app_id,
             me: self.me.clone(),
-            ownership: self.ownership.clone(),
             resource_id: Rc::from(id),
             record: Rc::from(""),
             kind,
@@ -523,16 +515,7 @@ impl DispatchCore {
     ) {
         #[cfg(debug_assertions)]
         not_painting();
-        let on_behalf_of = match &self.ownership {
-            Some(ownership) => {
-                if let Err(error) = ownership.check() {
-                    self.refuse(&address.action, error);
-                    return;
-                }
-                Some(ownership.invocation())
-            }
-            None => super::effect::acting_for(),
-        };
+        let on_behalf_of = super::effect::acting_for();
         if let Some(invocation) = on_behalf_of {
             self.waits.borrow_mut().submitted(invocation);
         }
@@ -561,14 +544,6 @@ impl DispatchCore {
             Err(error) => Err(error.to_string()),
         };
         self.waits.borrow_mut().landed(invocation, landed);
-    }
-
-    /// This core, lent to an admitted effect under `ownership`.
-    #[inline(never)]
-    fn for_ownership(&self, ownership: ui_core::invocation_scope::ResourceInvocationScope) -> Self {
-        let mut core = self.clone();
-        core.ownership = Some(Rc::new(ownership));
-        core
     }
 
     fn past(&mut self) {
@@ -805,18 +780,12 @@ impl DispatchCore {
 
     /// Why an invocation `id` submitted now is refused before its
     /// permission is asked: the record is unreadable (unless it is an
-    /// effect) or the effect lending this dispatcher lost its ownership.
+    /// effect).
     fn refusal(&self, id: &str, effect: bool) -> bool {
         if let Some(reason) = self.unreadable()
             && !effect
         {
             self.refuse(id, reason);
-            return true;
-        }
-        if let Some(ownership) = &self.ownership
-            && let Err(error) = ownership.check()
-        {
-            self.refuse(id, error);
             return true;
         }
         false
@@ -825,11 +794,6 @@ impl DispatchCore {
     /// Why nothing is applied now: an effect's dispatcher submits through
     /// the queue, and an unreadable record takes nothing.
     fn applies_now(&self) -> Result<(), ActionError> {
-        if self.ownership.is_some() {
-            return Err(ActionError::Refused(
-                "caller-scoped effects submit document changes through queued actions".into(),
-            ));
-        }
         if let Some(reason) = self.unreadable() {
             return Err(ActionError::Refused(reason));
         }
@@ -1011,22 +975,6 @@ impl<R: Resource> Dispatcher<R> {
     /// page's, never the text package's.
     pub fn anchored_kind(&self) -> &'static str {
         self.core.applied_as_kind().unwrap_or(R::KIND)
-    }
-
-    pub(crate) fn for_ownership(
-        &self,
-        ownership: ui_core::invocation_scope::ResourceInvocationScope,
-    ) -> Self {
-        Self {
-            core: self.core.for_ownership(ownership),
-            // An effect's group cannot absorb the person's unrelated input.
-            group: Rc::default(),
-            permission_of: Rc::clone(&self.permission_of),
-            submit_now: Rc::clone(&self.submit_now),
-            group_now: self.group_now.clone(),
-            last: Rc::clone(&self.last),
-            reported_as: self.reported_as.clone(),
-        }
     }
 
     /// What the effect `invocation` submitted here, once it all landed: the
@@ -1288,11 +1236,9 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Whether what runs now is the person's own gesture at this device,
-    /// not automation: no invocation, effect, ownership or past version is
-    /// acting.
+    /// not automation: no invocation, effect or past version is acting.
     fn gesture_is_own(&self) -> bool {
         !(self.core.past
-            || self.core.ownership.is_some()
             || super::effect::acting_for().is_some()
             || ui_core::invocation_scope::current_invoker().is_some())
     }
@@ -1480,9 +1426,6 @@ impl<R: Resource> Dispatcher<R> {
         if self.core.past {
             return Err("a past version calls nothing".into());
         }
-        if let Some(ownership) = &self.core.ownership {
-            ownership.check()?;
-        }
         let (target, argument) = call.request()?;
         Ok(self.core.opener.call(parent, target, argument))
     }
@@ -1496,9 +1439,6 @@ impl<R: Resource> Dispatcher<R> {
     ) -> Result<ui_core::remote_actions::ResourceReadCall, String> {
         if self.core.past {
             return Err("a past version reads nothing".into());
-        }
-        if let Some(ownership) = &self.core.ownership {
-            ownership.check()?;
         }
         Ok(self.core.opener.read_resource(parent, read))
     }
@@ -1624,7 +1564,7 @@ impl<R: Resource> Dispatcher<R> {
     /// What has no way back (`#[action(irreversible)]`) is still asked first.
     /// The confirmation stays with the callers who supply the arguments
     /// themselves (the palette, a script, an agent): under any invocation,
-    /// an effect's handler, ownership or a past version this is
+    /// an effect's handler or a past version this is
     /// [`Self::submit_now`], and the host asks as for any caller.
     ///
     /// # Errors
@@ -1727,7 +1667,7 @@ impl<R: Resource> Dispatcher<R> {
     /// applied as one action, one change and one entry in history, all or
     /// nothing.
     fn group_now(&self, edits: &mut Edits<'_>, invoke: &Invoke<R>) -> Result<(), ActionError> {
-        let _nonlocal = self.capture_nonlocal();
+        let _nonlocal = capture_nonlocal();
         let _capture = self.capture_invocation(invoke);
         let Some(group_now) = &self.group_now else {
             return Err(ActionError::Refused(
@@ -1814,7 +1754,7 @@ impl<R: Resource> Dispatcher<R> {
     ) -> Result<(), ActionError> {
         #[cfg(debug_assertions)]
         not_painting();
-        let _nonlocal = self.capture_nonlocal();
+        let _nonlocal = capture_nonlocal();
         self.core.applies_now()?;
         if !self.may_apply(action) {
             return Err(self.not_allowed(action));
@@ -2050,17 +1990,11 @@ impl<R: Resource> Dispatcher<R> {
         nested.push((id.to_owned(), child));
     }
 
-    fn capture_nonlocal(&self) -> Option<ui_core::local_document_action::Scope> {
-        (self.core.ownership.is_some() || super::effect::acting_for().is_some())
-            .then(ui_core::local_document_action::suspend)
-    }
-
     fn capture_invocation(
         &self,
         invoke: &Invoke<R>,
     ) -> Option<ui_core::local_document_action::InvocationScope> {
         if !ui_core::local_document_action::input_is_active()
-            || self.core.ownership.is_some()
             || super::effect::acting_for().is_some()
             || ui_core::local_document_action::has_invocation()
         {
@@ -2273,4 +2207,12 @@ impl<R: Resource> Drop for DispatchGroup<R> {
     fn drop(&mut self) {
         self.dispatcher.end_group();
     }
+}
+
+/// A local document action suspended while an effect acts: what it changes
+/// is that effect's, not the person's gesture.
+fn capture_nonlocal() -> Option<ui_core::local_document_action::Scope> {
+    super::effect::acting_for()
+        .is_some()
+        .then(ui_core::local_document_action::suspend)
 }

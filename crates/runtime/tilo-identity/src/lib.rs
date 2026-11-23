@@ -4,8 +4,8 @@
 //! [`broker`] to sign for them, and it answers only for the identity the
 //! [`store`] selected for their workspace, only while this device holds a
 //! valid, enrolled, non-revoked certificate ([`device_fleet`],
-//! [`certificates`]). [`enrollment`] is the one place a token admits another
-//! device; [`certification_ceremony`] holds the code a new device shows.
+//! [`certificates`]). A new device is added with a ticket the person's
+//! device issues; [`certification_ceremony`] holds the code a new device shows.
 //! [`provisioning`] creates that chain, [`store`]
 //! selects the certificate this device presents to the device serving each
 //! workspace, and [`join_proof`] keeps the signed proof it presents there.
@@ -30,10 +30,7 @@ pub mod certification_ceremony;
 #[cfg(unix)]
 pub mod device_admin;
 pub mod device_fleet;
-#[cfg(unix)]
 pub mod enrolled_transport;
-#[cfg(unix)]
-pub mod enrollment;
 pub mod identity_store;
 #[cfg(unix)]
 pub mod join_proof;

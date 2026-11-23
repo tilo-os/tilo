@@ -170,6 +170,33 @@ pub mod paint_reason {
     }
 }
 
+/// The most distinct client labels [`FrameSample::paint_clients`] keeps; past it a label reads
+/// [`MANY_CLIENTS`], so a session that ran for days holds a bounded set.
+const MAX_CLIENT_LABELS: usize = 256;
+/// The label of a tick whose clients were past [`MAX_CLIENT_LABELS`].
+pub const MANY_CLIENTS: &str = "many";
+
+/// `label` as a `'static` string, the same one each time it recurs: a trace row names its clients
+/// on every painted tick, and the set of labels a session meets is small.
+fn intern_clients(label: &str) -> &'static str {
+    static LABELS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    if label.is_empty() {
+        return "";
+    }
+    let mut labels = LABELS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(known) = labels.iter().find(|known| **known == label) {
+        return known;
+    }
+    if labels.len() >= MAX_CLIENT_LABELS {
+        return MANY_CLIENTS;
+    }
+    let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
+    labels.push(leaked);
+    leaked
+}
+
 /// When the frame the loop is about to paint was first wanted: the start of
 /// the first tick that had something new to show after a tick that had
 /// nothing. Lateness is measured from the later of this and the frame
@@ -826,6 +853,15 @@ impl FrameRecorder {
     }
     pub fn mark_wake(&mut self, reason: &'static str) {
         self.cur.wake = reason;
+    }
+    /// Why this tick painted, as [`paint_reason`] bits, and the apps whose commits asked for it,
+    /// `+`-joined: what names the frames an idle desktop keeps drawing.
+    pub fn mark_paint_reasons(&mut self, reasons: u16, clients: &str) {
+        if !self.enabled {
+            return;
+        }
+        self.cur.paint_reasons = reasons;
+        self.cur.paint_clients = intern_clients(clients);
     }
     /// Record the submit phase and close any outstanding-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
     pub fn mark_submit(

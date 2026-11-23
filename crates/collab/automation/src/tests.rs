@@ -2308,6 +2308,7 @@ tilo_test_env::scenario! {
                 actions: vec!["post".into()],
                 fields: vec![],
                 by: ActorFilter::NotBots,
+                filter: crate::shortcut::ChangeFilter::default(),
             }
         );
         assert_eq!(record.kind(), "resource_changed");

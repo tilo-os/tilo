@@ -11,9 +11,11 @@
 //! From then on it is `tilolang dev` over those sessions ([`crate::dev`]): every saved `.tl`
 //! file reaches the running app, with its state.
 
+use std::io::PipeWriter;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 use tilo_files::native::Watcher;
 
@@ -71,7 +73,7 @@ fn session_command(
     let mut command = Command::new(repo.join(session::SESSION_SCRIPT));
     command.arg("--state").arg(base.join("a"));
     command
-        .args(["--no-build", "--apps", ""])
+        .args(["--no-build", "--until-stdin-closes", "--apps", ""])
         .arg("--ready")
         .arg(ready);
     for app in apps {
@@ -86,58 +88,44 @@ fn session_command(
     command
 }
 
-/// Have the process `command` starts stop as an interrupt stops it when this process ends in a way
-/// that runs none of its own code (a signal, a kill): the kernel sends it SIGTERM then.
-pub(crate) fn end_with_this_process(command: &mut Command) {
-    use std::os::unix::process::CommandExt as _;
-    let parent = rustix::process::getpid();
-    // SAFETY: runs in the forked child before exec, and calls only async-signal-safe system
-    // calls (prctl, getppid), allocating nothing.
-    unsafe {
-        command.pre_exec(move || {
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
-            // This process may have ended before the request: then
-            // nobody is left to signal, and the session must not
-            // start.
-            if rustix::process::getppid() != Some(parent) {
-                return Err(rustix::io::Errno::SRCH.into());
-            }
-            Ok(())
-        });
-    }
+/// Make the stdin of the process `command` starts a pipe whose write end only the answer holds:
+/// it closes when the answer drops, and when this tool ends however it ends (the kernel closes it
+/// then), and the process ends when it reads that.
+pub(crate) fn lifeline(command: &mut Command) -> std::io::Result<PipeWriter> {
+    let (stdin, lifeline) = std::io::pipe()?;
+    command.stdin(stdin);
+    Ok(lifeline)
 }
 
-/// The session script this tool started, by a pidfd that names that process and no other.
+/// The session script this tool started on its [`lifeline`]. Dropping it ends the session and
+/// waits until it has.
 struct Started {
-    pidfd: std::os::fd::OwnedFd,
+    lifeline: Option<PipeWriter>,
+    waiter: Option<JoinHandle<()>>,
 }
 
 impl Started {
-    fn new(child: &std::process::Child) -> Result<Self, String> {
-        let pid = i32::try_from(child.id())
-            .ok()
-            .and_then(rustix::process::Pid::from_raw)
-            .ok_or("the nested session has no process id")?;
-        let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
-            .map_err(|error| format!("watching the nested session: {error}"))?;
-        Ok(Self { pidfd })
+    /// Own `child`, and send `wakes` its end when it ends.
+    fn watch(mut child: Child, lifeline: PipeWriter, wakes: mpsc::Sender<Wake>) -> Self {
+        let waiter = std::thread::spawn(move || {
+            let _ = wakes.send(Wake::Ended(child.wait()));
+        });
+        Self {
+            lifeline: Some(lifeline),
+            waiter: Some(waiter),
+        }
     }
 }
 
 impl Drop for Started {
     fn drop(&mut self) {
-        use rustix::event::{PollFd, PollFlags, poll};
-        let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
-        if poll(&mut exited, Some(&rustix::event::Timespec::default())).is_ok_and(|ready| ready > 0)
-        {
-            return;
+        drop(self.lifeline.take());
+        if let Some(waiter) = self.waiter.take() {
+            if !waiter.is_finished() {
+                eprintln!("==> stopping the nested session");
+            }
+            let _ = waiter.join();
         }
-        eprintln!("==> stopping the nested session");
-        if rustix::process::pidfd_send_signal(&self.pidfd, rustix::process::Signal::TERM).is_err() {
-            return;
-        }
-        let mut exited = [PollFd::new(&self.pidfd, PollFlags::IN)];
-        while poll(&mut exited, None) == Err(rustix::io::Errno::INTR) {}
     }
 }
 
@@ -203,22 +191,10 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
     let ready = base.join("ready.json");
     let _ = std::fs::remove_file(&ready);
     let mut command = session_command(&repo, options, &base, &ready, &apps);
-    end_with_this_process(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("starting the nested session: {error}"))?;
-    let _session = match Started::new(&child) {
-        Ok(session) => session,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
-    let ended_sender = sender.clone();
-    std::thread::spawn(move || {
-        let _ = ended_sender.send(Wake::Ended(child.wait()));
-    });
+    let starting = |error| format!("starting the nested session: {error}");
+    let lifeline = lifeline(&mut command).map_err(starting)?;
+    let child = command.spawn().map_err(starting)?;
+    let _session = Started::watch(child, lifeline, sender.clone());
     wait_for_file(&ready, &wakes, &sender)?;
     dev.open()?;
     if let Some(bin) = dev.bin() {
@@ -245,27 +221,35 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_started_session_is_stopped_with_its_run;
 
-        phase dropping_a_started_session_stops_it;
-        // A run that ends, however it ends, stops the session it started and waits until it has.
+        phase dropping_a_started_session_ends_it;
+        // A run that ends, however it ends, ends the session it started and waits until it has:
+        // `cat` plays a session that ends when its stdin closes.
         {
-            let mut child = Command::new("sleep")
-                .arg("600")
-                .spawn_locked()
-                .expect("a process stands in for the session");
-            drop(Started::new(&child).expect("a pidfd"));
-            let status = child
-                .try_wait()
-                .expect("its status")
-                .expect("stopped before the drop returned");
-            assert!(!status.success(), "{status}");
+            let mut command = Command::new("cat");
+            let lifeline = lifeline(&mut command).expect("a pipe");
+            let child = command.spawn_locked().expect("a session");
+            let (sender, ends) = mpsc::channel();
+            drop(Started::watch(child, lifeline, sender));
+            let Ok(Wake::Ended(status)) = ends.try_recv() else {
+                panic!("ended before the drop returned");
+            };
+            assert!(status.expect("its status").success());
         }
 
-        phase a_session_that_ended_is_not_signalled;
+        phase a_killed_tool_ends_its_session;
+        // The kernel closes a killed tool's end: a `sleep` playing the tool holds the only one.
         {
-            let mut child = Command::new("true").spawn_locked().expect("a process");
-            let started = Started::new(&child).expect("a pidfd");
-            assert!(child.wait().expect("its status").success());
-            drop(started);
+            let mut session = Command::new("cat");
+            let lifeline = lifeline(&mut session).expect("a pipe");
+            let mut session = session.spawn_locked().expect("a session");
+            let mut tool = Command::new("sleep")
+                .arg("600")
+                .stdout(lifeline)
+                .spawn_locked()
+                .expect("a tool");
+            tool.kill().expect("SIGKILL");
+            let _ = tool.wait();
+            assert!(session.wait().expect("its status").success());
         }
     }
 }

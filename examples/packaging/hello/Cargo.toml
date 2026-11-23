@@ -25,7 +25,7 @@ runtime-fs = { package = "tilo-fs-client", path = "../../../crates/runtime/tilo-
 tilo-identity-client = { path = "../../../crates/runtime/tilo-identity-client" }
 runtime-portal = { path = "../../../crates/runtime/runtime-portal" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
-runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
+runtime-dylib = { path = "../../../crates/sdk/runtime-dylib", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

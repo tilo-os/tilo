@@ -243,25 +243,29 @@ tilo_test_env::scenario! {
 
 const OFFICE_DOCX: &[u8] = {
     mod fixture {
-        include!("../../cloud-source-gdrive/tests/fixtures/docx.rs");
+        include!("../../../integrations/cloud-source-gdrive/tests/fixtures/docx.rs");
     }
     fixture::BYTES
 };
 const OFFICE_XLSX: &[u8] = {
     mod fixture {
-        include!("../../cloud-source-gdrive/tests/fixtures/xlsx.rs");
+        include!("../../../integrations/cloud-source-gdrive/tests/fixtures/xlsx.rs");
     }
     fixture::BYTES
 };
 const OFFICE_PPTX: &[u8] = {
     mod fixture {
-        include!("../../cloud-source-gdrive/tests/fixtures/pptx.rs");
+        include!("../../../integrations/cloud-source-gdrive/tests/fixtures/pptx.rs");
     }
     fixture::BYTES
 };
 
+#[path = "cloud_mount/import.rs"]
+mod cloud_import;
 #[path = "cloud_mount/native.rs"]
 mod cloud_volume_native;
+#[path = "cloud_mount/import_transition.rs"]
+mod import_transition;
 
 fn pattern(len: usize) -> Vec<u8> {
     (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect()
@@ -761,6 +765,7 @@ tilo_test_env::scenario! {
         assert_eq!(volume.upload_pending_unless_paused().unwrap(), 1);
         assert_eq!(server.get("new.txt").unwrap(), b"written by a POSIX tool");
         assert_eq!(volume.pending(), 0, "the sent change is still queued");
+        volume.prepare_import().unwrap();
     }
 
     phase a_write_closed_during_an_upload_is_sent_after_it;
@@ -778,6 +783,7 @@ tilo_test_env::scenario! {
         assert_eq!(volume.upload_pending().unwrap(), 2);
         assert_eq!(server.get("doc.txt").unwrap(), b"version three");
         assert_eq!(volume.pending(), 0);
+        volume.prepare_import().unwrap();
     }
 }
 
@@ -1502,6 +1508,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         CloudResponse::Done
     );
 
+    import_transition::verify_process_handshake(&mut service, &mount);
     service.shutdown();
     assert!(!mount.exists());
 }

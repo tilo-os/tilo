@@ -796,6 +796,27 @@ fn first_entry(
 pub fn decide_op_pinned(
     op: &crate::op::SignedOp,
     document: &WrittenDocument<'_>,
+    written: (
+        Option<&str>,
+        Option<automerge::AutoCommit>,
+        Option<[u8; 32]>,
+    ),
+    holding: Option<&automerge::Automerge>,
+    surfaces: &Surfaces,
+    allows: &Allows<'_>,
+) -> Result<Receipt, ReceiptRefusal> {
+    decide_op_imported(op, document, written, holding, surfaces, allows, None)
+}
+
+/// [`decide_op_pinned`] for an op of a history a device of `imported`'s imported, when it is
+/// one: its changes that name no invoker are that person's, as the import step the workspace
+/// keeps said, and are decided as theirs. Every other change is decided as it names itself.
+///
+/// # Errors
+/// The first [`ReceiptRefusal`].
+pub fn decide_op_imported(
+    op: &crate::op::SignedOp,
+    document: &WrittenDocument<'_>,
     (kind, held, pinned): (
         Option<&str>,
         Option<automerge::AutoCommit>,
@@ -804,6 +825,7 @@ pub fn decide_op_pinned(
     holding: Option<&automerge::Automerge>,
     surfaces: &Surfaces,
     allows: &Allows<'_>,
+    imported: Option<&Acting>,
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
     let governed = |action: &str| {
@@ -823,16 +845,13 @@ pub fn decide_op_pinned(
         crate::role::OpKind::Change => {
             // An op of an app that publishes no surface (and of a record that
             // names none) is decided as an edit of the record; one naming a
-            // surface is decided against it, and held until it is here. A
-            // resource store's document holds resources of every kind its app
-            // declares, and each of its changes names its verb in a stamp the
-            // store judges against that verb's declared write-set: the
-            // receipt decides it as an edit of the document.
-            let Some(source) = surfaces.0.as_ref().filter(|_| {
-                (op.surface.is_some() || pinned.is_some())
-                    && !crate::is_store_document(document.document)
-            }) else {
-                return decide_as_document_edit(op, document, allows);
+            // surface is decided against it, and held until it is here.
+            let Some(source) = surfaces
+                .0
+                .as_ref()
+                .filter(|_| op.surface.is_some() || pinned.is_some())
+            else {
+                return decide_as_document_edit(op, document, allows, imported);
             };
             let surface_for =
                 |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
@@ -861,12 +880,16 @@ pub fn decide_op_pinned(
                         .as_ref()
                         .and_then(|written| written.written.get(&change.hash().0))
                         .map_or_else(|| vec![Vec::new()], |written| written.units.clone());
-                    ChangeClaim::of_change(change.hash().0, change.message(), units).map_err(
-                        |error| match error {
-                            crate::claim::ClaimError::NoInvoker => ReceiptRefusal::NoInvoker,
-                            other => ReceiptRefusal::Unnamed(other.to_string()),
-                        },
+                    ChangeClaim::of_imported_change(
+                        change.hash().0,
+                        change.message(),
+                        units,
+                        imported,
                     )
+                    .map_err(|error| match error {
+                        crate::claim::ClaimError::NoInvoker => ReceiptRefusal::NoInvoker,
+                        other => ReceiptRefusal::Unnamed(other.to_string()),
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
@@ -918,27 +941,27 @@ fn decide_as_document_edit(
     op: &crate::op::SignedOp,
     document: &WrittenDocument<'_>,
     allows: &Allows<'_>,
+    imported: Option<&Acting>,
 ) -> Result<Receipt, ReceiptRefusal> {
     let node = written_node(document);
     let changes = cleartext_changes(op)?;
     // A change that carries a resource store's stamp names its invoker there;
-    // one whose stamp names none is refused, as any change that names nobody.
-    // A framework change names itself, and a checkpoint carries its writes'
-    // own, so neither reaches the stamp's rule.
-    if let Some(changes) = &changes {
-        for change in changes {
-            if matches!(
-                ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()),
-                Err(crate::claim::ClaimError::NoInvoker)
-            ) {
-                return Err(ReceiptRefusal::NoInvoker);
-            }
-        }
+    // one whose stamp names none is refused, as any change that names nobody,
+    // unless an import step said whose it is. A framework change names itself,
+    // and a checkpoint carries its writes' own, so neither reaches the stamp's
+    // rule.
+    let mut invokers: Vec<Option<Acting>> = Vec::new();
+    for change in changes.iter().flatten() {
+        let nameless = matches!(
+            ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()),
+            Err(crate::claim::ClaimError::NoInvoker)
+        );
+        invokers.push(match (nameless, imported) {
+            (false, _) => crate::claim::invoker_of(change),
+            (true, Some(person)) => Some(person.clone()),
+            (true, None) => return Err(ReceiptRefusal::NoInvoker),
+        });
     }
-    let mut invokers: Vec<Option<Acting>> = match changes {
-        Some(changes) => changes.iter().map(crate::claim::invoker_of).collect(),
-        None => Vec::new(),
-    };
     if invokers.is_empty() {
         invokers.push(None);
     }

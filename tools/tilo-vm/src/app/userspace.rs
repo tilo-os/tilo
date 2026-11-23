@@ -3,7 +3,7 @@
 use super::{
     App, Builder, CliError, Instant, Outcome, Remote, Status, VM_ACCOUNT, describe_apply, json,
 };
-use tilo_vm_protocol::{
+use tilo_device_protocol::{
     LayerVerify, Partner, Swap, USERSPACE_COMPONENTS, UserspaceApply, VM_RUNTIME_SERVICES,
 };
 
@@ -38,27 +38,16 @@ impl App {
         })?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
-        if !remote
-            .hello
-            .capabilities
-            .iter()
-            .any(|capability| capability == "userspace.apply")
-        {
-            return Err(CliError::Unsupported {
-                what: "this daemon has no staged userspace cohort admission".into(),
-                alternative: "update the maintained dev-vm-daemon component first".into(),
-            });
-        }
         let observed = Self::cohort_state(&mut remote, account)?;
         let expected_generation = observed.generation;
         let expected_session = observed.session.clone();
         let command = self
             .registry()?
             .remote_builders
-            .get(&remote.hello.arch)
+            .get(&remote.status.arch)
             .filter(|line| !line.is_empty())
             .cloned()
-            .ok_or_else(|| self.no_remote_builder(&remote.hello.arch))?;
+            .ok_or_else(|| self.no_remote_builder(&remote.status.arch))?;
         let mut members = Vec::new();
         for name in USERSPACE_COMPONENTS {
             inputs.unchanged(&worktree.root)?;
@@ -164,7 +153,7 @@ impl App {
             .inputs
             .provenance
             .interfaces
-            .get(tilo_vm_protocol::RUNTIME)
+            .get(tilo_device_protocol::RUNTIME)
             .copied();
         // A service the VM account never swapped is the image's own, built
         // for the image's runtime version: the daemon refuses the cohort
@@ -179,7 +168,7 @@ impl App {
                     })?
                     .provenance
                     .interfaces
-                    .get(tilo_vm_protocol::RUNTIME)
+                    .get(tilo_device_protocol::RUNTIME)
                     .copied()
             } else {
                 if image_runtime.is_none() {
@@ -242,19 +231,16 @@ impl App {
 
 impl App {
     /// The runtime interface version the VM's image serves, read from its
-    /// `system-interfaces.toml` over SSH; `None` when it cannot be read.
+    /// `system-interfaces.toml`; `None` when it cannot be read.
     fn image_runtime(&mut self, vm: &super::Resolved) -> Option<u32> {
-        let endpoint = self.endpoint(vm).ok()?;
-        let line = crate::remote::ssh_command(
-            &endpoint,
-            vm.entry.key.as_deref(),
-            &[format!("cat {}", tilo_vm_protocol::SYSTEM_INTERFACES)],
-            false,
-        );
-        let output = crate::hypervisor::Runner::output(&mut self.runner, &line).ok()?;
-        output.success.then_some(())?;
-        tilo_vm_protocol::system_interfaces(&output.stdout)
-            .get(tilo_vm_protocol::RUNTIME)
+        let mut remote = self.connect(vm).ok()?;
+        let text = super::reach::device_sh(
+            &mut remote,
+            &format!("cat {}", tilo_device_protocol::SYSTEM_INTERFACES),
+        )
+        .ok()?;
+        tilo_device_protocol::system_interfaces(&text)
+            .get(tilo_device_protocol::RUNTIME)
             .copied()
     }
 }
@@ -278,7 +264,7 @@ fn services_to_move<'a>(
 
 struct CohortState {
     generation: u64,
-    session: tilo_vm_protocol::UserspaceSession,
+    session: tilo_device_protocol::UserspaceSession,
     services: std::collections::BTreeMap<String, String>,
     current: std::collections::BTreeMap<String, String>,
 }
@@ -287,10 +273,10 @@ struct CohortMove<'a> {
     vm: &'a super::Resolved,
     root: &'a std::path::Path,
     account: &'a str,
-    manifest: &'a tilo_vm_protocol::manifest::Manifest,
+    manifest: &'a tilo_device_protocol::manifest::Manifest,
     command: &'a [String],
     inputs: &'a crate::source_inputs::Snapshot,
-    members: &'a [tilo_vm_protocol::UserspaceMember],
+    members: &'a [tilo_device_protocol::UserspaceMember],
     services: &'a std::collections::BTreeMap<String, String>,
     current: &'a std::collections::BTreeMap<String, String>,
 }
@@ -298,7 +284,7 @@ struct CohortMove<'a> {
 fn partner_for(
     account: &str,
     current: &std::collections::BTreeMap<String, String>,
-    members: &[tilo_vm_protocol::UserspaceMember],
+    members: &[tilo_device_protocol::UserspaceMember],
 ) -> Partner {
     let mut components = current.clone();
     for member in members {
@@ -315,11 +301,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn member(component: &str, layer: &str) -> tilo_vm_protocol::UserspaceMember {
-        tilo_vm_protocol::UserspaceMember {
+    fn member(component: &str, layer: &str) -> tilo_device_protocol::UserspaceMember {
+        tilo_device_protocol::UserspaceMember {
             component: component.into(),
             layer: layer.into(),
-            build: tilo_vm_protocol::Provenance::local(component),
+            build: tilo_device_protocol::Provenance::local(component),
             source_inventory: "digest".into(),
         }
     }

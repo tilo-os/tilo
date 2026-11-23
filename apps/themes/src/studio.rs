@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn editing_a_finished_theme_keeps_its_look() {
         let document: ThemeDocument = serde_json::from_str(include_str!(
-            "../../../crates/sdk/ui-core/tests/fixtures/finishes/liquid-glass.json"
+            "../../../crates/ui/ui-core/tests/fixtures/finishes/liquid-glass.json"
         ))
         .unwrap();
         let mut theme = Theme::from_document(&document);

@@ -54,9 +54,50 @@ pub struct Workspace {
     /// every workspace starts. Read by the owner's keys alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unattended: bool,
+    /// One of the person's own, rather than one they were invited into.
+    #[serde(default)]
+    pub own: bool,
+    /// Whether the device answering keeps a copy of it.
+    #[serde(default)]
+    pub kept_here: bool,
     /// Where the device keeping it is reached, as the person's list says.
     #[serde(skip)]
     pub address: Option<tilo_server_session::workspaces::KeepingDeviceAddress>,
+}
+
+impl Workspace {
+    /// `listed`, a workspace of the person's list as their server keeps it.
+    pub(crate) fn personal(listed: tilo_server_session::workspaces::PersonalWorkspace) -> Self {
+        Self {
+            id: listed.workspace,
+            name: listed.name,
+            host: listed.host.as_ref().map(|host| host.name.clone()),
+            own: listed.role.as_deref() == Some("owner"),
+            kept_here: false,
+            role: listed.role,
+            labels: listed.labels,
+            unattended: listed.unattended,
+            address: listed.host,
+        }
+    }
+
+    /// `listing`, a workspace the server `host` made or answered.
+    pub(crate) fn listed(
+        listing: &tilo_server_session::workspaces::WorkspaceListing,
+        host: Option<String>,
+    ) -> Self {
+        Self {
+            id: listing.workspace.clone(),
+            name: listing.name.clone(),
+            host,
+            own: listing.role.as_deref() == Some("owner"),
+            kept_here: false,
+            role: listing.role.clone(),
+            labels: listing.labels.clone(),
+            unattended: listing.unattended,
+            address: None,
+        }
+    }
 }
 
 /// Why the server did not answer what was asked.
@@ -352,15 +393,7 @@ impl Server {
         Ok(listed
             .workspaces
             .into_iter()
-            .map(|listed| Workspace {
-                id: listed.workspace,
-                name: listed.name,
-                host: listed.host.as_ref().map(|host| host.name.clone()),
-                role: listed.role,
-                labels: listed.labels,
-                unattended: listed.unattended,
-                address: listed.host,
-            })
+            .map(Workspace::personal)
             .collect())
     }
 
@@ -383,76 +416,23 @@ impl Server {
             .map_err(ServerError::from)
     }
 
-    /// Make the person's workspace called `name` as `connection`, labelled
-    /// `labels`, under `id` when the caller chose one. A person has any number of workspaces of
-    /// their own, sharing what the host keeps for them.
-    ///
-    /// The grant enters it only once a run acts there ([`Server::enter`]): a
-    /// backend that makes a workspace per customer keeps hundreds, and its
-    /// session with the server subscribes only to those it works in.
+    /// Make one of the person's workspaces as `connection`, with the server's own operation
+    /// `action` (making one, or branching one of theirs) and its `arguments`: the workspace it
+    /// made, or, asked again under the same id, the one it made before. The grant enters it only
+    /// once a run acts there ([`Server::enter`]).
     ///
     /// # Errors
-    /// The server was not reached or refused.
-    pub async fn create(
+    /// Not one of the person's own workspaces to branch ([`ServerError::NotFound`]), or the server
+    /// refused (a branch naming what did not come) or was not reached.
+    pub async fn make(
         &self,
         connection: &Connection,
-        name: &str,
-        labels: &WorkspaceLabels,
-        id: Option<uuid::Uuid>,
+        action: &str,
+        arguments: Map<String, Value>,
     ) -> Result<Workspace, ServerError> {
-        // The server makes the workspace under this id, or answers the one it
-        // made under it before (a retried create), or refuses one more than
-        // the person's plan keeps rather than answering one they have.
-        let fresh = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
-        let mut arguments = Map::new();
-        arguments.insert("name".into(), json!(name));
-        arguments.insert("workspace".into(), json!(fresh));
-        if !labels.is_empty() {
-            arguments.insert("labels".into(), json!(labels));
-        }
-        let (listing, _invitation) = connection
-            .device
-            .own_workspace(arguments, tilo_actions::InvocationId::new())
-            .await?;
-        connection.let_in();
-        Ok(connection.workspace(&listing))
-    }
-
-    /// Branch the person's own `source` as `connection` (reaching all their
-    /// workspaces): a new workspace of theirs called `name`, labelled `labels`,
-    /// under `id` when the caller chose one, that starts with everything
-    /// `source` holds but what is tied to other people. The server answers once
-    /// the branch holds all of it, or refuses and keeps nothing of it; asked
-    /// again under the same `id`, it answers the branch it made.
-    ///
-    /// # Errors
-    /// Not one of the person's own workspaces ([`ServerError::NotFound`]),
-    /// or the server refused (naming what did not come) or was not reached.
-    pub async fn branch(
-        &self,
-        connection: &Connection,
-        source: &str,
-        name: &str,
-        labels: &WorkspaceLabels,
-        id: Option<uuid::Uuid>,
-    ) -> Result<Workspace, ServerError> {
-        if tilo_server_protocol::WorkspaceId::parse(source).is_none() {
-            return Err(ServerError::NotFound);
-        }
-        let branch = id.unwrap_or_else(uuid::Uuid::new_v4).to_string();
-        let mut arguments = Map::new();
-        arguments.insert("workspace".into(), json!(source));
-        arguments.insert("name".into(), json!(name));
-        arguments.insert("branch".into(), json!(branch));
-        if !labels.is_empty() {
-            arguments.insert("labels".into(), json!(labels));
-        }
         let output = connection
             .device
-            .host_action(
-                tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE,
-                arguments,
-            )
+            .host_action(action, arguments)
             .await
             .map_err(|refusal| match ServerError::from(refusal) {
                 ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => {
@@ -462,8 +442,9 @@ impl Server {
             })?;
         let made: tilo_server_session::workspaces::CreatedWorkspace =
             serde_json::from_value(output).map_err(|error| {
-                ServerError::Unavailable(format!("the server answered no branch: {error}"))
+                ServerError::Unavailable(format!("the server answered no workspace: {error}"))
             })?;
+        connection.let_in();
         Ok(connection.workspace(&made.workspace))
     }
 
@@ -697,15 +678,7 @@ impl Connection {
     }
 
     fn workspace(&self, listing: &tilo_server_session::workspaces::WorkspaceListing) -> Workspace {
-        Workspace {
-            id: listing.workspace.clone(),
-            name: listing.name.clone(),
-            host: Some(self.host.clone()),
-            role: listing.role.clone(),
-            labels: listing.labels.clone(),
-            unattended: listing.unattended,
-            address: None,
-        }
+        Workspace::listed(listing, Some(self.host.clone()))
     }
 
     /// Whether the session still serves: not closed, and not refused by

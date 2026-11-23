@@ -1681,6 +1681,7 @@ impl Workspaces {
             label: claim.label,
             cloud: claim.cloud,
             moderates: claim.moderates.contains(workspace.workspace()),
+            origin: claim.origin,
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
             user_public_key: host.cert.user_public_key,

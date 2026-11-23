@@ -24,8 +24,17 @@ Group=tilo
 SupplementaryGroups=tilo-identity
 Environment=HOME=/var/lib/tilo/state
 Environment=TILO_RUNTIME_PROFILE=/var/lib/tilo/state
-# Its sockets, in /run/tilo: where its callers on this machine reach it.
-RuntimeDirectory=tilo
+# Its own runtime directory, never /run/tilo: that one is root's (tmpfiles,
+# 3770 root:tilo-identity) and holds the filesystem service's sockets and the
+# device steps. systemd owns a unit's RuntimeDirectory= and removes it when the
+# unit stops or restarts, so naming /run/tilo here took it over at boot and
+# emptied it whenever the daemon restarted, cutting the session off from them.
+# Every account on this machine reaches its sockets there, each connection
+# admitted by the account it comes from (root and this daemon act as the
+# device, a signed-in account as its person, any other the device's own
+# actions alone), never by a group. Nothing but its sockets is kept there.
+RuntimeDirectory=tilo-runtime
+RuntimeDirectoryMode=0755
 ExecStart=/usr/libexec/tilo/tilo-runtime
 # A ticket a machine is set up with (`tilo device add` on one of the person's
 # devices), passed as a system credential: spent at the first start, while no

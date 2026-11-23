@@ -395,7 +395,7 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     .with_accessible_name(tr("console-places"))
     .with_semantic_key("console.places")
     .bind_selection(&nav.place)
-    .on_view("console.places", move |_| {
+    .on_choose("console.places", move |_| {
         chosen.pane.set(ui::widget::NavPane::Content);
     });
 

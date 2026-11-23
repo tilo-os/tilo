@@ -308,6 +308,13 @@ impl StatePeer {
         let mut inbound = candidate.channel.clone();
         inbound.grants.clone_from(&member.policy.grants);
         inbound.surfaces.clone_from(&self.surfaces);
+        // A write an import step holds: what it made naming no one is the person's.
+        inbound.imported = self.governance().imported_invoker(
+            envelope.author.as_bytes(),
+            &route.app,
+            &route.record,
+            envelope.seq,
+        );
         match collab_types::validate_admitted_inbound_op(
             &envelope,
             &member,

@@ -89,6 +89,10 @@ pub struct Opens {
     pub reveal: Option<String>,
     /// The file (at the path the app's sandbox holds it at) or link the launch names.
     pub open: Option<String>,
+    /// The link the launch names, of a scheme its app claims, for an instance the session hands
+    /// to a tilolang host: the window's `open-link` shows what it names. `None` for a window
+    /// opened with a file or with nothing.
+    pub link: Option<String>,
     /// The file the launch opens, as content the instance reads from the content store: what an
     /// app with no path of its own is handed, the same `File` a chooser gives it.
     pub content: Option<ContentOpen>,

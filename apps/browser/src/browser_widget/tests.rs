@@ -1050,17 +1050,8 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
             "browser.address.cancel",
             "browser.credentials.close",
         ] {
-            let result = widget
-                .start_encoded(
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    &mut doc,
-                    &root,
-                )
-                .unwrap();
-            assert!(
-                result.is_some(),
+            let result = ui::framework::press_control(&mut widget, id, &mut doc, &root);
+            assert!(result,
                 "address editor control must be reachable: {id}"
             );
             assert!(widget.credentials.sync(&widget.engine));
@@ -1107,17 +1098,8 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
         widget.structure_dirty = true;
         layout_at(&mut widget, 390.0, 700.0);
         for id in ["browser.credentials.open", "browser.credentials.close"] {
-            let result = widget
-                .start_encoded(
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec(id).unwrap(),
-                    &mut doc,
-                    &root,
-                )
-                .unwrap();
-            assert!(
-                result.is_some(),
+            let result = ui::framework::press_control(&mut widget, id, &mut doc, &root);
+            assert!(result,
                 "credential action must reach its visible control"
             );
             assert!(widget.credentials.sync(&widget.engine));
@@ -1377,21 +1359,13 @@ fn site_panel_stays_retained_composed_and_actionable() {
             layout_at(&mut widget, 390.0, 700.0);
             layout_at(&mut widget, 390.0, 700.0);
             if information {
-                assert!(
-                    widget
-                        .start_encoded(
-                            OperationKind::View,
-                            "tilo.ui.segmented.select",
-                            &serde_json::to_vec(
-                                &serde_json::json!({"control":"browser.site.pages", "index":1})
-                            )
-                            .unwrap(),
-                            &mut doc,
-                            &root
-                        )
-                        .unwrap()
-                        .is_some()
-                );
+                assert!(Widget::perform_semantic_action(
+                    &mut widget,
+                    "browser.site.pages:segment:1",
+                    &ui::a11y::Action::Activate,
+                    &mut Edits::lend(&mut doc),
+                    &root,
+                ));
                 widget.site.sync(&widget.engine);
                 layout_at(&mut widget, 390.0, 700.0);
             }
@@ -1428,17 +1402,8 @@ fn site_panel_stays_retained_composed_and_actionable() {
         widget.site.open = true;
         layout_at(&mut widget, 1000.0, 700.0);
         assert!(widget.anchored_panel.is_some());
-        let result = widget
-            .start_encoded(
-                OperationKind::Effect,
-                "tilo.ui.control.invoke",
-                &serde_json::to_vec("browser.site.close").unwrap(),
-                &mut doc,
-                &root,
-            )
-            .unwrap();
-        assert!(
-            result.is_some(),
+        let result = ui::framework::press_control(&mut widget, "browser.site.close", &mut doc, &root);
+        assert!(result,
             "native button operation must reach overlay child"
         );
         widget.site.sync(&widget.engine);
@@ -1555,16 +1520,7 @@ fn site_protection_reload_updates_chrome_only_after_correlated_success() {
         layout_at(&mut widget, 1000.0, 700.0);
         assert!(widget.anchored_panel.is_some());
         assert!(
-            widget
-                .start_encoded(
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.site.toggle").unwrap(),
-                    &mut doc,
-                    &root
-                )
-                .unwrap()
-                .is_some(),
+            ui::framework::press_control(&mut widget, "browser.site.toggle", &mut doc, &root),
             "the real protection button must accept the action"
         );
         widget.sync(&doc, &root);
@@ -1905,25 +1861,7 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
                 click_at(&mut w, &tree, node, choose.center()),
                 "the real selection control handles its complete click"
             );
-            let invocation = ui::widget::controls::take_control_invocation(&mut w)
-                .expect("pointer emits its canonical control invocation");
-            assert_eq!(
-                invocation.address.resource,
-                "tilo.control:browser.pip.select-area"
-            );
-            assert_eq!(invocation.address.action, "invoke");
-            let (mut state, root) = synced(&mut w);
-            assert!(
-                w.start_encoded(
-                    OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &serde_json::to_vec("browser.pip.select-area").unwrap(),
-                    &mut state,
-                    &root
-                )
-                .unwrap()
-                .is_some()
-            );
+            let (state, root) = synced(&mut w);
             w.sync(&state, &root);
             assert!(w.take_pip_area_request());
             assert!(!w.take_pip_area_request());

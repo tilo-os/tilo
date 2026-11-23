@@ -66,41 +66,6 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-def real_apps_lines(log: str) -> list[dict]:
-    """Every `tilo::launch_latency` line of a session log, with its fields."""
-    import re
-    from datetime import datetime, timezone
-
-    pattern = re.compile(
-        r"^\S+Z\s+\w+\s+(?P<target>[A-Za-z0-9_:]+):\s*(?P<message>.*)$")
-    fields = re.compile(r"(\w+)=(\S+)")
-    lines = []
-    for raw in log.splitlines():
-        match = pattern.match(raw.strip())
-        if not match or match.group("target") != "tilo::launch_latency":
-            continue
-        message = match.group("message")
-        # `application launch requested` and `application first frame
-        # presented` say which step they are; the rest say it in the value.
-        stage = None
-        for name, word in (("requested", "application launch requested"),
-                           ("spawned", "application launcher spawned"),
-                           ("mapped", "application toplevel mapped"),
-                           ("presented", "application first frame presented")):
-            if message.startswith(word):
-                stage = name
-        if stage is None:
-            continue
-        line = dict(fields.findall(message))
-        line["stage"] = stage
-        line["message"] = message
-        line["epoch"] = datetime.fromisoformat(
-            raw.strip().split()[0].replace("Z", "+00:00")
-        ).astimezone(timezone.utc).timestamp()
-        lines.append(line)
-    return lines
-
-
 def opens(session, app: str) -> dict:
     """Open `app` and answer the launch-latency lines of that open."""
     app_id = real_apps.app_id(app)
@@ -111,11 +76,11 @@ def opens(session, app: str) -> dict:
     session.invoke_row(row)
     end = time.time() + DEADLINE
     while time.time() < end:
-        found = [line for line in real_apps_lines(session.log()) if line["epoch"] >= asked - 0.05]
+        found = [line for line in real_apps.launch_lines(session.log()) if line["epoch"] >= asked - 0.05]
         if any(line["stage"] == "presented" and line["package_id"] == app_id for line in found):
             return found
         time.sleep(0.1)
-    return [line for line in real_apps_lines(session.log())
+    return [line for line in real_apps.launch_lines(session.log())
             if line["epoch"] >= asked - 0.05 and line["package_id"] == app_id]
 
 

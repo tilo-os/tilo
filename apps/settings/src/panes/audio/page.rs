@@ -14,7 +14,7 @@ use ui::widget::{Button, Dropdown, Element, Row, Slider, Widget};
 use super::{
     AudioArea, AudioEffect, AudioModel, OUTPUT_SLIDER_WIDTH, STREAM_SLIDER_MIN_WIDTH,
     STREAM_SLIDER_WIDTH, area, bound, device_is_headphones, echo_cancellation, event_shown,
-    event_sound, follow_shown, level_meter, mono, stream_live_row, system_sounds,
+    event_sound, follow_shown, mono, stream_live_row, system_sounds,
 };
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
@@ -221,13 +221,7 @@ fn volume_line(actions: &Actions<Settings>, model: &AudioModel) -> Box<dyn Widge
             .with_id("audio.volume")
             .with_accessible_name(&t("sound-volume"))
             .shows_value()
-            .with_enabled(!model.muted)
-            // What the output in use plays, while the page is open: inside
-            // the volume's own track, never a second bar.
-            .with_level({
-                let meter = model.output_meter.clone();
-                move || meter.is_live().then(|| meter.get())
-            }),
+            .with_enabled(!model.muted),
         effect(AudioEffect::SET_OUTPUT_VOLUME),
     );
     let mute = invoking(
@@ -249,19 +243,48 @@ fn volume_line(actions: &Actions<Settings>, model: &AudioModel) -> Box<dyn Widge
             muted: !model.muted,
         },
     );
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_align_items(taffy::AlignItems::Center)
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                ui::widget::Container::new()
-                    .with_no_padding()
-                    .with_width(OUTPUT_SLIDER_WIDTH)
-                    .with_child(Box::new(volume)),
-            ))
-            .push(Box::new(mute)),
-    )
+    let mut line = ui::widget::Column::new()
+        .with_no_padding()
+        .with_rhythm(ui::tokens::Rhythm::Related)
+        .push(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(
+                    ui::widget::Container::new()
+                        .with_no_padding()
+                        .with_width(OUTPUT_SLIDER_WIDTH)
+                        .with_child(Box::new(volume)),
+                ))
+                .push(Box::new(mute)),
+        ));
+    // What the output in use plays, under its volume: the shared meter,
+    // metering the sink itself while this page is open.
+    if let Some(meter) = output_meter(model) {
+        line = line.push(Box::new(
+            ui::widget::Container::new()
+                .with_no_padding()
+                .with_width(OUTPUT_SLIDER_WIDTH)
+                .with_child(meter),
+        ));
+    }
+    Box::new(line)
+}
+
+/// The level of what the output in use plays, when this device can meter a
+/// sink: the shared meter reads it on its own, and only while a page holds it.
+fn output_meter(model: &AudioModel) -> Option<Box<dyn Widget>> {
+    if !model.runtime_caps.microphone_meter {
+        return None;
+    }
+    let device = model
+        .output_device()
+        .filter(|device| !device.name.is_empty())?;
+    let mut meter = ui::widget::LevelMeter::new(device.name.clone(), true);
+    meter.set_output(true);
+    meter.set_label(Some(t("sound-volume")));
+    Some(Box::new(meter))
 }
 
 fn balance(cx: &ViewCx<AudioPrefs>) -> Item {
@@ -309,17 +332,20 @@ fn input_card(
         );
     }
     if model.runtime_caps.microphone_meter && model.input_device().is_some() {
-        let running = model.mic_session.is_some();
+        let running = model.mic_test.is_some();
         let activity = if running {
             t("sound-mic-listening")
         } else {
             t("sound-mic-idle")
         };
         if running {
-            input_rows.push(block(Box::new(level_meter::LevelMeter::new(
-                &model.mic_meter,
-                t("sound-input-level"),
-            ))));
+            let source = model
+                .input_device()
+                .map(|device| device.name.clone())
+                .unwrap_or_default();
+            let mut meter = ui::widget::LevelMeter::new(source, true);
+            meter.set_label(Some(t("sound-input-level")));
+            input_rows.push(block(Box::new(meter)));
         }
         input_rows.push(setting_row(
             &activity,
@@ -498,7 +524,7 @@ fn stream_row(
             .with_id(&format!("audio.stream.{id}.volume.sl"))
             .with_accessible_name(&t_args(
                 "sound-app-volume",
-                &[("app", s.app.as_str().into())],
+                &[("app", s.application.as_str().into())],
             ))
             .with_enabled(!muted),
         crate::on_row::binding(
@@ -551,7 +577,7 @@ fn stream_row(
         );
         controls = controls.push(Box::new(route));
     }
-    let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.app.clone())
+    let mut line = ui::widget::ListRow::new(format!("audio.stream.{id}"), s.application.clone())
         .trailing(Box::new(controls));
     if let Some(media) = s.media.as_deref().filter(|media| !media.is_empty()) {
         line = line.secondary(media);

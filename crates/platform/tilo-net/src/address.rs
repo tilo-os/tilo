@@ -540,7 +540,7 @@ mod tests {
             address.parse::<IpAddr>().ok()
         }
 
-        /// `crates/agent/model-gateway/src/host_backend.rs` (`public_endpoint`,
+        /// `crates/integrations/model-gateway/src/host_backend.rs` (`public_endpoint`,
         /// literal branch after its `url.domain().is_some()` guard).
         pub(super) fn model_gateway_trim(url: &url::Url) -> Option<IpAddr> {
             if url.domain().is_some() {

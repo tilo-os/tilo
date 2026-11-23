@@ -318,7 +318,7 @@ impl DailyControls {
             format!("{} of {}", self.active.max(0), self.count.max(0))
         };
         let icon = |id: &str, icon: Icon, name: &str, action: Action| {
-            Button::icon_only(id, icon, name).on_effect(self.command(action))
+            Button::icon_only(id, icon, name).on_click(self.command(action))
         };
         let row = Row::new()
             .no_wrap()

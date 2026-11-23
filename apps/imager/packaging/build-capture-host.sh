@@ -19,5 +19,5 @@ if [ -n "${TILO_CAPTURE_PINS:-}${TILO_CAPTURE_SIDECAR:-}" ] || [ "${TILO_REQUIRE
     "$capture_recorder" cohort --evidence "$TILO_CAPTURE_BUILD_EVIDENCE" \
         --output "$TILO_CAPTURE_QUALIFICATION_COHORT"
 else
-    "${CARGO:-cargo}" build --locked --release -p imager --features "$capture_host_feature"
+    "${CARGO:-cargo}" build --locked --release -p imager --bin imager --features "$capture_host_feature"
 fi

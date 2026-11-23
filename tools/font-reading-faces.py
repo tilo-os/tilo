@@ -4,7 +4,7 @@
 The Reading role's default face, New Computer Modern, and the faces a reader
 can choose instead (Libertinus Serif, Literata, EB Garamond, Source Serif 4)
 ship unmodified from their official releases (see
-crates/sdk/ui-core/assets/fonts/PROVENANCE.md). Every archive and file is
+crates/ui/ui-core/assets/fonts/PROVENANCE.md). Every archive and file is
 checked against its pinned SHA-256 before anything is written.
 
     python3 tools/font-reading-faces.py          # write candidates outside source
@@ -25,7 +25,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG = ROOT / "crates/sdk/ui-core/assets/fonts"
+CATALOG = ROOT / "crates/ui/ui-core/assets/fonts"
 
 NEWCM = "https://download.gnu.org.ua/release/newcm/newcm-8.1.1.txz"
 # The CTAN package of the same release carries the licence statement the

@@ -870,3 +870,112 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_bridge_speaks_for_the_people_it_carries;
+
+    phase each_carried_person_is_a_member_of_the_call_of_their_own;
+    {
+        use collab_types::presence::{Bridged, stand_in};
+        let host = [3; 32];
+        let member = BridgedMember {
+            session: "discord:7001".into(),
+            name: "Dana".into(),
+            bridged: Bridged {
+                service: "discord".into(),
+                account: "7001".into(),
+                name: "Dana".into(),
+                avatar: None,
+                linked: None,
+            },
+            call: Call {
+                call: CallPresence {
+                    channel: "c_voice".into(),
+                    name: "voice".into(),
+                    bridge: None,
+                },
+                camera: false,
+                screen: false,
+                muted: false,
+                deafened: false,
+            },
+        };
+        let call = Call {
+            call: CallPresence {
+                channel: "c_voice".into(),
+                name: "voice".into(),
+                bridge: Some("discord".into()),
+            },
+            camera: false,
+            screen: false,
+            muted: false,
+            deafened: false,
+        };
+        let mut bridge = Board::new(WORKSPACE, host);
+        bridge.say(&Own {
+            label: "Discord".into(),
+            device: "home-server".into(),
+            user: Some("aa".repeat(32)),
+            call: Some(call),
+            bridged: vec![member],
+            ..Own::default()
+        });
+        let frames = bridge.flush(0.0);
+
+        let mut theirs = board();
+        theirs.set_host(Some(host));
+        for (_, frame) in &frames {
+            theirs.hear(host, frame, 1.0);
+        }
+        let listed = theirs.calls();
+        assert_eq!(listed.len(), 1, "one call: {listed:?}");
+        let channel = listed.first().expect("one call");
+        let dana = channel
+            .people
+            .iter()
+            .find(|caller| caller.bridged.is_some())
+            .expect("the carried person is a participant of their own");
+        assert_eq!(dana.label, "Dana");
+        assert_eq!(dana.id, hex::encode(stand_in(host, "discord:7001")));
+        assert_eq!(
+            dana.bridged.as_ref().map(|there| there.account.as_str()),
+            Some("7001")
+        );
+        assert!(
+            dana.user.is_none(),
+            "the carried person is never the bridge's own person"
+        );
+        let speaking_for = channel
+            .people
+            .iter()
+            .find(|caller| caller.bridge.is_some())
+            .expect("the bridge is in the call too");
+        assert_eq!(speaking_for.bridge.as_deref(), Some("discord"));
+        assert_eq!(
+            speaking_for.id,
+            hex::encode(host),
+            "the bridge says itself on its own device"
+        );
+
+        // One no longer carried leaves the call.
+        bridge.say(&Own {
+            label: "Discord".into(),
+            device: "home-server".into(),
+            user: Some("aa".repeat(32)),
+            ..Own::default()
+        });
+        for (_, frame) in &bridge.flush(2.0) {
+            theirs.hear(host, frame, 3.0);
+        }
+        assert!(
+            theirs
+                .present(stand_in(host, "discord:7001"))
+                .is_none_or(|member| !member.here),
+            "the person no longer carried has left"
+        );
+        assert!(
+            theirs.calls().is_empty(),
+            "the bridge is in no call and carries nobody"
+        );
+    }
+}

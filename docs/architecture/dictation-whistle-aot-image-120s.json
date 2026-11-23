@@ -372,15 +372,15 @@
           }
         },
         "sources": {
-          "crates/agent/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
-          "crates/agent/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
-          "crates/agent/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
-          "crates/agent/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
-          "crates/agent/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
-          "crates/agent/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
-          "crates/agent/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
-          "crates/agent/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
-          "crates/agent/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
+          "crates/engines/local-model-service/src/speech.rs": "8af0df03e21fadc7d0af69be9379520e148c5ae26a2f28d4fed91b2d9507fca2",
+          "crates/engines/local-model-service/src/speech/aot.rs": "c087c3441768a706d695204d8336ea26e1c4835804d48f4709acebfd68999a30",
+          "crates/engines/local-model-service/src/speech/model.rs": "f43419aba070c85db3ebe6a8d3418ede07e0a9253f68b9f406121af031376a01",
+          "crates/engines/local-model-service/src/speech/recognition.rs": "8edd172f8f0c9d988e6561ca49b80d548db18dd6931dab828795f5a2a7faff19",
+          "crates/engines/local-model-service/src/speech/worker.rs": "429a85bf98ab99d081bb762ba8bb463511b91f780d2c598200279a23a44c9d0c",
+          "crates/engines/local-model-service/src/lib.rs": "9ff6b9944c39792d7c37ac6d9fbf0d608e9fe8bb59c4ec0baa6d822d161a56e2",
+          "crates/engines/local-model-service/examples/whistle_aot_image_review.rs": "f6f8120763cb213728c181d6c4a3e409be84a324f198f481aa4aefe91afce6f6",
+          "crates/engines/local-model-service/Cargo.toml": "9ea7dec110d78bdf9e693b26dd93de6a145fb3deff34d3bf7056982eae42a153",
+          "crates/integrations/provider-config/src/local.rs": "b254be22db9492c1e11086298bfe0e064eab4ff5fd7a75588fa5e190fda03351"
         },
         "features": [
           "whistle-aot"

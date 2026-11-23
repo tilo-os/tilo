@@ -236,8 +236,8 @@ def trusted_path(root, relative, *, regular):
 # update origin and its development target UKI its pinned DTB with a compiled
 # copy of read_profile, development_origin, validate_target_imgref,
 # trusted_path, install_update_origin and resolve_profile
-# (crates/system/board-successor/src/profile.rs). Change what they accept in
-# both places; crates/system/board-successor/tests/profile.rs pins the copy.
+# (crates/os/board-successor/src/profile.rs). Change what they accept in
+# both places; crates/os/board-successor/tests/profile.rs pins the copy.
 def read_profile(root):
     candidate = root / PROFILE_PATH
     if not candidate.exists() and not candidate.is_symlink():

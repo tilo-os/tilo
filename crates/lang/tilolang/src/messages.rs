@@ -29,6 +29,26 @@ pub fn key_of(id: &str) -> String {
     key
 }
 
+/// The key of the message naming the other words people know `app` by.
+#[must_use]
+pub fn keywords_key(app: &str) -> String {
+    key_of(&format!("{app}-keywords"))
+}
+
+/// The words people know `app` by in `catalogue`, split from its `d-<app>-keywords` message:
+/// none when the catalogue does not translate them.
+#[must_use]
+pub fn keywords_word(catalogue: &str, app: &str) -> Option<Vec<String>> {
+    let words = word(catalogue, &keywords_key(app))?;
+    let words: Vec<String> = words
+        .split(',')
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    (!words.is_empty()).then_some(words)
+}
+
 /// The key of the message of the filter `key` a type with the stable id `ty` declares
 /// (`d-<ty>-filter-<key>`), which a translation replaces.
 #[must_use]
@@ -275,6 +295,16 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
     );
     if !meta.title.is_empty() {
         message(&mut out, &meta.app, &meta.title, "");
+    }
+    // The other words people know the app by, which search matches: one message a translation
+    // replaces, so each language names the app in its own words.
+    if !meta.keywords.is_empty() {
+        named(
+            &mut out,
+            &keywords_key(&meta.app),
+            &meta.keywords.join(", "),
+            "",
+        );
     }
     for ty in &meta.types {
         message(&mut out, &ty.id, &label(&ty.name), &ty.doc);

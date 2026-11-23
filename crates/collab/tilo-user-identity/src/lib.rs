@@ -35,7 +35,6 @@
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
-//! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v3\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
@@ -55,11 +54,11 @@
 //! - No I/O. The crate is pure types + pure functions. Where a machine keeps
 //!   these values — the device key in its keystore, certificates, revocations
 //!   — is `tilo-device-identity`.
-//! - No key recovery / paper share. `threshold-identity` already
-//!   solves that; this crate is single-key so the wire shape stays simple.
-//! - No transport. Peers exchange enrollment tokens out-of-band
-//!   (QR code, LAN mdns, typed string); this crate serialises the
-//!   token and validates it, but does not send it.
+//! - No key storage or recovery flow. [`recovery_words`] only encodes a
+//!   root seed as words; keeping and restoring it is `tilo-identity`'s.
+//! - No transport. A device is added with a ticket the person's device
+//!   issues; this crate holds the types it carries and checks, and sends
+//!   nothing itself.
 
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
@@ -76,10 +75,10 @@ pub mod certification;
 pub mod clock;
 pub mod directory;
 pub mod endpoint_delegation;
-pub mod enrollment;
 pub mod fleet;
 pub mod image;
 pub mod projection;
+pub mod recovery_words;
 pub mod revocation;
 pub mod root_statement;
 pub mod sign;
@@ -114,13 +113,6 @@ pub use endpoint_delegation::{
     MAX_LIFETIME_NS as MAX_ENDPOINT_DELEGATION_LIFETIME_NS, sign_endpoint_delegation,
     verify_endpoint_delegation,
 };
-pub use enrollment::{
-    Dial, ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentScope, EnrollmentToken,
-    MAX_ENROLLMENT_TOKEN_LIFETIME_NS, decode_enrollment_token, encode_enrollment_token,
-    enrollment_scope, mint_enrollment_token, mint_personal_enrollment_token,
-    verify_enrollment_token,
-};
-pub use enrollment::{enrollment_endpoint, enrollment_serving_key};
 pub use fleet::{CertifiedFleet, DeviceCertification, FleetError};
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
@@ -277,10 +269,6 @@ mod tests {
 
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
             assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
-
-            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v3\0");
-            assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
-
 
             assert_eq!(
                 approval::APPROVAL_REQUEST_TAG,

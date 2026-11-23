@@ -789,21 +789,13 @@ pair-device-lasting = { $minutes ->
    *[other] Works once, for the next { $minutes } minutes.
 }
 pair-device-in-tilo = On a computer with Tilo, paste the link into Join a workspace.
-pair-device-local-link = On the new Tilo device, choose Use my existing Tilo identity and paste this link. Compare the codes before approving.
-pair-device-nearby = Your new device can't reach this computer from elsewhere, so there is no link to show. Add it nearby instead: on the new device, choose Use my existing Tilo identity. Then, in Settings under Your devices, choose Add device and check both show the same code.
 pair-device-no-workspace = Open a workspace first: the link opens it on your new device.
 pair-device-no-host = This computer doesn't know where the workspace's host is yet. Open the workspace again, then add the device.
 pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.
 pair-device-no-link = The link could not be made. Close this and try again.
-pair-device-waiting-title = Device requests
-pair-device-waiting-nothing = Waiting for a device to ask.
-pair-device-waiting-code = Code { $code }
-pair-device-waiting-approve = Approve
-pair-device-waiting-approve-code = Approve { $device } with code { $code }
-pair-device-waiting-deny-device = Deny { $device }
-pair-device-waiting-decline = Deny
-pair-device-link-field = Link from your new device
-pair-device-link-use = Use link
-so-tilo-pair-device-link-approve = Admit the machine that asked to join
-so-tilo-pair-device-link-decline = Turn the machine that asked to join away
-so-tilo-pair-device-link-link = Let in the machine whose link was pasted
+pair-device-ticket-description = Type this ticket on your new computer to make it one of yours.
+pair-device-ticket-label = The ticket
+pair-device-ticket-copy = Copy ticket
+pair-device-ticket-alt = The ticket as a code to scan
+pair-device-ticket-in-tilo = On the new computer, open Tilo and choose “Use your existing identity”, then type the ticket. Or run tilo login with it there.
+pair-device-ticket-asking = Asking this computer for a ticket…

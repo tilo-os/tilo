@@ -30,7 +30,8 @@ use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::{NonBlank, Path};
 use ui::widget::{
     Actions as ActionGroup, ArrivingView, BannerKind, ButtonRole, ControlSize, Filterable, ListRow,
-    ModalDialog, NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
+    ModalDialog, NumberInput, Section, SectionHeader, ShortcutRecorder, SkeletonShape, TimePicker,
+    TimeValue, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
 
@@ -882,7 +883,7 @@ fn run_history(ui: &Ui, effects: &EffectsState) -> Element {
         let mut item = ListRow::new(format!("run-record-{}", run.serial), run.name.clone())
             .secondary(secondary)
             .meta(run.started.clone())
-            .on_view(open);
+            .on_open(open);
         item = match &run.status {
             InvocationStatus::Running => item.active(),
             InvocationStatus::Failed(_) => item.error(),
@@ -1374,7 +1375,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
                 .with_message(reason.clone()),
         ));
     }
-    items.push(schedule_section(ui, &draft_id));
+    items.push(triggers_section(ui, &draft_id));
     items.push(inputs_section(ui, &draft_id, draft));
     items.push(Box::new(Section::titled(
         CATALOG.t("shortcuts-steps"),
@@ -1454,10 +1455,337 @@ pub(crate) fn save_blocker(input: &EditorInput) -> Option<String> {
     }
 }
 
-/// Scheduling edits only this draft; the existing save sheet reviews authority.
-fn schedule_section(ui: &Ui, draft_id: &Id) -> Element {
+/// The trigger kinds the form offers, in the order it lists them: every kind
+/// a person's shortcut may carry. A connector event belongs to an app's
+/// robot, which a person's save refuses, so it is not one of them.
+const TRIGGER_KINDS: [&str; 16] = [
+    "keyboard",
+    "app_opened",
+    "schedule_day",
+    "schedule_every",
+    "once",
+    "workspace_joined",
+    "file_changed",
+    "focus_mode",
+    "network_changed",
+    "device_connected",
+    "resource_changed",
+    "app_event",
+    "incoming_message",
+    "nearby_device",
+    "resource_time",
+    "source_changed",
+];
+
+const WEEKDAYS: [&str; 7] = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+];
+
+/// What the trigger form holds while the person sets one: the kind chosen and
+/// every kind's fields. A field the chosen kind does not use keeps its value
+/// for when the person switches back to that kind, and nothing reaches the
+/// draft until Add makes the typed trigger the draft stores.
+#[derive(Clone)]
+struct TriggerForm {
+    kind: LocalState<String>,
+    chord: LocalState<String>,
+    time: LocalState<TimeValue>,
+    weekdays: [LocalState<bool>; 7],
+    catch_up: LocalState<bool>,
+    period: LocalState<f64>,
+    once: LocalState<String>,
+    app: LocalState<String>,
+    workspace: LocalState<String>,
+    folder: LocalState<String>,
+    focus_mode: LocalState<String>,
+    focus_transition: LocalState<String>,
+    network: LocalState<String>,
+    connected: LocalState<String>,
+    device_class: LocalState<String>,
+    record_kind: LocalState<String>,
+    actions: LocalState<String>,
+    only_fields: LocalState<String>,
+    by: LocalState<String>,
+    event_kind: LocalState<String>,
+    from: LocalState<String>,
+    device: LocalState<String>,
+    time_field: LocalState<String>,
+    offset: LocalState<f64>,
+    filter: LocalState<String>,
+    source_at: LocalState<String>,
+    every: LocalState<f64>,
+}
+
+impl TriggerForm {
+    fn new() -> Self {
+        Self {
+            kind: LocalState::new(String::from("app_opened")),
+            chord: LocalState::new(String::new()),
+            time: LocalState::new(TimeValue::new(8, 0)),
+            weekdays: std::array::from_fn(|_| LocalState::new(false)),
+            catch_up: LocalState::new(true),
+            period: LocalState::new(60.0),
+            once: LocalState::new(String::new()),
+            app: LocalState::new(String::new()),
+            workspace: LocalState::new(String::new()),
+            folder: LocalState::new(String::new()),
+            focus_mode: LocalState::new(String::from(tilo_automation::FOCUS_DO_NOT_DISTURB)),
+            focus_transition: LocalState::new(String::from("enter")),
+            network: LocalState::new(String::new()),
+            connected: LocalState::new(String::from("any")),
+            device_class: LocalState::new(String::new()),
+            record_kind: LocalState::new(String::new()),
+            actions: LocalState::new(String::new()),
+            only_fields: LocalState::new(String::new()),
+            by: LocalState::new(String::from("anyone")),
+            event_kind: LocalState::new(String::new()),
+            from: LocalState::new(String::new()),
+            device: LocalState::new(String::new()),
+            time_field: LocalState::new(String::new()),
+            offset: LocalState::new(0.0),
+            filter: LocalState::new(String::new()),
+            source_at: LocalState::new(String::new()),
+            every: LocalState::new(0.0),
+        }
+    }
+
+    /// The trigger the fields make, as the value the draft stores. A field
+    /// the kind needs is passed as the person typed it, blank included: the
+    /// draft refuses it with a message that names what is missing, rather
+    /// than a button that never says why it does nothing.
+    fn trigger(&self) -> Value {
+        let kind = self.kind.get();
+        match kind.as_str() {
+            "schedule_day" | "schedule_every" => self.schedule_trigger(&kind),
+            "resource_changed" | "app_event" | "incoming_message" | "nearby_device"
+            | "resource_time" | "source_changed" => self.record_trigger(&kind),
+            _ => self.event_trigger(&kind),
+        }
+    }
+
+    fn schedule_trigger(&self, kind: &str) -> Value {
+        let catch_up = if self.catch_up.get() {
+            "run_once"
+        } else {
+            "skip"
+        };
+        if kind == "schedule_every" {
+            let seconds = whole_number(self.period.get().max(1.0) * 60.0, 60).unwrap_or(60);
+            return json!({
+                "trigger": "schedule",
+                "catch_up": catch_up,
+                "schedule": {"every": "interval", "seconds": seconds},
+            });
+        }
+        let time = self.time.get();
+        let weekdays: Vec<&str> = WEEKDAYS
+            .iter()
+            .zip(self.weekdays.iter())
+            .filter(|(_, chosen)| chosen.get())
+            .map(|(day, _)| *day)
+            .collect();
+        json!({
+            "trigger": "schedule",
+            "catch_up": catch_up,
+            "schedule": {
+                "every": "calendar",
+                "at": {"hour": time.hours, "minute": time.minutes},
+                "weekdays": weekdays,
+            },
+        })
+    }
+
+    fn event_trigger(&self, kind: &str) -> Value {
+        match kind {
+            "keyboard" => json!({"trigger": "keyboard", "chord": form_text(&self.chord)}),
+            "app_opened" => json!({"trigger": "app_opened", "app_id": form_text(&self.app)}),
+            "workspace_joined" => with_field(
+                json!({"trigger": "workspace_joined"}),
+                "workspace",
+                form_optional(&self.workspace),
+            ),
+            "file_changed" => json!({
+                "trigger": "file_changed",
+                "capability": form_text(&self.folder),
+            }),
+            "focus_mode" => json!({
+                "trigger": "focus_mode",
+                "mode": self.focus_mode.get(),
+                "transition": self.focus_transition.get(),
+            }),
+            "network_changed" => {
+                let trigger = with_field(
+                    json!({"trigger": "network_changed"}),
+                    "network",
+                    form_optional(&self.network),
+                );
+                match self.connected.get().as_str() {
+                    "connected" => with_field(trigger, "connected", json!(true)),
+                    "disconnected" => with_field(trigger, "connected", json!(false)),
+                    _ => trigger,
+                }
+            }
+            "device_connected" => json!({
+                "trigger": "device_connected",
+                "device_class": form_text(&self.device_class),
+            }),
+            "once" => {
+                let at_ms = parse_moment(&form_text(&self.once)).unwrap_or(0);
+                json!({"trigger": "once", "at_ms": at_ms})
+            }
+            _ => json!({"trigger": kind}),
+        }
+    }
+
+    fn record_trigger(&self, kind: &str) -> Value {
+        match kind {
+            "resource_changed" => json!({
+                "trigger": "resource_changed",
+                "kind": form_text(&self.record_kind),
+                "actions": form_list(&self.actions),
+                "fields": form_list(&self.only_fields),
+                "by": self.by.get(),
+            }),
+            "app_event" => json!({
+                "trigger": "app_event",
+                "app_id": form_text(&self.app),
+                "kind": form_text(&self.event_kind),
+            }),
+            "incoming_message" => {
+                let trigger = with_field(
+                    json!({"trigger": "incoming_message"}),
+                    "app_id",
+                    form_optional(&self.app),
+                );
+                with_field(trigger, "from", form_optional(&self.from))
+            }
+            "nearby_device" => with_field(
+                json!({"trigger": "nearby_device"}),
+                "device",
+                form_optional(&self.device),
+            ),
+            "resource_time" => {
+                let offset_secs =
+                    i64::try_from(whole_number(self.offset.get() * 60.0, 0).unwrap_or(0))
+                        .unwrap_or(0);
+                let trigger = json!({
+                    "trigger": "resource_time",
+                    "kind": form_text(&self.record_kind),
+                    "field": form_text(&self.time_field),
+                    "offset_secs": offset_secs,
+                });
+                with_field(trigger, "filter", filter_value(&self.filter))
+            }
+            "source_changed" => {
+                let trigger = json!({
+                    "trigger": "source_changed",
+                    "kind": form_text(&self.record_kind),
+                });
+                let trigger = with_field(trigger, "at", form_optional(&self.source_at));
+                let every_secs = whole_number(self.every.get().max(0.0) * 60.0, 0).unwrap_or(0);
+                let trigger = if every_secs > 0 {
+                    with_field(trigger, "every_secs", json!(every_secs))
+                } else {
+                    trigger
+                };
+                with_field(trigger, "filter", filter_value(&self.filter))
+            }
+            _ => json!({"trigger": kind}),
+        }
+    }
+}
+
+/// A form field's text, trimmed.
+fn form_text(state: &LocalState<String>) -> String {
+    state.with(|value| value.trim().to_owned())
+}
+
+/// A field's text as the value optional fields take, or `null` when it is
+/// empty and the trigger means "any".
+fn form_optional(state: &LocalState<String>) -> Value {
+    let value = form_text(state);
+    if value.is_empty() {
+        Value::Null
+    } else {
+        Value::String(value)
+    }
+}
+
+/// Fields or actions the person named, one per comma.
+fn form_list(state: &LocalState<String>) -> Vec<String> {
+    form_text(state)
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Equality a filter counts, as the object the trigger holds; `null` for
+/// every match, or for text that is not one.
+fn filter_value(state: &LocalState<String>) -> Value {
+    serde_json::from_str::<Value>(&form_text(state))
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .filter(|fields| !fields.is_empty())
+        .map_or(Value::Null, Value::Object)
+}
+
+/// `trigger` with `field` set to `value`, unless the value is `null`: an
+/// empty optional field narrows nothing.
+fn with_field(mut trigger: Value, field: &str, value: Value) -> Value {
+    if value.is_null() {
+        return trigger;
+    }
+    if let Some(fields) = trigger.as_object_mut() {
+        fields.insert(field.to_owned(), value);
+    }
+    trigger
+}
+
+/// A moment written by the person, in milliseconds since the Unix epoch: an
+/// ISO date and time, with a zone or in this computer's.
+fn parse_moment(text: &str) -> Option<i64> {
+    if text.is_empty() {
+        return None;
+    }
+    let timestamp = text
+        .parse::<jiff::Timestamp>()
+        .ok()
+        .or_else(|| {
+            text.parse::<jiff::civil::DateTime>()
+                .ok()
+                .and_then(|moment| moment.to_zoned(jiff::tz::TimeZone::system()).ok())
+                .map(|moment| moment.timestamp())
+        })
+        .or_else(|| {
+            text.parse::<jiff::Zoned>()
+                .ok()
+                .map(|moment| moment.timestamp())
+        })?;
+    Some(timestamp.as_millisecond())
+}
+
+/// A whole number of seconds the person's `minutes` make, at least `least`.
+fn whole_number(minutes: f64, least: u64) -> Option<u64> {
+    let whole = format!("{:.0}", (minutes * 60.0).round())
+        .parse::<u64>()
+        .ok()?;
+    Some(whole.max(least))
+}
+
+/// What starts the open draft: every trigger it carries, each removable, and
+/// the form that adds another of any kind. Editing a trigger edits only this
+/// draft; the existing save sheet reviews authority.
+fn triggers_section(ui: &Ui, draft_id: &Id) -> Element {
     let id = draft_id.clone();
-    let controls_id = draft_id.clone();
+    let body_id = draft_id.clone();
     let builder = ui.clone();
     Box::new(ModelView::from_state_by(
         &ui.editor,
@@ -1469,110 +1797,340 @@ fn schedule_section(ui: &Ui, draft_id: &Id) -> Element {
                 .map(|(_, draft)| draft.program().triggers)
         },
         move |input| {
-            let time = input
+            let triggers = input
                 .draft
                 .as_ref()
-                .filter(|(id, _)| id == &controls_id)
-                .and_then(|(_, draft)| {
-                    let triggers = draft.program().triggers;
-                    triggers.iter().find_map(|trigger| match trigger {
-                        tilo_automation::TriggerSpec::Schedule {
-                            schedule: tilo_automation::Schedule::Calendar { at, weekdays },
-                            ..
-                        } if weekdays.is_empty() => Some(*at),
-                        _ => None,
-                    })
-                });
-            schedule_controls(&builder, controls_id.clone(), time)
+                .filter(|(draft, _)| draft == &body_id)
+                .map(|(_, draft)| draft.program().triggers)
+                .unwrap_or_default();
+            triggers_body(&builder, &body_id, &triggers)
         },
     ))
 }
-fn schedule_controls(ui: &Ui, draft_id: Id, time: Option<tilo_automation::TimeOfDay>) -> Element {
-    let time = time.unwrap_or(tilo_automation::TimeOfDay { hour: 8, minute: 0 });
-    let enabled = LocalState::new(time_is_enabled(ui, &draft_id));
-    let hour = LocalState::new(format!("{:02}", time.hour));
-    let minute = LocalState::new(format!("{:02}", time.minute));
-    let checkbox = ui.bind(
-        Checkbox::from_state(&enabled)
-            .with_id("schedule-enabled")
-            .with_label("shortcuts-schedule-enabled"),
-        Workbench::SET_SCHEDULE.map({
+
+fn triggers_body(ui: &Ui, draft_id: &Id, triggers: &[tilo_automation::TriggerSpec]) -> Element {
+    let mut items: Vec<Element> = Vec::new();
+    if triggers.is_empty() {
+        items.push(Box::new(caption("shortcuts-triggers-empty")));
+    }
+    for (index, trigger) in triggers.iter().enumerate() {
+        let remove = ui
+            .bind(
+                Button::icon_only(
+                    &format!("remove-trigger-{index}"),
+                    Icon::X,
+                    &CATALOG.t("shortcuts-remove"),
+                ),
+                Workbench::REMOVE_TRIGGER.map({
+                    let draft = draft_id.clone();
+                    let index = i64::try_from(index).unwrap_or(i64::MAX);
+                    move |()| (draft.clone(), index)
+                }),
+            )
+            .control_size(ControlSize::Small);
+        items.push(Box::new(
+            Row::new()
+                .push(Box::new(
+                    Text::new(&tilo_automation::text::trigger_line(trigger))
+                        .with_id(format!("trigger-{index}")),
+                ))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(remove)),
+        ));
+    }
+    let form = TriggerForm::new();
+    items.push(Box::new(ModelView::from_state_by(
+        &form.kind,
+        String::clone,
+        {
+            let form = form.clone();
             let draft = draft_id.clone();
-            let hour = hour.clone();
-            let minute = minute.clone();
-            move |enabled: bool| {
-                (
-                    draft.clone(),
-                    enabled,
-                    hour.get().parse::<i64>().unwrap_or(8),
-                    minute.get().parse::<i64>().unwrap_or(0),
-                )
-            }
-        }),
-    );
-    let hour_control = ui.bind(
-        Dropdown::from_state((0..24).map(|hour| format!("{hour:02}")).collect(), &hour)
-            .with_id("schedule-hour")
-            .with_accessible_name("shortcuts-schedule-hour"),
-        Workbench::SET_SCHEDULE.map({
+            let builder = ui.clone();
+            move |kind| trigger_fields(&builder, &draft, &form, kind)
+        },
+    )));
+    Box::new(Section::titled(CATALOG.t("shortcuts-triggers"), items))
+}
+
+/// The chosen kind's fields and the button that adds the trigger they make.
+fn trigger_fields(ui: &Ui, draft_id: &Id, form: &TriggerForm, kind: &str) -> Element {
+    let mut column = Column::new().with_no_padding().with_intrinsic_height();
+    let choices = TRIGGER_KINDS
+        .iter()
+        .map(|kind| {
+            (
+                (*kind).to_owned(),
+                CATALOG.t(&format!("shortcuts-trigger-kind-{kind}")),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut dropdown = Dropdown::from_state(
+        choices.iter().map(|(_, label)| label.clone()).collect(),
+        &form.kind,
+    )
+    .with_id("trigger-kind")
+    .with_accessible_name("shortcuts-trigger-kind")
+    .control_size(FIELD_HEIGHT);
+    dropdown.set_value_options(choices);
+    column = column.push(Box::new(labeled_field("shortcuts-trigger-kind", dropdown)));
+    for field in kind_fields(form, kind) {
+        column = column.push(field);
+    }
+    let add = ui.bind(
+        Button::new("add-trigger", "shortcuts-trigger-add").control_size(FIELD_HEIGHT),
+        Workbench::ADD_TRIGGER.map({
             let draft = draft_id.clone();
-            let enabled = enabled.clone();
-            let minute = minute.clone();
-            move |hour: String| {
-                (
-                    draft.clone(),
-                    enabled.get(),
-                    hour.parse::<i64>().unwrap_or(8),
-                    minute.get().parse::<i64>().unwrap_or(0),
-                )
-            }
+            let form = form.clone();
+            move |()| (draft.clone(), form.trigger())
         }),
     );
-    let minute_control = ui.bind(
-        Dropdown::from_state(
-            (0..60).map(|minute| format!("{minute:02}")).collect(),
-            &minute,
-        )
-        .with_id("schedule-minute")
-        .with_accessible_name("shortcuts-schedule-minute"),
-        Workbench::SET_SCHEDULE.map({
-            move |minute: String| {
-                (
-                    draft_id.clone(),
-                    enabled.get(),
-                    hour.get().parse::<i64>().unwrap_or(8),
-                    minute.parse::<i64>().unwrap_or(0),
-                )
-            }
-        }),
-    );
-    Box::new(Section::titled(
-        CATALOG.t("shortcuts-schedule"),
-        vec![
-            Box::new(checkbox),
-            Box::new(labeled_field("shortcuts-schedule-hour", hour_control)),
-            Box::new(labeled_field("shortcuts-schedule-minute", minute_control)),
-            Box::new(
-                Text::new(&CATALOG.t("shortcuts-schedule-description"))
-                    .with_role(TextRole::Caption),
+    column = column.push(Box::new(add));
+    Box::new(column)
+}
+
+/// The controls one trigger kind needs.
+fn kind_fields(form: &TriggerForm, kind: &str) -> Vec<Element> {
+    match kind {
+        "schedule_day" | "schedule_every" => schedule_fields(form, kind),
+        "resource_changed" | "resource_time" | "source_changed" | "app_event"
+        | "incoming_message" | "nearby_device" => record_fields(form, kind),
+        _ => event_fields(form, kind),
+    }
+}
+
+fn schedule_fields(form: &TriggerForm, kind: &str) -> Vec<Element> {
+    if kind == "schedule_every" {
+        return vec![
+            Box::new(labeled_field(
+                "shortcuts-trigger-period",
+                NumberInput::from_state(&form.period)
+                    .with_range(1.0, 1440.0)
+                    .with_id("trigger-period"),
+            )),
+            catch_up_check(form),
+        ];
+    }
+    let mut fields: Vec<Element> = vec![Box::new(labeled_field(
+        "shortcuts-trigger-time",
+        TimePicker::from_state(&form.time)
+            .with_id("trigger-time")
+            .with_accessible_name("shortcuts-trigger-time"),
+    ))];
+    for (day, chosen) in WEEKDAYS.iter().zip(form.weekdays.iter()) {
+        fields.push(Box::new(labeled_check(
+            format!("shortcuts-trigger-weekday-{day}"),
+            Checkbox::from_state(chosen).with_id(&format!("trigger-weekday-{day}")),
+        )));
+    }
+    fields.push(catch_up_check(form));
+    fields.push(Box::new(caption("shortcuts-trigger-weekday-hint")));
+    fields
+}
+
+fn event_fields(form: &TriggerForm, kind: &str) -> Vec<Element> {
+    match kind {
+        "keyboard" => vec![
+            Box::new(Text::new(&CATALOG.t("shortcuts-trigger-chord")).with_role(TextRole::Label)),
+            Box::new(ShortcutRecorder::new("trigger-chord", &form.chord, "")),
+        ],
+        "app_opened" => vec![
+            app_field(form),
+            Box::new(caption("shortcuts-trigger-app-hint")),
+        ],
+        "once" => vec![
+            field_text("once", "shortcuts-trigger-once", &form.once),
+            Box::new(caption("shortcuts-trigger-once-hint")),
+        ],
+        "workspace_joined" => vec![field_text(
+            "workspace",
+            "shortcuts-trigger-workspace",
+            &form.workspace,
+        )],
+        "file_changed" => vec![field_text(
+            "folder",
+            "shortcuts-trigger-folder",
+            &form.folder,
+        )],
+        "focus_mode" => vec![
+            field_choice(
+                "focus-mode",
+                "shortcuts-trigger-focus-mode",
+                &form.focus_mode,
+                &[
+                    (
+                        tilo_automation::FOCUS_DO_NOT_DISTURB,
+                        "shortcuts-trigger-focus-do-not-disturb",
+                    ),
+                    (
+                        tilo_automation::FOCUS_SCHEDULE,
+                        "shortcuts-trigger-focus-schedule",
+                    ),
+                ],
+            ),
+            field_choice(
+                "focus-transition",
+                "shortcuts-trigger-focus-transition",
+                &form.focus_transition,
+                &[
+                    ("enter", "shortcuts-trigger-focus-enter"),
+                    ("leave", "shortcuts-trigger-focus-leave"),
+                ],
             ),
         ],
+        "network_changed" => vec![
+            field_text("network", "shortcuts-trigger-network", &form.network),
+            field_choice(
+                "connected",
+                "shortcuts-trigger-connected",
+                &form.connected,
+                &[
+                    ("any", "shortcuts-trigger-connected-any"),
+                    ("connected", "shortcuts-trigger-connected-connected"),
+                    ("disconnected", "shortcuts-trigger-connected-disconnected"),
+                ],
+            ),
+        ],
+        "device_connected" => vec![field_text(
+            "device-class",
+            "shortcuts-trigger-device-class",
+            &form.device_class,
+        )],
+        _ => Vec::new(),
+    }
+}
+
+fn record_fields(form: &TriggerForm, kind: &str) -> Vec<Element> {
+    match kind {
+        "resource_changed" => vec![
+            field_text(
+                "record-kind",
+                "shortcuts-trigger-record-kind",
+                &form.record_kind,
+            ),
+            field_text("actions", "shortcuts-trigger-record-actions", &form.actions),
+            field_text(
+                "fields",
+                "shortcuts-trigger-record-fields",
+                &form.only_fields,
+            ),
+            field_choice(
+                "by",
+                "shortcuts-trigger-by",
+                &form.by,
+                &[
+                    ("anyone", "shortcuts-trigger-by-anyone"),
+                    ("people", "shortcuts-trigger-by-people"),
+                    ("not_bots", "shortcuts-trigger-by-not-bots"),
+                ],
+            ),
+        ],
+        "app_event" => vec![
+            app_field(form),
+            Box::new(caption("shortcuts-trigger-app-hint")),
+            field_text(
+                "event-kind",
+                "shortcuts-trigger-event-kind",
+                &form.event_kind,
+            ),
+        ],
+        "incoming_message" => vec![
+            app_field(form),
+            field_text("from", "shortcuts-trigger-from", &form.from),
+        ],
+        "nearby_device" => vec![field_text(
+            "device",
+            "shortcuts-trigger-device",
+            &form.device,
+        )],
+        "resource_time" => vec![
+            field_text(
+                "record-kind",
+                "shortcuts-trigger-record-kind",
+                &form.record_kind,
+            ),
+            field_text("field", "shortcuts-trigger-field", &form.time_field),
+            Box::new(labeled_field(
+                "shortcuts-trigger-offset",
+                NumberInput::from_state(&form.offset)
+                    .with_range(-525_600.0, 525_600.0)
+                    .with_id("trigger-offset"),
+            )),
+            field_text("filter", "shortcuts-trigger-filter", &form.filter),
+        ],
+        "source_changed" => vec![
+            field_text(
+                "record-kind",
+                "shortcuts-trigger-record-kind",
+                &form.record_kind,
+            ),
+            field_text("source-at", "shortcuts-trigger-source-at", &form.source_at),
+            Box::new(labeled_field(
+                "shortcuts-trigger-every",
+                NumberInput::from_state(&form.every)
+                    .with_range(0.0, 1440.0)
+                    .with_id("trigger-every"),
+            )),
+            field_text("filter", "shortcuts-trigger-filter", &form.filter),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// A text field of the trigger form, under its visible label.
+fn field_text(id: &str, key: &str, state: &LocalState<String>) -> Element {
+    Box::new(labeled_field(
+        key,
+        TextInput::from_state(state).with_id(&format!("trigger-{id}")),
     ))
 }
-fn time_is_enabled(ui: &Ui, draft_id: &Id) -> bool {
-    ui.editor.with(|input| {
-        input
-            .draft
-            .as_ref()
-            .filter(|(id, _)| id == draft_id)
-            .is_some_and(|(_, draft)| {
-                draft
-                    .program()
-                    .triggers
-                    .iter()
-                    .any(|trigger| matches!(trigger, tilo_automation::TriggerSpec::Schedule { schedule: tilo_automation::Schedule::Calendar { weekdays, .. }, .. } if weekdays.is_empty()))
-            })
-    })
+
+/// A choice of the trigger form, holding a stable value and reading as
+/// words.
+fn field_choice(
+    id: &str,
+    key: &str,
+    state: &LocalState<String>,
+    options: &[(&str, &str)],
+) -> Element {
+    let values: Vec<(String, String)> = options
+        .iter()
+        .map(|(value, label)| ((*value).to_owned(), CATALOG.t(label)))
+        .collect();
+    let mut dropdown = Dropdown::from_state(
+        values.iter().map(|(_, label)| label.clone()).collect(),
+        state,
+    )
+    .with_id(&format!("trigger-{id}"))
+    .with_accessible_name(key)
+    .control_size(FIELD_HEIGHT);
+    dropdown.set_value_options(values);
+    Box::new(labeled_field(key, dropdown))
+}
+
+/// The app a trigger names, under its own visible label. Its accessible name
+/// says what to watch rather than repeating "App", so a reader (and a walk)
+/// tells the field from the label above it.
+fn app_field(form: &TriggerForm) -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new(&CATALOG.t("shortcuts-trigger-app")).with_role(TextRole::Label),
+            ))
+            .push(Box::new(
+                TextInput::from_state(&form.app)
+                    .with_id("trigger-app")
+                    .with_accessible_name("shortcuts-trigger-app-field"),
+            )),
+    )
+}
+
+fn catch_up_check(form: &TriggerForm) -> Element {
+    Box::new(labeled_check(
+        "shortcuts-trigger-catch-up",
+        Checkbox::from_state(&form.catch_up).with_id("trigger-catch-up"),
+    ))
 }
 
 fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
@@ -1776,7 +2334,7 @@ fn add_controls(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> E
     Box::new(
         Row::new().push(Box::new(
             Button::new(&format!("add-action-{key}"), "shortcuts-add-step-button")
-                .on_view(move || picker.set(Some(address.clone()))),
+                .on_open(move || picker.set(Some(address.clone()))),
         )),
     )
 }
@@ -1876,7 +2434,7 @@ fn action_picker_body(
             "shortcuts-close",
         )
         .role(ButtonRole::Plain)
-        .on_view(move || picker.set(None))
+        .on_open(move || picker.set(None))
     };
     let mut groups: Vec<Element> = Vec::new();
     let blocks: Vec<Element> = block_offers()
@@ -2026,7 +2584,7 @@ fn fold_button(ui: &Ui, draft_id: &Id, path: &str, shutting: bool) -> Button {
     let key = Id::from_raw(path);
     Button::icon_only(&format!("{id}-{path}"), icon, &name)
         .control_size(ControlSize::Small)
-        .on_view(move || {
+        .on_open(move || {
             let mut steps = folded.get();
             steps.retain(|(folding, step)| !(folding == &draft && step == &key));
             if shutting {
@@ -2447,6 +3005,12 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
                 tilo_automation::CatchUp::RunOnce => "shortcuts-schedule-missed-once",
                 tilo_automation::CatchUp::Skip => "shortcuts-schedule-missed-skip",
             })));
+        } else {
+            body = body.push(Box::new(
+                Text::new(&tilo_automation::text::trigger_line(trigger))
+                    .with_role(TextRole::Caption)
+                    .with_id(format!("trigger-review-{index}")),
+            ));
         }
     }
     if permissions.is_empty() {

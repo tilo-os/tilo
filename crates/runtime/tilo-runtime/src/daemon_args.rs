@@ -56,23 +56,25 @@ pub fn validate_profile(profile: &Path) -> io::Result<()> {
 
 /// The same persistent profile is used by daemon, app attachment and MCP proxy.
 pub fn default_profile() -> io::Result<PathBuf> {
-    let path = if let Some(value) = std::env::var_os("TILO_RUNTIME_PROFILE") {
-        PathBuf::from(value)
-    } else {
-        let home = tilo_paths::home()
-            .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))?;
-        #[cfg(target_os = "macos")]
-        let suffix = "Library/Application Support/Tilo/runtime";
-        #[cfg(target_os = "windows")]
-        let suffix = "AppData/Local/Tilo/runtime";
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let suffix = ".local/state/tilo/runtime";
-        home.join(suffix)
+    let path = match std::env::var_os("TILO_RUNTIME_PROFILE") {
+        Some(value) => PathBuf::from(value),
+        None => own_profile()?,
     };
     if !path.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
     Ok(path)
+}
+
+/// This computer's own profile, whatever a process names: the system unit's, or its account's.
+pub(crate) fn own_profile() -> io::Result<PathBuf> {
+    // Tilo OS: the system unit's daemon is this computer's, for every account of it.
+    #[cfg(target_os = "linux")]
+    if tilo_api::daemon::system_daemon() {
+        return Ok(PathBuf::from(tilo_api::daemon::SYSTEM_PROFILE));
+    }
+    tilo_paths::machine::account_daemon_profile()
+        .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))
 }
 
 /// Parse native modes while preserving opaque application arguments.

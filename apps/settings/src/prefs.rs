@@ -5,7 +5,6 @@
 pub use settings_sections::desktop::*;
 pub use settings_sections::device_vpn::DeviceVpnPrefs;
 pub use settings_sections::identity::IdentityPrefs;
-pub use settings_sections::mcp_server::McpServerDevice;
 pub use settings_sections::network_usage::{ConnectionKind, NetworkUsage, ResetDay};
 pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;

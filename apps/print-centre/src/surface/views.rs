@@ -41,7 +41,7 @@ fn command_button(id: &str, label: impl AsRef<str>, tx: &Dispatch, command: UiCo
     Button::new(id, label.as_ref())
         .with_enabled(tx.0.is_some())
         .control_size(ControlSize::Large)
-        .on_effect(move || {
+        .on_click(move || {
             let _ = tx.send(command.clone());
         })
 }
@@ -375,7 +375,7 @@ fn tool_row(
             .icon(icon)
             .secondary(detail)
             .disclosure()
-            .on_view(move || {
+            .on_open(move || {
                 let _ = tx.send(command.clone());
             }),
     )
@@ -1199,7 +1199,7 @@ fn driver_choice(
     let id = format!("print-centre.print.{key}");
     ToggleGroup::new(segments(&labels), selected)
         .with_id(&id)
-        .on_view(&format!("{id}.select"), move |index| {
+        .on_choose(&format!("{id}.select"), move |index| {
             let Some(value) = values.get(index) else {
                 return;
             };
@@ -1454,7 +1454,7 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Dispatch) -
                 )
                 .icon(Icon::Camera)
                 .selected(selected == Some(scanner.device.as_str()))
-                .on_view(move || {
+                .on_open(move || {
                     let _ = tx.send(UiCommand::SelectScanner(device.clone()));
                 }),
             ));

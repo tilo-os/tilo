@@ -1,0 +1,43 @@
+[package]
+name = "browser-continuity"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Bounded reviewed browser migration plans and optional read-only source capture"
+
+[features]
+native = ["dep:rustix", "dep:uuid", "dep:tempfile", "dep:rusqlite", "dep:tilo-files", "dep:cap-primitives", "dep:cap-fs-ext", "dep:ed25519-dalek", "dep:tilo-user-identity"]
+
+[dependencies]
+zeroize.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ed25519-dalek = { workspace = true, optional = true }
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
+rustix = { workspace = true, features = ["fs", "process"], optional = true }
+uuid = { workspace = true, optional = true }
+blake3.workspace = true
+url.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+# A retained imported tree is a stored value of the personal library.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+browser-continuity-core = { path = "../../engines/browser-continuity-core" }
+tempfile = { workspace = true, optional = true }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"], optional = true }
+tilo-files = { path = "../../platform/tilo-files", optional = true }
+cap-primitives = { version = "3.4.6", optional = true }
+cap-fs-ext = { version = "3.4.6", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

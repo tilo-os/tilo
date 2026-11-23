@@ -18,7 +18,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_actions::ResourceSpec;
 use tilo_resource::{Effect as _, offer, typed_resource};
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::motion::{Direction, MotionValue, Presence, Transient};
+use ui::motion::{Presence, ReadingValue, Transient};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextStyle, TextWeight};
 use ui::time::{Duration, Instant};
@@ -1046,9 +1046,9 @@ struct Raised {
     /// Its coming and going, on the readout's motion: a new reading mid-flight keeps the opener,
     /// and a hide it reverses starts from where it is drawn.
     presence: Presence,
-    /// The bar's fill, on a spring: it follows the reading rather than jumping to it, and a
+    /// The bar's fill, a reading: it follows each new one rather than jumping to it, and a
     /// reversed press turns from where it is.
-    level: MotionValue<f64>,
+    level: ReadingValue,
 }
 
 /// The slab, as a widget filling the rectangle its host gives it.
@@ -1097,13 +1097,8 @@ impl OsdSlab {
         let mut bar = prior
             .as_ref()
             .filter(|_| same)
-            .map_or_else(|| MotionValue::new(target), |raised| raised.level);
-        if same {
-            let timing = Transient::READOUT.timing(Direction::Enter, motion, MotionSource::Pointer);
-            bar.set(target, timing, now);
-        } else {
-            bar.snap(target);
-        }
+            .map_or_else(|| ReadingValue::new(target), |raised| raised.level);
+        bar.take(target, Some(motion), now);
         self.raised = Some(Raised {
             osd,
             shown_since,
@@ -1213,9 +1208,10 @@ impl ui::host_operation::ResourceOperations for OsdSlab {
         _doc: &mut ui::widget::Edits<'_>,
         _path: &ui::automerge::ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|request| request.type_id == OPERATION) else {
+        let request = op.request();
+        if request.type_id != OPERATION {
             return Ok(None);
-        };
+        }
         let show = OsdShow::from_payload(request.payload).map_err(|error| error.to_string())?;
         self.show(show.osd());
         Ok(Some(ui::host_operation::ResourceOperationStart::Completed(

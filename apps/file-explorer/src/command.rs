@@ -51,6 +51,7 @@ pub enum FileCommand {
         at: vello::kurbo::Point,
     },
     Copy,
+    Cloud(crate::effects::FilesEffect),
     Cut,
     Paste,
     RecoverClipboardTransfers,

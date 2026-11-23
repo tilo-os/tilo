@@ -74,6 +74,59 @@ impl crate::account_probe::AccountTester for RejectCandidate {
     }
 }
 
+/// A drive that `tilo migrate connect` made, in the workspace's accounts record: it shows in
+/// Settings with its sign-in-again and remove actions, whether or not it is mounted.
+#[test]
+fn a_drive_connected_elsewhere_shows_with_its_sign_in_and_remove_actions() {
+    let (_dir, root) = scratch_root();
+    let mut account = accounts::Account::new("drive-1", accounts::cloud_types::GOOGLE_DRIVE);
+    account.display_name = "Drive".into();
+    account.config = serde_json::json!({
+        "provider": "google-drive",
+        "files_mode": "import",
+    });
+    let mut store = accounts::person::AccountList::default();
+    store.keep(&account).unwrap();
+    root.save_store(&store).unwrap();
+    let pane = AccountsPane::in_root(root);
+    let mut app = window_showing(pane);
+    let published: Vec<(String, Vec<String>, String)> = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            area(settings)
+                .unwrap()
+                .rows()
+                .into_iter()
+                .map(|published| {
+                    let id = published.id().to_string();
+                    let resource = published.into_resource();
+                    let label = resource.label.clone();
+                    let actions = resource
+                        .actions
+                        .into_iter()
+                        .map(|spec| spec.id.clone())
+                        .collect();
+                    (id, actions, label)
+                })
+                .collect()
+        })
+        .unwrap();
+    let (_, actions, label) = published
+        .iter()
+        .find(|(id, _, _)| id == "settings.account:drive-1")
+        .expect("the drive's row is published");
+    assert_eq!(label, "Drive");
+    for wanted in ["sign-in-again", "remove-account"] {
+        assert!(
+            actions.iter().any(|action| action == wanted),
+            "{wanted} is offered: {actions:?}"
+        );
+    }
+    assert!(
+        actions.iter().all(|action| action != "sync-now"),
+        "an import-only drive has no mount to sync: {actions:?}"
+    );
+}
+
 /// A private config root: the stores, vault and mutation journal of one
 /// test never meet another's, and nothing reaches the user's own.
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
@@ -783,6 +836,55 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
     }
 }
 
+/// An account whose mode change was interrupted says so and offers its recovery, through the
+/// action the row publishes.
+#[test]
+fn an_interrupted_mode_change_offers_its_recovery_on_the_row() {
+    let (_dir, root) = scratch_root();
+    let mut account = accounts::Account::new("drive-1", accounts::cloud_types::GOOGLE_DRIVE);
+    account.display_name = "Drive".into();
+    account.config = serde_json::json!({
+        "provider": "google-drive",
+        "files_mode": "sync",
+    });
+    let mut store = accounts::person::AccountList::default();
+    store.keep(&account).unwrap();
+    root.save_store(&store).unwrap();
+    root.sync_reporter(account.id.clone())
+        .failed()
+        .expect("the interrupted change is recorded");
+    let pane = AccountsPane::in_root(root).with_cloud_mounts(CloudMounts::known(Vec::new()));
+    let mut app = window_showing(pane);
+    let published = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            area(settings)
+                .unwrap()
+                .rows()
+                .into_iter()
+                .map(|published| {
+                    let id = published.id().to_string();
+                    let actions: Vec<String> = published
+                        .into_resource()
+                        .actions
+                        .into_iter()
+                        .map(|spec| spec.id.clone())
+                        .collect();
+                    (id, actions)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    let actions = published
+        .iter()
+        .find(|(id, _)| id == "settings.account:drive-1")
+        .map(|(_, actions)| actions.clone())
+        .expect("the drive's row is published");
+    assert!(
+        actions.iter().any(|action| action == "recover-cloud-mode"),
+        "recovering the interrupted change is offered: {actions:?}"
+    );
+}
+
 fn until_finished(finished: impl Fn() -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while !finished() {
@@ -1055,4 +1157,51 @@ fn linked_accounts_show_where_the_workspace_is_connected_to_a_service() {
         "{shown:?}"
     );
     assert!(shown.contains(&t("accounts-linked-unlink")), "{shown:?}");
+}
+
+#[test]
+fn the_mail_form_names_its_fields_to_assistive_technology() {
+    let mut pane = AccountsPane::from_dir(sample_directory(), true);
+    pane.command(AccountViewCommand::Add(AccountKind::Mail));
+    assert!(pane.form_open(), "Add opens the inline form");
+    let mut app = window_showing(pane);
+    let controls = app.harness().controls();
+    let names: Vec<_> = controls.iter().filter_map(|c| c.name.clone()).collect();
+    let field = controls
+        .iter()
+        .find(|control| {
+            control.name.as_deref() == Some("Display name")
+                && control.role == ui::accesskit::Role::TextInput
+        })
+        .unwrap_or_else(|| panic!("the exported tree names the display-name field: {names:#?}"));
+    assert!(
+        control_rect(app.harness(), &field.id).is_some_and(|rect| rect.width() > 0.0),
+        "the named field is drawn where a press reaches it"
+    );
+
+    // A screen reader, or an agent acting for one, reaches the field by that
+    // name: focus and the text land in the form's own draft.
+    let id = app
+        .harness()
+        .a11y_node_named("Display name")
+        .expect("the field is exported by its name");
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::Focus)
+        .expect("the field takes focus");
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::SetValue("Ada".into()))
+        .expect("the field takes the text");
+    assert_eq!(
+        change(&mut app, |pane| pane.form_name.get()),
+        "Ada",
+        "typing by accessible name reaches the draft"
+    );
+}
+
+/// Where the exported node `id` stands, if it is drawn.
+fn control_rect(harness: &ui::headless::FrameHarness, id: &str) -> Option<ui::vello::kurbo::Rect> {
+    let id = ui::accesskit::NodeId(id.parse().ok()?);
+    let node = harness.a11y_node(id)?;
+    node.bounds()
+        .map(|bounds| ui::vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
 }

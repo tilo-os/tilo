@@ -6,12 +6,9 @@
 #   - its whole checkout goes into the folder, timed from git's own progress: the files a second
 #     over the whole of it and over its first and last quarter (flat in the number of files), and
 #     how long `git fsck --full` and `git status` take there;
-#   - a checkout of part of it is under way when the holder ends: killed with SIGKILL, asked to
-#     step down by a holder of a newer program (a newly installed Tilo, as an agent's `tilo mcp`
-#     starts one), and stopped with SIGTERM. A holder asked to step down while files are being
-#     written keeps serving until the folder is quiet, so that checkout finishes; after a kill or
-#     a stop the folder is shown again, never stale, the checkout done again finishes, and
-#     `git fsck --full` finds the repository whole;
+#   - a checkout of part of it is under way when the holder ends: killed with SIGKILL, and
+#     stopped with SIGTERM. After a kill or a stop the folder is shown again, never stale, the
+#     checkout done again finishes, and `git fsck --full` finds the repository whole;
 #   - a holder with nothing kept of its own reads the whole tree back from the server: the tree
 #     there names no chunk it lacks, and the repository checked out first is whole through it.
 #
@@ -146,7 +143,7 @@ not_stale() { # WHAT
     return 1
   fi
 }
-# A holder answers again: a status starts one when none is there.
+# A holder answers again: the service (serve_daemon) starts one when the last ended.
 answers_again() {
   as_computer "$tilo" status >/dev/null 2>&1 || true
   shown && [[ -n $(holder_pid) ]]
@@ -334,39 +331,6 @@ end_by_sigkill() {
 during_checkout sigkill end_by_sigkill
 redo_and_check sigkill
 
-# A newly installed Tilo is another file, written later: a holder started from it asks the one
-# there to step down for it.
-mkdir -p "$scratch/newer-install"
-newer=$scratch/newer-install/tilo
-cp "$tilo" "$newer"
-cp "$(dirname "$tilo")/tilo-runtime" "$scratch/newer-install/tilo-runtime"
-end_by_newer_program() {
-  local holder
-  holder=$(holder_pid)
-  say "a holder of a newer program asks the holder $holder to step down mid-checkout"
-  as_computer "$scratch/newer-install/tilo-runtime" >>"$logs/newer-holder.log" 2>&1 &
-  pids+=("$!")
-  echo "$holder" >"$scratch/asked-holder"
-}
-during_checkout newer end_by_newer_program
-if [[ $(cat "$scratch/code-newer") != 0 ]]; then
-  fail "newer: the checkout failed while a newer program's holder took over (git ended with $(cat "$scratch/code-newer"))"
-  redo_and_check newer
-else
-  not_stale newer || true
-  whole "$folder/newer" newer || true
-fi
-say "once the folder is quiet, the newer program's holder takes over"
-took_over() { [[ -n $(holder_pid) && $(holder_pid) != $(cat "$scratch/asked-holder") ]] && shown; }
-taken=0
-for _ in 1 2 3 4 5 6; do
-  as_computer "$scratch/newer-install/tilo-runtime" >>"$logs/newer-holder.log" 2>&1 &
-  pids+=("$!")
-  if wait_for 40 "the newer program's holder holds the device" took_over; then taken=1; break; fi
-done
-((taken)) || fail "newer: the newer program's holder did not take over once the folder was quiet"
-tilo=$newer
-
 end_by_sigterm() {
   local holder
   holder=$(holder_pid)
@@ -379,21 +343,21 @@ end_by_sigterm() {
 during_checkout sigterm end_by_sigterm
 redo_and_check sigterm
 
-say "every way a holder ended said why at error level in its log"
+say "a stopped holder said why at error level in its log"
 log=$(holder_log)
 [[ -n $log ]] && cp "$log" "$logs/holder.log"
-for why in "newer" "SIGTERM"; do
-  cat "$logs/holder.log" "$logs/newer-holder.log" 2>/dev/null | grep -q "ERROR.*holder ends.*$why" \
-    || fail "no holder log has an error-level line for an end by $why"
-done
+grep -q "ERROR.*holder ends.*SIGTERM" "$logs/holder.log" 2>/dev/null \
+  || fail "no holder log has an error-level line for an end by SIGTERM"
 
 say "a holder with nothing kept of its own reads the whole tree back from the server"
 holder=$(holder_pid)
 want=$(mounted files)
+touch "$scratch/daemons-held"
 kill -TERM "$holder"
 wait_for 40 "the holder stopped" bash -c "! kill -0 '$holder' 2>/dev/null" || true
 kept=$(find "$scratch/state/tilo/device/files" -mindepth 2 -maxdepth 2 -type d -name tree | head -n 1)
 [[ -n $kept ]] && rm -rf "$kept" || fail "no kept tree under $scratch/state/tilo/device/files"
+rm -f "$scratch/daemons-held"
 wait_for 180 "a fresh holder shows the folder" answers_again || fail "no fresh holder shows the folder"
 converged() { synced "$want" any-sent; }
 wait_for 600 "the fresh holder's tree names all $want files" converged || fail "the fresh holder's tree is $(short)"
@@ -409,4 +373,4 @@ if ((${#failed[@]})); then
   printf '  %s\n' "${failed[@]}" >&2
   exit 1
 fi
-say "ok: $total files at $rate files a second; the checkout survived SIGKILL, a newer program and SIGTERM"
+say "ok: $total files at $rate files a second; the checkout survived SIGKILL and SIGTERM"

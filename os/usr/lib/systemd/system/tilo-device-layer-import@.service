@@ -1,0 +1,18 @@
+# One run of the device's "layer-import" step for invocation %i, started by the device's daemon (user
+# tilo) once it admitted the caller; see 49-tilo-device-steps.rules. The step reads its
+# arguments from /run/tilo/device-steps/%i and writes its progress and result there.
+[Unit]
+Description=Import a layer (device step %i)
+CollectMode=inactive-or-failed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo/tilo-device-step layer-import %i
+TimeoutStartSec=infinity
+LimitCORE=0
+LockPersonality=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
