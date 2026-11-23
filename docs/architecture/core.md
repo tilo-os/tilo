@@ -641,6 +641,12 @@ and screen share only, never documents, and stays as it is.
   extends this API; it gets no call of its own. The session's own engine
   (`EngineRecords`, `settings_sync`) goes, and settings are records read and
   written like any other.
+- **The operator chooses workspaces, membership chooses people**: a host's
+  operator decides which workspaces it stores and serves and who may create
+  one there. A hosted workspace's signed membership decides who reaches it,
+  guests admitted by entry included; the operator's default trust refuses only
+  a device that reaches no workspace the host serves. The operator's levers
+  are to stop hosting a workspace and to block a specific device or key.
 - **A checkpoint is a cache, never an authority**: a compaction names the
   hashes of the writes it covers, and a key-holding reader reads it only after
   checking that its content is the merge of those writes, each checked as an
