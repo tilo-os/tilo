@@ -86,6 +86,7 @@ impl ExecCtx {
             pending: None,
             finished: false,
             approved_by: self.approved_by.clone(),
+            asked: false,
             effects: 0,
             parent: None,
             served: None,
@@ -679,6 +680,7 @@ impl Core {
                 pending: None,
                 finished: false,
                 approved_by: None,
+                asked: false,
                 effects: 0,
                 parent: None,
                 invocation: String::new(),
@@ -872,8 +874,37 @@ impl Core {
         ctx: &ExecCtx,
         aref: &ActionRef,
     ) -> Result<ActionOutcome, RuntimeError> {
+        self.run_as(ctx, aref, false)
+    }
+
+    /// Run an action a person was just asked about and allowed, as the run they answered: what
+    /// it calls from the action's own package goes on without asking them again. Only the device
+    /// taking their answer starts this run; any other run of the action asks again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_action`].
+    pub(crate) fn run_answered(
+        &self,
+        ctx: &ExecCtx,
+        aref: &ActionRef,
+    ) -> Result<ActionOutcome, RuntimeError> {
+        self.run_as(ctx, aref, true)
+    }
+
+    fn run_as(
+        &self,
+        ctx: &ExecCtx,
+        aref: &ActionRef,
+        asked: bool,
+    ) -> Result<ActionOutcome, RuntimeError> {
         let aref = &self.completed(aref)?;
-        match self.start_ctx(ctx, aref) {
+        let run = self.run_id(ctx);
+        let journal = Journal {
+            asked,
+            ..ctx.journal(aref, run.clone())
+        };
+        match self.drive_chain(&run, journal) {
             Ok(RunOutcome::Done(v)) => Ok(ActionOutcome::Done(v)),
             Ok(waits) => Ok(ActionOutcome::Waits(waits)),
             Err(e) if failed(&e) => Ok(ActionOutcome::Failed(e.to_string())),
@@ -1761,14 +1792,19 @@ impl Core {
     }
 
     /// Whether the code in `chain` is all code the person who allowed `journal`'s run was asked
-    /// about: the chain the run was asked about, and the package of the action they allowed.
+    /// about: the chain the run was asked about, and, in the run they answered, the package of
+    /// the action they allowed. A run started afresh holds no answer of theirs for its calls.
     fn asked_about(&self, journal: &Journal, chain: &[ModuleHash]) -> bool {
-        let own = journal.action.as_ref().and_then(|action| {
-            self.registry
-                .borrow()
-                .action_package(action)
-                .map(|pkg| pkg.hash.clone())
-        });
+        let own = journal
+            .action
+            .as_ref()
+            .filter(|_| journal.asked)
+            .and_then(|action| {
+                self.registry
+                    .borrow()
+                    .action_package(action)
+                    .map(|pkg| pkg.hash.clone())
+            });
         chain
             .iter()
             .all(|m| journal.chain.contains(m) || own.as_ref() == Some(m))
@@ -1832,6 +1868,7 @@ impl Core {
         let child = format!("{run}/{}", journal.entries.len());
         let child_journal = Journal {
             parent: Some(run.clone()),
+            asked: journal.asked,
             ..ctx.journal(aref, journal.invocation.clone())
         };
         match self.drive(&child, child_journal)? {

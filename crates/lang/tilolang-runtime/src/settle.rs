@@ -595,7 +595,8 @@ impl Core {
             author: Some(identity.clone()),
             from: None,
         };
-        Ok(match self.run_action(&ctx, &aref)? {
+        // The person accepting it answered this run: it is the one they were asked about.
+        Ok(match self.run_answered(&ctx, &aref)? {
             ActionOutcome::Done(v) => ("done".to_owned(), self.result_text(&v), String::new()),
             ActionOutcome::Waits(_) => ("approved".to_owned(), String::new(), String::new()),
             ActionOutcome::Failed(why) => ("failed".to_owned(), why, String::new()),

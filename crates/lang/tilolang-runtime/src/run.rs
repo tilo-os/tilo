@@ -214,6 +214,12 @@ pub struct Journal {
     /// make.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<Actor>,
+    /// Whether the person who approved it answered this run's own ask, so it goes on from what
+    /// they were shown: what it calls from the package of the action they allowed runs without
+    /// asking again. A run started afresh, as a device that holds no journal of the one they
+    /// answered starts it, asks about each call again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asked: bool,
     /// How many outside effects the run has queued: the next one's key counts from it, so a run
     /// that goes on after a wait queues none under a key it used.
     #[serde(default)]
