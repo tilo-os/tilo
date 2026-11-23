@@ -325,7 +325,11 @@ class MachineFiles:
 
     def _await_identity(self) -> None:
         """Wait for the person's identity, which the session mints: the daemon presents it and
-        starts nowhere without it."""
+        starts nowhere without it.
+
+        The key becomes root's, shared read-only with the person's group, as a device's image
+        provisions it: the identity store admits a key owned by root or by the reader, and the
+        machine's daemon reads it as root while the session reads it as the person."""
         cert = self.state / "identity/device/cert.bin"
         deadline = time.monotonic() + self.START_WITHIN
         while not cert.is_file():
@@ -334,6 +338,10 @@ class MachineFiles:
             if time.monotonic() >= deadline:
                 raise Failed(f"the session minted no identity at {cert}")
             time.sleep(0.1)
+        key = self.state / "identity/device-private/keypair.bin"
+        if key.is_file():
+            os.chown(key, 0, self.account.pw_gid)
+            os.chmod(key, 0o640)
 
     def _launch(self) -> None:
         logs = self.out / "logs"
