@@ -8,8 +8,8 @@ use os_actions::{EnterpriseEapMethod, EnterpriseWifiConfiguration};
 
 use crate::device::{Change, Device, Readings};
 use crate::model::{
-    Accessory, Band, Bluetooth, Client, Metered, Mobile, MobileProfile, Nearby, Network, SavedKind,
-    SavedNetwork, Tethering, Vpn, VpnProfile, Wifi, WifiNetwork, Wired,
+    Accessory, Band, Bluetooth, Client, Link, LinkKind, Metered, Mobile, MobileProfile, Nearby,
+    Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi, WifiNetwork, Wired,
 };
 use crate::{BLUETOOTH, Connectivity, NETWORK, TETHERING, VPN};
 
@@ -43,6 +43,11 @@ impl Fake {
                     saved("Home", "uuid-home", true),
                     saved("Office", "uuid-office", false),
                 ],
+                link: Some(Link {
+                    kind: LinkKind::Wifi,
+                    name: Some("Home".into()),
+                    signal: 3,
+                }),
                 ..Network::default()
             };
             readings.network.saved[0].proxy = Some("proxy.local:3128".into());
@@ -68,6 +73,10 @@ impl Fake {
                 connected: false,
             }];
             readings.tethering.available = true;
+            readings.tethering.clients = vec![Client {
+                address: "11:22:33:44:55:66".into(),
+                signal: Some(-40),
+            }];
         }
         Arc::new(fake)
     }
@@ -307,13 +316,42 @@ fn read(service: &Connectivity, resource: &str) -> Value {
     service.read(resource).expect("published")
 }
 
+/// The actions a published child offers, by id; empty when it is gone.
+fn child_actions(service: &Connectivity, id: &str) -> Vec<String> {
+    service
+        .resources()
+        .iter()
+        .flat_map(|resource| resource.children.iter())
+        .find(|child| child.id.as_str() == id)
+        .map(|child| {
+            child
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A switch is taken at once, pending while the device works, and lands in
-/// the reading.
+/// the reading; the networks in reach and the networks this device keeps
+/// join, leave and are forgotten from the children the resource publishes,
+/// with a password that never shows.
 #[test]
-fn turning_wifi_off_lands_in_the_reading() {
+#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+fn wifi_switches_and_joins_from_the_network_resource() {
     let fake = Fake::laptop();
     let mut service = service(&fake);
-    assert_eq!(read(&service, NETWORK)["wifi"]["on"], json!(true));
+    let network = read(&service, NETWORK);
+    assert_eq!(network["wifi"]["on"], json!(true));
+    assert_eq!(
+        network["link"]["kind"],
+        json!("wifi"),
+        "the connection traffic leaves on"
+    );
+    assert_eq!(network["link"]["name"], json!("Home"));
+    assert_eq!(network["link"]["signal"], json!(3));
+
     let started = service
         .invoke(NETWORK, "set-wifi", &arguments(json!({"on": false})))
         .expect("taken");
@@ -324,20 +362,14 @@ fn turning_wifi_off_lands_in_the_reading() {
     assert_eq!(network["wifi"]["on"], json!(false));
     assert_eq!(network["pending"], json!([]));
     assert_eq!(fake.changes(), [Change::Wifi(false)]);
-
     // A toggle reads what the switch is now.
     service
         .invoke(NETWORK, "toggle-wifi", &Map::new())
         .expect("taken");
     service.settle();
     assert_eq!(fake.changes().last(), Some(&Change::Wifi(true)));
-}
 
-/// What the device refused is the resource's problem until the next change.
-#[test]
-fn a_refusal_is_the_problem() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
+    // What the device refused is the resource's problem until the next change.
     *fake.refuse.lock().expect("refuse") = Some("a switch holds it off".into());
     service
         .invoke(
@@ -363,15 +395,18 @@ fn a_refusal_is_the_problem() {
     let network = read(&service, NETWORK);
     assert_eq!(network["problem"], Value::Null);
     assert_eq!(network["airplane-mode"], json!(true));
-}
+    service
+        .invoke(
+            NETWORK,
+            "set-airplane-mode",
+            &arguments(json!({"on": false})),
+        )
+        .expect("taken");
+    service.settle();
 
-/// Each network in reach is a child offering to join it (or leave the one
-/// connected); a protected one this device does not know asks for its
-/// password, which never shows in a reading.
-#[test]
-fn networks_are_joined_from_their_children() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
+    // Each network in reach is a child offering to join it (or leave the one
+    // connected); a protected one this device does not know asks for its
+    // password.
     let resources = service.resources();
     let network = resources
         .iter()
@@ -405,7 +440,6 @@ fn networks_are_joined_from_their_children() {
         read(&service, NETWORK)["wifi"]["networks"][1]["connected"],
         json!(true)
     );
-
     let refused = service.invoke("wifi-network:Office", "join-wifi", &Map::new());
     assert!(
         matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "password_needed"),
@@ -427,120 +461,9 @@ fn networks_are_joined_from_their_children() {
             hidden: false,
         })
     );
-    for resource in [NETWORK, BLUETOOTH, VPN, TETHERING] {
-        assert!(!read(&service, resource).to_string().contains("hunter2"));
-    }
-}
 
-/// What the device has not got is published unavailable, and refused.
-#[test]
-fn what_the_device_lacks_is_unavailable() {
-    let fake = Arc::new(Fake::default());
-    let mut service = service(&fake);
-    for (resource, action, arguments) in [
-        (NETWORK, "set-wifi", json!({"on": true})),
-        (NETWORK, "set-wired", json!({"on": true})),
-        (NETWORK, "set-mobile-data", json!({"on": true})),
-        (NETWORK, "set-mobile-apn", json!({"apn": "internet"})),
-        (NETWORK, "set-mobile-roaming", json!({"on": true})),
-        (NETWORK, "connect-hidden-wifi", json!({"network": "Loft"})),
-        (NETWORK, "connect-enterprise-wifi", json!({})),
-        (NETWORK, "toggle-airplane-mode", json!({})),
-        (BLUETOOTH, "set-bluetooth", json!({"on": true})),
-        (BLUETOOTH, "scan", json!({"on": true})),
-        (BLUETOOTH, "pair", json!({"address": "AA:CC"})),
-        (VPN, "set-vpn", json!({"profile": "x", "on": true})),
-        (TETHERING, "set-hotspot", json!({"on": true})),
-        (
-            TETHERING,
-            "configure-hotspot",
-            json!({"name": "Loft", "password": "hunter2", "band": "five"}),
-        ),
-    ] {
-        let refused = service.invoke(resource, action, &self::arguments(arguments));
-        assert!(
-            matches!(refused, Err(ApiError::Unavailable { .. })),
-            "{resource} {action}: {refused:?}"
-        );
-    }
-    assert!(fake.changes().is_empty());
-    assert!(matches!(
-        service.invoke(NETWORK, "set-wifi", &arguments(json!({}))),
-        Err(ApiError::Unavailable { .. } | ApiError::InvalidArguments(_))
-    ));
-}
-
-/// Accessories and VPN profiles are children too, each bound to what
-/// pressing it does now.
-#[test]
-fn accessories_and_profiles_connect_from_their_children() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
-    service
-        .invoke("bluetooth-accessory:AA:BB", "connect", &Map::new())
-        .expect("taken");
-    service
-        .invoke("vpn-profile:uuid-work", "set-vpn", &Map::new())
-        .expect("taken");
-    service
-        .invoke(TETHERING, "set-hotspot", &arguments(json!({"on": true})))
-        .expect("taken");
-    service.settle();
-    assert_eq!(
-        fake.changes(),
-        [
-            Change::Connect {
-                address: "AA:BB".into()
-            },
-            Change::Vpn {
-                profile: "uuid-work".into(),
-                on: true
-            },
-            Change::Hotspot(true),
-        ]
-    );
-    assert_eq!(
-        read(&service, BLUETOOTH)["accessories"][0]["connected"],
-        json!(true)
-    );
-    assert_eq!(read(&service, VPN)["profiles"][0]["connected"], json!(true));
-    assert_eq!(read(&service, TETHERING)["hotspot"], json!(true));
-    let resources = service.resources();
-    let vpn = resources
-        .iter()
-        .find(|r| r.id.as_str() == VPN)
-        .expect("vpn");
-    assert!(
-        vpn.children[0].actions[0]
-            .bound()
-            .contains(&("on".to_owned(), json!(false))),
-        "once connected, its child disconnects it"
-    );
-}
-
-/// The actions a published child offers, by id; empty when it is gone.
-fn child_actions(service: &Connectivity, id: &str) -> Vec<String> {
-    service
-        .resources()
-        .iter()
-        .flat_map(|resource| resource.children.iter())
-        .find(|child| child.id.as_str() == id)
-        .map(|child| {
-            child
-                .actions
-                .iter()
-                .map(|action| action.id.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// A network nobody announces is joined by the name typed in, with its
-/// password when it has one.
-#[test]
-fn a_hidden_network_joins_by_the_name_it_does_not_announce() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
+    // A network nobody announces is joined by the name typed in, with its
+    // password when it has one.
     service
         .invoke(
             NETWORK,
@@ -557,7 +480,6 @@ fn a_hidden_network_joins_by_the_name_it_does_not_announce() {
             hidden: true,
         })
     );
-    // An open network nobody announces asks for no password.
     service
         .invoke(
             NETWORK,
@@ -574,26 +496,12 @@ fn a_hidden_network_joins_by_the_name_it_does_not_announce() {
             hidden: true,
         })
     );
-    assert!(!read(&service, NETWORK).to_string().contains("hunter2"));
-}
+    for resource in [NETWORK, BLUETOOTH, VPN, TETHERING] {
+        assert!(!read(&service, resource).to_string().contains("hunter2"));
+    }
 
-/// The arguments a work or school network joins with.
-fn campus() -> Value {
-    json!({
-        "ssid": "Campus",
-        "identity": "ada@example.edu",
-        "ca_certificate": "/etc/ssl/certs/campus.pem",
-        "password": "hunter2",
-    })
-}
-
-/// A work or school network joins in one change carrying the identity, the
-/// method and the certificates it was given; an unnamed method, profile and
-/// inner authentication take the setup's defaults.
-#[test]
-fn an_enterprise_network_joins_with_its_identity() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
+    // A work or school network joins in one change carrying the identity, the
+    // method and the certificates it was given.
     let mut enterprise = campus();
     enterprise["profile"] = json!("Campus");
     enterprise["anonymous_identity"] = json!("anonymous@example.edu");
@@ -606,8 +514,8 @@ fn an_enterprise_network_joins_with_its_identity() {
         .expect("taken");
     service.settle();
     assert_eq!(
-        fake.changes(),
-        [Change::Enterprise {
+        fake.changes().last(),
+        Some(&Change::Enterprise {
             config: EnterpriseWifiConfiguration {
                 profile_name: "Campus".into(),
                 ssid: "Campus".into(),
@@ -620,10 +528,12 @@ fn an_enterprise_network_joins_with_its_identity() {
                 private_key: Some("/etc/ssl/private/ada.key".into()),
             },
             password: Some("hunter2".into()),
-        }]
+        })
     );
     assert!(!read(&service, NETWORK).to_string().contains("hunter2"));
 
+    // An unnamed method, profile and inner authentication take the setup's
+    // defaults.
     service
         .invoke(NETWORK, "connect-enterprise-wifi", &arguments(campus()))
         .expect("taken");
@@ -634,15 +544,10 @@ fn an_enterprise_network_joins_with_its_identity() {
     assert_eq!(config.profile_name, "Campus", "the profile is the network");
     assert_eq!(config.method, EnterpriseEapMethod::Peap);
     assert_eq!(config.phase2_auth.as_deref(), Some("mschapv2"));
-}
 
-/// What a work or school network lacks, or a method nobody has, is refused
-/// by name before anything reaches the device; what the device refuses is
-/// the resource's problem.
-#[test]
-fn an_enterprise_network_without_what_it_needs_is_refused() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
+    // What a work or school network lacks, or a method nobody has, is refused
+    // by name before anything reaches the device.
+    let reached = fake.changes().len();
     let without = |field: &str| {
         let mut enterprise = campus();
         enterprise.as_object_mut().expect("an object").remove(field);
@@ -666,8 +571,9 @@ fn an_enterprise_network_without_what_it_needs_is_refused() {
             "{field}: {refused:?}"
         );
     }
-    assert!(fake.changes().is_empty(), "nothing reached the device");
+    assert_eq!(fake.changes().len(), reached, "nothing reached the device");
 
+    // What the device refuses is the resource's problem.
     *fake.refuse.lock().expect("refuse") = Some("no certificate agent".into());
     service
         .invoke(NETWORK, "connect-enterprise-wifi", &arguments(campus()))
@@ -679,9 +585,22 @@ fn an_enterprise_network_without_what_it_needs_is_refused() {
     );
 }
 
-/// The wired link is switched from the resource, and says what it carries.
+/// The arguments a work or school network joins with.
+fn campus() -> Value {
+    json!({
+        "ssid": "Campus",
+        "identity": "ada@example.edu",
+        "ca_certificate": "/etc/ssl/certs/campus.pem",
+        "password": "hunter2",
+    })
+}
+
+/// The wired link is switched from the resource, and the networks this
+/// device keeps are children that join by themselves again, take a proxy or
+/// are forgotten.
 #[test]
-fn the_wired_link_is_switched_from_the_resource() {
+#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+fn the_wired_link_and_saved_networks_are_controlled_from_their_resources() {
     let fake = Fake::laptop();
     let mut service = service(&fake);
     service
@@ -695,14 +614,7 @@ fn the_wired_link_is_switched_from_the_resource() {
         .expect("taken");
     service.settle();
     assert_eq!(read(&service, NETWORK)["wired"]["connected"], json!(false));
-}
 
-/// The networks this device keeps are children: each joins by itself
-/// again or is forgotten, and one going through a proxy offers to stop.
-#[test]
-fn saved_networks_are_kept_and_forgotten_from_their_children() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
     assert_eq!(
         child_actions(&service, "saved-network:uuid-home"),
         [
@@ -734,7 +646,7 @@ fn saved_networks_are_kept_and_forgotten_from_their_children() {
         .expect("taken");
     service.settle();
     assert_eq!(
-        fake.changes(),
+        fake.changes()[2..].to_vec(),
         [
             Change::Autoconnect {
                 profile: "uuid-office".into(),
@@ -744,7 +656,8 @@ fn saved_networks_are_kept_and_forgotten_from_their_children() {
                 profile: "uuid-home".into(),
                 server: None,
             },
-        ]
+        ],
+        "the wired link was switched first"
     );
     let saved = &read(&service, NETWORK)["saved"];
     assert_eq!(saved[1]["autoconnect"], json!(true));
@@ -797,69 +710,148 @@ fn saved_networks_are_kept_and_forgotten_from_their_children() {
     assert!(child_actions(&service, "saved-network:uuid-office").is_empty());
 }
 
-/// Mobile data takes the access point name typed in, or the SIM's
-/// operator's again, and whether it may roam.
+/// Accessories, VPN profiles, the hotspot and the modem are each bound to
+/// what pressing them does now, and what the device cannot do is refused by
+/// name.
 #[test]
-fn mobile_data_takes_its_access_point_and_roaming() {
-    let fake = Fake::phone();
+#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
+    let fake = Fake::laptop();
     let mut service = service(&fake);
+    assert_eq!(child_actions(&service, "bluetooth-nearby:AA:CC"), ["pair"]);
     assert_eq!(
-        read(&service, NETWORK)["mobile"]["profile"]["metered"],
-        json!("metered")
+        child_actions(&service, "bluetooth-accessory:AA:BB"),
+        ["connect", "forget"]
     );
     service
-        .invoke(
-            NETWORK,
-            "set-mobile-apn",
-            &arguments(json!({"apn": "internet.apn"})),
-        )
+        .invoke("bluetooth-accessory:AA:BB", "connect", &Map::new())
         .expect("taken");
     service
-        .invoke(
-            NETWORK,
-            "set-mobile-roaming",
-            &arguments(json!({"on": true})),
-        )
+        .invoke("vpn-profile:uuid-work", "set-vpn", &Map::new())
+        .expect("taken");
+    service
+        .invoke(TETHERING, "set-hotspot", &arguments(json!({"on": true})))
         .expect("taken");
     service.settle();
     assert_eq!(
         fake.changes(),
         [
-            Change::MobileApn {
-                apn: Some("internet.apn".into()),
+            Change::Connect {
+                address: "AA:BB".into()
             },
-            Change::MobileRoaming(true),
+            Change::Vpn {
+                profile: "uuid-work".into(),
+                on: true
+            },
+            Change::Hotspot(true),
         ]
     );
-    let mobile = &read(&service, NETWORK)["mobile"];
-    assert_eq!(mobile["profile"]["apn"], json!("internet.apn"));
-    assert_eq!(mobile["profile"]["roaming"], json!(true));
+    assert_eq!(
+        read(&service, BLUETOOTH)["accessories"][0]["connected"],
+        json!(true)
+    );
+    assert_eq!(read(&service, VPN)["profiles"][0]["connected"], json!(true));
+    assert_eq!(read(&service, TETHERING)["hotspot"], json!(true));
+    let resources = service.resources();
+    let vpn = resources
+        .iter()
+        .find(|r| r.id.as_str() == VPN)
+        .expect("vpn");
+    assert!(
+        vpn.children[0].actions[0]
+            .bound()
+            .contains(&("on".to_owned(), json!(false))),
+        "once connected, its child disconnects it"
+    );
 
-    // Nothing typed means the operator chooses it again.
+    // Bluetooth looks for devices in reach, pairs them and forgets them; a
+    // radio that is off does neither.
     service
-        .invoke(NETWORK, "set-mobile-apn", &arguments(json!({"apn": "  "})))
+        .invoke(BLUETOOTH, "scan", &arguments(json!({"on": true})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service, BLUETOOTH)["discovering"], json!(true));
+    service
+        .invoke("bluetooth-nearby:AA:CC", "pair", &Map::new())
         .expect("taken");
     service.settle();
     assert_eq!(
         fake.changes().last(),
-        Some(&Change::MobileApn { apn: None })
+        Some(&Change::Pair {
+            address: "AA:CC".into(),
+        })
+    );
+    let bluetooth = read(&service, BLUETOOTH);
+    assert_eq!(bluetooth["accessories"][1]["name"], json!("Speaker"));
+    assert_eq!(bluetooth["nearby"], json!([]));
+    service
+        .invoke("bluetooth-accessory:AA:CC", "forget", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ForgetBluetooth {
+            address: "AA:CC".into(),
+        })
     );
     assert_eq!(
-        read(&service, NETWORK)["mobile"]["profile"]["apn"],
-        Value::Null
+        read(&service, BLUETOOTH)["accessories"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
     );
-}
+    service
+        .invoke(BLUETOOTH, "set-bluetooth", &arguments(json!({"on": false})))
+        .expect("taken");
+    service.settle();
+    for action in ["scan", "pair"] {
+        let arguments = arguments(json!({"on": true, "address": "AA:CC"}));
+        let refused = service.invoke(BLUETOOTH, action, &arguments);
+        assert!(
+            matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "bluetooth_off"),
+            "{action}: {refused:?}"
+        );
+    }
 
-/// The hotspot takes the name and band it is set up with, and says who is
-/// sharing the connection; its password never shows.
-#[test]
-fn the_hotspot_takes_a_name_a_band_and_shows_who_is_on_it() {
-    let fake = Fake::laptop();
-    fake.readings.lock().expect("readings").tethering.clients = vec![Client {
-        address: "11:22:33:44:55:66".into(),
-        signal: Some(-40),
-    }];
-    let mut service = service(&fake);
+    // A VPN is added from a configuration's text and removed by its child;
+    // the text never shows in a reading.
+    let text = "[Interface]\nPrivateKey = very-secret";
+    service
+        .invoke(
+            VPN,
+            "import-vpn",
+            &arguments(json!({"kind": "wireguard", "name": "Home", "text": text})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ImportVpn {
+            kind: "wireguard".into(),
+            name: "Home".into(),
+            text: text.into(),
+        })
+    );
+    assert_eq!(read(&service, VPN)["profiles"][1]["name"], json!("Home"));
+    assert!(!read(&service, VPN).to_string().contains("very-secret"));
+    assert_eq!(
+        child_actions(&service, "vpn-profile:uuid-Home"),
+        ["set-vpn", "forget-vpn"]
+    );
+    service
+        .invoke("vpn-profile:uuid-Home", "forget-vpn", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ForgetVpn {
+            profile: "uuid-Home".into(),
+        })
+    );
+    assert!(child_actions(&service, "vpn-profile:uuid-Home").is_empty());
+
+    // The hotspot takes the name and band it is set up with, and says who is
+    // sharing the connection; its password never shows.
     service
         .invoke(
             TETHERING,
@@ -885,109 +877,90 @@ fn the_hotspot_takes_a_name_a_band_and_shows_who_is_on_it() {
         json!("11:22:33:44:55:66")
     );
     assert!(!tethering.to_string().contains("hunter2"));
-}
 
-/// Bluetooth looks for devices in reach, pairs them and forgets them; a
-/// radio that is off does neither.
-#[test]
-fn bluetooth_looks_for_devices_pairs_and_forgets_them() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
-    assert_eq!(child_actions(&service, "bluetooth-nearby:AA:CC"), ["pair"]);
+    // Mobile data takes the access point name typed in, or the SIM's
+    // operator's again, and whether it may roam.
+    let phone = Fake::phone();
+    let mut service = self::service(&phone);
     assert_eq!(
-        child_actions(&service, "bluetooth-accessory:AA:BB"),
-        ["connect", "forget"]
+        read(&service, NETWORK)["mobile"]["profile"]["metered"],
+        json!("metered")
     );
-    service
-        .invoke(BLUETOOTH, "scan", &arguments(json!({"on": true})))
-        .expect("taken");
-    service.settle();
-    assert_eq!(read(&service, BLUETOOTH)["discovering"], json!(true));
-
-    service
-        .invoke("bluetooth-nearby:AA:CC", "pair", &Map::new())
-        .expect("taken");
-    service.settle();
-    assert_eq!(
-        fake.changes().last(),
-        Some(&Change::Pair {
-            address: "AA:CC".into(),
-        })
-    );
-    let bluetooth = read(&service, BLUETOOTH);
-    assert_eq!(bluetooth["accessories"][1]["name"], json!("Speaker"));
-    assert_eq!(bluetooth["nearby"], json!([]));
-
-    service
-        .invoke("bluetooth-accessory:AA:CC", "forget", &Map::new())
-        .expect("taken");
-    service.settle();
-    assert_eq!(
-        fake.changes().last(),
-        Some(&Change::ForgetBluetooth {
-            address: "AA:CC".into(),
-        })
-    );
-    assert_eq!(
-        read(&service, BLUETOOTH)["accessories"]
-            .as_array()
-            .map(Vec::len),
-        Some(1)
-    );
-
-    service
-        .invoke(BLUETOOTH, "set-bluetooth", &arguments(json!({"on": false})))
-        .expect("taken");
-    service.settle();
-    for action in ["scan", "pair"] {
-        let arguments = arguments(json!({"on": true, "address": "AA:CC"}));
-        let refused = service.invoke(BLUETOOTH, action, &arguments);
-        assert!(
-            matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "bluetooth_off"),
-            "{action}: {refused:?}"
-        );
-    }
-}
-
-/// A VPN is added from a configuration's text and removed by its child;
-/// the text never shows in a reading.
-#[test]
-fn vpn_profiles_are_imported_and_forgotten() {
-    let fake = Fake::laptop();
-    let mut service = service(&fake);
-    let text = "[Interface]\nPrivateKey = very-secret";
     service
         .invoke(
-            VPN,
-            "import-vpn",
-            &arguments(json!({"kind": "wireguard", "name": "Home", "text": text})),
+            NETWORK,
+            "set-mobile-apn",
+            &arguments(json!({"apn": "internet.apn"})),
+        )
+        .expect("taken");
+    service
+        .invoke(
+            NETWORK,
+            "set-mobile-roaming",
+            &arguments(json!({"on": true})),
         )
         .expect("taken");
     service.settle();
     assert_eq!(
-        fake.changes().last(),
-        Some(&Change::ImportVpn {
-            kind: "wireguard".into(),
-            name: "Home".into(),
-            text: text.into(),
-        })
+        phone.changes(),
+        [
+            Change::MobileApn {
+                apn: Some("internet.apn".into()),
+            },
+            Change::MobileRoaming(true),
+        ]
     );
-    assert_eq!(read(&service, VPN)["profiles"][1]["name"], json!("Home"));
-    assert!(!read(&service, VPN).to_string().contains("very-secret"));
-
-    assert_eq!(
-        child_actions(&service, "vpn-profile:uuid-Home"),
-        ["set-vpn", "forget-vpn"]
-    );
+    let mobile = &read(&service, NETWORK)["mobile"];
+    assert_eq!(mobile["profile"]["apn"], json!("internet.apn"));
+    assert_eq!(mobile["profile"]["roaming"], json!(true));
     service
-        .invoke("vpn-profile:uuid-Home", "forget-vpn", &Map::new())
+        .invoke(NETWORK, "set-mobile-apn", &arguments(json!({"apn": "  "})))
         .expect("taken");
     service.settle();
     assert_eq!(
-        fake.changes().last(),
-        Some(&Change::ForgetVpn {
-            profile: "uuid-Home".into(),
-        })
+        phone.changes().last(),
+        Some(&Change::MobileApn { apn: None })
     );
-    assert!(child_actions(&service, "vpn-profile:uuid-Home").is_empty());
+    assert_eq!(
+        read(&service, NETWORK)["mobile"]["profile"]["apn"],
+        Value::Null
+    );
+}
+
+/// What the device has not got is published unavailable, and refused.
+#[test]
+fn what_the_device_lacks_is_unavailable() {
+    let fake = Arc::new(Fake::default());
+    let mut service = service(&fake);
+    for (resource, action, arguments) in [
+        (NETWORK, "set-wifi", json!({"on": true})),
+        (NETWORK, "set-wired", json!({"on": true})),
+        (NETWORK, "set-mobile-data", json!({"on": true})),
+        (NETWORK, "set-mobile-apn", json!({"apn": "internet"})),
+        (NETWORK, "set-mobile-roaming", json!({"on": true})),
+        (NETWORK, "connect-hidden-wifi", json!({"network": "Loft"})),
+        (NETWORK, "connect-enterprise-wifi", json!({})),
+        (NETWORK, "toggle-airplane-mode", json!({})),
+        (BLUETOOTH, "set-bluetooth", json!({"on": true})),
+        (BLUETOOTH, "scan", json!({"on": true})),
+        (BLUETOOTH, "pair", json!({"address": "AA:CC"})),
+        (VPN, "set-vpn", json!({"profile": "x", "on": true})),
+        (TETHERING, "set-hotspot", json!({"on": true})),
+        (
+            TETHERING,
+            "configure-hotspot",
+            json!({"name": "Loft", "password": "hunter2", "band": "five"}),
+        ),
+    ] {
+        let refused = service.invoke(resource, action, &self::arguments(arguments));
+        assert!(
+            matches!(refused, Err(ApiError::Unavailable { .. })),
+            "{resource} {action}: {refused:?}"
+        );
+    }
+    assert!(fake.changes().is_empty());
+    assert!(matches!(
+        service.invoke(NETWORK, "set-wifi", &arguments(json!({}))),
+        Err(ApiError::Unavailable { .. } | ApiError::InvalidArguments(_))
+    ));
 }

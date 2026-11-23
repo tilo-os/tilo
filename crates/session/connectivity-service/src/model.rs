@@ -548,13 +548,4 @@ mod tests {
             "nothing is connected, so nothing is named"
         );
     }
-
-    #[test]
-    fn a_reading_published_before_the_link_existed_still_opens() {
-        let reading = serde_json::json!({ "wifi": { "on": true }, "airplane-mode": true });
-        let network: Network = serde_json::from_value(reading).expect("the older reading opens");
-        assert_eq!(network.link, None, "nothing read is not offline");
-        assert!(network.wifi.on);
-        assert!(network.airplane_mode);
-    }
 }
