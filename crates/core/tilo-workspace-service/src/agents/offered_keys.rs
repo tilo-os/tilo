@@ -212,6 +212,17 @@ impl AgentKeys for DeviceAgentKeys {
             .or_else(|| self.offered.made(key))
     }
 
+    fn revocation(
+        &self,
+        person: &[u8; 32],
+        key: &[u8; 32],
+    ) -> Result<Option<tilo_user_identity::RevocationEntry>, String> {
+        match &self.roots {
+            Some(roots) => roots.revocation(person, key),
+            None => Ok(None),
+        }
+    }
+
     fn certify(
         &self,
         workspace: WorkspaceId,

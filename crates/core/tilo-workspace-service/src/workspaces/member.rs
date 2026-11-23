@@ -1619,6 +1619,16 @@ impl Workspaces {
             .and_then(|links| links.get(&workspace).cloned())
     }
 
+    /// The links of every member copy that is up.
+    pub(crate) fn member_links(&self) -> Vec<DirectSync> {
+        self.inner
+            .member
+            .links
+            .lock()
+            .map(|links| links.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Whether a link to the device serving `workspace` is up here: the copy's dialling task is
     /// still running, so a copy held again keeps it rather than replacing it.
     fn member_link_up(&self, workspace: WorkspaceId) -> bool {

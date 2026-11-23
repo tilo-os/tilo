@@ -2388,8 +2388,14 @@ impl RuntimeActionProvider {
             ));
         };
         let (agent, name) = agent(user);
-        let (signer, agent) = this_device()
-            .and_then(|keys| AgentSigner::grant(keys, workspace, (&agent, &name), person))
+        let keys = this_device().map_err(io::Error::other)?;
+        // The keys the device makes are kept among its person's keys in the record this device
+        // holds, and a revocation of one is announced from here to its workspaces' hosts.
+        {
+            let (keys, record) = (Arc::clone(&keys), self.workspaces.copies().clone());
+            block_on_owned(async move { keys.keep_in(&record) });
+        }
+        let (signer, agent) = AgentSigner::grant(keys, workspace, (&agent, &name), person)
             .map_err(io::Error::other)?;
         admission
             .check(self.workspaces.copies())
@@ -2979,6 +2985,13 @@ impl ActionProvider for RuntimeActionProvider {
         let session = self.session.as_ref()?;
         session.check(caller, &self.workspaces).ok()?;
         session.provider.session_state_changed(session.acting())
+    }
+
+    /// Why the agent this runtime's session runs acts no further: the session's own provider
+    /// says, read for whichever caller asks, as a revoked key ends every caller of it.
+    fn ended(&self, _caller: &Caller) -> Option<String> {
+        let session = self.session.as_ref()?;
+        session.provider.ended(session.acting())
     }
 
     /// What a watch of the workspace follows, routed and authorized as [`Self::here`] and

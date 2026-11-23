@@ -81,6 +81,39 @@ impl Workspaces {
         refused
     }
 
+    /// Announce `entries`, revocations this device's person's root signed, where devices announce
+    /// theirs: this device takes them in itself ([`Self::take_revocations`]), and sends them in
+    /// its identity hello on the link of every workspace it holds as a member, whose host takes
+    /// them in as it takes any device's ([`Self::take_revocations`] there). From then on the
+    /// host refuses whatever the revoked key signs, whichever device sends it.
+    ///
+    /// # Errors
+    /// This device did not take them in, or a link could not carry them.
+    pub async fn announce_revocations(&self, entries: Vec<RevocationEntry>) -> Result<(), String> {
+        self.take_revocations(entries.clone()).await?;
+        let cert = self.serving_certificate().clone();
+        let entries = entries
+            .into_iter()
+            .filter(|entry| entry.user_public_key == cert.user_public_key)
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let links = self.member_links();
+        let mut carried = Ok(());
+        for link in links {
+            let hello = neighbour_wire::NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(cert.clone()),
+                revocations: entries.clone(),
+            };
+            if let Err(error) = link.send(hello) {
+                carried = Err(error);
+            }
+        }
+        carried
+    }
+
     /// Take in what a refused dial said: a key its person's root retired, as the entry the root
     /// signed. The entry is checked before anything is done with the refusal: the root's
     /// signature first, as every entry the revocation list keeps is checked

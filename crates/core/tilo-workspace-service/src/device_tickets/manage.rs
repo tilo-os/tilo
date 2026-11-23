@@ -102,8 +102,13 @@ impl TicketServer {
             )
             .await?;
         }
-        // This device refuses the key at once; every other host as the record's change reaches it.
+        // This device refuses the key at once; every other host as the record's change reaches it,
+        // and the hosts of the workspaces this device holds as the revocation it announces does:
+        // they refuse what the key signs from then on, whichever device sends it.
         workspaces.refresh_blocked().await;
+        if let Err(error) = workspaces.announce_revocations(vec![entry.clone()]).await {
+            tracing::warn!(%error, "a revocation did not reach every host of this device's workspaces");
+        }
         Ok(json!({
             "device": key,
             "revoked": true,

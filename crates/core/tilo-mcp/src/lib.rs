@@ -2735,6 +2735,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     fn host(&self) -> &H {
         &self.host
     }
+    /// Why this session's caller acts no further, for good: an agent whose person revoked its
+    /// key. Its connection answers that and ends. `None` while it acts.
+    #[must_use]
+    pub fn ended(&self) -> Option<String> {
+        self.host.ended(&self.caller)
+    }
     /// The context this session's invocations carry: its agent run, its
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).

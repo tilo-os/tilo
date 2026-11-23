@@ -847,6 +847,156 @@ mod tests {
         runtime.block_on(socket.presence.close());
     }
 
+    const REVOKED_TEST: &str = "device::serve::tests::an_agent_whose_key_its_person_revokes_is_ended_where_it_is_connected";
+
+    /// An agent on the device's socket acts under a key the person's root certified it. Once the
+    /// person revokes that key, the open connection's next call is refused with why and the
+    /// connection ends; the workspace's host refuses whatever the key signs, whichever device
+    /// sends it; and an agent that connects again is told why it is not served.
+    #[test]
+    fn an_agent_whose_key_its_person_revokes_is_ended_where_it_is_connected() {
+        use tilo_workspace_service::agents::agent_keys::{AgentKeys as _, REVOKED, this_device};
+        let Some(root) = super::super::services::tests::isolated_root(REVOKED_TEST) else {
+            return;
+        };
+        let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+        let runtime = bridge_runtime().unwrap();
+        let socket = runtime.block_on(async {
+            let socket = Socket::new(&daemon).unwrap();
+            daemon.agents().serve(taking(Arc::clone(&socket)));
+            socket
+        });
+
+        let mut agent = Agent::connect(daemon.agents());
+        let (listed, failed) = agent.tool("tilo_ls", &json!({"path": ""}));
+        assert!(!failed && listed.contains("devices"), "{listed}");
+
+        // The one key the person's root certified the agent here, and what signs with it, as a
+        // copy of it on another device would.
+        let identities = tilo_identity::store::identity_dir_from_env().unwrap();
+        let identity = tilo_identity::store::IdentityRegistryStore::at(&identities)
+            .load()
+            .unwrap()
+            .default_identity
+            .unwrap();
+        let fleets = tilo_identity::device_fleet::DeviceFleetStore::from_env().unwrap();
+        let agents: Vec<_> = fleets
+            .load(&identity)
+            .unwrap()
+            .certificates
+            .into_iter()
+            .filter(|cert| cert.capabilities.agent.is_some())
+            .collect();
+        let [cert] = agents.as_slice() else {
+            panic!("the person's root certified the agent one key: {agents:?}");
+        };
+        // Its grant reaches this workspace alone, for this agent alone.
+        let scope = cert.capabilities.agent.as_ref().unwrap();
+        let workspace = tilo_server_protocol::WorkspaceId::parse(daemon.workspace()).unwrap();
+        assert_eq!(scope.workspace(), Some(*workspace.as_uuid().as_bytes()));
+        assert!(
+            !scope.is_agent(&tilo_actions::remote::device_agent_id(
+                &cert.user_public_key,
+                "another agent"
+            )),
+            "another agent of the person's cannot sign under it"
+        );
+        let (_, copy) = this_device()
+            .unwrap()
+            .made(&cert.device_public_key)
+            .unwrap();
+
+        // The person revokes it while the agent's connection is open.
+        fleets
+            .revoke(
+                &identity,
+                cert.device_public_key,
+                tilo_user_identity::RevocationReason::Retired,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap();
+
+        // The same connection's next call is refused with why, and the connection ends.
+        let (said, failed) = agent.tool("tilo_ls", &json!({"path": ""}));
+        assert!(failed, "{said}");
+        assert_eq!(said, REVOKED);
+        let mut line = String::new();
+        assert_eq!(
+            agent.reading.read_line(&mut line).unwrap(),
+            0,
+            "the connection ends after its refusal: {line}"
+        );
+
+        // The workspace's host was told: what the key signs is refused there, sent by anyone.
+        let host = daemon.serving().copies().clone();
+        let deadline = Instant::now() + tilo_test_env::hang_bound();
+        while !host.revocations().refuses(cert) {
+            assert!(
+                Instant::now() < deadline,
+                "the host was never told the revocation"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut asked = tilo_actions::remote::InvokeRequest {
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: "so.tilo.notes".into(),
+                address: tilo_actions::api::ActionAddress::new("notes:1", "rename"),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Text("Plans".into()),
+            invocation: tilo_actions::InvocationId::new(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        asked.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                daemon.workspace(),
+                &asked,
+                cert,
+                &copy,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap(),
+        ));
+        assert_eq!(
+            tilo_server_protocol::invocation::verify_invocation(
+                daemon.workspace(),
+                &asked,
+                &host.revocations(),
+                tilo_clock::unix_now_ns(),
+            ),
+            Err(tilo_server_protocol::invocation::InvocationError::Revoked)
+        );
+
+        // An agent that connects again is told why, and served nothing.
+        let mut again = daemon.agents().connect();
+        again
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        writeln!(
+            again,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "Claude Code", "version": "1"}}})
+        )
+        .unwrap();
+        let mut told = String::new();
+        std::io::BufReader::new(&again)
+            .read_line(&mut told)
+            .unwrap();
+        let told: Value = serde_json::from_str(&told).unwrap();
+        assert_eq!(told["error"]["message"], REVOKED, "{told}");
+
+        drop((agent, again));
+        daemon.agents().withdraw();
+        runtime.block_on(socket.presence.close());
+    }
+
     /// A stop ends by itself inside the user service's timeout: every wait it makes, added
     /// up, is shorter than what the unit gives it before the process is killed, so a holder
     /// stopped while a bulk write is under way exits rather than being killed.

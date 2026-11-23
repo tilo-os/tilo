@@ -328,6 +328,10 @@ impl ActionProvider for Latest {
         self.provider().session_state_changed(caller)
     }
 
+    fn ended(&self, caller: &Caller) -> Option<String> {
+        self.provider().ended(caller)
+    }
+
     fn changed(
         &self,
         caller: &Caller,

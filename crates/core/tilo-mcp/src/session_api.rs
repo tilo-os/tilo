@@ -720,12 +720,20 @@ where
         crate::lines::write_reply(&mut stream, &reply)?;
     }
     let input = crate::lines::spawn_reader(stream.try_clone()?)?;
+    // An agent whose person revoked its key acts no further: its next request is answered why,
+    // and the connection ends there.
+    let ending = crate::lines::Ending::default();
+    let mut ends = || ending.check();
     let ended = crate::lines::serve_lines(
         runtime,
         input,
         &mut stream,
-        |request| crate::lines::mcp_answer(&server, request),
-        None,
+        |request| {
+            ending
+                .answer(&server, &request)
+                .unwrap_or_else(|| crate::lines::mcp_answer(&server, request))
+        },
+        Some(&mut ends),
     );
     let _ = stream.shutdown(std::net::Shutdown::Both);
     ended

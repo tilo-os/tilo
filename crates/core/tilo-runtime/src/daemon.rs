@@ -1083,7 +1083,9 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                 }),
             )),
             Err(error) => {
+                // Told why, as an agent whose person revoked its key is.
                 tracing::debug!(%error, "native MCP session admission unavailable");
+                crate::device::serve::refuse(&stream, &error.to_string());
                 return;
             }
         };
@@ -1153,6 +1155,9 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let input = spawn_reader(input)?;
     let status = serde_json::to_value(status).map_err(io::Error::other)?;
+    // An agent whose person revoked its key acts no further: its next request is answered why,
+    // and the connection ends there.
+    let ending = tilo_mcp::lines::Ending::default();
     let answer = |value: Value| {
         if let Some(answer) = seated.and_then(|seated| seated.answer(&value)) {
             return answer;
@@ -1182,6 +1187,9 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                 }))
             }),
             _ => {
+                if let Some(refused) = ending.answer(server, &value) {
+                    return refused;
+                }
                 return match &agent {
                     Some((agents, visit)) => agents
                         .answer_first(visit, value)
@@ -1197,7 +1205,8 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
         stream,
         handed: seated.map(|seated| &*seated.handed),
     });
-    let ended = serve_lines(runtime, input, &mut writer, answer, None);
+    let mut ends = || ending.check();
+    let ended = serve_lines(runtime, input, &mut writer, answer, Some(&mut ends));
     // The reader thread holds a clone of the socket: shut it, so the reader
     // sees its end and the client its connection close.
     let _ = stream.shutdown(std::net::Shutdown::Both);

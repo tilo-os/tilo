@@ -301,4 +301,19 @@ impl Issuer for Fleet {
             .as_ref()
             .map(|service| service.copies().clone())
     }
+
+    /// The fleet store keeps what this computer's root revoked: an agent's key it made here
+    /// signs nothing from then on, its next call is refused and its connection ends.
+    fn keep_revocation(&self, entry: &tilo_user_identity::RevocationEntry) {
+        let kept = tilo_identity::device_fleet::DeviceFleetStore::from_env()
+            .map_err(|error| error.to_string())
+            .and_then(|fleets| {
+                fleets
+                    .record_revocation(&hex::encode(entry.user_public_key), entry)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = kept {
+            tracing::warn!(%error, "this computer does not keep the revocation it signed");
+        }
+    }
 }
