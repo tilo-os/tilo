@@ -20,6 +20,7 @@ use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
+use tilo_user_identity::DeviceCert;
 
 use tilo_peer_state::UnmergedReason;
 
@@ -59,15 +60,15 @@ impl DocumentKeys {
         }
     }
 
-    /// Compact `record`'s sealed history in `candidate` as the host's `key`,
-    /// into `rebuilt` when the operator rebuilt the record, else into its
-    /// merged history.
+    /// Compact `record`'s sealed history in `candidate` as the host's `key`, into `rebuilt` when
+    /// the operator rebuilt the record, else into its merged history; `device` is the host's own,
+    /// which checks the checkpoint it drafts.
     fn compact(
         &self,
         candidate: &mut StatePeer,
         (app, record): (&str, &str),
         rebuilt: Option<Vec<u8>>,
-        key: &SigningKey,
+        (device, key): (&DeviceCert, &SigningKey),
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut open = self.open();
@@ -108,13 +109,36 @@ impl DocumentKeys {
         for op in &mut ops {
             collab_types::sign_op(op, key).map_err(|error| error.to_string())?;
         }
-        candidate.publication_mut().admit_sealed_compaction(
+        let admitted = candidate.publication_mut().admit_sealed_compaction(
             app,
             record,
             self.readers.as_deref(),
             ops,
             now,
-        )
+        )?;
+        // The host drafts a checkpoint as a device with the record's keys: it checks it as every
+        // such device does, and keeps that it did, so the writes it stands in for are dropped
+        // once every one of them has. A check the workspace does not take leaves the checkpoint
+        // standing: this host's silence then keeps the writes back, and fails nothing.
+        if let Some((checkpoint, true)) = candidate
+            .publication()
+            .check_leading_checkpoint((app, record), &mut self.open())
+            && let Err(error) = candidate.workspace_mut().record_checkpoint_check(
+                device,
+                (app, record),
+                &checkpoint,
+                key,
+                now,
+            )
+        {
+            tracing::warn!(
+                %app,
+                %record,
+                %error,
+                "this host's check of the checkpoint it drafted was not kept"
+            );
+        }
+        Ok(admitted)
     }
 }
 
@@ -814,7 +838,7 @@ impl Workspaces {
             &mut candidate,
             (app, record),
             Some(rebuilt),
-            &self.inner.host.key,
+            (&self.inner.host.cert, &self.inner.host.key),
             now,
         )
         .map_err(CollaborationError::new)?;
@@ -910,6 +934,73 @@ impl Workspaces {
         )))
     }
 
+    /// Keep that this host, a device with `record`'s keys, checked the checkpoint leading it
+    /// against the writes it stands in for: the workspace's stores drop those writes once every
+    /// device with the record's keys, this one among them, has. A record whose keys this host
+    /// holds none of is one it is no device with the keys of, and it checks nothing; a checkpoint
+    /// it checked already is checked once.
+    ///
+    /// # Errors
+    /// The workspace cannot be committed, or the check cannot be kept.
+    #[cfg(feature = "device-keys")]
+    pub(super) async fn check_leading_checkpoint(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        (app, record): (&str, &str),
+    ) -> Result<(), String> {
+        let Some(checkpoint) = workspace
+            .peer()
+            .publication()
+            .leading_checkpoint((app, record))
+        else {
+            return Ok(());
+        };
+        let route = (app.to_owned(), record.to_owned());
+        if workspace.checked_checkpoints.get(&route) == Some(&checkpoint.signature.0) {
+            return Ok(());
+        }
+        let Ok(Some(keys)) = workspace.document_keys(app, record).await else {
+            return Ok(());
+        };
+        let host = &self.inner.host;
+        let now = tilo_clock::wall();
+        let checked = workspace.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                let Some((checkpoint, holds)) = candidate
+                    .publication()
+                    .check_leading_checkpoint((app, record), &mut keys.open())
+                else {
+                    return Ok((None, false));
+                };
+                if !holds {
+                    tracing::warn!(
+                        workspace = %candidate.workspace_id(),
+                        %app,
+                        %record,
+                        "a checkpoint does not hold what the writes it stands in for merge to: its \
+                         readers read the writes instead"
+                    );
+                    return Ok((None, false));
+                }
+                let filed = candidate.workspace_mut().record_checkpoint_check(
+                    &host.cert,
+                    (app, record),
+                    &checkpoint,
+                    &host.key,
+                    now,
+                )?;
+                Ok((Some(checkpoint.signature.0), filed))
+            },
+            |entry, _| Ok(entry.collaboration.clone()),
+        )?;
+        if let Some(signature) = checked {
+            workspace.checked_checkpoints.insert(route, signature);
+        }
+        Ok(())
+    }
+
     /// Compact every sealed record history of `workspace` that has used most of
     /// its bound into one sealed checkpoint, and commit and publish the
     /// compactions. A record whose history does not merge yet (a write it
@@ -942,7 +1033,7 @@ impl Workspaces {
                     &mut candidate,
                     (app, record),
                     None,
-                    &self.inner.host.key,
+                    (&self.inner.host.cert, &self.inner.host.key),
                     now,
                 ),
                 Ok(None) => continue,

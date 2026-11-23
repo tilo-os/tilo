@@ -46,6 +46,8 @@ pub(crate) struct CachedDocument {
     security_basis: Arc<OnceLock<SecurityBasis>>,
     /// [`Self::changes_named`], once asked.
     named: Arc<OnceLock<Named>>,
+    /// [`Self::newest_change_secs`], once asked.
+    newest_change: Arc<OnceLock<Option<i64>>>,
 }
 /// A governance state's changes by the bytes a write names each by
 /// ([`collab_types::governance_head`]), and its changes that build on none.
@@ -148,6 +150,7 @@ impl From<AutoCommit> for CachedDocument {
             layout: Arc::default(),
             security_basis: Arc::default(),
             named: Arc::default(),
+            newest_change: Arc::default(),
         }
     }
 }
@@ -179,6 +182,7 @@ impl DerefMut for CachedDocument {
         self.redemptions = Arc::default();
         self.security_basis = Arc::default();
         self.named = Arc::default();
+        self.newest_change = Arc::default();
         #[cfg(test)]
         if Arc::strong_count(&self.doc) > 1 {
             DETACHES.with(|count| count.set(count.get().saturating_add(1)));
@@ -230,6 +234,20 @@ impl CachedDocument {
                     .push(change.hash);
             }
             named
+        })
+    }
+    /// The time the newest change of this state was made, seconds since the epoch, when one names
+    /// a time: the state's own "now", which every device holding it reads alike. Read once per
+    /// state: it walks every change.
+    pub(crate) fn newest_change_secs(&self) -> Option<i64> {
+        *self.newest_change.get_or_init(|| {
+            self.doc
+                .committed_document()
+                .get_changes_meta(&[])
+                .iter()
+                .map(|change| change.timestamp)
+                .max()
+                .filter(|secs| *secs > 0)
         })
     }
     /// This state read as governing by `policy` instead of the policy its

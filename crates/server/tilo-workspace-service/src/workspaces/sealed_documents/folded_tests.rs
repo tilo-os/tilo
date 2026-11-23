@@ -153,6 +153,132 @@ fn newcomer_field(member: &SealingMember, held: &[SignedOp], field: &str) -> Opt
         .and_then(|(value, _)| value.into_string().ok())
 }
 
+/// A checkpoint a member publishes is a cache of the writes it stands in for, never their
+/// replacement: the host, a device with the record's keys, checks it as every such device does
+/// and keeps that it did in its own row of the workspace. The workspace's stores drop those
+/// writes only once every device with the keys has checked it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
+    const WRITES: usize = 4;
+    let (
+        Lounge {
+            _dir,
+            server,
+            workspaces,
+            workspace,
+            workspace_id,
+            governor,
+            governor_key,
+            member_key,
+            member_cert,
+            member,
+            ..
+        },
+        client,
+    ) = lounge_with_client().await;
+    for index in 0..WRITES {
+        send_member_field(
+            &member,
+            &client,
+            &workspace,
+            workspace_id,
+            &member_key,
+            "member",
+            &format!("member {index}"),
+        );
+    }
+    follows_field(
+        &workspaces,
+        &workspace,
+        "member",
+        &format!("member {}", WRITES - 1),
+    )
+    .await;
+
+    // The member folds the record's history into one checkpoint and sends it.
+    let [compaction]: [NeighbourMsg; 1] = member
+        .compact(&workspaces, &workspace)
+        .await
+        .try_into()
+        .unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
+        panic!("a compaction is a document write")
+    };
+    let (author, seq) = (*envelope.author.as_bytes(), envelope.seq);
+    send_members_delta(
+        &client,
+        workspace_id,
+        &member_key,
+        &crate::CoeditPayload::Checkpoint {
+            channel: neighbour_wire::retention(&compaction, false).unwrap().0,
+            body: postcard::to_stdvec(&compaction).unwrap(),
+        },
+    );
+
+    // The host checks the checkpoint it holds the record's keys of, and keeps that it did.
+    let host = governor.device_public_key;
+    tilo_test_env::within("the host checks the checkpoint it holds the keys of", async {
+        loop {
+            let state = workspaces.workspace(&workspace).await.unwrap();
+            let checked = state
+                .lock()
+                .await
+                .peer()
+                .publication()
+                .checkpoint_checked_by(&host, APP, RESOURCE);
+            if checked {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let mut state = state.lock().await;
+    assert!(
+        !state
+            .peer()
+            .publication()
+            .checkpoint_reached((APP, RESOURCE), (author, seq)),
+        "the member that wrote the checkpoint has not checked it: its writes stay"
+    );
+
+    // The member checks the checkpoint it wrote, as its own engine does, and keeps that it did:
+    // every device with the record's keys has now, so the workspace's stores drop its writes.
+    let mut candidate = state.peer().clone();
+    let (checkpoint, holds) = candidate
+        .publication()
+        .check_leading_checkpoint((APP, RESOURCE), &mut |op| member.open(op))
+        .expect("the writes the checkpoint stands in for are here");
+    assert!(holds, "the checkpoint holds what its writes merge to");
+    candidate
+        .workspace_mut()
+        .record_checkpoint_check(
+            &member_cert,
+            (APP, RESOURCE),
+            &checkpoint,
+            &member_key,
+            tilo_clock::wall(),
+        )
+        .unwrap();
+    state
+        .commit(candidate, &governor_key, tilo_clock::wall(), |entry, _| {
+            Ok(entry.collaboration.clone())
+        })
+        .unwrap();
+    assert!(
+        state
+            .peer()
+            .publication()
+            .checkpoint_reached((APP, RESOURCE), (author, seq)),
+        "every device with the keys checked it: a store drops its writes"
+    );
+    drop(state);
+    drop(workspaces);
+    server.shutdown().await;
+}
+
 /// A resource the governor and a member both write sealed is folded by the
 /// member into one checkpoint. The checkpoint replaces the governor's writes
 /// as well as the member's: a newcomer is sent the checkpoint and the writes

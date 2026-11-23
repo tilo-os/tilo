@@ -422,7 +422,7 @@ impl SealingMember {
 
     /// Open `op`, any write of the record's history, under any epoch this
     /// member holds, a compaction included.
-    fn open(&self, op: &SignedOp) -> Result<Vec<u8>, String> {
+    pub(super) fn open(&self, op: &SignedOp) -> Result<Vec<u8>, String> {
         let Some(metadata) = op.encryption else {
             return Ok(op.payload.clone());
         };

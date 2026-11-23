@@ -350,6 +350,16 @@ pub(crate) struct GovernedWorkspace {
         )
     )]
     compaction_wait: usize,
+    /// The checkpoint this host checked last of each sealed record, by app and record: the one
+    /// it kept its check of, so a write after it does not check the same one again.
+    #[cfg_attr(
+        not(feature = "device-keys"),
+        allow(
+            dead_code,
+            reason = "sealed histories are followed only where they are read"
+        )
+    )]
+    checked_checkpoints: std::collections::BTreeMap<(String, String), [u8; 64]>,
     /// Members' writes the governor took in that the workspace file lacks.
     unkept: bool,
     /// Whether writing them through is due already ([`Workspaces::keep_soon`]).
@@ -535,6 +545,7 @@ impl GovernedWorkspace {
             path,
             device: device.cloned(),
             compaction_wait: 0,
+            checked_checkpoints: std::collections::BTreeMap::new(),
             unkept: false,
             keeping: false,
             #[cfg(feature = "device-keys")]
@@ -2908,6 +2919,19 @@ impl Workspaces {
         // A sealed compaction this copy is behind in is taken as the record's base rather than
         // refused ([`GovernedWorkspace::follow_kept`]).
         let followed = workspace.follow_kept(author, message.clone()).await;
+        // A device with the record's keys checks the checkpoint leading it against the writes it
+        // stands in for, and keeps that it did: the writes stay in every store until every such
+        // device has.
+        #[cfg(feature = "device-keys")]
+        if followed.changed {
+            if let Err(error) = self
+                .check_leading_checkpoint(workspace, (app.as_str(), record.as_str()))
+                .await
+            {
+                tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
+                    "this host's check of a record's checkpoint was not kept");
+            }
+        }
         // The record's keys are not here yet: the retained store keeps the compaction like any
         // sealed frame it cannot read, and a replay takes it once they are. Asking to be let
         // into the record's channel is what brings them here.

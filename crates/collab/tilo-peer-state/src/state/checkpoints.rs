@@ -27,6 +27,7 @@ use collab_types::SealedCompaction;
 use collab_types::signer::DeviceSigner;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use web_time::Duration;
 
 /// Key of the checkpoints each device with the record's keys checked, in the workspace's own document:
 /// `{<person>/<device> → {<app>:<record> → postcard CheckpointCheck}}`, a row per device that
@@ -487,13 +488,31 @@ impl StatePeer {
         checks
     }
 
-    /// The devices with the keys of `record` of `app`: who checks its checkpoints.
-    fn checkpoint_checkers(&self, app: &str, record: &str, at: SystemTime) -> BTreeSet<[u8; 32]> {
+    /// The devices with the keys of `record` of `app`: who checks its checkpoints. They are the
+    /// devices the workspace's current membership and key access give the record, judged at the
+    /// time its governance records ([`Self::key_access_now`]): a device that was removed,
+    /// revoked, or one the record no longer reaches is not among them, so its silence holds
+    /// nothing back, and every device holding that governance waits on the same set.
+    fn checkpoint_checkers(&self, app: &str, record: &str) -> BTreeSet<[u8; 32]> {
+        let now = self.key_access_now();
         tilo_failure::ignored!(
             "a workspace whose devices with the record's keys are not known here has none whose checks settle anything",
-            self.document_key_holders(app, record, at).ok()
+            self.document_key_holders(app, record, now).ok()
         )
         .unwrap_or_default()
+    }
+
+    /// The instant the devices with a record's keys are counted at: the time of the newest change
+    /// the workspace's governance records, in which its membership and key access stand. Every
+    /// device holding that governance reads the same instant, so all of them count the same set.
+    fn key_access_now(&self) -> SystemTime {
+        self.core
+            .workspace_doc
+            .as_ref()
+            .and_then(|doc| doc.newest_change_secs())
+            .and_then(|secs| u64::try_from(secs).ok())
+            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+            .unwrap_or_else(SystemTime::now)
     }
 
     /// Whether every device with the keys of `record` of `app` checked `checkpoint` itself: the
@@ -503,7 +522,7 @@ impl StatePeer {
         (app, record): (&str, &str),
         checkpoint: &SignedOp,
     ) -> bool {
-        let checkers = self.checkpoint_checkers(app, record, checkpoint.timestamp);
+        let checkers = self.checkpoint_checkers(app, record);
         if checkers.is_empty() {
             return false;
         }
@@ -526,7 +545,7 @@ impl StatePeer {
         let Ok(wrapper) = SealedCompaction::parse(checkpoint) else {
             return false;
         };
-        let checkers = self.checkpoint_checkers(app, record, checkpoint.timestamp);
+        let checkers = self.checkpoint_checkers(app, record);
         if checkers.is_empty() {
             return false;
         }
@@ -550,7 +569,7 @@ impl StatePeer {
         (app, record): (&str, &str),
         checkpoint: &SignedOp,
     ) -> bool {
-        let checkers = self.checkpoint_checkers(app, record, checkpoint.timestamp);
+        let checkers = self.checkpoint_checkers(app, record);
         let checks = self.checkpoint_checks(app, record);
         let checked: BTreeSet<[u8; 32]> = checks
             .iter()
@@ -655,6 +674,29 @@ impl PeerPublication<'_> {
             .covered(&collab_types::Ed25519PublicKey::from_bytes(author))
             .is_some_and(|last| last >= seq)
             && self.peer.checkpoint_reached_by_all((app, record), head)
+    }
+
+    /// The checkpoint leading the sealed history of `record` of `app`, as this copy holds it.
+    #[must_use]
+    pub fn leading_checkpoint(self, (app, record): (&str, &str)) -> Option<SignedOp> {
+        self.peer
+            .core
+            .documents
+            .get(&Route::of(app, record))?
+            .sealed
+            .first()
+            .filter(|op| is_checkpoint(op))
+            .cloned()
+    }
+
+    /// Whether the workspace keeps `device`'s own check of a checkpoint of `record` of `app`: the
+    /// word a device with the record's keys gave for one.
+    #[must_use]
+    pub fn checkpoint_checked_by(self, device: &[u8; 32], app: &str, record: &str) -> bool {
+        self.peer
+            .checkpoint_checks(app, record)
+            .iter()
+            .any(|check| &check.by == device)
     }
 
     /// The writes the leading checkpoint of `record` of `app` stands in for that this device

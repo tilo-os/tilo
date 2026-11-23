@@ -3463,24 +3463,27 @@ fn checked_by_every_device(f: &Fixture, peer: &mut StatePeer, keys: &ContentKeys
         "the record's keys are with the fixture's devices"
     );
     for key in devices {
-        let device = key.verifying_key().to_bytes();
-        if !checkers.contains(&device) {
-            continue;
-        }
-        let cert = peer
-            .certificates()
-            .into_iter()
-            .find(|cert| cert.device_public_key == device)
-            .unwrap();
-        let (checkpoint, holds) = peer
-            .publication()
-            .check_leading_checkpoint((APP, RECORD), &mut |op| open(keys, op))
-            .expect("the writes the checkpoint stands in for are here");
-        assert!(holds, "the checkpoint holds what its writes merge to");
-        peer.workspace_mut()
-            .record_checkpoint_check(&cert, (APP, RECORD), &checkpoint, key, f.now)
-            .unwrap();
+        check_as(peer, key, keys, f.now);
     }
+}
+
+/// `key`'s device, one of `peer`'s workspace's devices with the record's keys, checks the
+/// checkpoint leading the record against the writes it stands in for, and keeps that it did.
+fn check_as(peer: &mut StatePeer, key: &SigningKey, keys: &ContentKeys, now: SystemTime) {
+    let device = key.verifying_key().to_bytes();
+    let cert = peer
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .unwrap();
+    let (checkpoint, holds) = peer
+        .publication()
+        .check_leading_checkpoint((APP, RECORD), &mut |op| open(keys, op))
+        .expect("the writes the checkpoint stands in for are here");
+    assert!(holds, "the checkpoint holds what its writes merge to");
+    peer.workspace_mut()
+        .record_checkpoint_check(&cert, (APP, RECORD), &checkpoint, key, now)
+        .unwrap();
 }
 
 /// A checkpoint that holds exactly what the writes it stands in for merge to is read, and those
@@ -3560,6 +3563,99 @@ fn an_honest_checkpoint_is_read_and_its_writes_go_once_every_device_with_its_key
     let read = captured(&f, &f.replica, &keys).unwrap();
     assert_eq!(text(&read, "other").as_deref(), Some("kept"));
     assert_eq!(text(&read, "second").as_deref(), Some("written"));
+}
+
+/// A device with the record's keys that never checks a checkpoint keeps its writes back, however
+/// long it stays away: only a device the workspace no longer gives the record's keys leaves the
+/// set retirement waits on.
+#[test]
+fn a_device_with_the_keys_that_never_checks_holds_a_checkpoints_writes_back() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let first = write(
+        &f.replica,
+        &f.other,
+        &keys,
+        &Author::new(&f.replica).edit("other", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.other, first, f.now);
+    let compaction = envelope_of(&mint(&mut f.replica, &keys, &f.owner, f.now).unwrap());
+    let (author, seq) = (*compaction.author.as_bytes(), compaction.seq);
+
+    // Every device but the editor checks it: the editor holds the record's keys and has not.
+    for key in [&f.owner, &f.other] {
+        check_as(&mut f.replica, key, &keys, f.now);
+    }
+    assert!(
+        !f.replica
+            .publication()
+            .checkpoint_reached((APP, RECORD), (author, seq)),
+        "a device with the keys that never checked keeps the writes it stands in for"
+    );
+
+    // Its own check is what lets them go.
+    check_as(&mut f.replica, &f.editor, &keys, f.now);
+    assert!(
+        f.replica
+            .publication()
+            .checkpoint_reached((APP, RECORD), (author, seq)),
+        "every device with the keys checked it: a store drops its writes"
+    );
+}
+
+/// A device the workspace removed no longer keeps the record's checkpoints back: it has none of
+/// the record's keys now, whatever it had when the checkpoint was written. Retirement waits on
+/// the devices the workspace's current membership and key access give the record.
+#[test]
+fn a_device_removed_from_the_workspace_no_longer_holds_a_checkpoints_writes_back() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let first = write(
+        &f.replica,
+        &f.other,
+        &keys,
+        &Author::new(&f.replica).edit("other", "kept"),
+        f.now,
+    );
+    admit(&mut f.replica, &f.other, first, f.now);
+    let compaction = envelope_of(&mint(&mut f.replica, &keys, &f.owner, f.now).unwrap());
+    let (author, seq) = (*compaction.author.as_bytes(), compaction.seq);
+
+    // Every device but the editor checks it, and the editor holds the writes back.
+    for key in [&f.owner, &f.other] {
+        check_as(&mut f.replica, key, &keys, f.now);
+    }
+    assert!(!f.replica
+        .publication()
+        .checkpoint_reached((APP, RECORD), (author, seq)));
+
+    // The editor's person leaves the workspace: no device of theirs reads its records any more.
+    let editor = hex::encode(person(&f.replica, &f.editor));
+    f.replica
+        .workspace_mut()
+        .apply_workspace_membership_command(
+            &f.authority,
+            &crate::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::RemoveMember { person: editor },
+            },
+            &f.owner,
+            f.now,
+        )
+        .unwrap();
+    assert!(
+        !f.replica
+            .document_key_holders(APP, RECORD, f.now)
+            .unwrap()
+            .contains(&f.editor.verifying_key().to_bytes()),
+        "a removed device holds none of the record's keys"
+    );
+    assert!(
+        f.replica
+            .publication()
+            .checkpoint_reached((APP, RECORD), (author, seq)),
+        "the devices with the keys now checked it: a store drops its writes"
+    );
 }
 
 /// A device that takes a record's checkpoint without the writes it stands in for, and that not
