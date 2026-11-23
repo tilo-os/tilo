@@ -1882,6 +1882,21 @@ impl Workspaces {
             .map_err(CollaborationError::new)
     }
 
+    /// What the change `hash` of the resource store's document `doc` of `workspace` wrote: each
+    /// resource, with what it holds as the change left it ([`tilo_resource_store::Store::wrote`]).
+    /// None for a workspace not kept here.
+    pub async fn store_wrote(
+        &self,
+        workspace: &str,
+        doc: &str,
+        hash: automerge::ChangeHash,
+    ) -> Vec<tilo_resource_store::Wrote> {
+        let Ok(state) = self.workspace(workspace).await else {
+            return Vec::new();
+        };
+        state.lock().await.store_wrote(doc, hash)
+    }
+
     /// The `(app, record)` of every record of `workspace` the governor's copy
     /// holds readable: in the clear, or sealed under channels this server
     /// takes part in ([`Self::resource_document`] opens those).

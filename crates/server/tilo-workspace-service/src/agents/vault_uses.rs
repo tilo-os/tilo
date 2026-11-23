@@ -368,7 +368,7 @@ impl TurnUses {
                     .map(|asked| asked.channel.to_string())
                     .ok_or_else(|| "the message that asked is gone".to_owned())
             }
-            Ask::Issue { .. } => Ok(chat::Chat::direct_id([
+            Ask::Issue { .. } | Ask::Triggered(_) => Ok(chat::Chat::direct_id([
                 MemberId::person(self.person.clone()),
                 MemberId::agent(self.agent.id.0.clone()),
             ])

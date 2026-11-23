@@ -707,7 +707,19 @@ async fn servers_model_failed_turn_then_next_message() {
     let command =
         AnswerScope::action(ui::apps::TERMINAL, "terminal.session", "run").node(&hosted.workspace);
     hosted.bound(&[(&command, "allow")]).await.unwrap();
-    let looking = tokio::spawn(hosted.agents.clone().run());
+    // The server looks at the conversation whenever something is written there.
+    let looking = {
+        let (agents, workspace) = (hosted.agents.clone(), hosted.workspace.clone());
+        let mut writes = hosted.workspaces.document_writes();
+        tokio::spawn(async move {
+            while !matches!(
+                writes.recv().await,
+                Err(tokio::sync::broadcast::error::RecvError::Closed)
+            ) {
+                Box::pin(agents.look(&workspace)).await.unwrap();
+            }
+        })
+    };
 
     let unknown = || ModelError {
         kind: ErrorKind::Provider,

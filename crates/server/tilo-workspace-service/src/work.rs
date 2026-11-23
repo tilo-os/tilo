@@ -726,6 +726,36 @@ pub trait AgentEngine: Send + Sync {
         workspace: &'a str,
         agent: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
+
+    /// The agents whose answer this engine takes, by id with their names, in every workspace
+    /// it runs agents of.
+    fn answering(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Start `agent`'s turn in `workspace` on `event`, the change a trigger `saver` keeps fired
+    /// on: whether this device took the turn, or why it did not start.
+    fn answer(
+        &self,
+        workspace: String,
+        agent: String,
+        event: tilo_automation::dispatch::DocumentEvent,
+        saver: String,
+    ) -> Pending<Result<Started, String>> {
+        let _ = (workspace, agent, event, saver);
+        Pending::ready(Err(
+            "this device's agent engine answers no trigger".to_owned()
+        ))
+    }
+}
+
+/// What became of a turn a trigger started ([`AgentEngine::answer`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Started {
+    /// This device took the turn, and runs it.
+    Taken,
+    /// Another device took it, or did it already: why this one did not.
+    Elsewhere(String),
 }
 
 /// `inputs` with every object's keys in order and every whole number as an integer: the same
