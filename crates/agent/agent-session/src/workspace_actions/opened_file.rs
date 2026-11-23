@@ -156,6 +156,9 @@ impl Worker {
     /// Answer the workspace's `app.<app>#open` (named `named`) in `request`:
     /// a new record of the app, or, given a file, the record the file
     /// lands in with the file in it.
+    ///
+    /// Called only from [`Self::perform`], which has already checked that
+    /// `named` parses to `workspace_id`.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -167,9 +170,6 @@ impl Worker {
         request: &InvokeRequest,
         (named, state): (&str, &WorkspaceState),
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
-        if WorkspaceId::parse(named) != Some(workspace_id) {
-            return Err(super::unknown_action());
-        }
         let target = &request.target;
         // Files' verbs on the workspace's own folder change its tree, and its reads answer
         // what that tree holds, each by a path in it.

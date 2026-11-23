@@ -288,10 +288,6 @@ impl Worker {
         })
     }
 
-    /// Answer one of Files' verbs on the folder of the workspace, its `write-file`
-    /// there, or one of its reads of that folder ([`acts_on_tree`]).
-    ///
-    /// # Errors
     /// The record of `workspace`'s files: the tree's own (chunk 0), which names the chunks that
     /// hold its nodes.
     pub(super) fn tree_route(workspace: &str) -> DocumentRoute {
@@ -310,6 +306,10 @@ impl Worker {
         }
     }
 
+    /// Answer one of Files' verbs on the folder of the workspace, its `write-file`
+    /// there, or one of its reads of that folder ([`acts_on_tree`]).
+    ///
+    /// # Errors
     /// What the verb ([`Self::change_tree`]), the write ([`Self::write_tree_file`]) or the
     /// read ([`Self::read_tree`]) refuses.
     #[allow(

@@ -107,6 +107,11 @@ impl Worker {
                 .show_on_layout(workspace_id, caller, (named, app), request)
                 .map(|output| (output, None));
         }
+        if let Some(named) = provider_workspace(&request.target.provider)
+            && WorkspaceId::parse(named) != Some(workspace_id)
+        {
+            return Err(unknown_action());
+        }
         // Acting on a record waits for that record's keys and no other's;
         // opening an app on a new record needs only the workspace, and on the
         // record it keeps per workspace, the host's answer for that record
@@ -352,8 +357,9 @@ impl Worker {
     /// else, a member or an agent of anyone's, within their member access there
     /// now.
     ///
-    /// Called only from [`Self::open_in_workspace`], which has already checked
-    /// that `named` parses to `workspace_id`.
+    /// Called only from [`Self::open_in_workspace`] (reached only through
+    /// [`Self::perform`], which has already checked that `named` parses to
+    /// `workspace_id`).
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt answered"
