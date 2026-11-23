@@ -1,15 +1,23 @@
 //! How far this device's own writes have gone: a record write is pending until another device
 //! that keeps the workspace has taken it in, and refused once the workspace refused it for good.
 //!
-//! The device's store keeps, per workspace, each of its own record writes no such device has
-//! answered yet ([`crate::direct::Answered`]), with its frame: a link that comes up sends it
-//! again ([`crate::direct::DirectSync`]), and its answer comes on that link. A write answered as
-//! kept is let go, so whatever is not listed has reached another device or is not this device's
-//! write. The writes the workspace refused stay listed, the newest [`REFUSED_KEPT`] of them.
+//! The device's store keeps, per workspace, each record with one of its own writes no such
+//! device has answered yet ([`crate::direct::Answered`]), with the newest of those writes' frame:
+//! a link that comes up sends it again ([`crate::direct::DirectSync`]), and its answer comes on
+//! that link. A write answered as kept is let go, so whatever is not listed has reached another
+//! device or is not this device's write. The writes the workspace refused are listed while the
+//! device runs, the newest [`REFUSED_KEPT`] of them.
+//!
+//! A record is one entry however many of its writes wait: a later write of it was built on the
+//! earlier ones, so it stands for the record and its changes cover theirs, which is what a view
+//! of one of its items asks ([`RecordReach::of_change`]). The log thus holds an entry per record
+//! with pending writes, not per write.
 //!
 //! The list is a log of entries beside the store's segments (`reach/<workspace>`), appended as
 //! writes are noted and answered and read back when the workspace is first asked about: a write
-//! pending when the device stopped is pending after it starts again, until an answer comes.
+//! pending when the device stopped is pending after it starts again, until an answer comes. A
+//! reached or refused write is answered in the log, and the log is written again with only what
+//! is still pending once it holds much more than that, so an answer never outweighs the list.
 //!
 //! Every view reads it the same way. The device's workspace service answers an app's ask about
 //! one of its records from it, and tells the app's windows that the record moved when it does,
@@ -63,7 +71,8 @@ pub struct OwnWrite {
 /// yet, and those the workspace refused, each oldest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordReach {
-    /// Not taken in by another device yet.
+    /// Not taken in by another device yet: one entry per record with pending writes, its newest
+    /// write standing for the record and its changes naming those of every pending write.
     pub pending: Vec<OwnWrite>,
     /// Refused for good.
     pub refused: Vec<OwnWrite>,
@@ -157,7 +166,30 @@ impl Ledger {
     fn apply(&mut self, entry: Entry) {
         match entry {
             Entry::Noted(noted) => {
-                self.pending.insert(noted.write, noted);
+                // A later write of a record is built on what an earlier pending write of it
+                // carried: the record keeps one entry, whose changes name theirs, so a view of
+                // one of its items still reads pending. The later write stands for the record,
+                // its frame the one a link sends again; an earlier write only adds the changes
+                // it carried.
+                let existing = self
+                    .pending
+                    .iter()
+                    .find(|(_, pending)| pending.app == noted.app && pending.record == noted.record)
+                    .map(|(write, _)| *write);
+                let Some(write) = existing else {
+                    self.pending.insert(noted.write, noted);
+                    return;
+                };
+                let Some(mut kept) = self.pending.remove(&write) else {
+                    return;
+                };
+                if noted.seq >= kept.seq {
+                    merge_changes(&mut noted.changes, kept.changes);
+                    kept = noted;
+                } else {
+                    merge_changes(&mut kept.changes, noted.changes);
+                }
+                self.pending.insert(kept.write, kept);
             }
             Entry::Reached(write) => {
                 self.pending.remove(&write);
@@ -174,21 +206,24 @@ impl Ledger {
         }
     }
 
-    /// The entries that list what this lists, and nothing else.
+    /// The entries that list what this lists, and nothing else: only what is still pending,
+    /// since an answer already recorded is no part of the list a restart reads back.
     fn entries(&self) -> Vec<Entry> {
-        let mut entries = Vec::new();
-        for noted in &self.refused {
-            entries.push(Entry::Noted(noted.clone()));
-            entries.push(Entry::Refused(noted.write));
-        }
-        entries.extend(self.pending.values().cloned().map(Entry::Noted));
-        entries
+        self.pending.values().cloned().map(Entry::Noted).collect()
     }
 
+    /// How many entries list something still pending: one per record with a pending write.
     fn live(&self) -> usize {
-        self.pending
-            .len()
-            .saturating_add(self.refused.len().saturating_mul(2))
+        self.pending.len()
+    }
+}
+
+/// Add to `changes` each change of `more` it does not name already.
+fn merge_changes(changes: &mut Vec<[u8; 32]>, more: Vec<[u8; 32]>) {
+    for change in more {
+        if !changes.contains(&change) {
+            changes.push(change);
+        }
     }
 }
 
@@ -301,6 +336,8 @@ impl Ledgers {
 
     /// Note `message`, a write this device sends to `workspace`'s other devices, as pending:
     /// nothing but an app's record write is noted, and a write noted already is left as it is.
+    /// A write of a record that has one pending is merged into its entry, the newer write
+    /// standing for the record.
     pub(crate) fn note(&self, root: &Path, workspace: WorkspaceId, message: &NeighbourMsg) {
         let NeighbourMsg::AppDocument {
             app_id,
@@ -348,7 +385,8 @@ impl Ledgers {
 
     /// Take another device's answer to this device's write `write` of `workspace`: kept, it has
     /// reached that device and is let go; refused, it is listed as refused. An answer to a write
-    /// not pending here (answered already, or not noted) changes nothing.
+    /// not pending here (answered already, not noted, or one a later write of its record stands
+    /// for) changes nothing: that record waits for its newer write's answer.
     pub(crate) fn answer(&self, root: &Path, workspace: WorkspaceId, write: [u8; 32], kept: Kept) {
         let moved = {
             let mut ledgers = self.ledgers.lock_recover();
@@ -402,8 +440,9 @@ impl Ledgers {
         }
     }
 
-    /// This device's writes of `workspace` no other device keeping it has taken in, in the order
-    /// it wrote them: what each link that comes up sends again.
+    /// The newest write of each record of `workspace` no other device keeping it has taken in,
+    /// in the order it wrote them: what each link that comes up sends again, so its answers come.
+    /// The store keeps the earlier writes it was built on, which a link takes in as history.
     pub(crate) fn unreached(&self, root: &Path, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
         let mut pending: Vec<(u64, Vec<u8>)> = {
             let mut ledgers = self.ledgers.lock_recover();
@@ -439,22 +478,26 @@ impl Ledgers {
 mod tests {
     use super::{Entry, Ledger, Noted, Reach, RecordReach};
 
-    fn noted(write: u8, seq: u64) -> Noted {
+    fn noted_on(record: &str, write: u8, seq: u64) -> Noted {
         Noted {
             write: [write; 32],
             app: "test.app".into(),
-            record: "tab:1".into(),
+            record: record.into(),
             seq,
             changes: vec![[write.wrapping_add(100); 32]],
             frame: vec![write],
         }
     }
 
+    fn noted(write: u8, seq: u64) -> Noted {
+        noted_on("tab:1", write, seq)
+    }
+
     #[test]
     fn a_write_is_pending_until_it_is_answered_and_a_refused_one_stays_refused() {
         let mut ledger = Ledger::default();
-        ledger.apply(Entry::Noted(noted(1, 1)));
-        ledger.apply(Entry::Noted(noted(2, 2)));
+        ledger.apply(Entry::Noted(noted_on("tab:1", 1, 1)));
+        ledger.apply(Entry::Noted(noted_on("tab:2", 2, 2)));
         ledger.apply(Entry::Reached([1; 32]));
         ledger.apply(Entry::Refused([2; 32]));
         assert!(ledger.pending.is_empty());
@@ -470,5 +513,59 @@ mod tests {
         assert_eq!(reach.state(), Reach::Refused);
         assert_eq!(reach.of_change(&[102; 32]), Reach::Refused);
         assert_eq!(reach.of_change(&[101; 32]), Reach::Reached);
+    }
+
+    #[test]
+    fn a_later_write_of_a_record_stands_for_the_one_entry_it_keeps() {
+        let mut ledger = Ledger::default();
+        ledger.apply(Entry::Noted(noted(1, 1)));
+        ledger.apply(Entry::Noted(noted(2, 2)));
+        assert_eq!(
+            ledger.live(),
+            1,
+            "one entry per record, however many of its writes wait"
+        );
+        let pending: Vec<&Noted> = ledger.pending.values().collect();
+        assert_eq!(
+            pending[0].write, [2; 32],
+            "the later write stands for the record"
+        );
+        assert_eq!(pending[0].seq, 2);
+        assert!(
+            pending[0].changes.contains(&[101; 32]),
+            "the earlier write's change is still named, so a view of its item reads pending"
+        );
+        assert!(pending[0].changes.contains(&[102; 32]));
+        // The record waits for its later write: an answer to the earlier one is no answer.
+        ledger.apply(Entry::Reached([1; 32]));
+        assert_eq!(ledger.live(), 1);
+        ledger.apply(Entry::Reached([2; 32]));
+        assert_eq!(ledger.live(), 0);
+        assert!(
+            ledger.entries().is_empty(),
+            "an answer is no part of the log written again"
+        );
+    }
+
+    #[test]
+    fn a_refused_write_is_listed_while_the_device_runs_but_not_written_again() {
+        let mut ledger = Ledger::default();
+        ledger.apply(Entry::Noted(noted(1, 1)));
+        ledger.apply(Entry::Refused([1; 32]));
+        assert_eq!(
+            ledger.refused.len(),
+            1,
+            "a view still reads that the workspace refused it"
+        );
+        assert_eq!(ledger.live(), 0);
+        assert!(
+            ledger.entries().is_empty(),
+            "an answer already recorded is not written again"
+        );
+        let mut read_back = Ledger::default();
+        for entry in ledger.entries() {
+            read_back.apply(entry);
+        }
+        assert!(read_back.pending.is_empty() && read_back.refused.is_empty());
     }
 }

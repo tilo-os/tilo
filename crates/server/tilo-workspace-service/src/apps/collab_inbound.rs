@@ -81,6 +81,25 @@ pub fn follow_admitted_writes(
     }
 }
 
+/// Follow, from now on, every write of another device the workspaces of `workspaces` take in
+/// ([`follow_admitted_writes`]) and every record of theirs whose reach moved
+/// ([`follow_reach`]): each app record's write is handed to `deliver`, `lagged` is told when
+/// writes went by unheard, and each record whose reach moved has its app's windows told, so a
+/// view that read `reach(r)` of it reads it again. Run the answer on the runtime the embedder's
+/// apps are served on.
+pub fn follow_workspace_writes(
+    workspaces: &crate::workspaces::Workspaces,
+    fanout: Arc<FanoutState>,
+    deliver: impl FnMut(RemoteDocument) + Send + 'static,
+    lagged: impl FnMut() + Send + 'static,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let reach = follow_reach(workspaces, fanout);
+    let writes = follow_admitted_writes(workspaces, deliver, lagged);
+    async move {
+        tokio::join!(reach, writes);
+    }
+}
+
 /// Follow each record of the workspaces of `workspaces` whose reach moved, from now on: one of this
 /// device's writes of it went out, was taken in by another device that keeps the workspace, or was
 /// refused. The app's windows are told the record moved, as when another device writes it, and a

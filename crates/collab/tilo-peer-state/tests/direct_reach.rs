@@ -6,12 +6,18 @@ use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
+use collab_types::{
+    DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
+    document_attestation_id,
+};
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
-use neighbour_wire::NeighbourMsg;
+use neighbour_wire::{NeighbourMsg, peer_handle};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
+use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
+use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::reach::{Reach, RecordReach};
 use tilo_peer_state::store::{Appetite, Store};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
@@ -257,5 +263,194 @@ async fn a_write_the_other_device_refuses_reads_refused() {
     assert!(
         refused.pending.is_empty(),
         "a refused write is not pending: {refused:?}"
+    );
+}
+
+/// How many entries `dir`'s log of pending writes holds, under `reach/`.
+fn log_entries(dir: &Path) -> usize {
+    let Ok(bytes) = std::fs::read(dir.join("reach").join(WORKSPACE)) else {
+        return 0;
+    };
+    let mut rest = bytes.as_slice();
+    let mut entries = 0;
+    while let Some((len, body)) = rest.split_first_chunk::<4>() {
+        let len = usize::try_from(u32::from_le_bytes(*len)).unwrap_or(usize::MAX);
+        let Some((_, after)) = body.split_at_checked(len) else {
+            break;
+        };
+        entries += 1;
+        rest = after;
+    }
+    entries
+}
+
+/// `count` record writes of `peer`'s record by `key`, each carrying one change, as a device
+/// sends them: what a solo workspace notes and nobody answers.
+fn one_change_writes(
+    peer: &StatePeer,
+    key: &SigningKey,
+    person: &[u8; 32],
+    count: usize,
+) -> Vec<(NeighbourMsg, [u8; 32])> {
+    let mut document = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    document.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let mut writes = Vec::with_capacity(count);
+    for index in 0..count {
+        let heads = document.get_heads();
+        document.put(ROOT, "value", index as i64).unwrap();
+        document.commit_edit("fixture", "value", person);
+        let change = document.get_heads()[0].0;
+        let payload = DocumentMutation::Incremental(document.save_after(&heads))
+            .encode()
+            .unwrap();
+        let envelope = SignedOp::new_unsigned(
+            payload,
+            document_artifact_id(APP, WORKSPACE, RECORD),
+            Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            document_attestation_id(APP, WORKSPACE, RECORD),
+            OpKind::Change,
+            SystemTime::now(),
+            index as u64 + 1,
+        );
+        writes.push((
+            NeighbourMsg::AppDocument {
+                peer: peer_handle(&key.verifying_key().to_bytes()),
+                app_id: APP.into(),
+                cluster_id: WORKSPACE.into(),
+                document_id: RECORD.into(),
+                envelope: Box::new(envelope),
+                readers: None,
+            },
+            change,
+        ));
+    }
+    writes
+}
+
+/// A solo workspace keeps one entry for a record however many of its writes wait, and the log
+/// holds only what is still pending: ten thousand writes neither list nor log ten thousand
+/// frames.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_solo_workspace_s_log_keeps_one_entry_per_record_over_ten_thousand_writes() {
+    let Two {
+        a, a_key, person, ..
+    } = two();
+    let dir = tempfile::tempdir().unwrap();
+    let (a_sync, store) = keeping(a, &a_key, dir.path());
+    let writes = one_change_writes(&a_sync.read(Clone::clone), &a_key, &person, 10_000);
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+    for (message, _) in &writes {
+        store.note_own_write(workspace, message);
+    }
+
+    let reach = a_sync.record_reach(APP, RECORD).unwrap();
+    assert_eq!(
+        reach.state(),
+        Reach::Pending,
+        "nobody else keeps the workspace, so every write has reached nobody"
+    );
+    assert_eq!(
+        reach.pending.len(),
+        1,
+        "a record keeps one entry, not one per write: {reach:?}"
+    );
+    assert_eq!(
+        reach.pending[0].changes.len(),
+        writes.len(),
+        "the entry names every pending write's change, so a view of one of its items reads pending"
+    );
+    for (_, change) in [&writes[0], &writes[5_000], &writes[9_999]] {
+        assert_eq!(reach.of_change(change), Reach::Pending);
+    }
+    let entries = log_entries(dir.path());
+    assert!(
+        entries <= 512,
+        "the log is written again with what is still pending: {entries} entries for 10000 writes"
+    );
+}
+
+/// A restart reads the one entry a record keeps back, with every change its pending writes
+/// carried still named.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_reads_back_the_record_s_one_entry_for_its_pending_writes() {
+    let Two {
+        a, a_key, person, ..
+    } = two();
+    let dir = tempfile::tempdir().unwrap();
+    let (a_sync, store) = keeping(a, &a_key, dir.path());
+    let mut changes = Vec::new();
+    for value in ["one", "two"] {
+        let mut written = None;
+        a_sync
+            .publish(|peer| {
+                let (message, change) = write(peer, &a_key, &person, "value", value);
+                written = Some(change);
+                Ok(message)
+            })
+            .unwrap();
+        changes.push(written.unwrap());
+    }
+    assert_eq!(a_sync.record_reach(APP, RECORD).unwrap().pending.len(), 1);
+
+    let kept_state = a_sync.read(Clone::clone);
+    drop(a_sync);
+    drop(store);
+    let (a_sync, _store) = keeping(kept_state, &a_key, dir.path());
+    let reach = a_sync.record_reach(APP, RECORD).unwrap();
+    assert_eq!(
+        reach.state(),
+        Reach::Pending,
+        "a restart forgets nothing of what is pending"
+    );
+    assert_eq!(reach.pending.len(), 1, "one entry per record");
+    assert_eq!(
+        reach.of_change(&changes[0]),
+        Reach::Pending,
+        "the earlier write's change is still pending through the record's entry"
+    );
+    assert_eq!(reach.of_change(&changes[1]), Reach::Pending);
+}
+
+/// The answer a link delivers to the newest write of a record turns every change its pending
+/// writes carried reached; an answer to an earlier one of them is no answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_to_the_record_s_newest_write_turns_all_it_carried_reached() {
+    let Two {
+        a, a_key, person, ..
+    } = two();
+    let dir = tempfile::tempdir().unwrap();
+    let (a_sync, store) = keeping(a, &a_key, dir.path());
+    let workspaces = WorkspaceId::parse(WORKSPACE).unwrap();
+    let writes = one_change_writes(&a_sync.read(Clone::clone), &a_key, &person, 2);
+    for (message, _) in &writes {
+        store.note_own_write(workspaces, message);
+    }
+    let mut reach = a_sync.record_reach(APP, RECORD).unwrap();
+    assert_eq!(reach.pending.len(), 1);
+    assert_eq!(
+        reach.pending[0].write,
+        hash_of(&writes[1].0),
+        "the later write stands for the record"
+    );
+
+    store.answered_own_write(workspaces, hash_of(&writes[0].0), Kept::Durable);
+    reach = a_sync.record_reach(APP, RECORD).unwrap();
+    assert_eq!(
+        reach.state(),
+        Reach::Pending,
+        "an answer to the earlier write is not the record's answer"
+    );
+
+    store.answered_own_write(workspaces, hash_of(&writes[1].0), Kept::Durable);
+    reach = a_sync.record_reach(APP, RECORD).unwrap();
+    assert_eq!(reach.state(), Reach::Reached, "{reach:?}");
+    assert_eq!(reach.of_change(&writes[0].1), Reach::Reached);
+    assert_eq!(reach.of_change(&writes[1].1), Reach::Reached);
+    assert_eq!(
+        log_entries(dir.path()),
+        3,
+        "the two writes and the answer, which a later write compacts away"
     );
 }

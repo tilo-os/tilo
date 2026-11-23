@@ -2367,14 +2367,17 @@ impl PeerDocuments {
 
     /// Show this device's apps every write of another device that `workspaces`, this device's
     /// workspace service, takes in from now on: a member's write to a workspace it governs, and
-    /// what the device serving a workspace this device joined sends. Followed until the service
-    /// stops.
+    /// what the device serving a workspace this device joined sends. Also tell them each record
+    /// of theirs whose reach moved, as this device's own writes reach the workspace's other
+    /// devices. Followed until the service stops.
     pub(crate) fn follow(&self, workspaces: &tilo_workspace_service::workspaces::Workspaces) {
         let documents = self.clone();
         let arrivals = self.arrivals.clone();
+        let fanout = Arc::clone(&self.fanout);
         tokio::spawn(
-            tilo_workspace_service::apps::collab_inbound::follow_admitted_writes(
+            tilo_workspace_service::apps::collab_inbound::follow_workspace_writes(
                 workspaces,
+                fanout,
                 move |document| documents.deliver(document),
                 // Writes went by unheard: every read waiting for one reads again.
                 move || {

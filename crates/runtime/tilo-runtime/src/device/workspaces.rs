@@ -652,16 +652,16 @@ impl ServiceWorkspaces {
         brokers: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     ) {
-        tilo_rt::app().spawn(tilo_workspace_service::apps::collab_inbound::follow_reach(
-            self.copies(),
-            Arc::clone(&fanout),
-        ));
+        let delivering = Arc::clone(&fanout);
         tilo_rt::app().spawn(
-            tilo_workspace_service::apps::collab_inbound::follow_admitted_writes(
+            tilo_workspace_service::apps::collab_inbound::follow_workspace_writes(
                 self.copies(),
+                fanout,
                 move |document| {
                     tilo_workspace_service::apps::collab_inbound::deliver(
-                        &brokers, &fanout, document,
+                        &brokers,
+                        &delivering,
+                        document,
                     );
                 },
                 || {},
