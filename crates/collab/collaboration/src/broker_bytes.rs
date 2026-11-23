@@ -466,6 +466,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "ResourcesArrived"
         }
+        CollabEvent::RecordsMoved { records } => {
+            meter.add_product(records.capacity(), std::mem::size_of::<String>());
+            for record in records {
+                meter.string_capacity(record);
+            }
+            "RecordsMoved"
+        }
         CollabEvent::ResourceUnavailable { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.document {

@@ -865,6 +865,10 @@ pub struct ChannelContext {
     /// wrote and no window here holds (`recordsArrived`); empty otherwise.
     /// Not a roster update either.
     pub resources_arrived: Vec<String>,
+    /// On a session-local frame: records another device wrote into this
+    /// workspace's store (`recordsMoved`); empty otherwise. What a window that
+    /// reads the store read of them is read again. Not a roster update either.
+    pub records_moved: Vec<String>,
 }
 
 /// A page of previously-validated signed ops returned by

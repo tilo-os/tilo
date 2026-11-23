@@ -1872,6 +1872,7 @@ impl ContextStream {
             ContextUpdate::SnapshotRequested => context.snapshot_requested = true,
             ContextUpdate::Handoff(handoff) => context.handoff = Some(handoff),
             ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
+            ContextUpdate::RecordsMoved(records) => context.records_moved = records,
         }
         Ok(context)
     }

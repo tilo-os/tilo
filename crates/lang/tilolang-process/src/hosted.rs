@@ -907,6 +907,9 @@ pub struct Hosted {
     presence: Presence,
     /// What the connection delivered before the instance ran, taken on its first frame.
     early: Vec<CollabEvent>,
+    /// The records other devices wrote, as the connection told since the last frame: read again
+    /// once, after every event of the frame is in, so a burst of writes is one reading.
+    moved_records: std::collections::BTreeSet<String>,
     /// The file the app was opened with, until the turn that published its surface runs the action
     /// its package declares for the file's kind ([`Self::opened`]).
     opening: Option<runtime_portal::process_link::OpenedFile>,
@@ -1042,6 +1045,7 @@ impl Hosted {
             access,
             presence,
             early: Vec::new(),
+            moved_records: std::collections::BTreeSet::new(),
             opening: None,
             files: kept.content.clone(),
         }
@@ -1257,6 +1261,7 @@ impl Hosted {
         for event in events {
             changed |= self.delivered(event, &cancelled);
         }
+        changed |= self.records_moved();
         changed |= self.read_used();
         self.send_asks();
         self.publish();
@@ -1425,6 +1430,21 @@ impl Hosted {
         for used in &mut self.used {
             used.moved = true;
         }
+    }
+
+    /// The records other devices wrote, every one the frame's events named, read again in one
+    /// go: what this window read of them is read again, and the other apps whose resources it
+    /// reads are read again too, so what it shows moves with them. Whether any moved.
+    fn records_moved(&mut self) -> bool {
+        if self.moved_records.is_empty() {
+            return false;
+        }
+        let records = std::mem::take(&mut self.moved_records);
+        self.instance.records_moved(&records);
+        for used in &mut self.used {
+            used.moved = true;
+        }
+        true
     }
 
     /// Carry out the history verb `edit` on the store, as `by`'s: undo takes back the last step
@@ -1886,11 +1906,22 @@ impl Hosted {
                 );
                 return false;
             }
-            CollabEvent::ResourcesArrived { .. } => {
-                // Documents of the workspace the instance reads arrived here from elsewhere:
-                // what it read of the store is read again, and what it shows moves with it.
-                self.store_moved();
-                return true;
+            CollabEvent::ResourcesArrived { records } => {
+                // Records of the workspace the instance reads arrived here from elsewhere: what
+                // it read of them is read again, and what it shows moves with it. A move that
+                // names no record may have moved any of them.
+                if records.is_empty() {
+                    self.store_moved();
+                    return true;
+                }
+                self.moved_records.extend(records);
+                return false;
+            }
+            CollabEvent::RecordsMoved { records } => {
+                // Another device wrote these records: what this window read of them is read
+                // again with the rest of the frame's events, once, however many ops moved them.
+                self.moved_records.extend(records);
+                return false;
             }
             _ => return false,
         };

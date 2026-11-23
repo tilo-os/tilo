@@ -2335,6 +2335,14 @@ impl Instance {
         self.moved = true;
     }
 
+    /// The records `docs` moved on, written by another device: what this window read of those
+    /// records is read again, and what it read of the rest stays, so a workspace changed as a
+    /// whole is read again the records that changed, not all of it.
+    pub fn records_moved(&mut self, docs: &BTreeSet<tilolang_runtime::ids::DocId>) {
+        self.store.moved_docs(docs);
+        self.moved = true;
+    }
+
     /// The first half of a frame: open the host and the root, stage a scenario, and send the
     /// window what changed.
     pub fn sync(&mut self) {

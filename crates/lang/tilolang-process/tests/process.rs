@@ -499,11 +499,10 @@ tilo_test_env::scenario! {
 
     phase an_edit_another_device_made_shows_in_a_hosted_window;
     // What grace did in her window on another device is written to the workspace's store; the
-    // broker tells ada's connection the workspace's documents arrived, and ada's window shows what
-    // grace wrote.
+    // broker tells ada's connection which records moved, and ada's window shows what grace wrote.
     {
         let bus = Rc::new(Bus::default());
-        let (mut host, mut window, _sent, inbox, _route) =
+        let (mut host, mut window, _sent, _inbox, _route) =
             running_on("ada", APP, counter(), Rc::default(), &bus);
         settle(&mut host, &mut window);
         assert_eq!(value_of(host.instances().next().unwrap()), 0);
@@ -515,11 +514,8 @@ tilo_test_env::scenario! {
         press_increment(&mut elsewhere, &mut graces);
         assert_eq!(value_of(elsewhere.instances().next().unwrap()), 1);
 
-        // The broker hands ada's connection the workspace's documents, as it does when another
-        // device wrote them.
-        let records = bus.workspace().documents();
-        assert!(!records.is_empty(), "the workspace's store holds them");
-        inbox.borrow_mut().push_back(CollabEvent::ResourcesArrived { records });
+        // The broker tells ada's connection which records grace's write moved, as it does when
+        // another device wrote them; ada's window reads them again.
         settle(&mut host, &mut window);
 
         assert_eq!(

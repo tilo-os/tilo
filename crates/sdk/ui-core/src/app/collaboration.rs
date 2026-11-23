@@ -953,6 +953,7 @@ impl App {
                 | CollabEvent::RealtimeCommandResult { .. }
                 | CollabEvent::ResourceCommandResult { .. }
                 | CollabEvent::ResourcePage { .. }
+                | CollabEvent::RecordsMoved { .. }
                 | CollabEvent::Realtime(_)
         )
     }
@@ -1052,6 +1053,10 @@ impl App {
             | CollabEvent::DrivesChanged
             | CollabEvent::ApplicationsChanged
             | CollabEvent::LocalFileClipboardResult { .. }
+            // A window that holds the workspace's documents applies each as it arrives from
+            // the broker; only a window that reads the store, as a tilolang app's window does,
+            // re-reads the records named.
+            | CollabEvent::RecordsMoved { .. }
             | CollabEvent::Realtime(_) => {}
         }
     }

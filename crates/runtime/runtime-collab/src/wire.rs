@@ -560,6 +560,9 @@ pub enum ContextUpdate {
     Handoff(Vec<u8>),
     /// Records of the application's trees a peer wrote and no window holds.
     ResourcesArrived(Vec<String>),
+    /// Records another device wrote into this workspace's store: what a window that reads the
+    /// store read of them is read again.
+    RecordsMoved(Vec<String>),
 }
 
 /// What the host sends an endpoint.

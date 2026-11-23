@@ -5086,6 +5086,17 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
+                if !context.records_moved.is_empty() {
+                    if !tx
+                        .send_durable(CollabEvent::RecordsMoved {
+                            records: context.records_moved,
+                        })
+                        .await
+                    {
+                        return;
+                    }
+                    continue;
+                }
                 // Membership/permission replacement fences cached private bodies
                 // before delivering the new public context. Presentation changes
                 // alone must not cause a private contacts refresh.

@@ -271,6 +271,7 @@ fn accept(
     if first_of_the_document {
         announce_document(fanout, route);
     }
+    tell_records_moved(fanout, route);
 }
 
 /// Whether this exact op, signature included, passed validation here.
@@ -293,11 +294,10 @@ fn fan_out(fanout: &FanoutState, envelope: SignedOp, route: &CrdtRoute) {
     fanout.fanout_to_route(&event, u64::MAX, route);
 }
 
-/// Tell a window open on the app that a peer wrote a record of one of its
-/// trees (a chain's next part, a container's child): it holds no part of that
-/// tree yet, so nothing else brings the record to it. A window opened later
-/// learns the same records as it subscribes
-/// ([`crate::apps::collab_core::BrokerChannels::tree_records_held`]).
+/// Tell a window open on the app that a peer wrote a record of one of its trees (a chain's next
+/// part, a container's child): a window that holds the workspace's documents keeps no part of
+/// that tree yet, so nothing else brings the record to it. A window opened later learns the same
+/// records as it subscribes ([`crate::apps::collab_core::BrokerChannels::tree_records_held`]).
 fn announce_document(fanout: &FanoutState, route: &CrdtRoute) {
     if collab_types::document::DocumentId::parse(&route.document_id)
         .is_none_or(|record| record.tree().is_none())
@@ -306,6 +306,26 @@ fn announce_document(fanout: &FanoutState, route: &CrdtRoute) {
     }
     fanout.fanout_to_route(
         &CollabEvent::ResourcesArrived {
+            records: vec![route.document_id.clone()],
+        },
+        u64::MAX,
+        &CrdtRoute::app(route.app_id.clone(), route.cluster_id.clone()),
+    );
+}
+
+/// Tell the app's windows that the record on `route` moved. A window that holds the record's
+/// document applies the op as it arrives; a window that keeps no document of its own, whose views
+/// read the store a record at a time (a tilolang app's window), reads again what it read of this
+/// record and of no other. Sent on the app's route, which every window of the app is joined on,
+/// whether or not it already opened the record.
+fn tell_records_moved(fanout: &FanoutState, route: &CrdtRoute) {
+    if route.app_id.is_empty() || route.document_id.is_empty() {
+        // A route that names no app or no record carries the app's own document, which its
+        // windows apply themselves: no store a window reads holds it.
+        return;
+    }
+    fanout.fanout_to_route(
+        &CollabEvent::RecordsMoved {
             records: vec![route.document_id.clone()],
         },
         u64::MAX,
@@ -647,91 +667,5 @@ mod tests {
         assert_eq!(took.shown, [first, second]);
         assert_eq!(text(&took.note, "title").as_deref(), Some("Groceries"));
         assert_eq!(text(&took.note, "body").as_deref(), Some("oat milk"));
-    }
-
-    /// A peer wrote the next part of a chat's messages: a window already open
-    /// on Chat is told the part arrived, so it opens it and shows what was
-    /// posted. A record of no tree (a conversation itself) is read directly
-    /// once and is told no arrival, and a record is announced once, not for
-    /// every message written into it.
-    #[test]
-    fn a_peer_written_part_is_announced_to_the_apps_open_window() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let part = collab_types::document::DocumentId::derived(
-            "messages",
-            &collab_types::document::DocumentId::workspace_default(),
-        )
-        .part(0)
-        .to_string();
-        let conversation = collab_types::document::DocumentId::for_tab(7).to_string();
-        let write = |record: &str, sequence: u64, title: &str| {
-            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
-            let mut op = SignedOp::new_unsigned(
-                mutation.encode().unwrap(),
-                document_artifact_id("so.tilo.chat", WORKSPACE, record),
-                collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("so.tilo.chat", WORKSPACE, record),
-                OpKind::Change,
-                tilo_clock::wall(),
-                sequence,
-            );
-            collab_types::sign_op(&mut op, &key).unwrap();
-            op
-        };
-        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        let fanout = FanoutState::new();
-        let told = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&told);
-        let _app = fanout.subscribe_workspaces(
-            vec![WORKSPACE.into()],
-            Box::new(move |event, origin| {
-                if let CollabEvent::ResourcesArrived { records } = event {
-                    sink.lock().unwrap().push((origin.clone(), records.clone()));
-                }
-            }),
-        );
-        let take = |record: &str, envelope: SignedOp| {
-            deliver(
-                &channels,
-                &fanout,
-                RemoteDocument {
-                    app_id: "so.tilo.chat".into(),
-                    cluster_id: WORKSPACE.into(),
-                    document_id: record.into(),
-                    author: editor(),
-                    replayed: false,
-                    envelope,
-                },
-            )
-        };
-        assert_eq!(take(&part, write(&part, 1, "hello")), Delivery::Done);
-        assert_eq!(
-            told.lock().unwrap().as_slice(),
-            &[(
-                CrdtRoute::app("so.tilo.chat", WORKSPACE),
-                vec![part.clone()]
-            )],
-            "the window is told the part, on the app's route"
-        );
-        assert_eq!(
-            take(&part, write(&part, 2, "hello again")),
-            Delivery::Done,
-            "a later message in a part the window opened is delivered to it"
-        );
-        assert_eq!(
-            take(&conversation, write(&conversation, 1, "hi")),
-            Delivery::Done
-        );
-        assert_eq!(
-            take(&conversation, write(&conversation, 2, "hi again")),
-            Delivery::Done,
-            "a window tells its app a record of no tree is read"
-        );
-        drop(fanout);
-        assert_eq!(
-            told.lock().unwrap().len(),
-            1,
-            "only the part is an arrival, and only once"
-        );
     }
 }

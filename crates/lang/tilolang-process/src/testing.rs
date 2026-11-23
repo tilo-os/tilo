@@ -94,6 +94,34 @@ impl Workspace {
             .map(str::to_owned)
             .collect()
     }
+
+    /// The records `command` moves: each resource it writes, by the document it lives in. A
+    /// write that names no resource (an undo) may move every record the store holds.
+    #[must_use]
+    pub fn records_written(&self, command: &Command) -> Vec<String> {
+        fn collect(command: &Command, records: &mut Vec<String>) -> bool {
+            match command {
+                Command::Put { id, .. } | Command::Remove { id, .. } | Command::Edit { id, .. } => {
+                    let doc = id.split_once('/').map_or(id.as_str(), |(doc, _)| doc);
+                    if !records.iter().any(|known| known == doc) {
+                        records.push(doc.to_owned());
+                    }
+                    true
+                }
+                Command::Batch(commands) => {
+                    commands.iter().all(|command| collect(command, records))
+                }
+                Command::Undo { .. } => false,
+                _ => true,
+            }
+        }
+        let mut records = Vec::new();
+        if collect(command, &mut records) {
+            records
+        } else {
+            self.documents()
+        }
+    }
 }
 
 /// The stamps `command` writes under, each write of a batch its own.
@@ -208,16 +236,17 @@ impl Bus {
     }
 
     /// The workspace's store moved, here or in another window of it: every other connection reads
-    /// what it read of it again, as the session tells each window when another host wrote.
-    fn resources_moved(&self, from: &Inbox) {
+    /// again what it read of the records that moved, as the session tells each window when
+    /// another host wrote.
+    fn resources_moved(&self, from: &Inbox, records: &[String]) {
         let joined = self.joined.borrow();
         let mut told: Vec<&Inbox> = Vec::new();
         for (_, _, inbox) in joined.iter() {
             if Rc::ptr_eq(inbox, from) || told.iter().any(|told| Rc::ptr_eq(told, inbox)) {
                 continue;
             }
-            inbox.borrow_mut().push_back(CollabEvent::ResourcesArrived {
-                records: Vec::new(),
+            inbox.borrow_mut().push_back(CollabEvent::RecordsMoved {
+                records: records.to_vec(),
             });
             told.push(inbox);
         }
@@ -378,6 +407,11 @@ impl PeerTransport for Broker {
             } => {
                 let parsed = serde_json::from_slice(command).map_err(|error| error.to_string());
                 let writes = parsed.as_ref().is_ok_and(Command::writes);
+                let records = parsed
+                    .as_ref()
+                    .ok()
+                    .map(|command| self.bus.workspace.records_written(command))
+                    .unwrap_or_default();
                 let reply = parsed.and_then(|command| self.bus.workspace.command(command));
                 let result = reply.and_then(|reply| {
                     serde_json::to_vec(&reply).map_err(|error| error.to_string())
@@ -385,7 +419,7 @@ impl PeerTransport for Broker {
                 // The workspace's store is one, every connection of it: what one wrote, the
                 // others read again.
                 if writes {
-                    self.bus.resources_moved(&self.inbox);
+                    self.bus.resources_moved(&self.inbox, &records);
                 }
                 self.inbox
                     .borrow_mut()

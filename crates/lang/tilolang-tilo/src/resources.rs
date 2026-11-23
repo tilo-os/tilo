@@ -40,7 +40,7 @@ use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, ClockField, DeliveryState, FieldKey, FieldRead,
     FieldSpec, FieldValue, Link, LinkHow, Listing, Lit, Mutation, NewResource, NextChange,
     OutboxEntry, OutboxState, PagedItems, Pred, Scalar, Settled, Store, StoreError, SubId, Txn,
-    Version, VersionKind, field_json, field_of, ordered_cmp,
+    Version, VersionKind, doc_of, field_json, field_of, ordered_cmp,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -1006,6 +1006,37 @@ impl ResourceStore {
         self.inner.cache.borrow_mut().clear();
         self.inner.listings.borrow_mut().clear();
         self.inner.versions.borrow_mut().clear();
+    }
+
+    /// The records `docs` moved on, written by another device: what was read of those records is
+    /// read again, and the views that read them move with it. What was read of any other record
+    /// stays as it read, so a workspace whose records arrive in a burst is read again a record at
+    /// a time, not whole for each.
+    pub fn moved_docs(&self, docs: &BTreeSet<DocId>) {
+        if docs.is_empty() {
+            return;
+        }
+        self.forget_reads_of(docs);
+        for doc in docs {
+            self.notify(&ChangeSummary::whole(doc.clone()));
+        }
+    }
+
+    /// Forget what was read of the records `docs`, and of nothing else: each resource's reading
+    /// under a moved record (its id leads with the record's), and the listings read from it.
+    fn forget_reads_of(&self, docs: &BTreeSet<DocId>) {
+        self.inner
+            .cache
+            .borrow_mut()
+            .retain(|id, _| !docs.contains(doc_of(id)));
+        self.inner
+            .versions
+            .borrow_mut()
+            .retain(|id, _| !docs.contains(doc_of(id)));
+        self.inner
+            .listings
+            .borrow_mut()
+            .retain(|_, (_, pages)| !docs.contains(&pages.doc));
     }
 
     /// Forget the versions read of what `command` writes: each resource it writes, what holds
