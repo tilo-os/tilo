@@ -476,4 +476,25 @@ tilo_test_env::scenario! {
         let view = "type N {\n    body: RichText\n}\nview look(n: N) {\n    match File.list(\"~/Books\") {\n        .ok(entries) => { text(\"{entries.len}\") },\n        .err(why) => { text(why) }\n    }\n}\n";
         assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
     }
+
+    phase a_file_opens_in_the_app_that_opens_its_kind;
+    {
+        let path = "type N {\n    body: RichText\n}\naction open_at(n: N) uses files {\n    match File.open(\"~/Books/plan.md\") {\n        .ok => { n.body = RichText(\"opened\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(path), Vec::<String>::new());
+        let held = "type N {\n    body: RichText\n}\naction open_it(n: N, file: File) uses files {\n    match File.open(file) {\n        .ok => { n.body = RichText(\"opened\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        assert_eq!(codes(held), Vec::<String>::new());
+        let undeclared = held.replace(" uses files", "");
+        assert_eq!(codes(&undeclared), ["E121"], "the open is an outside read");
+        let wrong = "type N {\n    body: RichText\n}\naction open_it(n: N) uses files {\n    File.open(3)\n}\n";
+        assert!(
+            codes(wrong).contains(&"E020".to_owned()),
+            "an open takes a path or a file, not a number"
+        );
+    }
+
+    phase a_view_opens_no_file;
+    {
+        let view = "type N {\n    body: RichText\n}\nview look(n: N) {\n    match File.open(\"~/Books/plan.md\") {\n        .ok => { text(\"opened\") },\n        .err(why) => { text(why) }\n    }\n}\n";
+        assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
+    }
 }

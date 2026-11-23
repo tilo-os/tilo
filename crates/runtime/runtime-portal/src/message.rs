@@ -14,9 +14,10 @@ pub const MAX_MESSAGE: usize = 1024;
 
 /// The most descriptors one message carries: the instance a process is handed is the widest,
 /// with its broker, identity, module and window connections and, when the session opened them,
-/// its origin connector, the device's content store and the person's chooser.
+/// its origin connector, the device's content store, the person's chooser and clipboard, and the
+/// tools service it opens a file through.
 #[cfg(unix)]
-pub const MAX_FDS: usize = 7;
+pub const MAX_FDS: usize = 9;
 
 /// `fields` as one message: NUL-separated, so no field may contain a NUL.
 pub fn encode(fields: &[&[u8]]) -> io::Result<Vec<u8>> {

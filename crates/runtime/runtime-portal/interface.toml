@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/package-service/interface.toml).
 name = "runtime"
-version = 36
+version = 37
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -931,6 +931,10 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "ToolIntent::identity_backup" = "#5 unit"
 "ToolIntent::open_application" = "#13 struct"
 "ToolIntent::open_application.app" = "#0 String"
+"ToolIntent::open_content" = "#15 struct"
+"ToolIntent::open_content.app" = "#2 String"
+"ToolIntent::open_content.hash" = "#1 String"
+"ToolIntent::open_content.name" = "#0 String"
 "ToolIntent::open_document" = "#11 struct"
 "ToolIntent::open_document.app" = "#1 Option<String>"
 "ToolIntent::open_document.path" = "#0 String"

@@ -2370,9 +2370,13 @@ impl Checker<'_> {
     /// address)` and `File.zip(name, files)`.
     fn file_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         // A folder on this device, within what the app was granted: its entries, one entry, the
-        // bytes a path holds, and a watch that runs an action when the folder changes. They
-        // read the disk, so an action declares `uses files` and a view calls none of them.
-        if matches!(name.name.as_str(), "list" | "stat" | "read" | "watch") {
+        // bytes a path holds, a watch that runs an action when the folder changes, and the open
+        // of a file in the app that opens its kind. They read the disk, so an action declares
+        // `uses files` and a view calls none of them.
+        if matches!(
+            name.name.as_str(),
+            "list" | "stat" | "read" | "watch" | "open"
+        ) {
             return self.file_device_method(name, args, span);
         }
         let (held, imp, what, of) = match name.name.as_str() {
@@ -2395,7 +2399,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `at` and `zip`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `at`, `zip` and `open`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -2444,14 +2448,18 @@ impl Checker<'_> {
     }
 
     /// The `File` calls over a device folder: `File.list(path)`, `File.stat(path)`,
-    /// `File.read(path)` and `File.watch(path, on: action)`. Each reads the disk, so the action
-    /// declaring it says `uses files`; a view calls none.
+    /// `File.read(path)`, `File.watch(path, on: action)` and `File.open(path)`/`File.open(file)`.
+    /// Each reads the disk, so the action declaring it says `uses files`; a view calls none.
     fn file_device_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let method = name.name.as_str();
         let form = match method {
             "list" => "`File.list(path)`: a folder's entries, within what the app was granted",
             "stat" => "`File.stat(path)`: one entry, or none when nothing is there",
             "read" => "`File.read(path)`: the bytes a path holds",
+            "open" => {
+                "`File.open(path)` or `File.open(file)`: the file at a path, or one an action \
+                 holds, in the app that opens its kind"
+            }
             _ => {
                 "`File.watch(path, run)`: one of this package's actions, run when the folder changes"
             }
@@ -2478,6 +2486,24 @@ impl Checker<'_> {
             span,
             &format!("`File.{method}`"),
         );
+        // `File.open` names a path the app was granted, or the file an action holds: both are one
+        // open, decided by the shell from the file's bytes and its name.
+        if method == "open" {
+            let opened = self.expr(&args[0].value, None);
+            let (imp, opened) = if opened.ty.same(&Ty::File) {
+                (Imp::FileOpen, opened)
+            } else {
+                (
+                    Imp::FileOpenPath,
+                    self.coerce(opened, &Ty::Text, args[0].value.span),
+                )
+            };
+            return Ex::host(
+                imp,
+                vec![opened],
+                Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Text)),
+            );
+        }
         let path = self.expr_as(&args[0].value, &Ty::Text);
         let entry = || super::platform::host_ty("FileEntry");
         match method {

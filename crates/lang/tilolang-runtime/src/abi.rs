@@ -308,6 +308,8 @@ imports! {
     (FileStat, "file_stat", "i", "i"),
     (FileReadPath, "file_read_path", "i", "i"),
     (FileWatch, "file_watch", "ii", "i"),
+    (FileOpenPath, "file_open_path", "i", "i"),
+    (FileOpen, "file_open", "i", "i"),
     (ActChoose, "act_choose", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
 

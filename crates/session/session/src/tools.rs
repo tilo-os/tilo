@@ -140,6 +140,36 @@ impl Handle {
     pub(crate) fn take_asks(&self) -> Vec<Ask> {
         std::mem::take(&mut *self.inner.asks.lock_recover())
     }
+
+    /// A connection to this service answering as `app` in `workspace`, for the process the session
+    /// runs the app's code in: who asks is fixed here, when the connection is made, since that
+    /// process is the session's own host rather than a launch of the app. The app's end goes to
+    /// that process; this one is served here.
+    ///
+    /// # Errors
+    /// The connection cannot be made, or the thread that answers it cannot start.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "session helper: the tools service answers on a thread of its own"
+    )]
+    pub(crate) fn for_app(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<std::os::fd::OwnedFd, String> {
+        let (ours, theirs) =
+            UnixStream::pair().map_err(|error| format!("make the tools connection: {error}"))?;
+        let caller = Caller {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+        };
+        let inner = Arc::clone(&self.inner);
+        std::thread::Builder::new()
+            .name("tilo-tools-app".into())
+            .spawn(move || serve_lines(&inner, ours, Some(caller)))
+            .map_err(|error| format!("start the tools connection: {error}"))?;
+        Ok(theirs.into())
+    }
 }
 
 impl Tools {
@@ -245,10 +275,18 @@ struct Caller {
     workspace: String,
 }
 
-/// Serve one app's connection: its requests, answered one line at a time.
+/// Serve one app's connection: its requests, answered one line at a time. Who asked is read off
+/// the connection, since a launched app made it; a connection the session made itself is served by
+/// [`serve_lines`] with the caller it fixed.
 fn serve(handle: &Handle, stream: UnixStream) {
     let inner = Arc::clone(&handle.inner);
     let caller = caller_of(&inner, &stream);
+    serve_lines(&inner, stream, caller);
+}
+
+/// Serve `stream` as `caller`, one request per line: the connection a launched app made
+/// (`caller` read from its credentials) or one the session made for an app's process.
+fn serve_lines(inner: &Arc<Inner>, stream: UnixStream, caller: Option<Caller>) {
     let Ok(mut writing) = stream.try_clone() else {
         return;
     };
@@ -269,7 +307,7 @@ fn serve(handle: &Handle, stream: UnixStream) {
                 }
             }
             Line::Request(request) => {
-                let reply = answer(&inner, caller.as_ref(), &request);
+                let reply = answer(inner, caller.as_ref(), &request);
                 if !say(&mut writing, &reply) {
                     return;
                 }
@@ -409,6 +447,7 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
         ToolIntent::OpenDocument { path, app } => {
             open_document(inner, caller, path, app.as_deref())
         }
+        ToolIntent::OpenContent { name, hash, app } => open_content(inner, caller, name, hash, app),
         ToolIntent::OpenApplication { app } => open_application(inner, caller, app),
         ToolIntent::UninstallApplication { app } => uninstall(inner, caller, app),
         ToolIntent::WorkspaceSettings { route } => workspace_settings(inner, caller, *route),
@@ -495,6 +534,13 @@ fn open_drive(inner: &Inner, caller: &Caller, drive: &str) -> ToolReply {
     }
 }
 
+/// Whether `caller` may open a file and list the apps that open its kind: Files is the person's
+/// own view of their files, and any other app only when the signed manifest it was installed with
+/// declares `files.open` — its own deliberate ask, which the person saw when they installed it.
+fn opens_files(inner: &Inner, caller: &Caller) -> bool {
+    caller.app == files() || inner.launches.declares_files_open(&caller.app)
+}
+
 /// The apps that open the document at `path` in the caller's workspace, the one it opens with
 /// today first: what Files' "Open with" lists and what opening the document starts.
 fn openers(inner: &Inner, caller: &Caller, path: &Path) -> Result<Vec<Launch>, String> {
@@ -514,8 +560,10 @@ fn openers(inner: &Inner, caller: &Caller, path: &Path) -> Result<Vec<Launch>, S
 /// The apps that open the document at `path` , the one this workspace opens it with today first:
 /// what Files' "Open with" lists.
 fn document_apps(inner: &Inner, caller: &Caller, path: &str) -> ToolReply {
-    if caller.app != files() {
-        return refused("the apps that open a document are listed for Files alone");
+    if !opens_files(inner, caller) {
+        return refused(
+            "a file's apps are listed for Files, or for an app that declares files.open",
+        );
     }
     let launches = match openers(inner, caller, Path::new(path)) {
         Ok(launches) => launches,
@@ -543,8 +591,8 @@ fn document_apps(inner: &Inner, caller: &Caller, path: &str) -> ToolReply {
 /// Open the document at `path` in `app`, one of the apps that open its type,
 /// or in the app this workspace opens the type with today.
 fn open_document(inner: &Inner, caller: &Caller, path: &str, app: Option<&str>) -> ToolReply {
-    if caller.app != files() {
-        return refused("a document is opened from Files alone");
+    if !opens_files(inner, caller) {
+        return refused("a file is opened by Files, or by an app that declares files.open");
     }
     let launches = match openers(inner, caller, Path::new(path)) {
         Ok(launches) => launches,
@@ -562,6 +610,27 @@ fn open_document(inner: &Inner, caller: &Caller, path: &str, app: Option<&str>) 
         } else {
             "nothing on this device opens this document"
         });
+    };
+    match inner
+        .launches
+        .ask(launch, &caller.workspace, LaunchPlace::Focus, None)
+    {
+        Ok(()) => accepted("opened"),
+        Err(message) => refused(&message),
+    }
+}
+
+/// Open the file `name`, whose bytes the caller's workspace keeps under `hash`, in `app`: the
+/// launch a file an app holds opens with, `content:` naming the bytes both apps read, never a
+/// path this device has.
+fn open_content(inner: &Inner, caller: &Caller, name: &str, hash: &str, app: &str) -> ToolReply {
+    if !opens_files(inner, caller) {
+        return refused("a file is opened by Files, or by an app that declares files.open");
+    }
+    let launch = Launch::Content {
+        app: app.to_owned(),
+        hash: hash.to_owned(),
+        name: Some(name.to_owned()),
     };
     match inner
         .launches

@@ -58,8 +58,8 @@ file-chooser = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@36"
-tilo-fs = "optional@36"
+collab = "optional@37"
+tilo-fs = "optional@37"
 
 [entrypoint]
 bin             = "bin/feeds"

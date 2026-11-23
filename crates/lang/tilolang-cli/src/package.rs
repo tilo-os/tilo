@@ -103,28 +103,64 @@ pub fn origins_of(meta: &PackageMeta) -> Vec<&'static str> {
     origins
 }
 
+/// A package's `[capabilities]`: the hosts it reaches, and the device's files when one of its
+/// actions reads them (`uses files`). An app that reads a folder also opens the files it lists in
+/// the app that opens their kind, which is `files.open`; it is a `required` capability since the
+/// app's own page offers the open, and the person saw it declared when they installed the app.
+fn capabilities(origins: &[&str], uses_files: bool) -> String {
+    let mut required: Vec<&str> = Vec::new();
+    let mut optional: Vec<&str> = Vec::new();
+    if !origins.is_empty() {
+        required.push("network.http");
+        // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others
+        // don't.
+        if origins.contains(&"imap") {
+            optional.push("account-sign-ins");
+        }
+    }
+    if uses_files {
+        required.push(tilo_app_package::manifest::FILES_OPEN);
+    }
+    let list = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<String>>()
+            .join(", ")
+    };
+    format!(
+        "required = [{}]\noptional = [{}]",
+        list(&required),
+        list(&optional)
+    )
+}
+
 /// A package's `[sandbox]`: the capabilities, namespaces and
-/// network mode of a package holding the outside `origins`.
-fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
+/// network mode of a package holding the outside `origins` and reading the device's files when
+/// `uses_files`.
+fn sandbox(origins: &[&str], uses_files: bool) -> (String, &'static str, &'static str) {
+    let capabilities = capabilities(origins, uses_files);
     if origins.is_empty() {
         return (
-            "optional = []",
+            capabilities,
             "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
             "mode = \"off\"",
         );
     }
-    // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others don't.
-    let capabilities = if origins.contains(&"imap") {
-        "required = [\"network.http\"]\noptional = [\"account-sign-ins\"]"
-    } else {
-        "required = [\"network.http\"]\noptional = []"
-    };
     (
         capabilities,
         "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
         "# Each origin's connector speaks to the hosts its service names, in the sandbox\n\
          # the launcher runs it in.\nmode = \"host\"",
     )
+}
+
+/// Whether any action of the package reads the device's own files (`uses files`): what declares
+/// the `files.open` capability, so the app opens a file in the app that opens its kind.
+fn uses_files(meta: &PackageMeta) -> bool {
+    meta.actions
+        .iter()
+        .any(|action| action.uses.iter().any(|effect| effect == "files"))
 }
 
 /// The kinds of file the package's actions open (`opens:`), each once: the media types first, as
@@ -177,7 +213,7 @@ pub fn manifest_text(
         .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
-    let (capabilities, namespaces, net) = sandbox(&origins);
+    let (capabilities, namespaces, net) = sandbox(&origins, uses_files(meta));
     let mut extra = if meta.icon.is_some() {
         format!("icon = {}\n", toml_string(ICON_FILE))
     } else {
@@ -693,4 +729,28 @@ pub(crate) fn write_tapp(
     )
     .map(|_| ())
     .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_app_that_reads_the_devices_files_declares_that_it_opens_them() {
+        assert_eq!(
+            capabilities(&[], true),
+            "required = [\"files.open\"]\noptional = []",
+            "an app reading folders opens the files it lists"
+        );
+        assert_eq!(capabilities(&[], false), "required = []\noptional = []");
+        assert_eq!(
+            capabilities(&["youtube"], false),
+            "required = [\"network.http\"]\noptional = []"
+        );
+        assert_eq!(
+            capabilities(&["imap"], true),
+            "required = [\"network.http\", \"files.open\"]\noptional = [\"account-sign-ins\"]"
+        );
+        assert!(sandbox(&[], true).0.contains("\"files.open\""));
+    }
 }

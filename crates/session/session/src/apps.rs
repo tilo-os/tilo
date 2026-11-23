@@ -53,6 +53,9 @@ struct AppConnections {
     chooser: Option<std::os::fd::OwnedFd>,
     /// Its connection to the person's clipboard, when this session serves one.
     clipboard: Option<std::os::fd::OwnedFd>,
+    /// Its connection to this session's tools service, made for this app in this workspace: what
+    /// `File.open` asks which app opens a file and starts it.
+    tools: Option<std::os::fd::OwnedFd>,
     /// What the person may do in the app.
     access: Option<tilo_action_policy::MemberAccess>,
 }
@@ -204,6 +207,9 @@ struct State {
     processes: Option<Arc<tilo_runtime::device::processes::Processes>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
+    /// This session's tools service, once it lent it: what a tilolang app's `File.open` asks, on a
+    /// connection made for that app.
+    tools: Option<crate::tools::Handle>,
     /// The files apps are handed, while the session serves them where a launcher binds each app's
     /// view of them: what a document a package opens reaches its sandbox through.
     documents: Option<tilo_documents::Documents>,
@@ -385,6 +391,7 @@ impl Apps {
                 wake,
                 processes: None,
                 connectors: None,
+                tools: None,
                 documents: None,
                 #[cfg(target_os = "linux")]
                 kept: Vec::new(),
@@ -652,6 +659,12 @@ impl Apps {
         state.connectors = Some(connectors);
     }
 
+    /// This session's tools service, which the tilolang apps' `File.open` asks: from here on an
+    /// app's process is handed a connection to it made for that app in its workspace.
+    pub(crate) fn lend_tools(&self, tools: crate::tools::Handle) {
+        self.state.borrow_mut().tools = Some(tools);
+    }
+
     /// The person's region formats or language changed: every tilolang host running here is
     /// told, so the instances it runs write the dates, clocks and weeks their windows show again
     /// in the new formats ([`crate::formats`]), and their windows read their words in the
@@ -751,6 +764,20 @@ impl Apps {
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
         let access = tilo_app_launch::authority::access(&self.workspace_named(workspace), app);
+        // This session's tools service, on a connection the session makes for this app in this
+        // workspace: what `File.open` asks which app opens a file, and starts it, since the app's
+        // process holds no launch identity of its own to be read off a socket.
+        let tools = self.state.borrow().tools.clone();
+        let tools = match tools {
+            Some(tools) => match tools.for_app(app, workspace) {
+                Ok(connection) => Some(connection),
+                Err(error) => {
+                    tracing::warn!(app, %error, "the tools connection is unusable");
+                    None
+                }
+            },
+            None => None,
+        };
         Ok(AppConnections {
             person,
             identity,
@@ -758,6 +785,7 @@ impl Apps {
             content,
             chooser,
             clipboard,
+            tools,
             access,
         })
     }
@@ -807,6 +835,7 @@ impl Apps {
             content: resources.content,
             chooser: resources.chooser,
             clipboard: resources.clipboard,
+            tools: resources.tools,
             document: hosted.opens.record,
             reveal: hosted.opens.reveal,
             open: hosted
@@ -2131,6 +2160,7 @@ impl Apps {
                 content: resources.content,
                 chooser: resources.chooser,
                 clipboard: resources.clipboard,
+                tools: resources.tools,
                 document: None,
                 reveal: None,
                 open: None,

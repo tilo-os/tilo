@@ -208,6 +208,18 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// Open `file` in the app that opens its kind: what `File.open` asks. The shell picks the app
+    /// by the file's first bytes and its name and starts it, or says nothing here opens it or
+    /// that this app may not open files.
+    ///
+    /// # Errors
+    ///
+    /// Why it did not open.
+    fn open_file(&self, file: &tilolang_runtime::files::FileTarget<'_>) -> Result<(), String> {
+        let _ = file;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
     /// Keep the folder `path` watched, running the package's action `run` when it changes: what
     /// `File.watch` registers, within the paths this app was granted. The action is invoked on
     /// the app's root, as the person the app runs for.
@@ -282,8 +294,8 @@ impl tilolang_runtime::clipboard::ClipboardHost for PlatformClipboard {
 }
 
 /// The device's own folders, as the platform running the instance answers them: the paths the
-/// app was granted, and nothing else. What `File.list`, `File.stat`, `File.read` and
-/// `File.watch` reach.
+/// app was granted, and nothing else. What `File.list`, `File.stat`, `File.read`, `File.watch` and
+/// `File.open` reach.
 pub struct PlatformFiles(pub(super) Rc<dyn Platform>);
 
 impl tilolang_runtime::files::FilesHost for PlatformFiles {
@@ -305,6 +317,10 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn unwatch(&self, token: &str) {
         self.0.unwatch_folder(token);
+    }
+
+    fn open(&self, file: tilolang_runtime::files::FileTarget<'_>) -> Result<(), String> {
+        self.0.open_file(&file)
     }
 }
 

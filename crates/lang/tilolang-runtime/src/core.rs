@@ -28,24 +28,24 @@ use Imp::{
     CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
     Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileFiles, FileList, FileOfBytes, FileOfText, FilePart, FileReadPath, FileSize,
-    FileStat, FileText, FileWatch, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
-    FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin, FloatRound,
-    FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax,
-    IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode,
-    JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI,
-    ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
-    ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue,
-    MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
-    MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
-    Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock,
-    RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew,
-    RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
-    ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
-    RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen, RunChanges,
-    SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
-    StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
-    StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
+    FileAt, FileFiles, FileList, FileOfBytes, FileOfText, FileOpen, FileOpenPath, FilePart,
+    FileReadPath, FileSize, FileStat, FileText, FileWatch, FileZip, FilterLit, Filters, Find,
+    FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax,
+    FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs,
+    IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError,
+    IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
+    ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
+    ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue,
+    MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd,
+    MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
+    Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote,
+    Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
+    ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
+    ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed,
+    RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen,
+    RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
+    Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
+    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
     StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay,
     TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
     TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState,
@@ -151,8 +151,9 @@ pub struct Core {
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
-    /// The device's own folders, within the paths the app was granted
-    /// (`Runtime::set_device_files`). Until the host sets one, it reads none.
+    /// The device's own folders, within the paths the app was granted, and the app that opens a
+    /// file's kind (`Runtime::set_device_files`). Until the host sets one, it reads none and
+    /// opens none.
     pub files: RefCell<Option<Box<dyn crate::files::FilesHost>>>,
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
@@ -552,7 +553,9 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
-            FileList | FileStat | FileReadPath | FileWatch => self.file_device_import(imp, a),
+            FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen => {
+                self.file_device_import(imp, a)
+            }
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }

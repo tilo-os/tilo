@@ -340,6 +340,10 @@ imports! {
     FileStat = "file_stat" ([H] -> [H]);
     FileReadPath = "file_read_path" ([H] -> [H]);
     FileWatch = "file_watch" ([H, H] -> [H]);
+    // Opening a file in the app that opens its kind: the path the app was granted, or the file an
+    // action holds, by its name and the address of its bytes.
+    FileOpenPath = "file_open_path" ([H] -> [H]);
+    FileOpen = "file_open" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H] -> [H]);
 

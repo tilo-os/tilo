@@ -276,6 +276,11 @@ pub struct InstanceFds {
     /// session that serves none.
     #[serde(with = "crate::packet::optional_fd")]
     pub clipboard: Option<Descriptor>,
+    /// The instance's connection to the session's tools service, made for this instance: what
+    /// `File.open` asks which app opens a file and starts it. `None` on a session that serves
+    /// none.
+    #[serde(with = "crate::packet::optional_fd")]
+    pub tools: Option<Descriptor>,
 }
 
 #[cfg(unix)]
@@ -315,6 +320,7 @@ impl InstanceFds {
                 .as_ref()
                 .map(Descriptor::try_clone)
                 .transpose()?,
+            tools: self.tools.as_ref().map(Descriptor::try_clone).transpose()?,
         })
     }
 }
@@ -705,16 +711,41 @@ mod tests {
             };
             // An instance that shows nothing crosses with no window connection.
             let nothing = InstanceRequest { shows: Shows::Nothing, ..opened.clone() };
-            for (request, window, (origin, content, chooser)) in [
-                (opened.clone(), Some(connection()), (None, None, None)),
-                (opened, Some(connection()), (Some(connection()), Some(connection()), Some(connection()))),
-                (plain.clone(), Some(connection()), (None, None, None)),
-                (plain, Some(connection()), (Some(connection()), Some(connection()), Some(connection()))),
-                (unnamed, Some(connection()), (None, Some(connection()), None)),
-                (nothing, None, (None, None, None)),
+            for (request, window, (origin, content, chooser, tools)) in [
+                (opened.clone(), Some(connection()), (None, None, None, None)),
+                (
+                    opened,
+                    Some(connection()),
+                    (
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                    ),
+                ),
+                (plain.clone(), Some(connection()), (None, None, None, None)),
+                (
+                    plain,
+                    Some(connection()),
+                    (
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                        Some(connection()),
+                    ),
+                ),
+                // The clipboard and the tools service are their own connections: each crosses
+                // whether the other does.
+                (unnamed, Some(connection()), (None, Some(connection()), None, Some(connection()))),
+                (nothing, None, (None, None, None, None)),
             ] {
                 let clipboard = chooser.is_some().then(connection);
-                let had = (origin.is_some(), content.is_some(), chooser.is_some());
+                let had = (
+                    origin.is_some(),
+                    content.is_some(),
+                    chooser.is_some(),
+                    tools.is_some(),
+                );
                 ToProcess::Instance {
                     request: Box::new(request.clone()),
                     fds: InstanceFds {
@@ -726,6 +757,7 @@ mod tests {
                         content,
                         chooser,
                         clipboard,
+                        tools,
                     },
                 }
                 .send(&session)
@@ -742,9 +774,14 @@ mod tests {
                     "a window crosses with the instance that draws one"
                 );
                 assert_eq!(
-                    (fds.origin.is_some(), fds.content.is_some(), fds.chooser.is_some()),
+                    (
+                        fds.origin.is_some(),
+                        fds.content.is_some(),
+                        fds.chooser.is_some(),
+                        fds.tools.is_some(),
+                    ),
                     had,
-                    "the instance's own chooser and content store cross with it"
+                    "each connection the session made crosses with the instance"
                 );
                 assert_eq!(
                     fds.clipboard.is_some(),
