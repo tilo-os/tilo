@@ -4551,7 +4551,7 @@ arch = ["x86_64", "aarch64"]
 name = "release/linux-{arch}"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/linux-imager/package.sh {arch} /target/linux/{arch}/release"
-needs = ["os-assets-appimage-{arch}"]
+needs = ["os-assets-appimage-{arch}", "release-catalog/imager"]
 requires = ["arch={arch}"]
 outputs = ["/target/linux/{arch}/release/*"]
 secrets = ["TILO_CAPTURE_RUNTIME_IDENTITY_KEY", "TILO_CAPTURE_SERVICE_IDENTITY_KEY", "TILO_CAPTURE_QUALIFIER_BASE", "TILO_CAPTURE_SOURCE_ASSETS"]
@@ -4635,28 +4635,40 @@ secrets = ["TILO_PACKAGES_TOKEN"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# A tag's catalogue of the media it built, which the tag's installer builds embed
+# (TILO_RELEASE_CATALOG, apps/imager/build.rs); main's builds embed the reviewed
+# apps/imager/release-catalog.json.
+[[check]]
+name = "release-catalog/imager"
+run = "GITHUB_REF_NAME=${T_REF#tag:} bash apps/imager/packaging/build-release-catalog.sh /target/imager-medium /target/imager-release/catalog"
+needs = ["medium/imager-x86_64", "medium/imager-aarch64"]
+image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
+outputs = ["/target/imager-release/catalog/*"]
+cache = false
+on = ["tag:imager-v*"]
+
+# Main's dry run: the complete unsigned set gathered and checked, nothing published.
 [[check]]
 name = "release-assets/imager"
-run = """set -eu
-version=0.0.0
-case "${T_REF:-}" in tag:imager-v*) version="${T_REF#tag:imager-v}" ;; esac
-bash tools/ci/imager-release/assets.sh gather /target/imager-release/assets "$version"
-"""
+run = "bash tools/ci/imager-release/assets.sh gather /target/imager-release/assets 0.0.0"
 needs = ["package/linux-x86_64", "package/linux-aarch64", "package/windows-x86_64", "package/windows-aarch64", "package/macos-x86_64", "package/macos-aarch64", "medium/imager-x86_64", "medium/imager-aarch64"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 requires = ["arch=x86_64"]
 outputs = ["/target/imager-release/assets/**"]
-on = ["idle", "tag:imager-v*"]
+on = ["idle"]
 
+# A tag's release: the signed set of every platform and the signed media, gathered and checked the
+# same way, then published once every download has been installed and started.
 [[check]]
 name = "publish-github-release"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = """set -eu
 export GITHUB_REF_NAME="${T_REF#tag:}" GITHUB_SHA="{commit}"
-apps/imager/packaging/publish-github-release.sh /target/imager-release/assets
+bash tools/ci/imager-release/assets.sh gather "$TMPDIR/imager-release" "${T_REF#tag:imager-v}"
+apps/imager/packaging/publish-github-release.sh "$TMPDIR/imager-release"
 """
-needs = ["release-assets/imager", "sign/linux-x86_64", "sign/linux-aarch64", "sign/windows-x86_64", "sign/windows-aarch64", "install/linux-x86_64", "install/linux-aarch64", "wine/windows-x86_64-install", "install/macos-x86_64", "install/macos-aarch64"]
+needs = ["sign/linux-x86_64", "sign/linux-aarch64", "sign/windows-x86_64", "sign/windows-aarch64", "sign/macos-x86_64", "sign/macos-aarch64", "sign/medium-x86_64", "sign/medium-aarch64", "install/linux-x86_64", "install/linux-aarch64", "wine/windows-x86_64-install", "install/macos-x86_64", "install/macos-aarch64"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
 env = { TILO_RELEASE_REPOSITORY = "tilo-os/releases" }
 requires = ["arch=x86_64"]

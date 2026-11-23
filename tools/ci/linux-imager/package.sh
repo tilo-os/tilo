@@ -46,6 +46,10 @@ export TILO_REQUIRE_NATIVE_PACKAGES=1
 # qualified on the pinned base image. Main's dry run builds the installer without it.
 case "${T_REF:-}" in
   tag:imager-v*)
+    # The installer offers the media this tag built: release-catalog/imager's catalogue.
+    export TILO_RELEASE_CATALOG=/target/imager-release/catalog/tilo-installer-catalog-v2.json
+    [ -s "$TILO_RELEASE_CATALOG" ] \
+      || { printf 'missing %s: a release tag builds the installer with its own media catalogue\n' "$TILO_RELEASE_CATALOG" >&2; exit 1; }
     for input in TILO_CAPTURE_RUNTIME_IDENTITY_KEY TILO_CAPTURE_SERVICE_IDENTITY_KEY \
                  TILO_CAPTURE_QUALIFIER_BASE TILO_CAPTURE_SOURCE_ASSETS; do
       [ -n "${!input:-}" ] || { printf 'missing %s: a release tag needs it to sign the capture service\n' "$input" >&2; exit 1; }

@@ -12,7 +12,7 @@ use tilo_net::http::fetch;
 
 use crate::model::{Source, TiloRelease};
 
-const BUNDLED_CATALOG: &str = include_str!("../release-catalog.json");
+const BUNDLED_CATALOG: &str = include_str!(concat!(env!("OUT_DIR"), "/release-catalog.json"));
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

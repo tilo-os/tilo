@@ -1,7 +1,7 @@
 // Capture trust inputs are selected at build time and embedded in the signed host.
 use std::{env, fs, io, path::PathBuf, process::Command};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=TILO_REQUIRE_CAPTURE");
     println!("cargo:rerun-if-env-changed=TILO_CAPTURE_PINS");
     println!("cargo:rerun-if-env-changed=TILO_CAPTURE_SIDECAR");

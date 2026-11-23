@@ -55,7 +55,11 @@ gather() {
     cp -- /target/linux/"$arch"/"$stage"/tilo-imager-linux-"$arch".* "$out/"
     cp -- /target/windows/"$arch"/"$stage"/tilo-imager-*windows-"$arch".* "$out/"
     cp -- /target/macos/"$arch"/"$stage"/tilo-imager-macos-"$arch".* "$out/"
-    cp -- /target/imager-medium/"$arch"/tilo-installer-linux-"$arch".img.zst* "$out/"
+    if [ "$signed" = 1 ]; then
+      cp -- /target/imager-medium-signed/"$arch"/tilo-installer-linux-"$arch".img.zst* "$out/"
+    else
+      cp -- /target/imager-medium/"$arch"/tilo-installer-linux-"$arch".img.zst* "$out/"
+    fi
   done
   # The release key's public half, which verify-linux-release.sh and the site read.
   [ "$signed" = 0 ] || cp -- /target/linux/x86_64/signed/tilo-release-key.* "$out/"

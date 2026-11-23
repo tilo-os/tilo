@@ -133,55 +133,28 @@ that installed ref against the system `org.freedesktop.Platform//25.08`
 runtime; release runners therefore install both the SDK and Platform runtime
 system-wide.
 
-An `imager-v*` release tag sets `TILO_REQUIRE_SIGNING=1`, so packaging fails
-closed unless the platform release credentials are configured:
+An `imager-v*` release tag runs the signing checks of t.toml, each of which holds
+only the t secrets it needs and fails, naming what is missing, when one is not
+configured; main's newest head builds and checks the same files unsigned.
 
-- Linux steady state: `IMAGER_LINUX_CREDENTIAL_BROKER` names the native OIDC
-  credential broker. It installs the public verification
-  key and exports `TILO_LINUX_SIGNER` plus `TILO_LINUX_VERIFY_KEY`; every tarball
-  and AppImage receives an armored detached signature that is immediately
-  verified. The protected repository variable
-  `IMAGER_LINUX_SIGNING_FINGERPRINT` must contain that key's full OpenPGP
-  fingerprint. Packaging refuses a different broker/imported key, exports the
-  exact public key as `tilo-release-key.asc`, and publishes its fingerprint and
-  SHA-256 sidecars beside the artifacts. The final publication job imports only
-  that exported key into a fresh keyring and re-verifies every Linux signature
-  against the protected fingerprint. CI has no private-key import fallback.
-- Windows steady state: `IMAGER_WINDOWS_CREDENTIAL_BROKER` configures the
-  preinstalled signer wrapper after validating the job's OIDC identity. The
-  wrapper receives the artifact path, uses a federated short-lived signing
-  lease, and returns only after timestamping. `signtool verify` independently
-  checks its result. CI neither imports a PFX nor accepts a direct signer-path
-  bypass.
-  `IMAGER_WINDOWS_PUBLISHER` pins the complete Authenticode certificate subject;
-  packaging checks the signer of every executable against it.
-- macOS steady state: `IMAGER_MACOS_CREDENTIAL_BROKER` leases the Developer ID
-  signing identity and a notarytool keychain profile. CI has no P12 or Apple
-  app-password import fallback. The app is signed with the hardened runtime;
-  both the app and signed DMG are notarized and stapled before publication.
-
-`IMAGER_MAC_TEAM_ID` and `IMAGER_MAC_CERT_SHA256` independently pin the
-ten-character Developer Team ID and complete SHA-256 leaf-certificate
-fingerprint. Packaging extracts the actual app signing certificate and refuses
-either mismatch.
-
-All Unix broker programs and signer wrappers must be canonical absolute,
-root-owned paths outside the checkout and runner temporary directory; neither
-they nor any parent may be group/world writable. A broker creates its output as
-a new regular, non-symlink, runner-owned mode-0600 file without an extended ACL.
-Linux leases contain exactly one `TILO_LINUX_SIGNER` and one
-`TILO_LINUX_VERIFY_KEY`; macOS leases contain exactly one
-`TILO_MAC_SIGNING_IDENTITY` and one `TILO_NOTARY_KEYCHAIN_PROFILE`. Publication
-token brokers write one non-empty token with no newline. Unknown, duplicate,
-empty, control-character, multiline, or malformed output fails the release.
-Windows applies the equivalent protected-ACL and non-reparse-point contract.
-Temporary notary profiles are removed by an `always()` cleanup step, including
-after a failed build.
-
-Native and promotion broker paths are separate protected repository variables
-because absolute paths are platform-specific; public-key identities are
-protected variables as well. Private signing material and OIDC leases must
-never enter the repository, workflow environment files, or ordinary artifacts.
+- Linux: `sign/linux-{arch}` and `sign/medium-{arch}` sign every tarball,
+  AppImage, Flatpak and installer medium with `TILO_LINUX_SIGNING_KEY_ASC` in a
+  keyring that exists only for the step, and check it is the key
+  `TILO_LINUX_EXPECTED_FINGERPRINT` names. The key's public half,
+  `tilo-release-key.asc`, and its fingerprint are published beside the
+  downloads, and the publication re-verifies every signature against that
+  fingerprint. `release/linux-{arch}` builds the tag's packages with the capture
+  service signed by the capture identities (`TILO_CAPTURE_RUNTIME_IDENTITY_KEY`,
+  `TILO_CAPTURE_SERVICE_IDENTITY_KEY`, `TILO_CAPTURE_QUALIFIER_BASE`,
+  `TILO_CAPTURE_SOURCE_ASSETS`).
+- Windows: `sign/windows-{arch}` signs and timestamps every executable with
+  `TILO_AUTHENTICODE_CERT_CHAIN` and checks each signer against
+  `TILO_WINDOWS_PUBLISHER`.
+- macOS: `sign/macos-{arch}` signs the app with the hardened runtime from
+  `TILO_MAC_SIGNING_P12`, notarizes and staples the app and the DMG
+  (`TILO_APPLE_ID`, `TILO_APPLE_TEAM_ID`, `TILO_APPLE_APP_PASSWORD`), and refuses
+  a certificate other than `TILO_MAC_EXPECTED_TEAM_ID` and
+  `TILO_MAC_EXPECTED_CERT_SHA256` pin.
 
 Linux users should download `tilo-release-key.asc` and
 `tilo-release-key.fingerprint`, compare the complete fingerprint through an
@@ -199,21 +172,16 @@ The release attachment is the convenient key transport, not by itself the
 trust anchor: the full fingerprint must also be pinned on the Tilo website or
 another independently authenticated channel before the first release.
 
-Publishing to Homebrew and WinGet is a separate credentialed promotion after
-the signed release exists. Signed binaries are published to the dedicated
-public GitHub repository `tilo-os/releases`, never to the private Forgejo source
-repository. The tag job obtains a target-only GitHub App installation token from
-`IMAGER_RELEASE_CREDENTIAL_BROKER`; the source job token is not accepted for
-this step, verifies it can see exactly one repository, and revokes it after the
-promotion. `IMAGER_PUBLIC_RELEASE_REPOSITORY` can select another pre-created
-public `OWNER/REPOSITORY`. `publish-homebrew-tap.sh` updates the first-party
-`tilo-os/homebrew-tilo` tap, replaces the version, immutable base URL and
-release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
-generated three-file manifest to Microsoft's public community index. See
-`docs/imager-release-operations.md` for runner labels, protected variables and
-the Forgejo OIDC design for short-lived signing access.
+Signed downloads are published to the public GitHub repository
+`tilo-os/releases` by `publish-github-release` (`GITHUB_RELEASE_TOKEN`), only
+after every download has been installed and started. Homebrew and WinGet follow
+it: `publish-homebrew-tap.sh` (`HOMEBREW_TAP_TOKEN`) updates the first-party
+`tilo-os/homebrew-tilo` tap, replaces the version, immutable base URL and release
+SHA-256 values, and runs strict audits; `publish-winget.sh` (`WINGET_GITHUB_TOKEN`,
+`WINGET_GITHUB_USER`) submits the generated three-file manifest to Microsoft's
+public community index. See `docs/imager-release-operations.md`.
 
-`IMAGER_HOMEBREW_TAP_REPOSITORY` and `IMAGER_HOMEBREW_TAP_NAME` name the tap
+`TILO_HOMEBREW_TAP_REPOSITORY` and `TILO_HOMEBREW_TAP_NAME` name the tap
 the release updates and the tap people are told to run. The tap README, the
 native install tests and the landing page's Homebrew commands all read that one
 destination, and `docs/install-contract.json` publishes it so the site prints
