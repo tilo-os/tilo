@@ -1378,7 +1378,8 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
-    // It hands its answer to an assistant, and nobody it runs for keeps one.
+    // It reads the chat it follows, then hands its answer to an assistant,
+    // and nobody it runs for keeps one.
     let answering = || {
         own_program(
             tilo_automation::TriggerSpec::ResourceChanged {
@@ -1387,7 +1388,17 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
                 fields: Vec::new(),
                 by: tilo_automation::ActorFilter::People,
             },
-            vec![tell("Say welcome.")],
+            vec![
+                tilo_automation::Step::new(
+                    "read",
+                    tilo_automation::StepKind::Read {
+                        app: CHAT.into(),
+                        record: String::new(),
+                        joined: false,
+                    },
+                ),
+                tell("Say welcome."),
+            ],
         )
     };
     let start = || program_runner(&workspaces, &workspace, &cert, answering(), state.clone());
