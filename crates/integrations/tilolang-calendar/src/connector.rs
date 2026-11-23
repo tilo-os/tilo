@@ -32,6 +32,8 @@ pub struct CalendarRef {
     pub color: String,
     /// Whether its server lets its person write it, and the account is not read-only.
     pub writable: bool,
+    /// Where its last pull ended, as its server names it; empty for one not pulled yet.
+    pub token: String,
 }
 
 /// One person an entry names, and whether they come.
@@ -71,6 +73,8 @@ pub struct Entry {
     pub uid: String,
     /// Where its server keeps it, absolute: empty for one not on a server yet.
     pub href: String,
+    /// The version its server last gave it.
+    pub etag: String,
     /// The calendar's key.
     pub calendar: String,
     pub title: String,
@@ -125,6 +129,15 @@ pub struct Sync {
     pub removed: Vec<Removal>,
 }
 
+/// Where a calendar's last pull ended and the version each of its entries was, as the workspace
+/// kept them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CalendarKnown {
+    pub calendar: String,
+    pub token: String,
+    pub entries: Vec<(String, String)>,
+}
+
 /// A request handed to a server.
 pub type Request = uuid::Uuid;
 
@@ -168,7 +181,7 @@ pub trait CalDavConnector {
     /// The workspace's calendar accounts.
     fn accounts(&self) -> Vec<AccountRef>;
     /// Ask for the calendars of `account` and what changed in them since what is held.
-    fn sync(&mut self, account: &str) -> Option<Request>;
+    fn sync(&mut self, account: &str, known: Vec<CalendarKnown>) -> Option<Request>;
     /// Write `entry` to the server of `account`: over the entry at `href` when it is not empty,
     /// as a new entry where it is. `from` names the entry to take out first, where the entry
     /// moves from one calendar to another.

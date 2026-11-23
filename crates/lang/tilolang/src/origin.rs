@@ -466,6 +466,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Bool",
                 "Whether its server lets its person write it, and the account is not read-only.",
             ),
+            field(
+                "sync_token",
+                "Text",
+                "Where its last pull ended, as its server names it: the next pull asks from                  there. Empty for one not pulled yet.",
+            ),
         ],
     },
     OriginKind {
@@ -502,6 +507,11 @@ pub const KINDS: &[OriginKind] = &[
                 "href",
                 "Text",
                 "Where its server keeps it; empty for an entry no server holds.",
+            ),
+            field(
+                "etag",
+                "Text",
+                "The version its server last gave it: a write goes over that one.",
             ),
             people("title", "Text", "What it is called."),
             people(

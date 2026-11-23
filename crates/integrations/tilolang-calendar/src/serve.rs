@@ -212,7 +212,7 @@ impl Connector {
         };
         let mut refused: Option<(uuid::Uuid, String)> = None;
         let made = match asked {
-            ToConnector::Sync { account, .. } => attached.connector.sync(&account),
+            ToConnector::Sync { account, known, .. } => attached.connector.sync(&account, known),
             ToConnector::Put {
                 request,
                 account,

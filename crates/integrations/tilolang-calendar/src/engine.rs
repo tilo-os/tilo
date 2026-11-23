@@ -18,8 +18,8 @@ use tilo_dav::{
 };
 
 use crate::connector::{
-    AccountRef, CalDavConnector, CalendarRef, Entry, Event as Reported, Guest, Occurrence, Removal,
-    Request, Sync, Unmade,
+    AccountRef, CalDavConnector, CalendarKnown, CalendarRef, Entry, Event as Reported, Guest,
+    Occurrence, Removal, Request, Sync, Unmade,
 };
 
 /// The limits a listing is read under: the same safety caps every `CalDAV` reader here holds.
@@ -121,7 +121,9 @@ pub struct EngineRequest {
 
 /// What a request asks of a server.
 pub enum Work {
-    Sync,
+    Sync {
+        known: Vec<CalendarKnown>,
+    },
     Put {
         entry: Box<Entry>,
         href: String,
@@ -323,8 +325,8 @@ impl CalDavConnector for DirectConnector {
             .collect()
     }
 
-    fn sync(&mut self, account: &str) -> Option<Request> {
-        self.asked(account, Work::Sync).ok()
+    fn sync(&mut self, account: &str, known: Vec<CalendarKnown>) -> Option<Request> {
+        self.asked(account, Work::Sync { known }).ok()
     }
 
     fn put(
@@ -423,8 +425,8 @@ impl CalDavConnector for EngineConnector {
             .collect()
     }
 
-    fn sync(&mut self, account: &str) -> Option<Request> {
-        self.request(account, Work::Sync).ok()
+    fn sync(&mut self, account: &str, known: Vec<CalendarKnown>) -> Option<Request> {
+        self.request(account, Work::Sync { known }).ok()
     }
 
     fn put(
@@ -573,7 +575,7 @@ struct HeldEntry {
 }
 
 /// The engine: what each account's server holds, and the requests it works on.
-struct Engine {
+pub struct Engine {
     source: AccountSource,
     held: HashMap<String, Held>,
 }
@@ -599,7 +601,7 @@ impl Engine {
             }];
         };
         match work {
-            Work::Sync => match self.sync(&signed) {
+            Work::Sync { known } => match self.sync(&signed, known) {
                 Ok(sync) => vec![EngineEvent::Synced(sync)],
                 Err(reason) => vec![EngineEvent::Unreachable { account, reason }],
             },
@@ -655,7 +657,11 @@ impl Engine {
         clippy::too_many_lines,
         reason = "one calendar server's whole answer, each calendar in turn"
     )]
-    fn sync(&mut self, signed: &CalendarAccount) -> Result<Sync, String> {
+    fn sync(
+        &mut self,
+        signed: &CalendarAccount,
+        known: Vec<CalendarKnown>,
+    ) -> Result<Sync, String> {
         let (client, server) = Self::client(signed)?;
         let discovered = tilo_dav::discovery::calendars(&client, &server)?;
         let calendars: Vec<CalendarRef> = discovered
@@ -666,9 +672,31 @@ impl Engine {
                 name: found.name,
                 color: String::new(),
                 writable: !found.read_only && !signed.read_only,
+                token: String::new(),
             })
             .collect();
         let mut held = self.held.remove(&signed.id).unwrap_or_default();
+        if held.calendars.is_empty() {
+            // A connector restarted since the workspace last pulled: it asks from where that
+            // pull ended, and writes over the versions the workspace kept.
+            for kept in known {
+                if !kept.calendar.is_empty() {
+                    held.tokens.insert(
+                        kept.calendar.clone(),
+                        (!kept.token.is_empty()).then_some(kept.token),
+                    );
+                }
+                for (href, etag) in kept.entries {
+                    held.entries.insert(
+                        (kept.calendar.clone(), href),
+                        HeldEntry {
+                            etag,
+                            entry: Entry::default(),
+                        },
+                    );
+                }
+            }
+        }
         // What a calendar no longer holds is forgotten here: its entries are gone from the
         // server, and the origin takes them out of the workspace with this pull.
         held.calendars.clone_from(&calendars);
@@ -729,9 +757,10 @@ impl Engine {
                 }
                 let etag = response.prop_text("getetag").unwrap_or_default().to_owned();
                 seen.push(href.clone());
-                let Some(entry) = Self::entry_of(text, &calendar.key, &href) else {
+                let Some(mut entry) = Self::entry_of(text, &calendar.key, &href) else {
                     continue;
                 };
+                etag.clone_into(&mut entry.etag);
                 sync.entries.push(entry.clone());
                 held.entries
                     .insert((calendar.key.clone(), href), HeldEntry { etag, entry });
@@ -756,6 +785,11 @@ impl Engine {
                 None if tells => None,
                 None => Self::token_of(&client, &collection)?,
             };
+            if let Some(kept) = token.as_deref()
+                && let Some(calendar) = sync.calendars.get_mut(index)
+            {
+                kept.clone_into(&mut calendar.token);
+            }
             held.tokens.insert(calendar.key.clone(), token);
         }
         self.held.insert(signed.id.clone(), held);
@@ -844,7 +878,7 @@ impl Engine {
     }
 
     /// What the entry `text` says, as the record holds it.
-    fn entry_of(text: &str, calendar: &str, href: &str) -> Option<Entry> {
+    pub fn entry_of(text: &str, calendar: &str, href: &str) -> Option<Entry> {
         let parsed = ics::parse_calendar(text);
         let mut event = parsed.events.into_iter().next()?;
         event.calendar_id = Some(calendar.to_owned());
@@ -1186,6 +1220,7 @@ impl Engine {
         let held = self.held.entry(signed.id.clone()).or_default();
         let mut entry = entry.clone();
         href.clone_into(&mut entry.href);
+        etag.clone_into(&mut entry.etag);
         held.entries.insert(
             (entry.calendar.clone(), href.to_owned()),
             HeldEntry {
@@ -1470,6 +1505,7 @@ fn entry_of(
     Entry {
         uid: uid.unwrap_or_else(|| event.id.to_string()),
         href: href.to_owned(),
+        etag: String::new(),
         calendar: calendar.to_owned(),
         title: event.title.clone(),
         start: wall_text(event.start),
@@ -1684,7 +1720,7 @@ fn invite_status_of(status: &str) -> InviteStatus {
 }
 
 /// The iCalendar text the entry is written as.
-fn text_of(entry: &Entry) -> String {
+pub fn text_of(entry: &Entry) -> String {
     let zone = entry.timezone.as_str();
     let start = wall_of_text(&entry.start).unwrap_or_default();
     let end = wall_of_text(&entry.end).unwrap_or_default();

@@ -447,3 +447,61 @@ fn a_colour_reaches_the_server_and_a_refused_one_puts_the_servers_back() {
     rig.settle();
     assert_eq!(server.color("work"), "#00ff00");
 }
+
+#[test]
+fn a_calendar_colour_a_server_refuses_puts_the_servers_back() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "Work");
+    let mut rig = rig(&server);
+    let calendar = rig.calendars().remove(0);
+    server.make_read_only("work");
+    rig.run(
+        "Calendar",
+        "recolor_calendar",
+        Some(&calendar),
+        &[("color", serde_json::json!("#00ff00"))],
+    );
+    rig.settle();
+    assert_eq!(server.color("work"), "", "the server kept its own colour");
+    assert_eq!(
+        rig.text("Calendar", &calendar, "color"),
+        "",
+        "the server's colour is put back"
+    );
+}
+
+#[test]
+fn a_restarted_connector_asks_from_where_the_last_pull_ended() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "Work");
+    server.put(
+        "work",
+        "a.ics",
+        &entry(
+            "a@example.test",
+            "Review",
+            "20261119T190000Z",
+            "20261119T200000Z",
+        ),
+    );
+    let mut rig = rig(&server);
+    let calendar = rig.calendars().remove(0);
+    let token = rig.text("Calendar", &calendar, "sync_token");
+    assert!(token.starts_with("urn:test:sync:"), "{token}");
+    let before = rig.events();
+    let _ = server.requests();
+    rig.restart();
+    rig.settle();
+    let reports: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "REPORT")
+        .collect();
+    assert!(
+        reports
+            .iter()
+            .any(|request| request.body_text().contains(&token)),
+        "a restarted connector asks from where the last pull ended"
+    );
+    assert_eq!(rig.events(), before, "and brings in nothing again");
+}

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
-use crate::connector::{AccountRef, CalDavConnector, Entry, Event, Request, Unmade};
+use crate::connector::{AccountRef, CalDavConnector, CalendarKnown, Entry, Event, Request, Unmade};
 use crate::wire::{self, FromConnector, ToConnector};
 
 /// What the reading thread hands the origin: a message, or that the connector is gone.
@@ -114,10 +114,11 @@ impl CalDavConnector for RemoteConnector {
         self.accounts.clone()
     }
 
-    fn sync(&mut self, account: &str) -> Option<Request> {
+    fn sync(&mut self, account: &str, known: Vec<CalendarKnown>) -> Option<Request> {
         self.ask(account, |request| ToConnector::Sync {
             request,
             account: account.to_owned(),
+            known,
         })
         .ok()
     }
