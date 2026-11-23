@@ -45,10 +45,14 @@ use crate::widget::{
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-/// The smallest and largest zoom the map is shown at: far enough out to see a whole canvas, far
+/// The smallest and largest zoom a canvas is shown at: far enough out to see a whole canvas, far
 /// enough in to read a note.
 pub const MAP_ZOOM_MIN: f64 = 0.2;
 pub const MAP_ZOOM_MAX: f64 = 2.5;
+
+/// The zoom a map of the world draws back to: the whole world across about a screen and a half,
+/// so a map of every place stands in view at once.
+pub const MAP_ZOOM_WORLD_MIN: f64 = 1_600.0 / MERCATOR_WORLD;
 
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
@@ -121,8 +125,21 @@ impl MapCamera {
     /// Zoom by `factor` about the screen point `about`, keeping the canvas point under it in
     /// place. The zoom stays within [`MAP_ZOOM_MIN`] and [`MAP_ZOOM_MAX`].
     pub fn zoom_about(&mut self, corner: Point, about: Point, factor: f64) {
+        self.zoom_about_within(corner, about, factor, MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+    }
+
+    /// [`MapCamera::zoom_about`] within `min` and `max`: a canvas keeps its own limits, a map
+    /// of the world draws back to the whole world.
+    pub fn zoom_about_within(
+        &mut self,
+        corner: Point,
+        about: Point,
+        factor: f64,
+        min: f64,
+        max: f64,
+    ) {
         let held = self.to_canvas(corner, about);
-        self.zoom = (self.zoom * factor).clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+        self.zoom = (self.zoom * factor).clamp(min, max);
         self.origin = held - (about - corner) / self.zoom;
     }
 
@@ -149,6 +166,10 @@ pub struct MapProps {
     /// ([`SurfaceLevel::Ground`](crate::widget::primitives::SurfaceLevel)), not on the content
     /// colour of the window the map is in.
     pub ground: bool,
+    /// Whether it is a map of the world: a pin stands centred on the place it names and keeps
+    /// the size the view gave it on screen at every zoom, and the camera draws back until the
+    /// whole world fits.
+    pub world: bool,
     /// The pins, in the order the map draws them (the last on top).
     #[component(part(default))]
     pub pins: Vec<MapPinProps>,
@@ -373,6 +394,9 @@ pub struct Map {
     touch: TouchGestureArena,
     /// It stands on the desktop's ground.
     ground: bool,
+    /// It is a map of the world: pins stand centred on their places at the size they were given
+    /// on screen, and the camera draws back to [`MAP_ZOOM_WORLD_MIN`].
+    world: bool,
     rect: Rect,
     /// How far a press may travel and still be a click, not a pan: the theme's click slop.
     slop: f64,
@@ -570,6 +594,7 @@ impl Map {
             cursor: Point::ORIGIN,
             touch: TouchGestureArena::new(),
             ground: false,
+            world: false,
             rect: Rect::ZERO,
             slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
@@ -645,6 +670,23 @@ impl Map {
         }
     }
 
+    /// The closest and furthest the camera draws this map back and in: a canvas keeps
+    /// [`MAP_ZOOM_MIN`], a map of the world draws back to the whole world.
+    fn zoom_limits(&self) -> (f64, f64) {
+        let least = if self.world {
+            MAP_ZOOM_WORLD_MIN
+        } else {
+            MAP_ZOOM_MIN
+        };
+        (least, MAP_ZOOM_MAX)
+    }
+
+    /// Zoom `camera` by `factor` about the screen point `about`, within this map's own limits.
+    fn zoom_camera(&self, camera: &mut MapCamera, corner: Point, about: Point, factor: f64) {
+        let (least, most) = self.zoom_limits();
+        camera.zoom_about_within(corner, about, factor, least, most);
+    }
+
     /// Centre the camera on the place the view set, at the zoom it set: once, on the first
     /// layout after the view changed it. The person's own pan and zoom stand after that.
     fn centre_on_focus(&mut self) {
@@ -658,9 +700,10 @@ impl Map {
         if size.width <= 0.0 || size.height <= 0.0 {
             return;
         }
-        let zoom = self.focus_zoom.map_or(self.camera.zoom, |zoom| {
-            zoom.clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX)
-        });
+        let (least, most) = self.zoom_limits();
+        let zoom = self
+            .focus_zoom
+            .map_or(self.camera.zoom, |zoom| zoom.clamp(least, most));
         let centre = mercator_project(latitude, longitude);
         let origin = centre - (size.to_vec2() * 0.5) / zoom.max(f64::EPSILON);
         self.set_camera(MapCamera { origin, zoom });
@@ -713,9 +756,10 @@ impl Map {
             return;
         }
         let bounds = area.inflate(margin, margin);
+        let (least, most) = self.zoom_limits();
         let zoom = (self.rect.width() / bounds.width().max(1.0))
             .min(self.rect.height() / bounds.height().max(1.0))
-            .clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX);
+            .clamp(least, most);
         let origin =
             bounds.center() - Vec2::new(self.rect.width(), self.rect.height()) / (2.0 * zoom);
         self.set_camera(MapCamera { origin, zoom });
@@ -914,21 +958,31 @@ impl Map {
             return;
         }
         let zoom = self.camera.zoom.max(f64::EPSILON);
+        let world = self.world;
         let canvas = |place: &PinPlace| {
             // A place whose height its view says is as tall as a window is wide over tall; one
             // that hugs what it holds is shown by its top, so a short answer in a tall room
             // does not carry the camera to the room's foot. Its caption's band over it is shown
-            // with it.
+            // with it. A world pin takes the screen size its view gave it, centred on its place.
             let height = match place.height {
                 Some(height) if place.hug => height.min(LEAST_SIDE),
                 Some(height) => height,
                 None => place.width.max(1.0) / 1.6,
             };
             let band = place.band / zoom;
-            Rect::from_origin_size(
-                Point::new(place.x, place.y - band),
-                (place.width.max(1.0), height + band),
-            )
+            if world {
+                let width = place.width.max(1.0) / zoom;
+                let height = height / zoom + band;
+                Rect::from_origin_size(
+                    Point::new(place.x - width / 2.0, place.y - height / 2.0),
+                    (width, height),
+                )
+            } else {
+                Rect::from_origin_size(
+                    Point::new(place.x, place.y - band),
+                    (place.width.max(1.0), height + band),
+                )
+            }
         };
         // The person's answer is framed with what arrives beside it once both are laid out, at
         // the sizes they stand at ([`Self::keep_answer`]).
@@ -1049,6 +1103,9 @@ impl Map {
         // glide of the camera lays the places out again without building the region again.
         let shown = Rc::clone(&self.shown);
         let followed = Rc::clone(&self.followed);
+        // A map of the world lays its pins out at the size the view gave them on screen, centred
+        // on their places; a canvas scales them with the camera, from their top-leading corner.
+        let world = self.world;
         let moving = Rc::clone(&self.placed);
         let motion = self.motion;
         let laid: Rc<RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
@@ -1082,7 +1139,16 @@ impl Map {
                 let Some(place) = places.get(index) else {
                     continue;
                 };
-                let width = (place.width * camera.zoom).max(1.0);
+                // How many screen pixels a size the view gave a pin takes: its own, on a map of
+                // the world, and the camera's scale over it on a canvas.
+                let screen = |size: f64| {
+                    if world {
+                        size.max(1.0)
+                    } else {
+                        (size * camera.zoom).max(1.0)
+                    }
+                };
+                let width = screen(place.width);
                 // A pin that hugs is measured at its natural height and stands no taller than
                 // its own: an answer as tall as its words, inside the rectangle it was asked in.
                 let fixed = place.height.filter(|_| !place.hug);
@@ -1092,19 +1158,25 @@ impl Map {
                         Size {
                             width: MeasureConstraint::Exact(f32_of(width)),
                             height: fixed.map_or(MeasureConstraint::Intrinsic, |height| {
-                                MeasureConstraint::Exact(f32_of(
-                                    (height * camera.zoom).max(1.0) + place.band,
-                                ))
+                                MeasureConstraint::Exact(f32_of(screen(height) + place.band))
                             }),
                         },
                     )?
                     .size;
-                let left = (place.x - camera.origin.x) * camera.zoom;
+                // A world pin stands centred on its place; a canvas pin from its top-leading
+                // corner, where the view said it goes.
+                let left = (place.x - camera.origin.x) * camera.zoom
+                    - if world { width / 2.0 } else { 0.0 };
                 // A band over the view stands above the pin's point, so the view's top is there.
-                let top = (place.y - camera.origin.y) * camera.zoom - place.band;
+                // A world pin of a height its view says stands its middle on its place.
+                let centred = place
+                    .height
+                    .filter(|_| world && !place.hug)
+                    .map_or(0.0, |height| screen(height) / 2.0);
+                let top = (place.y - camera.origin.y) * camera.zoom - place.band - centred;
                 let natural = f64::from(size.height);
                 let height = place.height.map_or(natural, |height| {
-                    let most = (height * camera.zoom).max(1.0) + place.band;
+                    let most = screen(height) + place.band;
                     // What hugs what it holds never grows past what the person sees: a long
                     // answer stands as tall as the viewport leaves it, and scrolls.
                     let most = if place.hug {
@@ -1114,7 +1186,8 @@ impl Map {
                     };
                     // A view that says no height of its own (a list that scrolls is as tall as
                     // the room it is given) fills its most: it cannot hug what it holds.
-                    let says = natural - place.band >= LEAST_NATURAL * camera.zoom;
+                    let says = natural - place.band
+                        >= LEAST_NATURAL * if world { 1.0 } else { camera.zoom };
                     if place.hug
                         && !says
                         && let Some(key) = keys.get(index)
@@ -1201,6 +1274,7 @@ impl Described for Map {
         let MapProps {
             name,
             ground,
+            world,
             pins,
             drop,
             press,
@@ -1223,6 +1297,7 @@ impl Described for Map {
         map.drawn = drawn;
         map.outline = outline_of(&outline);
         map.ground = ground;
+        map.world = world;
         map.name = name.unwrap_or_default();
         map.key = format!("map\u{1f}{key}");
         map.drop = drop;
@@ -1231,7 +1306,12 @@ impl Described for Map {
         map.context = context;
         map.at = at;
         map.focus = latitude.zip(longitude);
-        map.focus_zoom = zoom;
+        // A map of the world opens showing the world; a canvas keeps the camera's own zoom.
+        map.focus_zoom = if world {
+            Some(zoom.unwrap_or(MAP_ZOOM_WORLD_MIN))
+        } else {
+            zoom
+        };
         map.recentre = map.focus.is_some();
         for pin in pins {
             let (x, y) = match (pin.latitude, pin.longitude) {
@@ -1273,6 +1353,7 @@ impl Described for Map {
         let MapProps {
             name: _,
             ground,
+            world,
             pins,
             drop,
             press,
@@ -1307,6 +1388,11 @@ impl Described for Map {
         self.context = context;
         self.at = at;
         let focus = latitude.zip(longitude);
+        let zoom = if world {
+            Some(zoom.unwrap_or(MAP_ZOOM_WORLD_MIN))
+        } else {
+            zoom
+        };
         if focus != self.focus || zoom != self.focus_zoom {
             self.focus = focus;
             self.focus_zoom = zoom;
@@ -1321,6 +1407,7 @@ impl Described for Map {
             return false;
         }
         self.ground = ground;
+        self.world = world;
         self.items.clear();
         for (pin, (key, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
@@ -1757,7 +1844,7 @@ impl Map {
                 let corner = self.rect.origin();
                 let about = self.cursor;
                 let mut camera = self.camera;
-                camera.zoom_about(corner, about, 1.0 + *delta);
+                self.zoom_camera(&mut camera, corner, about, 1.0 + *delta);
                 self.set_camera(camera);
                 *ctx.handled = true;
             }
@@ -1772,7 +1859,7 @@ impl Map {
                 let corner = self.rect.origin();
                 let about = self.cursor;
                 let mut camera = self.camera;
-                camera.zoom_about(corner, about, ZOOM_PER_DETENT.powf(notches));
+                self.zoom_camera(&mut camera, corner, about, ZOOM_PER_DETENT.powf(notches));
                 self.set_camera(camera);
                 *ctx.handled = true;
             }
@@ -2016,7 +2103,7 @@ impl Map {
                         TouchGestureEvent::Pinch { center, scale, .. } => {
                             let corner = self.rect.origin();
                             let mut camera = self.camera;
-                            camera.zoom_about(corner, center, scale);
+                            self.zoom_camera(&mut camera, corner, center, scale);
                             self.set_camera(camera);
                             *ctx.handled = true;
                         }
