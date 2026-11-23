@@ -37,6 +37,7 @@ tilo-deployment-status = { path = "../deployment-status" }
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
+tilo-formats = { path = "../../sdk/tilo-formats" }
 rustix = { workspace = true, features = ["fs", "net", "std", "process", "termios"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the

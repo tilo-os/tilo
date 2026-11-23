@@ -402,13 +402,12 @@ pub struct App {
     pub machine: Option<Machine>,
 }
 
+#[must_use]
 pub fn human_bytes(bytes: u64) -> String {
-    if bytes >= 1 << 30 {
-        let tenths = bytes.saturating_mul(10) >> 30;
-        format!("{}.{} GB", tenths / 10, tenths % 10)
-    } else {
-        format!("{} MB", bytes >> 20)
-    }
+    tilo_formats::ByteFormat::binary()
+        .min_unit(tilo_formats::ByteUnit::Mega)
+        .decimal_from(tilo_formats::ByteUnit::Giga)
+        .format(bytes)
 }
 
 fn insert(value: &mut Value, key: &str, item: Value) {
@@ -7292,8 +7291,8 @@ mod tests {
             }
 
             {
-                assert_eq!(human_bytes(5 << 30), "5.0 GB");
-                assert_eq!(human_bytes(300 << 20), "300 MB");
+                assert_eq!(human_bytes(5 << 30), "5.0 GiB");
+                assert_eq!(human_bytes(300 << 20), "300 MiB");
             }
         }
     }
@@ -7382,20 +7381,20 @@ mod tests {
     #[test]
     fn human_bytes_formats_table() {
         let cases = [
-            (0, "0 MB"),
-            (1, "0 MB"),
-            (999, "0 MB"),
-            (1_000, "0 MB"),
-            (1_023, "0 MB"),
-            (1_024, "0 MB"),
-            (1_500, "0 MB"),
-            (999_999, "0 MB"),
-            (1_000_000, "0 MB"),
-            (1_048_576, "1 MB"),
-            (1_500_000, "1 MB"),
-            (1_073_741_824, "1.0 GB"),
-            (5_000_000_000, "4.6 GB"),
-            (u64::MAX, "1717986918.3 GB"),
+            (0, "0 MiB"),
+            (1, "0 MiB"),
+            (999, "0 MiB"),
+            (1_000, "0 MiB"),
+            (1_023, "0 MiB"),
+            (1_024, "0 MiB"),
+            (1_500, "0 MiB"),
+            (999_999, "0 MiB"),
+            (1_000_000, "0 MiB"),
+            (1_048_576, "1 MiB"),
+            (1_500_000, "1 MiB"),
+            (1_073_741_824, "1.0 GiB"),
+            (5_000_000_000, "4.6 GiB"),
+            (u64::MAX, "17179869183.9 GiB"),
         ];
         for (input, expected) in cases {
             assert_eq!(human_bytes(input), expected, "input={input}");

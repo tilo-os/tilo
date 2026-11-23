@@ -72,28 +72,9 @@ pub fn total_bytes(states: &[WorkspaceState]) -> u64 {
 }
 
 /// `1.4 MB`, for a prompt.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "display only, rounded to one decimal place; precision beyond f64's 52-bit \
-              mantissa is unobservable at that rounding and would only matter for byte counts \
-              in the exabyte range"
-)]
+#[must_use]
 pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [(&str, u64); 4] = [
-        ("GB", 1_000_000_000),
-        ("MB", 1_000_000),
-        ("kB", 1_000),
-        ("B", 1),
-    ];
-    for (label, scale) in UNITS {
-        if bytes >= scale {
-            if scale == 1 {
-                return format!("{bytes} B");
-            }
-            return format!("{:.1} {label}", bytes as f64 / scale as f64);
-        }
-    }
-    "0 B".to_string()
+    tilo_formats::decimal_bytes(bytes)
 }
 
 /// Turn a package id into a single path component that cannot escape its parent.

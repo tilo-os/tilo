@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(space.total, 16_316_416 * 1024);
         assert_eq!(space.source, "tmpfs");
         assert_eq!(space.mount, "/run/user/1000 extra words");
-        assert_eq!(room(&space), "8.7 GB of 15.5 GB");
+        assert_eq!(room(&space), "8.7 GiB of 15.5 GiB");
         let place = measured(Path::new("/"), &space);
         assert_eq!(place, "/ (tmpfs mounted at /run/user/1000 extra words)");
         assert_eq!(

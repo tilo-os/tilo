@@ -640,22 +640,7 @@ fn progress_reporter() -> impl FnMut(DownloadProgress) {
 }
 
 fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
-    let mut whole = bytes;
-    let mut remainder = 0;
-    let mut unit: usize = 0;
-    while whole >= 1024 && unit < 3 {
-        remainder = whole % 1024;
-        whole /= 1024;
-        unit = unit.saturating_add(1);
-    }
-    let unit_name = UNITS.get(unit).copied().unwrap_or("GiB");
-    if unit == 0 {
-        format!("{bytes} {unit_name}")
-    } else {
-        let decimal = remainder.saturating_mul(10) / 1024;
-        format!("{whole}.{decimal} {unit_name}")
-    }
+    tilo_formats::binary_bytes(bytes)
 }
 
 fn human_duration(duration: Duration) -> String {

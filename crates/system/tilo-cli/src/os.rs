@@ -253,15 +253,13 @@ pub struct ProgressView {
     stage: Option<String>,
 }
 
+#[must_use]
 pub fn human_size(bytes: u64) -> String {
-    if bytes >= 1_000_000_000 {
-        let tenths = bytes / 100_000_000;
-        format!("{}.{} GB", tenths / 10, tenths % 10)
-    } else if bytes >= 1_000_000 {
-        format!("{} MB", bytes / 1_000_000)
-    } else {
-        format!("{} kB", bytes / 1000)
-    }
+    tilo_formats::ByteFormat::decimal()
+        .min_unit(tilo_formats::ByteUnit::Kilo)
+        .decimal_from(tilo_formats::ByteUnit::Giga)
+        .rounding(tilo_formats::ByteRounding::Truncate)
+        .format(bytes)
 }
 
 impl ProgressView {
