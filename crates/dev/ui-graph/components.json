@@ -6181,6 +6181,13 @@
           "type": {
             "list": "text"
           }
+        },
+        {
+          "name": "slash",
+          "doc": "The commands only an editor can carry out that its slash menu offers besides the block kinds: `image` puts a picture the person chooses in the document, `page` makes a page inside this one, titled with the block's words. A view offers only the ones it answers.",
+          "type": {
+            "list": "text"
+          }
         }
       ],
       "events": [
@@ -6202,6 +6209,15 @@
         {
           "name": "command",
           "doc": "A command of `commands` was chosen, carrying its label: the view does what the label says, as it would for a button it placed.",
+          "value": "text"
+        },
+        {
+          "name": "slash_image",
+          "doc": "The person chose a picture from the slash menu: the view chooses the file and puts it in the document, as its own Insert image does."
+        },
+        {
+          "name": "slash_page",
+          "doc": "The person chose a page from the slash menu, in the block the words are: the view makes the page, titled with those words.",
           "value": "text"
         },
         {

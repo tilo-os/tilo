@@ -2758,6 +2758,13 @@ impl BlockEditor {
         self
     }
 
+    /// Offer the commands the editor itself carries out besides the block kinds, a picture and a
+    /// page of its own, leaving a link to another page offered as it stands.
+    pub fn set_slash_host(&mut self, host: &[SlashHostCommand]) {
+        self.host_commands = host.to_vec();
+        self.refresh_slash_commands();
+    }
+
     /// The slash command the person chose that only the host can carry
     /// out, once. The `/query` is already gone from the block.
     pub fn take_slash_request(&mut self) -> Option<SlashRequest> {
@@ -10590,6 +10597,7 @@ impl Widget for BlockEditor {
         let edited = self.take_body_edits();
         let followed = self.follow_body();
         self.publish_headings();
+        self.publish_slash_request();
         let mut changed = false;
         for child in self.children_mut() {
             changed |= child.update(state, path);
