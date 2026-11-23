@@ -584,6 +584,30 @@ impl ShellDesktop {
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetSurface) -> R) -> R {
         read(&mut self.desktop.borrow_mut().surface)
     }
+
+    /// The controls the windows' own content offers, each where it stands on
+    /// the desktop ([`ui::window_targets`]): what an app describes of its
+    /// window, moved from the window's place to where the desktop shows it.
+    ///
+    /// A shell that draws the screen replaced what the desktop draws, never
+    /// the windows standing in it, so this is what it lists beside its own
+    /// controls: the desktop's own widgets are not drawn there.
+    #[must_use]
+    pub fn window_controls(&self) -> Vec<ui::window_targets::WindowControl> {
+        let desktop = self.desktop.borrow();
+        let (ox, oy) = desktop.surface.placement().origin;
+        desktop
+            .policy
+            .handle()
+            .window_controls()
+            .into_iter()
+            .map(|mut control| {
+                control.rect.0 += f64::from(ox);
+                control.rect.1 += f64::from(oy);
+                control
+            })
+            .collect()
+    }
 }
 
 impl crate::well_policy::WindowModel for ShellDesktop {
@@ -682,14 +706,10 @@ impl crate::Published for ShellDesktop {
         // Every window's own controls stand where they stand, beside the desktop's: two windows go
         // by the same names — each window's sidebar toggle, each window's "More actions" — and
         // each is named where it is drawn. A window's control is never the desktop's because they
-        // share a name; a press by name reaches the window in front ([`Self::press_action`]).
-        // The windows' controls stand where the desktop draws them, in its coordinates: moved, as
-        // its own are, to where the desktop is placed in the logical layout.
-        let desktop = self.desktop.borrow();
-        let (ox, oy) = desktop.surface.placement().origin;
-        for mut control in desktop.policy.handle().window_controls() {
-            control.rect.0 += f64::from(ox);
-            control.rect.1 += f64::from(oy);
+        // share a name; a press by name reaches the window in front ([`Self::press_action`]). The
+        // windows' controls stand where the desktop draws them, in its coordinates: moved, as its
+        // own are, to where the desktop is placed in the logical layout.
+        for control in self.window_controls() {
             if !shown
                 .iter()
                 .any(|seen| seen.name == control.name && seen.rect == control.rect)
