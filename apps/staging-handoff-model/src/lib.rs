@@ -214,9 +214,10 @@ impl Handoff {
         if bytes.len() > MAX_BYTES {
             return Err("staged installation resource is unexpectedly large".into());
         }
-        let handoff = serde_json::from_slice::<Self>(bytes)
+        let mut handoff = serde_json::from_slice::<Self>(bytes)
             .map_err(|error| format!("staged installation resource is malformed: {error}"))?;
         handoff.validate()?;
+        drop_invalid_hostname(&mut handoff.profile);
         Ok(handoff)
     }
 
@@ -227,6 +228,13 @@ impl Handoff {
     /// Why the resource is inconsistent, cannot be serialized, or does not fit `len` bytes.
     pub fn to_padded(&self, len: u64) -> Result<Vec<u8>, String> {
         self.validate()?;
+        if self
+            .profile
+            .get("hostname")
+            .is_some_and(|value| !value.as_str().is_some_and(valid_hostname))
+        {
+            return Err("staged installation profile field hostname is malformed".into());
+        }
         pad_json(&serde_json::to_vec(self).map_err(|e| e.to_string())?, len)
     }
 }
@@ -279,6 +287,18 @@ pub fn valid_hostname(value: &str) -> bool {
     value.trim() == value && install_profile_model::valid_hostname(value)
 }
 
+/// Remove `"hostname"` when it fails the strict DNS-label rule so a read-back
+/// handoff or stored staging record loads cleanly and asks for a valid hostname
+/// instead of passing an invalid value to any privileged step.
+pub fn drop_invalid_hostname(profile: &mut serde_json::Map<String, serde_json::Value>) {
+    if profile
+        .get("hostname")
+        .is_some_and(|value| !value.as_str().is_some_and(valid_hostname))
+    {
+        profile.remove("hostname");
+    }
+}
+
 /// Validate the closed, secret-free installer profile shared by both sides.
 pub fn validate_profile(
     profile: &serde_json::Map<String, serde_json::Value>,
@@ -286,10 +306,8 @@ pub fn validate_profile(
     for (key, value) in profile {
         let valid = match key.as_str() {
             "schema" => value.is_i64() || value.is_u64(),
-            "hostname" => value.as_str().is_some_and(valid_hostname),
-            "username" | "full_name" | "locale" | "keyboard" | "timezone" | "filesystem" => {
-                value.as_str().is_some_and(|s| s.chars().count() <= 256)
-            }
+            "hostname" | "username" | "full_name" | "locale" | "keyboard" | "timezone"
+            | "filesystem" => value.as_str().is_some_and(|s| s.chars().count() <= 256),
             "purpose" => value
                 .as_str()
                 .is_some_and(|s| matches!(s, "computer" | "server")),
@@ -596,19 +614,7 @@ mod tests {
             ("device_label", serde_json::json!(" ")),
             ("device_label", serde_json::json!("é".repeat(33))),
             ("device_label", serde_json::json!("bad\u{0080}")),
-            ("hostname", serde_json::json!("")),
-            ("hostname", serde_json::json!("a".repeat(64))),
             ("hostname", serde_json::json!("a".repeat(257))),
-            ("hostname", serde_json::json!("-desktop")),
-            ("hostname", serde_json::json!("desktop-")),
-            ("hostname", serde_json::json!("bad host")),
-            ("hostname", serde_json::json!(" desktop")),
-            ("hostname", serde_json::json!("desktop ")),
-            ("hostname", serde_json::json!("desktop\n")),
-            ("hostname", serde_json::json!("desktop\r")),
-            ("hostname", serde_json::json!("desktop\t")),
-            ("hostname", serde_json::json!("desktop\u{0000}")),
-            ("hostname", serde_json::json!("desktop.local")),
             ("prepared_setup", serde_json::json!(null)),
             (
                 "prepared_setup",
@@ -722,6 +728,95 @@ mod tests {
             let bytes = h.to_padded(4096).unwrap();
             assert_eq!(Handoff::parse(&bytes).unwrap(), h, "{good}");
         }
+
+        // Building a new handoff refuses invalid hostnames, while reading a staged handoff
+        // accepts bounded text (<= 256 chars) and drops the invalid hostname for repair.
+        for bad in [
+            "",
+            "bad host",
+            "-desktop",
+            "desktop-",
+            " desktop",
+            "desktop ",
+            "desktop\n",
+            "desktop\r",
+            "desktop\t",
+            "desktop\u{0000}",
+            "desktop.local",
+            &"h".repeat(64),
+            &"h".repeat(256),
+        ] {
+            let mut h = handoff();
+            h.profile.insert("hostname".into(), bad.into());
+            assert!(h.to_padded(4096).is_err(), "write refuses {bad:?}");
+            let encoded = serde_json::to_vec(&h).unwrap();
+            let parsed = Handoff::parse(&encoded).unwrap();
+            assert!(
+                !parsed.profile.contains_key("hostname"),
+                "read drops {bad:?}"
+            );
+        }
+
+        // The 256-character bound and string type remain enforced on read.
+        let mut oversized = handoff();
+        oversized
+            .profile
+            .insert("hostname".into(), "h".repeat(257).into());
+        assert!(Handoff::parse(&serde_json::to_vec(&oversized).unwrap()).is_err());
+        let mut non_string = handoff();
+        non_string.profile.insert("hostname".into(), 42.into());
+        assert!(Handoff::parse(&serde_json::to_vec(&non_string).unwrap()).is_err());
+    }
+
+    #[test]
+    fn windows_relative_paths_table() {
+        let max_len = "a".repeat(4096);
+        let over_len = "a".repeat(4097);
+        let cases: [(&str, bool); 27] = [
+            ("Documents", true),
+            ("Documents\\Private", true),
+            ("Documents/Private", true),
+            ("Documents\\Work/Notes", true),
+            (".config", true),
+            ("a\\...\\b", true),
+            ("日本語\\文書", true),
+            (max_len.as_str(), true),
+            ("", false),
+            ("dir\\", false),
+            ("dir/", false),
+            ("a\\\\b", false),
+            ("a//b", false),
+            ("a\\/b", false),
+            ("\\abs", false),
+            ("/abs", false),
+            ("\\\\server\\share", false),
+            ("\\\\?\\C:\\dir", false),
+            (".", false),
+            ("..", false),
+            ("a\\.\\b", false),
+            ("a\\..\\b", false),
+            ("C:\\dir", false),
+            ("C:dir", false),
+            ("dir:stream", false),
+            ("a\0b", false),
+            (over_len.as_str(), false),
+        ];
+        for (input, expected) in cases {
+            let path = NativePath::Windows(input.encode_utf16().collect());
+            assert_eq!(
+                path.is_normalized_relative(),
+                expected,
+                "Windows path {input:?}"
+            );
+        }
+        // Native UTF-16 units may hold an unpaired surrogate without being rejected as invalid.
+        let surrogate = NativePath::Windows(vec![
+            u16::from(b'a'),
+            0xD800,
+            u16::from(b'\\'),
+            u16::from(b'b'),
+        ]);
+        assert!(surrogate.is_normalized_relative());
     }
 
     #[test]
