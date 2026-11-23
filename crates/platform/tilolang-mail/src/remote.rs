@@ -130,6 +130,14 @@ impl MailConnector for RemoteConnector {
         })
     }
 
+    fn purge(&mut self, account: &str, key: &str) -> Option<Request> {
+        self.ask(account, |request| ToConnector::Purge {
+            request,
+            account: account.to_owned(),
+            key: key.to_owned(),
+        })
+    }
+
     fn search(&mut self, account: &str, text: &str) -> Option<Request> {
         self.ask(account, |request| ToConnector::Search {
             request,

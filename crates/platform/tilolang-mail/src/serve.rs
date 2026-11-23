@@ -270,7 +270,10 @@ impl Connector {
         let Some(attached) = self.sessions.get_mut(&session) else {
             return;
         };
-        let write = matches!(asked, ToConnector::Flag { .. } | ToConnector::Move { .. });
+        let write = matches!(
+            asked,
+            ToConnector::Flag { .. } | ToConnector::Move { .. } | ToConnector::Purge { .. }
+        );
         let older = matches!(asked, ToConnector::Older { .. });
         let (host, engine) = match asked {
             ToConnector::Changes {
@@ -302,6 +305,11 @@ impl Connector {
                 request,
                 attached.connector.move_to(&account, &key, &mailbox),
             ),
+            ToConnector::Purge {
+                request,
+                account,
+                key,
+            } => (request, attached.connector.purge(&account, &key)),
             ToConnector::Search {
                 request,
                 account,
@@ -315,13 +323,16 @@ impl Connector {
             }
             ToConnector::Send { .. } => return,
         };
-        match engine {
+        let ready = match engine {
             // Only a write is answered under its id (taken or refused); what a fetch or a search
             // found names its account.
             Some(engine) if write => {
                 attached.asked.insert(engine, host);
+                Vec::new()
             }
-            Some(_) => {}
+            // What the connector answered itself, without a server: the mail another mail
+            // program kept on this computer, which the installer brought over.
+            Some(_) => attached.connector.take_ready(),
             None => {
                 let reason = if older {
                     "there is no older mail to fetch".to_owned()
@@ -333,7 +344,11 @@ impl Connector {
                     reason,
                 });
                 self.tell(session, &refused);
+                Vec::new()
             }
+        };
+        for event in ready {
+            self.answer(Some(session), event);
         }
     }
 

@@ -16,6 +16,26 @@ use crate::transport::build_mime_from;
 
 pub type EngineRequestId = uuid::Uuid;
 
+/// Who a message goes from: the identity its draft names (`Name <address>`, one of the
+/// account's own), or the account's name and address when it names none.
+fn draft_from(account: &AccountConfig, draft: &Draft) -> crate::model::Addr {
+    let named = draft
+        .sender
+        .as_ref()
+        .map(|sender| sender.email.trim())
+        .filter(|identity| !identity.is_empty());
+    match named {
+        Some(identity) => match identity.rsplit_once('<') {
+            Some((name, address)) => crate::model::Addr::new(
+                name.trim().trim_matches('"'),
+                address.trim_end_matches('>').trim(),
+            ),
+            None => crate::model::Addr::bare(identity),
+        },
+        None => crate::model::Addr::new(account.display_name.clone(), account.email.clone()),
+    }
+}
+
 fn next_request_id() -> EngineRequestId {
     // Unlike a wrapping integer counter, a freshly-minted UUID cannot alias a
     // previous in-flight request after a counter exhaustion boundary. The
@@ -370,7 +390,7 @@ impl MailEngine for StubEngine {
                 files,
                 ..
             } => {
-                let from = crate::model::Addr::new(account.display_name.clone(), account.email);
+                let from = draft_from(&account, &draft);
                 match build_mime_from(&from, &draft, &files) {
                     Ok(bytes) => {
                         let _ = out.send(EngineEvent::Error {
@@ -473,9 +493,8 @@ pub mod live {
 
     use super::{
         AccountConfig, Draft, EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind,
-        Folder, MailEngine, Message, Sender,
+        Folder, MailEngine, Message, Sender, draft_from,
     };
-    use crate::model::Addr;
     use crate::sync::{CATCH_UP_LIMIT, Synced, Want};
     use crate::transport::{build_mime, build_mime_from, parse_fetched};
 
@@ -717,7 +736,7 @@ pub mod live {
             draft: &Draft,
         ) -> Result<(), String> {
             let places = self.places_of(account)?;
-            let from = Addr::new(account.display_name.clone(), account.email.clone());
+            let from = draft_from(account, draft);
             let mime = build_mime(&self.content, &from, draft)?;
             let made = self.run(account, async |session: &mut ImapSession| {
                 server::keep_draft(session, &places, &mime).await
@@ -753,7 +772,8 @@ pub mod live {
             files: &[crate::model::SendFile],
         ) -> Result<Vec<u8>, SendFailure> {
             let (signed, secret) = signed(account).map_err(SendFailure::Refused)?;
-            let from = Addr::new(account.display_name.clone(), account.email.clone());
+            // Who it goes from is the identity its draft names, or the account's own.
+            let from = draft_from(account, draft);
             let bytes = build_mime_from(&from, draft, files).map_err(SendFailure::Refused)?;
             let envelope = build_envelope(account, draft).map_err(SendFailure::Refused)?;
             self.session.hand_over(&signed, &secret, envelope, &bytes)?;
@@ -1008,6 +1028,41 @@ pub mod live {
     }
 
     #[test]
+    fn a_message_goes_from_the_identity_its_draft_names() {
+        let account = AccountConfig {
+            email: "sam@rivera.example".into(),
+            display_name: "Sam Rivera".into(),
+            ..Default::default()
+        };
+        // An account that sends as more than one name goes from the one its draft names, in the
+        // message and in the delivery alike.
+        let named = Draft {
+            to: "ada@example.test".into(),
+            sender: Some(crate::model::DraftSender {
+                account: "sam@rivera.example".into(),
+                email: "Ada at work <ada@work.example>".into(),
+            }),
+            ..Default::default()
+        };
+        let from = crate::engine::draft_from(&account, &named);
+        assert_eq!(from.email, "ada@work.example");
+        assert_eq!(from.display(), "Ada at work");
+        let envelope = build_envelope(&account, &named).unwrap();
+        assert_eq!(
+            envelope.from().map(ToString::to_string),
+            Some("ada@work.example".to_owned())
+        );
+        // A draft that names none goes from the account's own name and address.
+        let plain = Draft {
+            to: "ada@example.test".into(),
+            ..Default::default()
+        };
+        let from = crate::engine::draft_from(&account, &plain);
+        assert_eq!(from.email, "sam@rivera.example");
+        assert_eq!(from.display(), "Sam Rivera");
+    }
+
+    #[test]
     fn blind_recipients_remain_in_the_delivery_envelope() {
         let account = AccountConfig {
             email: "sender@example.test".into(),
@@ -1045,7 +1100,7 @@ pub mod live {
         draft: &Draft,
     ) -> Result<lettre::address::Envelope, String> {
         use std::str::FromStr;
-        let from = lettre::Address::from_str(account.email.trim())
+        let from = lettre::Address::from_str(draft_from(account, draft).email.trim())
             .map_err(|e| format!("invalid From address: {e}"))?;
         let mut to = Vec::new();
         for field in [&draft.to, &draft.cc, &draft.bcc] {

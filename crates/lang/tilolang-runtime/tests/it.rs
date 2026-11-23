@@ -36,6 +36,8 @@ mod e2e_counter;
 mod e2e_enums;
 #[path = "e2e_layout.rs"]
 mod e2e_layout;
+#[path = "e2e_mail_files.rs"]
+mod e2e_mail_files;
 #[path = "e2e_native.rs"]
 mod e2e_native;
 #[path = "e2e_native_ui.rs"]

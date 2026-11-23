@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@58dd056be3447224";
+export const SURFACE = "so.tilo.mail@8e566cb43d7b1955";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -93,6 +93,11 @@ export interface SendFromArgs {
   a: Account;
 }
 
+/** The arguments of `send_as`. */
+export interface SendAsArgs {
+  identity: string;
+}
+
 /** The arguments of `set_hold`. */
 export interface SetHoldArgs {
   seconds: number;
@@ -123,6 +128,7 @@ export interface Account extends tilo.Resource {
   "33f3rqw2": boolean;  // online
   hzbwof46: string;  // fetched
   jxc5rufs: string;  // signature
+  yinmk5zb: string;  // identities
   ehmoyzk2: Array<tilo.Entry<Mailbox>>;  // mailboxes
   qybqg4dl: Array<tilo.Entry<Thread>>;  // threads
   /** Sets or clears the workspace account's signature. */
@@ -157,7 +163,7 @@ export interface Mailbox extends tilo.Resource {
   xhiqdk3p: string;  // role
   dtd4czyv: number;  // unread
   rxoe5vzb: number;  // total
-  xgjbfrkl: boolean;  // more
+  al2vjuet: boolean;  // more
   /** Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here. */
   older_messages(): Promise<void>;
 }
@@ -211,6 +217,8 @@ export interface Thread extends tilo.Resource {
   delete(): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and the platform takes back this app's record of it only. */
+  purge(): Promise<void>;
   /** Flags or unflags the conversation. */
   flag(args?: {
     flagged?: boolean;
@@ -262,7 +270,7 @@ export interface Thread extends tilo.Resource {
 
 /** The actions `Thread` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "archiveMany", "to_inbox", "to_inboxMany", "move_to", "move_toMany", "delete", "deleteMany", "flag", "flagMany", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "mark_readMany", "answer"] as const;
+export const THREAD_ACTIONS = ["reply", "reply_all", "forward", "archive", "archiveMany", "to_inbox", "to_inboxMany", "move_to", "move_toMany", "delete", "deleteMany", "purge", "flag", "flagMany", "snooze", "snoozeMany", "snooze_an_hour", "snooze_an_hourMany", "snooze_until_tomorrow", "snooze_until_tomorrowMany", "unsnooze", "unsnoozeMany", "label", "labelMany", "mute", "muteMany", "mark_read", "mark_readMany", "answer"] as const;
 
 /** The `tl.so.tilo.mail.Thread` kind at `path`. */
 export function thread(ws: tilo.Workspace, path: string): Thread {
@@ -303,6 +311,12 @@ export interface Message extends tilo.Resource {
   xlejsz5j: string;  // mailbox
   hgysjvfy: string;  // original
   wuefabwr: string;  // parts
+  /** The message as a Markdown file: what a person exports to read it, or keep it, elsewhere. */
+  export_markdown(): Promise<unknown>;
+  /** The message as a JSON file: what a script or an agent reads its record from. */
+  export_json(): Promise<unknown>;
+  /** The message as an `.eml` file, which every mail program opens. A message taken in from outside an account's server is exported as it was sent; one its server holds is written from what the workspace keeps of it. */
+  export_eml(): Promise<unknown>;
   /** Answers one message of the conversation, to whoever wrote it, quoting it. */
   reply_to(): Promise<Draft>;
   /** Answers one message of the conversation, to everyone it went to but the person answering. */
@@ -313,7 +327,7 @@ export interface Message extends tilo.Resource {
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGE_ACTIONS = ["reply_to", "reply_all_to", "forward_message"] as const;
+export const MESSAGE_ACTIONS = ["export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message"] as const;
 
 /** The `tl.so.tilo.mail.Message` kind at `path`. */
 export function message(ws: tilo.Workspace, path: string): Message {
@@ -323,8 +337,10 @@ export function message(ws: tilo.Workspace, path: string): Message {
 /** Draft — `tl.so.tilo.mail.Draft`. */
 export interface Draft extends tilo.Resource {
   m2g6zrle: string;  // from
+  zx2b4ax2: string;  // from_address
   hd3o4gkq: string;  // to
   cwukhrvn: string;  // cc
+  ib44zkec: string;  // bcc
   tyxmravh: string;  // subject
   d5u2c7jm: string;  // body
   w6twdkob: string;  // in_reply_to
@@ -348,6 +364,12 @@ export interface Draft extends tilo.Resource {
   }): Promise<void>;
   /** Runs `send_from` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   send_fromMany(items: SendFromArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sends the message as another of its account's names or addresses, `Name <address>`: what a person writing as a role rather than as themselves chooses. Empty sends as the account's own. */
+  send_as(args: {
+    identity: string;
+  }): Promise<void>;
+  /** Runs `send_as` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  send_asMany(items: SendAsArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sends the message from its account. It leaves the system, so it goes once, and waits in the outbox until the server took it; it is held back for the person's hold first, so they can take it back. The effect is an argument the action records, so the wait survives a window closing and an agent takes it back the same way. */
   send(): Promise<void>;
   /** Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was. Once it went it cannot be taken back. */
@@ -356,7 +378,7 @@ export interface Draft extends tilo.Resource {
 
 /** The actions `Draft` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFT_ACTIONS = ["cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send", "undo_send"] as const;
+export const DRAFT_ACTIONS = ["cancel_later", "send_later", "send_in_the_morning", "send_from", "send_fromMany", "send_as", "send_asMany", "send", "undo_send"] as const;
 
 /** The `tl.so.tilo.mail.Draft` kind at `path`. */
 export function draft(ws: tilo.Workspace, path: string): Draft {
@@ -401,6 +423,10 @@ export interface Mail extends tilo.Resource {
     parts?: string[];
     attachments?: string[];
   }): Promise<Message>;
+  /** Opens a message kept as a file a mail program writes (`.eml`, a single message of an mbox, or Apple Mail's `.emlx`): its headers are read, and it is kept with the mail held outside the accounts, read, in the inbox. The same file opened again is the message already kept. */
+  open_message_file(args: {
+    file: unknown;
+  }): Promise<Message>;
   /** Renames one of the workspace's labels, all the conversations that carry it with it. */
   rename_label(args: {
     l: Label;
@@ -424,7 +450,7 @@ export interface Mail extends tilo.Resource {
 
 /** The actions `Mail` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
+export const MAIL_ACTIONS = ["set_hold", "set_holdMany", "new_draft", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_labelMany", "delete_label", "delete_labelMany", "discard", "discardMany"] as const;
 
 /** The `tl.so.tilo.mail.Mail` kind at `path`. */
 export function mail(ws: tilo.Workspace, path: string): Mail {

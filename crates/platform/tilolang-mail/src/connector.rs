@@ -13,6 +13,9 @@ pub struct AccountRef {
     pub address: String,
     /// The name it sends as.
     pub name: String,
+    /// The other names and addresses it sends as, beside its own, each `Name <address>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identities: Vec<String>,
 }
 
 /// A message as its server holds it.
@@ -61,10 +64,22 @@ pub struct Changes {
 /// A message to send.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Outgoing {
+    /// The name and address it goes from, `Name <address>`: one of the account's identities, or
+    /// empty for the account's own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
     pub to: String,
     pub cc: String,
+    /// Blind recipients: in the delivery envelope, never in a header of the message.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bcc: String,
     pub subject: String,
+    /// What it says, as it was written.
     pub body: String,
+    /// What it says as HTML, the formatted alternative a mail program shows beside the words:
+    /// empty when it says nothing more than `body`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub html_body: String,
     /// The Message-ID it answers.
     pub in_reply_to: String,
     /// The Message-IDs of the conversation it continues, oldest first, space separated.
@@ -132,6 +147,8 @@ pub trait MailConnector {
     fn flag(&mut self, account: &str, key: &str, unread: bool, flagged: bool) -> Option<Request>;
     /// Move a message to another mailbox.
     fn move_to(&mut self, account: &str, key: &str, mailbox: &str) -> Option<Request>;
+    /// Delete a message from its server for good: its trash emptied of it.
+    fn purge(&mut self, account: &str, key: &str) -> Option<Request>;
     /// Search the account's server.
     fn search(&mut self, account: &str, text: &str) -> Option<Request>;
     /// Send a message from the account.

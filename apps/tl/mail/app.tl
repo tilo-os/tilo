@@ -19,6 +19,9 @@ type Account (origin: imap.account) {
     fetched: Time = Time("1970-01-01T00:00:00Z")
     /// What the account's messages end with. Empty for none.
     signature: Text
+    /// The other names and addresses the account sends as, beside its own, one `Name <address>`
+    /// a line: what a person writes from when they write as a role rather than as themselves.
+    identities: Text
     mailboxes: Collection<Mailbox>
     threads: Collection<Thread>
 }
@@ -116,8 +119,13 @@ type Message (origin: imap.message, title: subject) {
 /// its way out. The account it goes from is named by its key.
 type Draft (title: subject, untitled: "New message") {
     from: Text
+    /// The identity of `from` it goes from, one of the account's own (`Name <address>`): empty
+    /// for the account's own address, and for one it no longer sends as.
+    from_address: Text = ""
     to: Text
     cc: Text
+    /// Blind recipients, who see the message but are not named in it.
+    bcc: Text
     subject: Text
     body: Text
     in_reply_to: Text
@@ -130,7 +138,7 @@ type Draft (title: subject, untitled: "New message") {
     /// The calendar invitation it carries (iCalendar), which goes beside what it says so the
     /// guest's calendar can answer it: empty for none.
     invitation: Text = ""
-    /// What the native Mail kept on this draft that this one has no place for (Bcc, attachments,
+    /// What the native Mail kept on this draft that this one has no place for (attachments,
     /// private notes), said in words: never sent with it.
     set_aside: Text
 
@@ -242,10 +250,10 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
 
 /// The mailbox the native Mail kept before this app took its id over, carried into this one
 /// once: every draft it was writing and every message still waiting in its outbox is a draft
-/// here, from the same account, to the same people, with the same subject, body and invitation.
-/// A message that was waiting to go is a draft again, to be sent from here. What a draft held
-/// that this app has no place for is kept on it in `set_aside`, never sent. The native app's own
-/// documents are left as they are.
+/// here, from the same account, as the same identity, to the same people (the blind ones too),
+/// with the same subject, body and invitation. A message that was waiting to go is a draft
+/// again, to be sent from here. What a draft held that this app has no place for is kept on it
+/// in `set_aside`, never sent. The native app's own documents are left as they are.
 migration action carry_native_mail(m: Mail) {
     let earlier = earlier(m)
     // An outbox entry is waiting while it has not settled; one that went or failed for good is
@@ -293,12 +301,12 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
     let files = e.lists.get("{at}attachments.filename") ?? []
     let notes = native_said(e, "{at}notes")
     let sender = native_said(e, "{at}sender.account")
+    let sender_address = native_said(e, "{at}sender.email")
     let reply = native_said(e, "{at}in_reply_to")
     if files.len() == 0 and not [to, cc, bcc, subject, body].any(t -> t.trim() != "") {
         []
     } else {
         let aside = [
-            if bcc == "" { "" } else { "Bcc: {bcc}" },
             if files.len() == 0 {
                 ""
             } else {
@@ -310,8 +318,10 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
         [
             Draft(
                 from: if sender == "" { account } else { sender },
+                from_address: sender_address,
                 to: to,
                 cc: cc,
+                bcc: bcc,
                 subject: subject,
                 body: body,
                 in_reply_to: if reply == "" { answers } else { reply },
@@ -458,6 +468,174 @@ fn sender_name(from: Text) -> Text {
         }
     }
     sender_address(from)
+}
+
+/// Who a header names: the person and their address, or the address alone when it is all there
+/// is.
+fn header_addr(name: Text, address: Text) -> Text {
+    if name == "" or name == address { address } else { "{name} <{address}>" }
+}
+
+/// The name a message's export is written under: its subject with the characters a file name
+/// cannot hold taken out, and "Message" for one that names nothing.
+fn message_file(m: Message) -> Text {
+    let safe = m.subject
+        .trim()
+        .replace("/", "-")
+        .replace("\\", "-")
+        .replace(":", "-")
+        .replace("\n", " ")
+        .replace("<", "-")
+        .replace(">", "-")
+    if safe == "" or safe == "." or safe == ".." { std.say("Message") } else { safe }
+}
+
+/// The message as a mail program writes it in one file (`.eml`): its headers, then what it says.
+fn message_eml(m: Message) -> Text {
+    let headers = [
+        "From: {header_addr(m.from_name, m.from)}",
+        if m.to == "" { "" } else { "To: {m.to}" },
+        if m.cc == "" { "" } else { "Cc: {m.cc}" },
+        "Subject: {m.subject}",
+        "Date: {m.received.iso()}",
+        if m.message_id == "" { "" } else { "Message-ID: <{m.message_id}>" },
+        if m.references == "" { "" } else { "References: <{m.references}>" },
+        "MIME-Version: 1.0",
+        "Content-Type: text/plain; charset=utf-8",
+    ]
+        .filter(line -> line != "")
+    "{headers.join("\n")}\n\n{as_lines(m.body)}\n"
+}
+
+/// The message as Markdown: what it says, under who wrote it and what it is called.
+fn message_markdown(m: Message) -> Text {
+    let details = [
+        "From: {header_addr(m.from_name, m.from)}",
+        if m.to == "" { "" } else { "To: {m.to}" },
+        if m.cc == "" { "" } else { "Cc: {m.cc}" },
+        "Date: {m.received.iso()}",
+        if m.attachments == "" {
+            ""
+        } else {
+            "Attached: {m.attachments.replace("\n", ", ")}"
+        },
+    ]
+        .filter(line -> line != "")
+    "# {m.subject}\n\n{details.join("\n")}\n\n{as_lines(m.body)}\n"
+}
+
+/// The message as one JSON object: who wrote it, to whom, when, what it says and what came with
+/// it, so a script or an agent reads it as the record it is.
+fn message_json(m: Message) -> Text {
+    let fields = [
+        "\"from\": {json_text(m.from)}",
+        "\"from_name\": {json_text(m.from_name)}",
+        "\"to\": {json_text(m.to)}",
+        "\"cc\": {json_text(m.cc)}",
+        "\"subject\": {json_text(m.subject)}",
+        "\"received\": {json_text(m.received.iso())}",
+        "\"message_id\": {json_text(m.message_id)}",
+        "\"references\": {json_text(m.references)}",
+        "\"body\": {json_text(as_lines(m.body))}",
+        "\"attachments\": {quoted_list(attachment_names(m))}",
+        "\"unread\": {m.unread.to_text()}",
+        "\"flagged\": {m.flagged.to_text()}",
+    ]
+    let written = fields.join(",\n  ")
+    "\{\n  {written}\n\}\n"
+}
+
+/// The files a message carries, by name: none when it carries none.
+fn attachment_names(m: Message) -> List<Text> {
+    if m.attachments == "" { [] } else { m.attachments.split("\n") }
+}
+
+/// `text` as JSON writes it, quotes and escapes and all.
+fn json_text(text: Text) -> Text {
+    json.encode(text)
+}
+
+/// A list of texts as a JSON array.
+fn quoted_list(items: List<Text>) -> Text {
+    "[{items.map(item -> json_text(item)).join(", ")}]"
+}
+
+/// The message as a Markdown file: what a person exports to read it, or keep it, elsewhere.
+action export_markdown(m: Message) -> File (icon: .download, label: "Export as Markdown") {
+    File.of_text("{message_file(m)}.md", message_markdown(m))
+}
+
+/// The message as a JSON file: what a script or an agent reads its record from.
+action export_json(m: Message) -> File (icon: .download, label: "Export as JSON") {
+    File.of_text("{message_file(m)}.json", message_json(m))
+}
+
+/// The message as an `.eml` file, which every mail program opens. A message taken in from outside
+/// an account's server is exported as it was sent; one its server holds is written from what the
+/// workspace keeps of it.
+action export_eml(m: Message) -> File (icon: .download, label: "Export as .eml") {
+    if m.original.starts_with("tilo-blob://") {
+        File.at("{message_file(m)}.eml", m.original)
+    } else {
+        File.of_text("{message_file(m)}.eml", message_eml(m))
+    }
+}
+
+/// What the message file `file` holds as text, its lines ended one way: empty for a file that is
+/// not a message or cannot be read.
+fn message_text(file: File) -> Text {
+    match file.text() {
+        .ok(said) => as_lines(said),
+        .err(_) => "",
+    }
+}
+
+/// Where the headers of a message file end: the blank line after them, or its end when it has
+/// none.
+fn mail_head_at(text: Text) -> Int {
+    text.find("\n\n") ?? text.len()
+}
+
+/// What a message file's headers say in the header `name`: its value, without the name and the
+/// colon, and nothing when it names none.
+fn header_of(text: Text, name: Text) -> Text {
+    for line in text.slice(0, mail_head_at(text)).split("\n") {
+        if let at = line.find(":") {
+            if line.slice(0, at).trim().lower() == name {
+                return line.slice(at + 1, line.len()).trim()
+            }
+        }
+    }
+    ""
+}
+
+/// Opens a message kept as a file a mail program writes (`.eml`, a single message of an mbox, or
+/// Apple Mail's `.emlx`): its headers are read, and it is kept with the mail held outside the
+/// accounts, read, in the inbox. The same file opened again is the message already kept.
+action open_message_file(m: Mail, file: File) -> Message uses time (
+    icon: .mail,
+    label: "Open a message file",
+    opens: ["message/rfc822", .eml, .emlx, .mbox],
+) {
+    require message_text(file) != "" "The file holds no message"
+    let text = message_text(file)
+    let head_at = mail_head_at(text)
+    let message_id = header_of(text, "message-id").replace("<", "").replace(">", "").trim()
+    let body = if head_at >= text.len() { "" } else { text.slice(head_at + 2, text.len()) }
+    deliver_message(
+        m,
+        from: header_of(text, "from"),
+        subject: header_of(text, "subject"),
+        body: body,
+        folder: "inbox",
+        read: true,
+        to: header_of(text, "to"),
+        cc: header_of(text, "cc"),
+        date: Time.parse(header_of(text, "date"), near: now) ?? now,
+        conversation: message_id,
+        message_id: message_id,
+        original: file.url,
+    )
 }
 
 /// The subject an answer to a conversation has.
@@ -652,6 +830,33 @@ destructive action delete(t: Thread) (icon: .trash, key: "#") {
     t.boxes.add("trash")
 }
 
+/// Deletes the conversation's trashed messages for good, from its server too, and the
+/// conversation with them when no message of it is left. This is the one deletion there is no
+/// trash to take back from: what is deleted for good is gone from the server, and the platform
+/// takes back this app's record of it only.
+destructive action purge(t: Thread) (icon: .trash, label: "Delete permanently") {
+    require t.boxes.any(b -> b == "trash") "It is not in the trash"
+    require t.messages.any(x -> x.mailbox == "trash") "Nothing of it is in the trash"
+    let m = root Mail
+    let doomed = t.messages.filter(x -> x.mailbox == "trash")
+    // A conversation kept from outside an account's server has no server to be deleted from: it
+    // goes from the workspace alone.
+    if has_account(m, t.account) {
+        outside("imap.purge", (t.account, doomed.map(x -> x.key)))
+    }
+    for x in doomed {
+        t.messages.remove(x)
+    }
+    let left = t.messages.len()
+    if left == 0 {
+        if let a = m.accounts.find(x -> x.key == t.account) { a.threads.remove(t) }
+        if m.recovered_mail.any(x -> x.id() == t.id()) { m.recovered_mail.remove(t) }
+    } else {
+        t.unread = t.messages.any(x -> x.unread)
+        t.boxes.remove("trash")
+    }
+}
+
 /// Flags or unflags the conversation.
 action flag(t: Thread, flagged: Bool = not t.flagged) (
     label: if t.flagged { "Unflag" } else { "Flag" },
@@ -751,12 +956,23 @@ action cancel_later(d: Draft) (icon: .undo_2, label: "Cancel scheduled send") {
 /// taken back, and bringing it back leaves it a draft.
 action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send later") {
     require not d.sent or d.recalled "This message went already"
-    require d.to != "" "It goes to nobody yet"
+    require d.to != "" or d.bcc != "" "It goes to nobody yet"
     require has_account(root Mail, d.from) "Add a mail account in Settings first"
     require at > now "Pick a moment still to come"
     outside(
         "smtp.send",
-        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references, d.invitation),
+        (
+            d.from,
+            d.from_address,
+            d.to,
+            d.cc,
+            d.bcc,
+            d.subject,
+            d.body,
+            d.in_reply_to,
+            d.references,
+            d.invitation,
+        ),
         at: at,
     )
     d.send_at = at
@@ -820,6 +1036,22 @@ opened action read_on_open(t: Thread) {
 action send_from(d: Draft, a: Account) (icon: .user) {
     require not d.sent or d.recalled "This message went already"
     d.from = a.key
+    d.from_address = ""
+}
+
+/// Sends the message as another of its account's names or addresses, `Name <address>`: what a
+/// person writing as a role rather than as themselves chooses. Empty sends as the account's own.
+action send_as(d: Draft, identity: Text) (icon: .user, label: "Send as") {
+    require not d.sent or d.recalled "This message went already"
+    d.from_address = identity
+}
+
+/// The other names and addresses an account sends as, one each: none when it sends as one, and
+/// none for no account.
+fn identities_of(a: Option<Account>) -> List<Text> {
+    if let acct = a {
+        if acct.identities.trim() == "" { [] } else { acct.identities.split("\n") }
+    } else { [] }
 }
 
 /// Throws a message being written away.
@@ -833,13 +1065,24 @@ destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draf
 /// closing and an agent takes it back the same way.
 primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
-    require d.to != "" "It goes to nobody yet"
+    require d.to != "" or d.bcc != "" "It goes to nobody yet"
     require has_account(root Mail, d.from) "Add a mail account in Settings first"
     let m = root Mail
     let at = now + Duration(m.hold)
     outside(
         "smtp.send",
-        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references, d.invitation),
+        (
+            d.from,
+            d.from_address,
+            d.to,
+            d.cc,
+            d.bcc,
+            d.subject,
+            d.body,
+            d.in_reply_to,
+            d.references,
+            d.invitation,
+        ),
         at: at,
     )
     d.send_at = at
@@ -890,6 +1133,9 @@ fn can_answer(t: Thread) -> Bool {
 view compose(d: Draft) {
     stack(gap: .related) {
         text("To {d.to}", role: .title)
+        if d.bcc != "" {
+            text("Bcc {d.bcc}", role: .caption)
+        }
         text(d.subject, role: .caption)
         text(d.body)
     }
@@ -1205,12 +1451,14 @@ fn in_mailbox(a: Account, b: Mailbox) -> List<Thread> {
 
 /// Conversations as a list: each a row that opens the conversation beside it, read as it
 /// opens, its actions on its menu and the destructive one on its swipe; "Nothing here" when
-/// there are none.
+/// there are none. More than one row is chosen at a time — Ctrl+A chooses the whole list — and
+/// the window's bar runs what the chosen ones' menus offer as one command over all of them, so
+/// archiving, trashing, reading or deleting for good takes one press and one undo.
 view thread_list(shown: List<Thread>) {
     if shown.is_empty() {
         ui.EmptyState("Nothing here", icon: .inbox)
     } else {
-        ui.VirtualList(selection_follows_focus: true, in_column: true) {
+        ui.VirtualList(selection_follows_focus: true, multi_select: true, in_column: true) {
             on select(x: Thread): open(x, front: false)
             on activate(x: Thread): open(x)
             for x in shown {
@@ -1374,6 +1622,12 @@ view message(m: Message) {
 
 /// A message being written: its window.
 view editor(d: Draft) {
+    // The formatting controls ask the shared editor for a command, told apart by a count so the
+    // same command pressed twice is two commands.
+    state formats: Int = 0
+    state format_ask: Option<Text> = .none
+    state link_open: Bool = false
+    state link_target: Text = ""
     std.document(d) {
         if d.sent or d.recalled {
             field("Status") {
@@ -1395,19 +1649,43 @@ view editor(d: Draft) {
         field("From") {
             // One account a draft goes from is said; with more, or none of them chosen yet, each
             // is offered. With no account at all, nothing can send it: the person is told so and
-            // offered the way to where an account is added.
+            // offered the way to where an account is added. An account that sends as more than
+            // one name or address offers each under it: the one it hears back from is the one the
+            // person chose.
             if mail.accounts.is_empty() {
                 stack(gap: .tight) {
                     text("No mail account to send from")
                     ui.Link("settings://accounts", label: "Add an account in Settings")
                 }
             } else if mail.accounts.len() == 1 and sender != .none {
-                text(sender?.address ?? "")
+                if identities_of(sender).is_empty() {
+                    text(sender?.address ?? "")
+                } else {
+                    row(gap: .tight, wrap: true) {
+                        ui.Chip(sender?.address ?? "", selected: d.from_address == "") {
+                            on press: send_as(d, "")
+                        }
+                        for identity in identities_of(sender) {
+                            ui.Chip(identity, selected: d.from_address == identity) {
+                                on press: send_as(d, identity)
+                            }
+                        }
+                    }
+                }
             } else {
                 row(gap: .tight, wrap: true) {
                     for a in mail.accounts {
                         ui.Chip(a.address, selected: a.key == d.from) {
                             on press: send_from(d, a)
+                        }
+                    }
+                }
+                if not identities_of(sender).is_empty() {
+                    row(gap: .tight, wrap: true) {
+                        for identity in identities_of(sender) {
+                            ui.Chip(identity, selected: d.from_address == identity) {
+                                on press: send_as(d, identity)
+                            }
                         }
                     }
                 }
@@ -1419,8 +1697,52 @@ view editor(d: Draft) {
         field("Cc") {
             input(bind: d.cc)
         }
+        field("Bcc") {
+            input(bind: d.bcc, placeholder: "name@example.org")
+        }
         input(bind: d.subject, placeholder: "Subject")
-        ui.BlockEditor(bind: d.body, placeholder: "Write your message")
+        // The formatting the shared editor applies, asked of it by these controls: what a person
+        // presses reaches the words as formatting, which the message carries to its recipients
+        // as its formatted alternative beside the words themselves.
+        row(gap: .tight, align: .center) {
+            ui.Button("Bold", icon: .bold, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "bold:{formats}"))
+            }
+            ui.Button("Italic", icon: .italic, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "italic:{formats}"))
+            }
+            ui.Button("Underline", icon: .underline, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "underline:{formats}"))
+            }
+            ui.Button("Bulleted list", icon: .list, icon_only: true) {
+                on press: set(formats, formats + 1).then(set(format_ask, "bullets:{formats}"))
+            }
+            ui.Button("Link", icon: .link, icon_only: true) {
+                on press: set(link_open, not link_open)
+            }
+            spacer()
+        }
+        if link_open {
+            row(gap: .tight) {
+                ui.TextInput(bind: link_target, placeholder: "https://example.org", fill) {
+                    on submit: set(formats, formats + 1)
+                        .then(
+                            set(format_ask, "link:{link_target}:{formats}"),
+                        )
+                        .then(set(link_open, false))
+                        .then(set(link_target, ""))
+                }
+                ui.Button("Add link", icon: .check, icon_only: true) {
+                    on press: set(formats, formats + 1)
+                        .then(
+                            set(format_ask, "link:{link_target}:{formats}"),
+                        )
+                        .then(set(link_open, false))
+                        .then(set(link_target, ""))
+                }
+            }
+        }
+        ui.BlockEditor(bind: d.body, placeholder: "Write your message", format: format_ask)
         // The message's own Send: a composer sends from where it is written, and the window's
         // bar keeps it once for the draft it shows. While `send` would refuse, it stands dimmed
         // where a person looks for it, saying why in the words of its `require`.

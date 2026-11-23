@@ -43,6 +43,7 @@ __all__ = [
     "MuteArgs",
     "MarkReadArgs",
     "SendFromArgs",
+    "SendAsArgs",
     "SetHoldArgs",
     "RenameLabelArgs",
     "DeleteLabelArgs",
@@ -118,6 +119,11 @@ SendFromArgs = TypedDict("SendFromArgs", {
 })
 """The arguments of `send_from`."""
 
+SendAsArgs = TypedDict("SendAsArgs", {
+    "identity": "str",
+})
+"""The arguments of `send_as`."""
+
 SetHoldArgs = TypedDict("SetHoldArgs", {
     "seconds": "int",
 })
@@ -141,7 +147,7 @@ DiscardArgs = TypedDict("DiscardArgs", {
 
 class Account(Resource):
     """Account — `tl.so.tilo.mail.Account`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     yujnud5c: str  # key
     @property
     def _4lo3ei5n(self) -> str:
@@ -163,6 +169,7 @@ class Account(Resource):
         self.edit("33f3rqw2", value=value)
     hzbwof46: str  # fetched
     jxc5rufs: str  # signature
+    yinmk5zb: str  # identities
     ehmoyzk2: list[Entry[Mailbox]]  # mailboxes
     qybqg4dl: list[Entry[Thread]]  # threads
 
@@ -197,13 +204,13 @@ class Account(Resource):
 
 class Mailbox(Resource):
     """Mailbox — `tl.so.tilo.mail.Mailbox`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     mh47w3p6: str  # key
     tlasysm5: str  # name
     xhiqdk3p: str  # role
     dtd4czyv: int  # unread
     rxoe5vzb: int  # total
-    xgjbfrkl: bool  # more
+    al2vjuet: bool  # more
 
     def older_messages(self) -> None:
         """Asks the account's server for the messages older than the oldest this workspace holds in the mailbox, so a folder longer than one page can be read back to its first message. They come in as new mail does, and the mailbox stops offering them once its first message is here."""
@@ -216,7 +223,7 @@ class Mailbox(Resource):
 
 class Thread(Resource):
     """Thread — `tl.so.tilo.mail.Thread`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     ecmpoary: str  # key
     zu23m2dm: str  # account
     u732lnuk: str  # subject
@@ -289,6 +296,10 @@ class Thread(Resource):
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("delete", items)
+
+    def purge(self) -> None:
+        """Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left. This is the one deletion there is no trash to take back from: what is deleted for good is gone from the server, and the platform takes back this app's record of it only."""
+        return self.action("purge")
 
     def flag(self,
         *,
@@ -386,18 +397,18 @@ class Thread(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "archive_many", "to_inbox", "to_inbox_many", "move_to", "move_to_many", "delete", "delete_many", "flag", "flag_many", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "mark_read_many", "answer"})
+    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "archive_many", "to_inbox", "to_inbox_many", "move_to", "move_to_many", "delete", "delete_many", "purge", "flag", "flag_many", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "mark_read_many", "answer"})
 
 
 class Label(Resource):
     """Label — `tl.so.tilo.mail.Label`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     ammoua3h: str  # name
 
 
 class Message(Resource):
     """Message — `tl.so.tilo.mail.Message`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     kzjq6hvc: str  # key
     kdxoo3c6: str  # account
     ntqgnz4f: str  # subject
@@ -438,6 +449,18 @@ class Message(Resource):
     hgysjvfy: str  # original
     wuefabwr: str  # parts
 
+    def export_markdown(self) -> Any:
+        """The message as a Markdown file: what a person exports to read it, or keep it, elsewhere."""
+        return self.action("export_markdown")
+
+    def export_json(self) -> Any:
+        """The message as a JSON file: what a script or an agent reads its record from."""
+        return self.action("export_json")
+
+    def export_eml(self) -> Any:
+        """The message as an `.eml` file, which every mail program opens. A message taken in from outside an account's server is exported as it was sent; one its server holds is written from what the workspace keeps of it."""
+        return self.action("export_eml")
+
     def reply_to(self) -> Draft:
         """Answers one message of the conversation, to whoever wrote it, quoting it."""
         return self.action("reply_to")
@@ -452,15 +475,17 @@ class Message(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reply_to", "reply_all_to", "forward_message"})
+    __actions__ = frozenset({"export_markdown", "export_json", "export_eml", "reply_to", "reply_all_to", "forward_message"})
 
 
 class Draft(Resource):
     """Draft — `tl.so.tilo.mail.Draft`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     m2g6zrle: str  # from
+    zx2b4ax2: str  # from_address
     hd3o4gkq: str  # to
     cwukhrvn: str  # cc
+    ib44zkec: str  # bcc
     tyxmravh: str  # subject
     d5u2c7jm: str  # body
     w6twdkob: str  # in_reply_to
@@ -491,6 +516,14 @@ class Draft(Resource):
         """Runs `send_from` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("send_from", items)
 
+    def send_as(self, *, identity: str) -> None:
+        """Sends the message as another of its account's names or addresses, `Name <address>`: what a person writing as a role rather than as themselves chooses. Empty sends as the account's own."""
+        return self.action("send_as", identity=identity)
+
+    def send_as_many(self, items: list[SendAsArgs]) -> list[dict[str, Any]]:
+        """Runs `send_as` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("send_as", items)
+
     def send(self) -> None:
         """Sends the message from its account. It leaves the system, so it goes once, and waits in the outbox until the server took it; it is held back for the person's hold first, so they can take it back. The effect is an argument the action records, so the wait survives a window closing and an agent takes it back the same way."""
         return self.action("send")
@@ -501,12 +534,12 @@ class Draft(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send", "undo_send"})
+    __actions__ = frozenset({"cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send_as", "send_as_many", "send", "undo_send"})
 
 
 class Mail(Resource):
     """Mail — `tl.so.tilo.mail.Mail`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
     blig7xcq: list[Entry[Account]]  # accounts
     gkuo27e6: list[Entry[Draft]]  # drafts
     z3zcztpz: list[Entry[Label]]  # labels
@@ -587,6 +620,10 @@ class Mail(Resource):
             args["attachments"] = attachments
         return self.action("deliver_message", **args)
 
+    def open_message_file(self, *, file: Any) -> Message:
+        """Opens a message kept as a file a mail program writes (`.eml`, a single message of an mbox, or Apple Mail's `.emlx`): its headers are read, and it is kept with the mail held outside the accounts, read, in the inbox. The same file opened again is the message already kept."""
+        return self.action("open_message_file", file=file)
+
     def rename_label(self,
         *,
         l: Label,
@@ -617,10 +654,10 @@ class Mail(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "prepare_calendar_invitation", "deliver_message", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
+    __actions__ = frozenset({"set_hold", "set_hold_many", "new_draft", "prepare_calendar_invitation", "deliver_message", "open_message_file", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
 
 
 class TiloMail(Resource):
     """Mail — `tl.so.tilo.mail`."""
-    __surface__ = "so.tilo.mail@58dd056be3447224"
+    __surface__ = "so.tilo.mail@8e566cb43d7b1955"
 

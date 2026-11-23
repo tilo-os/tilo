@@ -12,6 +12,7 @@
 pub mod connector;
 #[cfg(feature = "engine")]
 pub mod engine;
+pub mod html;
 pub mod origin;
 #[cfg(unix)]
 pub mod remote;

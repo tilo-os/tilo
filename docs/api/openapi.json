@@ -29231,7 +29231,8 @@
               "address",
               "name",
               "trouble",
-              "signature"
+              "signature",
+              "identities"
             ],
             "type": "string"
           },
@@ -29493,6 +29494,12 @@
         "required": [],
         "description": "Deletes the conversation: its messages go to the trash."
       },
+      "tl.so.tilo.mail.Thread.purge.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Deletes the conversation's trashed messages for good, from its server too, and the\nconversation with them when no message of it is left. This is the one deletion there is no\ntrash to take back from: what is deleted for good is gone from the server, and the platform\ntakes back this app's record of it only."
+      },
       "tl.so.tilo.mail.Thread.flag.Arguments": {
         "type": "object",
         "properties": {
@@ -29696,6 +29703,24 @@
         "required": [],
         "description": "What the outside service said is taken in."
       },
+      "tl.so.tilo.mail.Message.export_markdown.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The message as a Markdown file: what a person exports to read it, or keep it, elsewhere."
+      },
+      "tl.so.tilo.mail.Message.export_json.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The message as a JSON file: what a script or an agent reads its record from."
+      },
+      "tl.so.tilo.mail.Message.export_eml.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The message as an `.eml` file, which every mail program opens. A message taken in from outside\nan account's server is exported as it was sent; one its server holds is written from what the\nworkspace keeps of it."
+      },
       "tl.so.tilo.mail.Message.reply_to.Arguments": {
         "type": "object",
         "properties": {},
@@ -29727,8 +29752,10 @@
             "description": "The name of the field to set.",
             "enum": [
               "from",
+              "from_address",
               "to",
               "cc",
+              "bcc",
               "subject",
               "body",
               "in_reply_to",
@@ -29839,6 +29866,18 @@
           "a"
         ],
         "description": "Sends the message from another workspace account."
+      },
+      "tl.so.tilo.mail.Draft.send_as.Arguments": {
+        "type": "object",
+        "properties": {
+          "identity": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity"
+        ],
+        "description": "Sends the message as another of its account's names or addresses, `Name <address>`: what a\nperson writing as a role rather than as themselves chooses. Empty sends as the account's own."
       },
       "tl.so.tilo.mail.Draft.send.Arguments": {
         "type": "object",
@@ -29995,6 +30034,16 @@
           "from"
         ],
         "description": "Takes in a message that reached the workspace from outside its accounts' servers: one moved\nin from another mail program (`tilo migrate`), or handed over through the API. It is kept\nwith the mail held outside the accounts, in the conversation it belongs to (`conversation`,\nthe Message-ID the conversation began with) and the folder it was in, read or not. `from` is\nthe sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the\ncontent reference of the message as it was sent, less its large parts: `parts` says where\neach of those stands in it and which pieces of content it is in, one JSON text each\n(`{\"at\": 120, \"size\": 4096, \"pieces\": [\"tilo.content:…\"]}`). `attachments` names the\nfiles it carries. A message already held under its Message-ID is answered as it is, so\ndelivering it again keeps it once."
+      },
+      "tl.so.tilo.mail.Mail.open_message_file.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Opens a message kept as a file a mail program writes (`.eml`, a single message of an mbox, or\nApple Mail's `.emlx`): its headers are read, and it is kept with the mail held outside the\naccounts, read, in the inbox. The same file opened again is the message already kept."
       },
       "tl.so.tilo.mail.Mail.rename_label.Arguments": {
         "type": "object",
@@ -41119,6 +41168,12 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Thread",
+      "action": "purge",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.purge.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "flag",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.flag.Arguments"
     },
@@ -41221,6 +41276,24 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Message",
+      "action": "export_markdown",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.export_markdown.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
+      "action": "export_json",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.export_json.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
+      "action": "export_eml",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.export_eml.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "reply_to",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Message.reply_to.Arguments"
     },
@@ -41287,6 +41360,12 @@
     {
       "app": "so.tilo.mail",
       "resource": "tl.so.tilo.mail.Draft",
+      "action": "send_as",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send_as.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "send",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send.Arguments"
     },
@@ -41343,6 +41422,12 @@
       "resource": "tl.so.tilo.mail.Mail",
       "action": "deliver_message",
       "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.deliver_message.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
+      "action": "open_message_file",
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.open_message_file.Arguments"
     },
     {
       "app": "so.tilo.mail",

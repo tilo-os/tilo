@@ -59,8 +59,10 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ("post", "Posts a payload; the development sink logs it."),
     (
         "smtp.send",
-        "Sends a message from a mail account of the workspace's settings: (account, to, cc, \
-         subject, body, the Message-ID it answers, the References it continues).",
+        "Sends a message from a mail account of the workspace's settings: (account, the name and \
+         address it goes from, to, cc, bcc, subject, body, the Message-ID it answers, the \
+         References it continues, its calendar invitation). What it says goes out as the words \
+         alone and as the formatted alternative of them.",
     ),
     (
         "imap.check",
@@ -71,6 +73,12 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
         "imap.older",
         "Asks a mail account's server for the messages older than the oldest one the workspace \
          holds: (the account's key, the mailbox's key). They come in as the server's changes do.",
+    ),
+    (
+        "imap.purge",
+        "Deletes messages of a mail account from its server for good, its trash emptied of them: \
+         (the account's key, the keys of its messages). A message the account no longer holds is \
+         passed over.",
     ),
     (
         "youtube.search",

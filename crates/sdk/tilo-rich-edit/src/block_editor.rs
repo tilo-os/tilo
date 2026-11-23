@@ -784,6 +784,9 @@ pub struct BlockEditor {
     /// The block last asked for by its place (`reveal`), as it was asked: a view asking for a
     /// heading again after it is not asking for that heading anew.
     revealed_block: Option<String>,
+    /// The formatting a view last asked for (`format`), as it asked: the ask it answers again
+    /// only when it changes.
+    asked_format: Option<String>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
@@ -984,6 +987,7 @@ impl BlockEditor {
             find_reveal: false,
             revealed: None,
             revealed_block: None,
+            asked_format: None,
             presence_key: None,
             body: None,
         };

@@ -23734,6 +23734,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-content",
+ "tilo-doc-codecs",
  "tilo-net",
  "tilolang-tilo",
  "tokio",

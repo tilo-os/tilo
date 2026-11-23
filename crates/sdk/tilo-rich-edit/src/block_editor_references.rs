@@ -80,6 +80,13 @@ pub struct BlockEditorProps {
     /// document shows — an export writing each beside the note — records of one.
     #[component(event(value = Vec<String>))]
     pub image: Event,
+    /// The formatting a view asks for, as a toolbar beside the document asks it: `bold`,
+    /// `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or
+    /// `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`),
+    /// so the same command asked twice is two commands. Formatting a message is a command of the
+    /// shared editor's, never a control of the app's own.
+    #[component(state)]
+    pub format: Option<String>,
     /// The heading the document shows, asked by the view that places an outline beside it: the
     /// place of the heading among the document's headings (`headings` reports them in that
     /// order), then a count the view changes every time it asks (`3:1`), so asking for a heading
@@ -368,6 +375,9 @@ impl Described for BlockEditor {
             slash_page,
             headings,
             image,
+            // A view opened with a formatting ask is just opened: the ask is answered on the
+            // change that follows, never on the editor a note is first shown in.
+            format: _,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -431,6 +441,7 @@ impl Described for BlockEditor {
             slash_page,
             headings,
             image,
+            format,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -463,8 +474,10 @@ impl Described for BlockEditor {
         // A view that asks for a heading again changes its count, so the same heading is shown
         // again rather than read as the ask it already answered.
         self.reveal_asked(reveal);
+        // A formatting ask is one command: the same ask twice is the command it already ran.
+        let formatted = self.format_asked(format);
         self.publish_headings();
-        rebound
+        rebound || formatted
     }
 }
 

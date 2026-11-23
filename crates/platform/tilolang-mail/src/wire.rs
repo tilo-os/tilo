@@ -39,6 +39,11 @@ pub enum ToConnector {
         key: String,
         mailbox: String,
     },
+    Purge {
+        request: Request,
+        account: String,
+        key: String,
+    },
     Search {
         request: Request,
         account: String,
@@ -179,6 +184,7 @@ mod tests {
                 id: "acc-1".into(),
                 address: "sam@rivera.example".into(),
                 name: "Sam Rivera".into(),
+                identities: Vec::new(),
             }]),
             ACCOUNTS_WIRE,
         );
