@@ -4,9 +4,10 @@
 //! The whole way through the server's own interfaces, against a calendar server the test starts.
 //! She says in her own words where her calendar is and under which user name. Her assistant's one
 //! tool call hands the server that address, the user name and a name for the account, and nothing
-//! else: no password, no reference, nothing that makes the account writable. The server asks her
-//! for the password itself, on her own device in the system's protected field. What she types goes
-//! from that field to the workspace's vault. The server then signs in to her calendar server, keeps
+//! else: no password, no reference, nothing that makes the account writable. The server keeps the
+//! ask as a record at her own device, naming the server and the vault's own add as what answers it.
+//! She keeps the password in the workspace's vault herself and approves the ask. The server then
+//! signs in to her calendar server, keeps
 //! the account in the workspace for reading only and tells the assistant which calendars the server
 //! lists, by their names. Her assistant reads an entry through its tools afterwards. The calendar
 //! server was asked to read and nothing else. The password is in no request a model was sent, no
@@ -14,7 +15,7 @@
 //! holds even the item's reference.
 //!
 //! What a telling is refused for asks nobody and connects nothing; a calendar server that refuses
-//! the password is said so in its own words, and the item she typed is not kept.
+//! the password signs nothing in and keeps no account.
 use super::*;
 use crate::workspace_actions::hosted_agent_turns::{SCOUT, conversation_part};
 use crate::workspace_actions::hosted_secret_use::{Hosted, Lines, does, files_holding, logged};

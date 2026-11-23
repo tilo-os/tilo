@@ -3,16 +3,16 @@
 //!
 //! The whole way through the server's own interfaces. She writes one sentence, "log in my mail
 //! account" and its address. Her assistant's one tool call hands the server that address and
-//! nothing else. The server works out the account's two servers, asks her for the password itself,
-//! on her own device in the system's protected field, with a question that names both servers,
-//! keeps what she typed in the workspace's vault, signs in with it, keeps the account in the
-//! workspace and wakes the assistant once. Nobody is asked to allow a use. The password is in no
+//! nothing else. The server works out the account's two servers and keeps the ask as a record at
+//! her own device, in the system's words, naming both servers and the vault's own add as what
+//! answers it. She keeps the password in the workspace's vault herself and approves the ask; the
+//! server signs in with it and keeps the account in the workspace. The password is in no
 //! request a model was sent, no message, no log line and no file of the server in the clear, and on
 //! this way the model never holds even the item's reference.
 //!
 //! The network is stood in for: what works an address's servers out and what proves a sign-in
-//! answer from this file. A password her mail server refuses is asked for again by the server
-//! itself, and no ask of the model is spent on it. One test signs in at a mail server with real
+//! answer from this file. A password her mail server refuses signs nothing in and keeps no
+//! account. One test signs in at a mail server with real
 //! sockets instead, reads her inbox there and sees a message she sends herself arrive.
 use super::*;
 use tilo_server::workspaces::hosted_use::{MailFound, MailServer, MailServers};
