@@ -243,8 +243,12 @@ mod sheets;
 mod sheets_placement;
 #[path = "shell.rs"]
 mod shell;
+#[path = "shell_a11y.rs"]
+mod shell_a11y;
 #[path = "shell_displays.rs"]
 mod shell_displays;
+#[path = "shell_platform.rs"]
+mod shell_platform;
 #[path = "shell_record_persists.rs"]
 mod shell_record_persists;
 #[path = "shell_screen.rs"]

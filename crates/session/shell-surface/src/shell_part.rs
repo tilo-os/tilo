@@ -1329,6 +1329,22 @@ impl ShellPart {
         self.again = true;
     }
 
+    /// What the part shows as a host that writes it as semantic HTML reads it
+    /// (`ui::composition`): the bar, the strips and their windows as elements,
+    /// with the words each shows, for a page that shows the shell instead of
+    /// drawing it.
+    #[must_use]
+    pub fn composition(&self) -> ui::composition::Composition {
+        self.widgets.composition()
+    }
+
+    /// The scene the part's last drawn frame encoded: what a display with no working GPU
+    /// replays on the CPU (`tilo_cpu_raster`).
+    #[must_use]
+    pub fn scene(&self) -> &vello::Scene {
+        self.widgets.scene()
+    }
+
     /// When the session has something of its own to draw, which the part does not know: it
     /// wakes at `deadline` rather than sleeping over it, and draws what the session publishes
     /// by then.

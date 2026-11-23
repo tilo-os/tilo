@@ -1009,6 +1009,25 @@ impl Shell {
             .collect()
     }
 
+    /// What the part on `output` shows as a page reads it (its bar, its strips and their
+    /// windows as elements): `None` while the shell shows no part there.
+    pub(crate) fn composition(&self, output: &str) -> Option<ui::composition::Composition> {
+        let (_, part) = self
+            .parts
+            .iter()
+            .find(|(name, part)| name == output && part.borrow().placement().is_some())?;
+        Some(part.borrow().composition())
+    }
+
+    /// The scene the part on `output` last drew: `None` while the shell shows no part there.
+    pub(crate) fn scene(&self, output: &str) -> Option<ui::vello::Scene> {
+        let (_, part) = self
+            .parts
+            .iter()
+            .find(|(name, part)| name == output && part.borrow().placement().is_some())?;
+        Some(part.borrow().scene().clone())
+    }
+
     /// Where each display's part stands now, by connector name: what a test reads to prove a part
     /// on every display, and none on one a fullscreen window owns.
     pub(crate) fn parts(&self) -> Vec<PartPlace> {
@@ -1809,6 +1828,22 @@ impl crate::Session {
     #[must_use]
     pub fn shell_parts(&self) -> Vec<PartPlace> {
         self.shell.as_ref().map(Shell::parts).unwrap_or_default()
+    }
+
+    /// What the shell shows on `output` as a host that writes it as semantic HTML reads it
+    /// (`ui::composition`): the bar, its strips and their windows as elements, each with the
+    /// words it shows. `None` when the shell does not run or shows no part on that output.
+    #[must_use]
+    pub fn shell_composition(&self, output: &str) -> Option<ui::composition::Composition> {
+        self.shell.as_ref()?.composition(output)
+    }
+
+    /// The scene the shell's part on `output` last drew: its own layer's pixels, which a
+    /// display with no working GPU replays on the CPU (`tilo_cpu_raster`). `None` when the
+    /// shell does not run or shows no part on that output.
+    #[must_use]
+    pub fn shell_scene(&self, output: &str) -> Option<ui::vello::Scene> {
+        self.shell.as_ref()?.scene(output)
     }
 
     /// Run the shell's action `action` with `arguments`, as pressing its control in the shell's
