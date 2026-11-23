@@ -5148,6 +5148,154 @@ heavy = true
 default = false
 on = ["dispatch"]
 
+# The live installer medium a release publishes, from the release image this tree composes:
+# the bootable qcow2, the raw payload the Imager downloads and writes with the catalog entry
+# that names its bytes, and the internal bundle the Imager stages onto a machine's own disk
+# (tools/ci/publish/installer-release-medium.sh). The medium is tools/ci/publish/installer-medium.sh's,
+# the same build the server and development media use; the release image is the one
+# os-release-image-{arch} composes, which the release seal and sign steps consume.
+# The medium carries no release signature: signing its boot artifacts is the release signer's
+# step, on the protected tag it runs on.
+[[check]]
+name = "installer-release-medium-{arch}"
+# Pinned: it runs in the OS assembler image, which carries the install's tools, and the disk
+# step installs from container storage, so it pulls no image.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/installer-release-medium.sh {arch} /target/os/{arch}/release-image /target/publish/installer-release-medium/{arch}"
+needs = ["os-release-image-{arch}", "bootc-alongside-{arch}"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc", TILO_INSTALLER_RELEASE_TAG = "imager-v0.0.0", TILO_INSTALLER_VERSION = "0.0.0", TILO_INSTALLER_CHANNEL = "stable" }
+requires = ["arch={arch}", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/installer-release-medium/{arch}/**"]
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The complete graphical installation cycle on that medium: erase, prepared-alongside and
+# guided-alongside (tools/ci/installer-release-cycle.sh). Each mode drives the live installer
+# only through the actions its console publishes, unlocks the encrypted target after a cold
+# power cycle, and reads the installed desktop's first login off the framebuffer; the alongside
+# modes also prove the foreign Windows and Linux partitions and their shared ESP are unchanged.
+[[check]]
+name = "installer-release-cycle-{arch}"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt tools/ci/packages/installer-cycle.txt\nrm -rf /var/tmp/tilo-installer-release-cycle\nTILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-release-cycle bash tools/ci/installer-release-cycle.sh /target/publish/installer-release-medium/{arch} /target/installer-release-cycle/{arch}\n"
+needs = ["installer-release-medium-{arch}", "tilo-vm-binary-{arch}"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch={arch}", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/installer-release-cycle/{arch}/**"]
+# A failed run keeps what each guest and its installer said: the serial tails, the installer's
+# console state and the screens it was on.
+evidence = ["/target/installer-release-cycle/{arch}/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The WHPX installer medium: the aarch64 live installer with one published, signed target
+# preloaded, then the guided-alongside install-only cycle that proves the installer wrote exactly
+# that target, and the qcow2 compressed once for the Windows on ARM host to write
+# (tools/ci/publish/installer-whpx-medium.sh, tools/ci/installer-whpx-cycle.sh). It reads
+# published, signed inputs; it builds, signs and publishes nothing. Dispatch it with
+# `--input target_image=...,live_base_image=...,source_revision=...`; a run without them fails
+# here, never falls back to an unsigned target.
+[[check]]
+name = "installer-whpx-medium-aarch64"
+# Takes an identity token from t for the registry and reads the public release hosts; the
+# private board child needs the stored registry token.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "[[ -n $T_INPUT_TARGET_IMAGE && -n $T_INPUT_LIVE_BASE_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'installer-whpx-medium-aarch64 needs --input target_image=...,live_base_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\nbash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt\nbash tools/ci/publish/installer-whpx-medium.sh $T_INPUT_TARGET_PROFILE \"$T_INPUT_TARGET_IMAGE\" \"$T_INPUT_LIVE_BASE_IMAGE\" \"$T_INPUT_SOURCE_REVISION\" /target/publish/installer-whpx-medium\n"
+needs = ["bootc-alongside-aarch64", "signing-tools"]
+image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/aarch64/bootc" }
+secrets = ["REGISTRY_TOKEN"]
+requires = ["arch=aarch64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/installer-whpx-medium/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+dispatch_inputs = { target_image = "", live_base_image = "", source_revision = "", target_profile = "generic" }
+
+[[check]]
+name = "installer-whpx-aarch64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-aarch64.txt tools/ci/packages/installer-cycle.txt\n[[ -n $T_INPUT_LIVE_BASE_IMAGE ]] || { echo 'installer-whpx-aarch64 needs --input live_base_image=... from a published, signed release' >&2; exit 2; }\nTILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-whpx bash tools/ci/installer-whpx-cycle.sh /target/publish/installer-whpx-medium \"$T_INPUT_LIVE_BASE_IMAGE\" /target/installer-whpx\n"
+needs = ["installer-whpx-medium-aarch64", "tilo-vm-binary-aarch64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=aarch64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/installer-whpx/**"]
+evidence = ["/target/installer-whpx/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+dispatch_inputs = { live_base_image = "" }
+
+# The USB-free installation round trip on the x86-64 release medium: a retained Fedora stages the
+# internal bundle, reboots into the staged installer, installs Tilo beside it, and comes back to
+# an intact Fedora after the installed system's first boot (os/dev/ci-internal-install-cycle.sh).
+# Fedora Cloud Base is pinned by the same URL and SHA-256 the server install proof pins.
+[[check]]
+name = "installer-internal-cycle-x86_64"
+# dnf installs from Fedora's mirrors, the Fedora image is fetched by URL, and the test Imager
+# builds from this tree: no fixed host list names them all.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "FEDORA_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2 FEDORA_SHA256=28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f SCENARIO=all TILO_INTERNAL_CYCLE_RELEASE_TAG=imager-v0.0.0 TILO_INTERNAL_CYCLE_RUN_ID=t-${T_COMMIT:0:12} TILO_INTERNAL_CYCLE_STORAGE_ROOT=/var/tmp/tilo-installer-internal-cycle TILO_ACCEL=kvm TILO_MEM=8192 TILO_INTERNAL_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/ci-internal-install-cycle.sh /target/publish/installer-release-medium/x86_64/disk.qcow2 /target/installer-internal-cycle"
+needs = ["installer-release-medium-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/installer-internal-cycle/**"]
+evidence = ["/target/installer-internal-cycle/**"]
+cache = false
+git = true
+timeout_secs = 14400
+heavy = true
+default = false
+on = ["dispatch"]
+
+# The signed target policy a preparation host reviews instead of mounting a live medium: one
+# architecture's small boot bundle and the catalog fragment that names it, exported from the
+# exact published OS child and verified with the shape a catalog merge reads
+# (apps/imager/packaging/export-target-policy.py). It reads a published, signed image; it
+# publishes nothing. Dispatch it on a release with
+# `--input published_os_image=registry.tilo.so/tilo/tilo@sha256:...`.
+[[check]]
+name = "installer-target-policy-{arch}"
+# The registry redirects each blob to its object store, and the verifier reads the transparency
+# log; no fixed host list names them.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "[[ -n $T_INPUT_PUBLISHED_OS_IMAGE && -n $T_INPUT_SOURCE_REVISION ]] || { echo 'installer-target-policy-{arch} needs --input published_os_image=...,source_revision=... from a published, signed release' >&2; exit 2; }\n[[ $T_INPUT_SOURCE_REVISION =~ ^[0-9a-f]{40}$ ]] || { echo 'source_revision must be a full commit' >&2; exit 2; }\nexport RUNNER_TEMP=$TMPDIR GITHUB_PATH=$TMPDIR/github-path TILO_GITHUB_ASSET_CACHE=/target/signing-tools TILO_ASSET_OFFLINE=1\nbash os/dev/install-cached-cosign.sh\nexport PATH=$(cat \"$GITHUB_PATH\"):$PATH\nout=/target/publish/installer-target-policy/{arch}\nrm -rf \"$out\"\npython3 apps/imager/packaging/export-target-policy.py export --image \"$T_INPUT_PUBLISHED_OS_IMAGE\" --arch {arch} --release-id \"$T_INPUT_RELEASE_ID\" --expected-source \"$T_INPUT_SOURCE_REVISION\" --output \"$out\"\ntest -s \"$out/tilo-target-policy-{arch}.tar\" && test -s \"$out/target-policy-catalog-{arch}.json\"\npython3 apps/imager/packaging/export-target-policy.py verify --bundle \"$out\" --release-id \"$T_INPUT_RELEASE_ID\"\n(cd \"$out\" && sha256sum tilo-target-policy-{arch}.tar target-policy-catalog-{arch}.json) > \"$out/artifacts.sha256\"\n(cd \"$out\" && sha256sum --check --strict artifacts.sha256)\n"
+needs = ["signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}"]
+isolation = "vm"
+outputs = ["/target/publish/installer-target-policy/{arch}/**"]
+timeout_secs = 3600
+default = false
+on = ["dispatch"]
+dispatch_inputs = { published_os_image = "", source_revision = "", release_id = "imager-v0.0.0" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 # One person's four devices used as one computer, on tilo-vm's private network: an x86-64
 # desktop with two virtual outputs, an aarch64 laptop under the software emulator and the
 # server when a disk for it is supplied. The scenario goes through published actions and

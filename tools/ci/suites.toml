@@ -1832,8 +1832,8 @@ check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/dev/test-internal-install-cycle.sh"
-reason = "boots VMs (KVM) from a built installer image and a retained Fedora Cloud Base qcow2, which the release run pins through repository variables; a t check has no pinned Fedora image to name, so release-imager.yml runs it through os/dev/ci-internal-install-cycle.sh"
-workflow = "release-imager.yml"
+reason = "boots VMs (KVM) from a built installer image and a retained Fedora Cloud Base qcow2; the internal install cycle check pins that image and runs os/dev/ci-internal-install-cycle.sh in a KVM guest"
+check = "installer-internal-cycle-x86_64"
 
 [[unrequired]]
 suite = "os/dev/test-server-plan-install-cycle.sh"
