@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+use tilo_identity_client::KeyProtection;
 use tilo_user_identity::DeviceCert;
 
 use super::{IdentityProfile, IdentityRegistry, short_fingerprint};
@@ -265,7 +266,20 @@ impl IdentityRegistryStore {
     /// default. Reads each record; there is no second index to read or write.
     pub fn load(&self) -> io::Result<IdentityRegistry> {
         let mut registry = IdentityRegistry::default();
-        for summary in crate::store::list_identities(&self.identity_dir)? {
+        // One person can keep more than one record here: the one holding their
+        // root, and the public projection a device enrolled without it takes up
+        // (`complete_enrolled_device`). The record that holds the root is the one
+        // this account signs as, so it comes first and its profile is the one a
+        // reader of that person gets; the `active` selection breaks a tie
+        // between records that hold the same thing.
+        let mut summaries = crate::store::list_identities(&self.identity_dir)?;
+        summaries.sort_by(|a, b| {
+            holds_root(b)
+                .cmp(&holds_root(a))
+                .then_with(|| b.active.cmp(&a.active))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for summary in summaries {
             let id = hex::encode(summary.public_key);
             let path = self.identity_dir.join(format!("{}.json", summary.id));
             let profile = IdentityProfile {
@@ -278,7 +292,7 @@ impl IdentityRegistryStore {
                 record_path: absolute_path(&path)?,
                 user_public_key: summary.public_key,
             };
-            registry.identities.insert(id.clone(), profile);
+            registry.identities.entry(id.clone()).or_insert(profile);
             if summary.active {
                 registry.default_identity = Some(id);
             }
@@ -568,6 +582,15 @@ fn device_cert() -> Option<DeviceCert> {
 /// Resolve the identity directory from environment variables.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     crate::store::identity_dir_from_env()
+}
+
+/// Whether `summary`'s record holds a signing share of the person's root: every protection but
+/// the public projection a device without the root takes up, and one this session cannot open.
+fn holds_root(summary: &tilo_identity_client::IdentitySummary) -> bool {
+    !matches!(
+        summary.protection,
+        KeyProtection::DeviceCertificate | KeyProtection::Unavailable
+    )
 }
 
 /// Convert a relative path to absolute, or return unchanged if already absolute.

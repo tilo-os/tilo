@@ -621,18 +621,28 @@ fn complete_enrolled(
         .map_err(|error| io::Error::other(error.to_string()))?;
     prepare_identity_directory(identity_dir)?;
     let identity_id = hex::encode(cert.user_public_key);
-    let record_id = public_record_id(&identity_id);
-    let record_path = identity_dir.join(format!("{record_id}.json"));
-    if !record_path.exists() {
-        let record = record(cert.user_public_key)?;
-        tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
-    }
-    if crate::store::resolve_active_identity(identity_dir).is_none() {
-        tilo_files::native::atomic::write_with_mode(
-            &identity_dir.join("active"),
-            format!("{record_id}\n").as_bytes(),
-            0o600,
-        )?;
+    // A computer that holds its person's root keeps the record it signs as them with: the public
+    // projection a device enrolled without the root takes up would name the same person a second
+    // time and could not sign, so it is not written here.
+    let holds_their_root = crate::store::resolve_active_identity(identity_dir)
+        .and_then(|active| crate::store::load_metadata_from_path(&active).ok())
+        .is_some_and(|active| {
+            active.single_device && active.group_public_key == cert.user_public_key
+        });
+    if !holds_their_root {
+        let record_id = public_record_id(&identity_id);
+        let record_path = identity_dir.join(format!("{record_id}.json"));
+        if !record_path.exists() {
+            let record = record(cert.user_public_key)?;
+            tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
+        }
+        if crate::store::resolve_active_identity(identity_dir).is_none() {
+            tilo_files::native::atomic::write_with_mode(
+                &identity_dir.join("active"),
+                format!("{record_id}\n").as_bytes(),
+                0o600,
+            )?;
+        }
     }
     crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
         .remember_certificate(&identity_id, cert)?;

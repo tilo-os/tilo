@@ -758,6 +758,78 @@ mod tests {
             assert!(store.load(&identity_id).expect("fleet").is_revoked(&agent));
         }
 
+        phase a_computer_that_carries_its_persons_identity_directory_signs_with_its_root;
+        // A person's second computer carries the account's identity directory over from the
+        // computer that made their root, the secret that signs with the root included, as a disk
+        // copy carries it. It also keeps the public projection a device enrolled without the root
+        // takes up under the same person, as every device that booted before this build did. It
+        // signs as the person there: the record that holds the root is theirs.
+        {
+            let first = tempfile::tempdir().expect("the first computer");
+            let first_identity = first.path().join("config/identity");
+            crate::provisioning::ensure_collaboration_identity(
+                &first_identity,
+                &IdentityPaths::under(first.path().join("system")),
+                crate::provisioning::IdentityStorage::Files,
+            )
+            .expect("provision");
+            let record =
+                crate::store::resolve_active_identity(&first_identity).expect("a record");
+            let root = crate::store::load_from_path(record).expect("the person's root");
+            let person = hex::encode(root.group_public_key());
+
+            let here = tempfile::tempdir().expect("another computer");
+            let identity_dir = here.path().join("config/identity");
+            copy_tree(&first_identity, &identity_dir);
+            let projection = identity_dir.join(format!("identity-{}", &person[..55]));
+            let public = crate::store::public_member_record("Ada", [1, 2, 3], root.group_public_key())
+                .expect("a public record");
+            tilo_files::native::atomic::write_with_mode(&projection, &public, 0o600)
+                .expect("the projection is kept");
+            assert!(
+                !crate::store::load_metadata_from_path(&projection)
+                    .expect("the projection reads")
+                    .single_device,
+                "the projection holds no share of the root"
+            );
+
+            let store = DeviceFleetStore::at(
+                &identity_dir,
+                IdentityPaths::under(here.path().join("system")),
+            );
+            let signed = store
+                .sign_root(&person, &[9; 32])
+                .expect("the record that holds the root signs");
+            assert_eq!(signed.len(), 64, "the person's own signature");
+            let profile = crate::store::IdentityRegistryStore::at(&identity_dir)
+                .load()
+                .expect("the registry")
+                .identities
+                .get(&person)
+                .cloned()
+                .expect("the person's identity");
+            assert_eq!(
+                profile.record_path,
+                identity_dir.join("primary.json"),
+                "the record holding the root is the person's, not the projection"
+            );
+        }
+
+    }
+
+    /// Copy `from`'s files to `to`, as a disk copy of a computer carries what its account's
+    /// identity directory holds.
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        fs::create_dir_all(to).expect("a copied directory");
+        for entry in fs::read_dir(from).expect("a readable directory") {
+            let entry = entry.expect("a directory entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("an entry's kind").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).expect("a copied file");
+            }
+        }
     }
 
     #[cfg(target_os = "linux")]
