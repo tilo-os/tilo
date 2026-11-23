@@ -561,13 +561,13 @@ mod tests {
         link
     }
 
-    /// With both the power service and the system service running (as on an owned device),
-    /// the catalogue an agent is offered holds exactly one action to set the power profile:
+    /// With both the power service and the system service mounted, the session's own
+    /// provider publishes exactly one power-profile action on `power` / `power:*`:
     /// `power#set-power-mode`. Invoking it changes the profile through the system service's
     /// test double, and a device refusal surfaces in `problem`.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_catalogue_offers_one_power_profile_action_and_invoking_it_switches_the_profile() {
+    fn the_session_publishes_one_power_profile_action_and_invoking_it_switches_the_profile() {
         use tilo_system_service::device::Change;
         use tilo_system_service::model::PowerMode;
 
@@ -669,11 +669,12 @@ mod tests {
         );
     }
 
-    /// In a headless start (no power service / no `PowerLink`, only the system service),
-    /// `power#set-power-mode` is still offered in the agent's catalogue and switches the profile.
+    /// With only the system service mounted (no power service / no `PowerLink`),
+    /// `power#set-power-mode` is still offered under the session's provider and switches
+    /// the profile through the system service's test double.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_headless_session_still_offers_and_runs_set_power_mode() {
+    fn without_the_power_service_the_session_still_offers_and_runs_set_power_mode() {
         use tilo_system_service::device::Change;
         use tilo_system_service::model::PowerMode;
 
