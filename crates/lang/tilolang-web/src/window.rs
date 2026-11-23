@@ -15,6 +15,7 @@ use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::resources::{LocalPort, ResourceStore};
+use tilolang_tilo::runtime::Value;
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
 use ui::headless::FrameHarness;
@@ -67,7 +68,9 @@ struct Asked(Rc<RefCell<Vec<Invocation>>>);
 impl Invoker for Asked {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         self.0.borrow_mut().push(invocation.clone());
-        Invoked::Sent
+        // The page's host carries it out and what it changed comes back as the app's readings:
+        // nothing here waits on an answer.
+        Invoked::Done(Value::Unit)
     }
 }
 
