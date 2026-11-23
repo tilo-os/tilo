@@ -5404,7 +5404,7 @@ pub(crate) fn ush_request(
 }
 
 /// The supervisor's answer to `open-session`, field for field (`ServeResponse::Session` in
-/// `crates/runtime/ush/src/supervisor.rs`). Unknown fields are refused, so every field the supervisor
+/// `crates/vm/ush/src/supervisor.rs`). Unknown fields are refused, so every field the supervisor
 /// sends is named here; `a_session_reply_keeps_its_wire_form` pins the form.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]

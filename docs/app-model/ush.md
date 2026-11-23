@@ -27,7 +27,7 @@ exactly what its environment record lists — on every device it opens on.
 
 An environment is a synced record declared by the Terminal app
 (`#[resource(kind = "environment")]`, in
-[`tilo-environment`](../../crates/runtime/environment/src/lib.rs)):
+[`tilo-environment`](../../crates/vm/environment/src/lib.rs)):
 
 ```rust
 pub struct Environment {
@@ -213,7 +213,7 @@ master attached, or `{"result":"denied","reason":…}`.
 `{"kind":"host"}` is the device's own login shell: the account's shell from
 the passwd database, on a pty, in the supervisor's session environment, with
 no namespace, filter or Landlock ruleset. It is answered only when all of
-these hold (`crates/runtime/ush/src/host.rs`):
+these hold (`crates/vm/ush/src/host.rs`):
 
 1. **The caller is Terminal.** `tilo-launcher` writes `QUS1`, a little-endian
    `u32` length and `{"protocol":1,"app_id":…,"workspace":…}` on a sandboxed app's
@@ -245,7 +245,7 @@ the environments of the request's workspace, and no other's.
 
 Several people and agents work on one device at once, each in a workspace of
 their own; an environment is one workspace's
-([`ush::workspace`](../../crates/runtime/ush/src/workspace.rs)). The
+([`ush::workspace`](../../crates/vm/ush/src/workspace.rs)). The
 workspace a request is for:
 
 - **An app the launcher started** (a sandboxed Terminal): the workspace it
@@ -286,7 +286,7 @@ Every program of a session, in its guest and on the Tilo side, starts with:
 - `TILO_WORKSPACE` — the workspace's id (`personal` for the primary one);
 - `TILO_ENVIRONMENT` — the environment's id on this device, the same for
   every session of it: `<workspace>/<record>`
-  ([`EnvironmentId`](../../crates/runtime/ush/src/workspace.rs)).
+  ([`EnvironmentId`](../../crates/vm/ush/src/workspace.rs)).
 
 From outside a session, `ush::workspace::environment_workspace(&Store::discover(), &EnvironmentId::parse(id)?)`
 answers which workspace an environment belongs to, from its record.
@@ -305,7 +305,7 @@ started. The reason is for the log. Terminal says the
 environment could not be set up and offers to try again.
 
 Nothing about setting a guest up is written on its terminal
-(`crates/runtime/ush/src/setup.rs`). The supervisor starts `ush run` with the
+(`crates/vm/ush/src/setup.rs`). The supervisor starts `ush run` with the
 pty as standard input and output, and hands it the pty again as descriptor 3
 (`--terminal-fd 3`). Its standard error is a pipe the supervisor reads and
 logs: `ush run`'s own log, `bwrap`'s refusals, a library's warning, and the
@@ -348,11 +348,11 @@ home of the environment's own at `/home/<user>` as before.
 ## The session's shell
 
 A new Terminal session runs ush's own shell on the Tilo side: the
-interpreter ([`ush-shell`](../../crates/runtime/ush-shell/src/lib.rs)) runs in
+interpreter ([`ush-shell`](../../crates/vm/ush-shell/src/lib.rs)) runs in
 the process that serves the session's terminal, outside every guest, with
-[`ush_tilo::TiloHost`](../../crates/runtime/ush-tilo/src/lib.rs) as its host
+[`ush_tilo::TiloHost`](../../crates/vm/ush-tilo/src/lib.rs) as its host
 and this device's parts in
-[`ush::tilo_side`](../../crates/runtime/ush/src/tilo_side.rs). It is a shell
+[`ush::tilo_side`](../../crates/vm/ush/src/tilo_side.rs). It is a shell
 interpreter in Rust: POSIX sh, and the bash features people use (arrays,
 `[[ ]]`, `local`, `$'…'`, `${x//a/b}`, brace expansion, `mapfile`). A
 feature it does not have (process substitution,
@@ -381,7 +381,7 @@ The host reaches nothing but the environment:
   `cp` uses.
 - **A WebAssembly tool** (tier 2) runs in the host itself when the session
   has one by the command's name: a WASI preview 1 module, run under wasmi
-  ([`ush-wasi`](../../crates/runtime/ush-wasi/src/lib.rs)) with the limits
+  ([`ush-wasi`](../../crates/vm/ush-wasi/src/lib.rs)) with the limits
   every guest in Tilo has. Its files are the grants (fd 3 is the working
   directory, fd 4 is `/`), and each file it writes is one action of the
   command line's run, so `jq . a.json > b.json` is one undoable run
@@ -398,7 +398,7 @@ The host reaches nothing but the environment:
   session ends (or something in it asks for `restart`); a session that only
   ran Tilo's own commands never starts one. Its first process is
   `tilo-ush exec-serve`, which takes one command at a time over a socket
-  ([`ush::guest_exec`](../../crates/runtime/ush/src/guest_exec.rs)). `bash
+  ([`ush::guest_exec`](../../crates/vm/ush/src/guest_exec.rs)). `bash
   script.sh` is such a program. What a program writes in the guest still
   lands on disk directly, through the guest's binds of the granted
   directories; folding those writes into the environment's actions is the
@@ -412,11 +412,11 @@ grants, like any file) when it starts interactively; it does not read
 bash's files. `ush -c SCRIPT` runs a script the same way.
 
 `ush-sh` on a guest's `PATH` (`tilo-ush sh`, with the guest as its host in
-[`ush::shell_host`](../../crates/runtime/ush/src/shell_host.rs)) is the same
+[`ush::shell_host`](../../crates/vm/ush/src/shell_host.rs)) is the same
 interpreter inside a guest: what a program there gets as `$SHELL`.
 
 **The prompt** is a line editor of the shell's own
-([`editor`](../../crates/runtime/ush-shell/src/editor/mod.rs)), with
+([`editor`](../../crates/vm/ush-shell/src/editor/mod.rs)), with
 readline's emacs keys, so a person moving between ush and bash finds the
 same ones: Left, Right, Home, End, `Ctrl+A/E/B/F`, `Alt+B/F` and
 `Ctrl+Left/Right` move; Backspace, Delete and `Ctrl+D` delete; `Ctrl+K`,
@@ -428,7 +428,7 @@ asks for more lines with `$PS2`. A paste (bracketed) goes in as it is,
 newlines included, and runs only on Enter. Terminal edits the line too, as a
 native text field: its input method and dictation put text in at the cursor
 as if typed, and take it back with Undo
-([`field`](../../crates/runtime/ush-shell/src/field.rs)). At the prompt the
+([`field`](../../crates/vm/ush-shell/src/field.rs)). At the prompt the
 editor publishes the line and a lease on it over the editor capability
 Terminal negotiated; an edit of a line that changed since is refused, an edit
 never presses Enter, and away from the prompt the line is not offered. The editor reads keys through the
@@ -473,7 +473,7 @@ shell's own commands run concurrently in the shell's process, and a program
 runs in the guest in a process group of the job's: `exec-serve` makes the
 group for the job's first program and says which it is, the job's next
 programs join it, and the shell stops, continues and ends it over the
-program's socket ([`guest_exec`](../../crates/runtime/ush/src/guest_exec.rs)).
+program's socket ([`guest_exec`](../../crates/vm/ush/src/guest_exec.rs)).
 While the job is in the foreground the group holds the terminal, whichever of
 its streams the terminal is. `jobs`, `fg`, `bg`,
 `wait` and `kill %n` (or the number `$!` gives) move them. Each line the
@@ -664,7 +664,7 @@ session's own runs are search entries of the session whose `open` shows it.
 
 `pkg install pandoc` inside a guest asks the broker (`Request::AddTool`). The
 broker builds a `tool` image for the environment's runtime through the
-[`ToolBuilder`](../../crates/runtime/environment/src/lib.rs) boundary — the build
+[`ToolBuilder`](../../crates/vm/environment/src/lib.rs) boundary — the build
 runs `dnf` as uid 0 in its own build sandbox, never in your guest — and appends
 it to the record with `add-tool`. Running sessions pick it up on `restart`; new
 sessions have it immediately. A package another tool already provides is not
@@ -717,7 +717,7 @@ Tilo ships no signature database, and this runtime does not provide one.
 
 These are the guest's own verbs, under the names the person already types, and
 each is one of the environment record's published actions
-([`tilo_environment::files`](../../crates/runtime/environment/src/files.rs)):
+([`tilo_environment::files`](../../crates/vm/environment/src/files.rs)):
 `copy`, `move`, `remove`, `make-dir`, `remove-dir`, `link`, `truncate`, `touch`
 and `append`. A shell's redirect is one too: `> file` is `write` (the file's
 whole contents; contents that are not text travel as base64, and `set -C`

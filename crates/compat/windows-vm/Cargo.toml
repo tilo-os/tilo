@@ -9,7 +9,7 @@ description = "Default-deny single Windows appliance and RemoteApp integration f
 [dependencies]
 uuid.workspace = true
 tilo-paths.workspace = true
-tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
+tilo-libvirt-domain = { path = "../../vm/libvirt-domain" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 base64.workspace = true

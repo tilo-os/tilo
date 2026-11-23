@@ -202,7 +202,7 @@ tilo-model-engine = { path = "../../lang/tilo-model-engine" }
 tasks-model = { path = "../../../apps/tasks-model" }
 tilo-server = { path = "../../server/tilo-server", features = ["agents", "test-support"] }
 # The workspace's machine secrets.
-tilo-environment = { path = "../../runtime/environment" }
+tilo-environment = { path = "../../vm/environment" }
 # The API server, driven through its HTTP routes against the relay.
 tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 # A message with large attachments, split as `tilo migrate` splits one.
@@ -210,7 +210,7 @@ tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 test-server = { path = "../../../tools/test-server" }
 # A hosted Terminal session's stream, dialled as a device dials it, and a host selling Linux
 # machines whose programs a test reads back.
-ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
+ush = { path = "../../vm/ush", features = ["quic", "test-host"] }
 test-http = { path = "../../../tools/test-http" }
 # Opens an invitation's link as a page does, asking the workspace's host for it.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }

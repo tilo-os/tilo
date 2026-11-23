@@ -177,8 +177,8 @@ hmac = { workspace = true, optional = true }
 tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # The workspaces' shells a host serving their records runs: ush's own
 # commands here, Linux programs in the workspace's hosted VM.
-ush = { path = "../../runtime/ush", optional = true, features = ["quic"] }
-linux-vm = { path = "../../runtime/linux-vm", optional = true, default-features = false }
+ush = { path = "../../vm/ush", optional = true, features = ["quic"] }
+linux-vm = { path = "../../vm/linux-vm", optional = true, default-features = false }
 # What the host's account standing is read from: its plans file and the
 # log of the Browser page actions this host ran for it.
 tilo-server-account = { path = "../tilo-server-account", optional = true }
@@ -289,7 +289,7 @@ uuid = { workspace = true, features = ["js"] }
 # What an app reaches the server's content store with, as a launched app does.
 tilo-fs-client = { path = "../../runtime/tilo-fs-client" }
 # A host selling the workspaces' VMs, which keeps what each program it starts was given.
-ush = { path = "../../runtime/ush", features = ["quic", "test-host"] }
+ush = { path = "../../vm/ush", features = ["quic", "test-host"] }
 # The live session a workspace's session publishes on, as the hosted Browser
 # tests open one to prove an environment whose session is on it is here.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }

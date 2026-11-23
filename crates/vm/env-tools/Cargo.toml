@@ -24,7 +24,7 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 registry-types = { path = "../../packaging/registry-types" }
 tilo-environment = { path = "../environment" }
 # The build sandbox reaches its runtime's repositories and nothing else.
-tilo-egress = { path = "../egress" }
+tilo-egress = { path = "../../runtime/egress" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 
 anyhow.workspace = true

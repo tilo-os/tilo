@@ -54,7 +54,7 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-app-id.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
-tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
+tilo-libvirt-domain = { path = "../libvirt-domain" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
@@ -85,4 +85,4 @@ linux-vm-agent = { path = "../linux-vm-agent" }
 tilo-app-keeper = { path = "../../session/app-keeper", optional = true }
 # The VM network's bridge filter, over the same nf_tables encoder as a
 # sandbox's egress filter.
-tilo-egress = { path = "../egress" }
+tilo-egress = { path = "../../runtime/egress" }

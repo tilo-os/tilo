@@ -462,7 +462,7 @@ suites = ["os/tests/test_image_size_budget.py"]
 [[group]]
 name = "windows"
 inputs = [
-  "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
+  "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/compat/",
   # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
   # publish it.
   "crates/system/extension-helper/src/",
@@ -1320,7 +1320,7 @@ inputs = [
   "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json",
   "os/Containerfile",
 ]
-readers = ["crates/windows/compat-service/src/plan.rs"]
+readers = ["crates/compat/compat-service/src/plan.rs"]
 
 [[cargo]]
 package = "os-actions"
@@ -1335,9 +1335,9 @@ inputs = [
   "os/hosted-guest/git-credential-tilo",
 ]
 readers = [
-  "crates/runtime/linux-vm/src/image.rs",
-  "crates/runtime/linux-vm/src/hosted/guest.rs",
-  "crates/runtime/linux-vm/tests/guest_git_credentials.rs",
+  "crates/vm/linux-vm/src/image.rs",
+  "crates/vm/linux-vm/src/hosted/guest.rs",
+  "crates/vm/linux-vm/tests/guest_git_credentials.rs",
 ]
 
 [[cargo]]
@@ -1400,7 +1400,7 @@ readers = ["crates/doc/tilo-doc-codecs/build.rs"]
 package = "ush"
 # Native reexec proof reads the actual shipped supervisor unit.
 inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
-readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
+readers = ["crates/vm/ush/tests/serve_handoff.rs"]
 
 [[cargo]]
 package = "local-model-service"

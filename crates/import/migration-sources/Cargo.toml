@@ -48,7 +48,7 @@ tilo-net = { workspace = true, features = ["blocking"] }
 # The stored RRULE spelling and the time-zone names a calendar keeps.
 tilo-recurrence = { version = "0.1.0", path = "../../sdk/tilo-recurrence" }
 # Whole-or-not-at-all writes of the entries the inbox keeps.
-tilo-files = { path = "../tilo-files" }
+tilo-files = { path = "../../platform/tilo-files" }
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
@@ -60,11 +60,11 @@ bounded-command = { path = "../../system/bounded-command" }
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-paths.workspace = true
 # The key a Chromium-family browser keeps its `v11` passwords under, in the system keyring.
-tilo-secrets = { path = "../tilo-secrets" }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-tilo-process = { path = "../tilo-process" }
+tilo-process = { path = "../../platform/tilo-process" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

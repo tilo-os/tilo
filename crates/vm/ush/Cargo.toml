@@ -30,7 +30,7 @@ tokio = { workspace = true, features = ["rt", "time"], optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }
 sha2.workspace = true
-runtime-portal = { path = "../runtime-portal" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The shell a session runs: POSIX sh and bash's common features, with
@@ -57,7 +57,7 @@ durable-store = { path = "../../system/durable-store" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 # Images a node did not ship (a server's), from the OCI registry CI
 # publishes them to.
-tilo-oci-images = { path = "../../packaging/oci-images" }
+tilo-oci-images = { path = "../oci-images" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 semver.workspace = true
 # This device's key signs the tool images its builder makes; the user's
@@ -72,7 +72,7 @@ tilo-secrets.workspace = true
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The guest's own network namespace: a DNS stub that answers only the
 # record's NetHost grants, and nftables that admit only what it answered.
-tilo-egress = { path = "../egress" }
+tilo-egress = { path = "../../runtime/egress" }
 # Installed Linux apps become commands in every guest (`LinuxVmLaunch`);
 # a hosted workspace's programs run in its own VM (`hosted_vm`). The keeper
 # that wakes a VM's windows belongs to the VM's own program, so this side

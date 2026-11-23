@@ -52,7 +52,7 @@ rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"
 tempfile = { workspace = true, optional = true }
 # The website-session codecs, whose account credentials the accounts engine
 # below provides.
-tilo-browser-sessions = { path = "../../../platform/tilo-browser-sessions", optional = true }
+tilo-browser-sessions = { path = "../../../import/tilo-browser-sessions", optional = true }
 # Account credentials, which the session codecs use, comes from its own engine
 # library: one copy in the app's process.
 tilo-accounts-engine = { path = "../accounts", optional = true }

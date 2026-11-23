@@ -242,7 +242,7 @@ fedora)
         # zlib-ng-compat provides zlib. Video goes through GStreamer, so no
         # FFmpeg or libva development packages are needed. bash-devel and
         # readline-devel are what Terminal's Bash editor builds against
-        # (crates/runtime/ush/native/build.py), as in os/Containerfile.
+        # (crates/vm/ush/native/build.py), as in os/Containerfile.
         dnf install -y --setopt=install_weak_deps=False \
             nasm perl-FindBin python3 \
             sqlite-devel zlib-ng-compat-devel expat-devel \

@@ -573,7 +573,7 @@ fi
 grep -Fq 'systemctl --global enable tilo-ush.socket' "$repo/os/Containerfile"
 ush_socket="$repo/os/usr/lib/systemd/user/tilo-ush.socket"
 ush_service="$repo/os/usr/lib/systemd/user/tilo-ush.service"
-ush_source="$repo/crates/runtime/ush/src/supervisor.rs"
+ush_source="$repo/crates/vm/ush/src/supervisor.rs"
 grep -Fqx 'ListenStream=%t/tilo/services/ush.sock' "$ush_socket"
 grep -Fqx 'Service=tilo-ush.service' "$ush_socket"
 grep -Fqx 'SocketMode=0600' "$ush_socket"

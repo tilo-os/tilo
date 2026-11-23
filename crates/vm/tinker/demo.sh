@@ -3,7 +3,7 @@
 # create a layer, install into it, see what it did, keep it, stack on it,
 # revert one path, throw it all away, and prove the base never moved.
 #
-#     cargo build -p tinker && ./crates/system/tinker/demo.sh
+#     cargo build -p tinker && ./crates/vm/tinker/demo.sh
 #
 # Needs rootless podman (to fetch the base once), bubblewrap, and a subordinate
 # id range in /etc/subuid. Nothing here asks for a password.

@@ -68,7 +68,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
+browser-continuity = { path = "../../import/browser-continuity", features = ["native"] }
 
 [dev-dependencies]
 iroh.workspace = true

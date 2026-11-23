@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# A host of hosted workspace VMs (crates/runtime/linux-vm/src/hosted): the
+# A host of hosted workspace VMs (crates/vm/linux-vm/src/hosted): the
 # service that owns every VM on its machine, the privileged helper that jails
 # each one, Firecracker and its jailer, pasta for their network, and skopeo to
 # fetch the signed guest. One runs per VM-host node, privileged (KVM, a

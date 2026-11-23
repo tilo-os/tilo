@@ -160,7 +160,7 @@ tilo-content = { path = "../../system/content", features = ["dir"] }
 # page cannot.
 accounts = { path = "../../system/accounts", features = ["person"] }
 # Which vault items a workspace's machine hands its programs: a Terminal document.
-tilo-environment = { path = "../../runtime/environment", optional = true }
+tilo-environment = { path = "../../vm/environment", optional = true }
 agent-provider-config = { path = "../../agent/provider-config" }
 settings-store = { path = "../../system/settings-store" }
 tilo-account-probe = { path = "../../platform/account-probe" }

@@ -56,7 +56,7 @@ session_components=(tilo-session control launcher install app-package runtime-bu
 # and the engine version its Browser requires.
 inputs_digest() {
   find os/Containerfile.hosted-guest os/hosted-guest os/external-assets/github-assets.tsv \
-    crates/runtime/linux-vm-agent crates/runtime/linux-vm-protocol \
+    crates/vm/linux-vm-agent crates/vm/linux-vm-protocol \
     crates/session crates/packaging os/components.toml \
     os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \

@@ -164,7 +164,7 @@ fn a_server_without_programs_starts_none() {
 #[test]
 fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
     use crate::hosted_vm::testing::{fake_service, fake_vm};
-    const VALUE: &str = "sk-ant-oat01-the-persons-own-token";
+    const VALUE: &str = "sk-ant-oat01-the-persons-own-token"; // placeholder, not a credential
     let state = tempfile::tempdir().unwrap();
     let socket = fake_service(state.path(), fake_vm(state.path()));
     let shells = WorkspaceShells::new(

@@ -5,7 +5,7 @@
 # apps").
 #
 # The guest agent runs this, as the tenant, at the workspace's first Linux app
-# (`crates/runtime/linux-vm/src/hosted/browser.rs`, "The session in the
+# (`crates/vm/linux-vm/src/hosted/browser.rs`, "The session in the
 # guest"), with `TILO_HOSTED_APPS` set. Its standard input's first line is the
 # workspace's material; every later line is one app to start (a desktop file
 # of this guest's, `tilo_actions::remote::linux_apps::AppLaunch`). Each app's

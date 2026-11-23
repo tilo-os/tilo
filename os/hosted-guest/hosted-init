@@ -3,7 +3,7 @@
 #
 # It is not systemd: a VM here wakes when a workspace's first command arrives
 # and must answer within a few hundred milliseconds, so boot is this script and
-# then the guest agent (crates/runtime/linux-vm-agent), nothing else. The kernel
+# then the guest agent (crates/vm/linux-vm-agent), nothing else. The kernel
 # command line baked into the image is
 #   root=/dev/vda rw init=/usr/libexec/tilo/hosted-init
 # and the host adds what is about this VM alone: its console and
@@ -40,7 +40,7 @@ mounted /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
 mounted /tmp || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp
 
 # The tenant's own folders on this disk. A program's `~` is its workspace's files
-# (crates/runtime/ush/src/hosted_vm.rs), so what belongs to the machine rather than to the
+# (crates/vm/ush/src/hosted_vm.rs), so what belongs to the machine rather than to the
 # workspace — caches, npm's cache, build output — lives here, and the first program that needs
 # one finds it ready and theirs.
 install -d -m 0700 -o tilo -g tilo /home/tilo/.cache /home/tilo/.npm /var/tmp/tilo

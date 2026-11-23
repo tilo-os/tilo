@@ -583,10 +583,10 @@ Must change:
 
 ## Part 3 — Prototype status
 
-`crates/system/tinker/`, 42 tests, all green.
+`crates/vm/tinker/`, 42 tests, all green.
 
 ```bash
-cargo build -p tinker && ./crates/system/tinker/demo.sh
+cargo build -p tinker && ./crates/vm/tinker/demo.sh
 ```
 
 `demo.sh` drives the entire loop from a cold start and fails if the base

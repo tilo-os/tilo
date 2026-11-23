@@ -104,11 +104,11 @@ class RuntimeSurfaceTests(unittest.TestCase):
         # depending on it again maps it into every app process.
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
-            "4serde v1.0.228\n2browser-continuity v0.1.0 (/repo/crates/browser/browser-continuity)\n",
+            "4serde v1.0.228\n2browser-continuity v0.1.0 (/repo/crates/import/browser-continuity)\n",
         ).replace(
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-            "1browser-continuity v0.1.0 (/repo/crates/browser/browser-continuity) (*)\n0store",
+            "1browser-continuity v0.1.0 (/repo/crates/import/browser-continuity) (*)\n0store",
         )
         found = checker.violations(tree, ["notes", "store"], TARGET)
         self.assertEqual(len(found), 1, found)

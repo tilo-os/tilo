@@ -1495,7 +1495,7 @@ grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo
 
 
 # What the shell runtime logs when it refuses to start an environment: an
-# image that ships no env-runtime, a store it cannot open (crates/runtime/ush).
+# image that ships no env-runtime, a store it cannot open (crates/vm/ush).
 _UNBUILDABLE = "the environment cannot be built"
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
