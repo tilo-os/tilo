@@ -6,6 +6,12 @@ license.workspace = true
 publish.workspace = true
 description = "Portable provider administration panel and standalone application for Tilo."
 
+# Model Providers (apps/model-providers) is built from this crate as well as
+# Settings: the kinds named for it (`model-providers.root`, its standalone
+# app's root) are that app's records, not Settings'.
+[package.metadata.tilo]
+apps = ["model-providers"]
+
 [features]
 test-support = []
 

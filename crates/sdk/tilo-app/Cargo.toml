@@ -14,6 +14,11 @@ description = "The Tilo application SDK: one app source for Linux, macOS and the
 # builds for Linux, macOS and wasm32 unchanged. With resolver 2 the features
 # below that name the native runner enable nothing on wasm32, where that
 # dependency does not exist.
+# The app SDK: the kinds it declares are the framework's, which no app lists as
+# its own (tools/tilo-app-cli/src/resource_kinds.rs).
+[package.metadata.tilo]
+framework = true
+
 [features]
 # Every OS affordance is on by default: the native runner, collaboration over
 # the broker, desktop media controls, notifications and GPU video frames. An
