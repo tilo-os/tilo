@@ -1,7 +1,7 @@
 //! Dropbox-specific behaviour beyond the shared conformance suite, against
 //! the in-process fake: long-poll backoff, content-hash verification,
 //! upload-session recovery, deletions the source never saw, moves in the
-//! change feed, share links, quota, team spaces and non-ASCII names.
+//! change feed, quota, team spaces and non-ASCII names.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -107,17 +107,6 @@ fn longpoll_idles_and_honours_backoff_without_asking_again() {
         polls,
         "no request while backing off"
     );
-}
-
-#[test]
-fn longpoll_wakes_on_a_change_in_scope() {
-    let server = FakeDropbox::start();
-    let source = source(&server);
-    let (_, cursor, _) = drain(&source, None);
-    let waiter = std::thread::spawn(move || source.wait(Some(&cursor), Duration::from_secs(60)));
-    // The waiter holds its request open until the change lands.
-    server.put("/woken.txt", b"x");
-    assert_eq!(waiter.join().unwrap().unwrap(), Wait::Changed);
 }
 
 #[test]
@@ -358,17 +347,6 @@ fn names_are_case_insensitive_and_keep_their_case() {
         server.paths(),
         ["/Café ☕", "/Café ☕/naïve €.txt", "/Readme.TXT"]
     );
-}
-
-#[test]
-fn share_links_are_created_once() {
-    let server = FakeDropbox::start();
-    server.put("/share.txt", b"s");
-    let source = source(&server);
-    let item = find(&source, &source.root(), "share.txt");
-    let first = source.share_link(&item.id).unwrap();
-    assert!(first.starts_with("https://www.dropbox.com/"));
-    assert_eq!(source.share_link(&item.id).unwrap(), first);
 }
 
 #[test]

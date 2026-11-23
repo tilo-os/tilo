@@ -153,12 +153,14 @@ macro_rules! conformance_suite {
             $crate::conformance_suite!(@tests $fixture;
                 listing_matches_stat,
                 whole_and_ranged_reads,
+                empty_files_round_trip,
                 stale_reads_are_conflicts,
                 create_refuses_to_overwrite,
                 replace_with_revision,
                 stale_replace_is_a_conflict,
                 chunked_and_resumed_uploads,
                 folders_moves_and_deletes,
+                share_links_when_declared,
                 change_detection,
                 change_notification,
                 offline_is_reported,
@@ -336,6 +338,22 @@ pub fn whole_and_ranged_reads(fixture: &dyn Fixture) {
             &bytes[usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap()];
         assert_eq!(got, expected, "range {range:?}");
     }
+}
+
+/// An empty file is a file: it uploads as zero bytes and reads back empty.
+pub fn empty_files_round_trip(fixture: &dyn Fixture) {
+    let source = fixture.source();
+    let item = upload_bytes(
+        source,
+        UploadTarget::Create {
+            parent: source.root(),
+            name: "empty".into(),
+        },
+        b"",
+    );
+    assert_eq!(item.size, Some(0));
+    assert!(item.revision.is_some(), "an empty file carries a revision");
+    assert_eq!(read_all(source, &item.id), b"", "an empty file reads empty");
 }
 
 /// A read pinned to a revision the file no longer has fails instead of
@@ -537,6 +555,24 @@ pub fn folders_moves_and_deletes(fixture: &dyn Fixture) {
     assert!(matches!(source.stat(&listed.id), Err(Error::NotFound)));
     source.delete(&folder.id, None).expect("delete folder");
     assert!(lookup(source, "Archive").is_none());
+}
+
+/// Where the provider declares share links, an item has an address that is
+/// the same each time it is asked for.
+pub fn share_links_when_declared(fixture: &dyn Fixture) {
+    let source = fixture.source();
+    if !source.capabilities().share_links {
+        return;
+    }
+    put_remote(fixture, "shared-link.txt", b"l");
+    let item = must(source, "shared-link.txt");
+    let link = source.share_link(&item.id).expect("share link");
+    assert!(link.starts_with("http"), "{link}");
+    assert_eq!(
+        source.share_link(&item.id).expect("share link again"),
+        link,
+        "a share link is stable"
+    );
 }
 
 fn drain(source: &dyn CloudSource, cursor: Option<&Cursor>) -> (Vec<Change>, Cursor, bool) {

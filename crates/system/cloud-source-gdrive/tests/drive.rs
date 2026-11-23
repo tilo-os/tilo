@@ -227,20 +227,9 @@ tilo_test_env::scenario! {
         assert_eq!(server.bytes(item.id.as_str()).unwrap(), bytes);
     }
 
-    phase empty_files_upload_and_aborted_sessions_are_cancelled;
+    phase aborted_sessions_are_cancelled;
     {
         let (_server, source) = setup();
-        let empty = upload(
-            &source,
-            UploadTarget::Create {
-                parent: source.root(),
-                name: "empty".into(),
-            },
-            b"",
-        )
-        .unwrap();
-        assert_eq!(empty.size, Some(0));
-        assert!(empty.revision.is_some());
         let session = source
             .begin_upload(
                 UploadTarget::Create {
@@ -607,6 +596,7 @@ tilo_test_env::scenario! {
             b"first",
         )
         .unwrap();
+        // A share link is anyone-with-the-link read access, not a wider grant.
         let link = source.share_link(&item.id).unwrap();
         assert!(link.contains(item.id.as_str()));
         let permissions = server.permissions(item.id.as_str());
