@@ -2847,3 +2847,38 @@ fn money(micros: u64) -> String {
         (micros % 1_000_000) / 10_000
     )
 }
+
+#[cfg(test)]
+mod invocation_keeps_tests {
+    use super::TurnUsage;
+
+    #[test]
+    fn a_turn_names_the_summary_it_kept_beside_its_cost() {
+        let usage = TurnUsage {
+            answered: None,
+            tokens: 12,
+        };
+        let keeps = usage.as_invocation_keeps(250_000, Some("  what was said  "));
+        assert_eq!(
+            keeps.get("cost_usd"),
+            Some(&serde_json::json!(0.25)),
+            "the cost is named in dollars"
+        );
+        assert_eq!(
+            keeps.get("summary"),
+            Some(&serde_json::json!("what was said")),
+            "the conversation's summary is named beside the cost"
+        );
+        assert!(
+            usage.as_invocation_keeps(0, None).get("summary").is_none(),
+            "a turn that kept none names none"
+        );
+        assert!(
+            usage
+                .as_invocation_keeps(0, Some("  "))
+                .get("summary")
+                .is_none(),
+            "a blank summary is no summary"
+        );
+    }
+}
