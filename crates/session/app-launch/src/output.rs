@@ -35,7 +35,7 @@ const TARGET: &str = tilo_startup_metrics::APP_OUTPUT_TARGET;
 
 /// The most bytes kept of one line: reading to a newline would let an app
 /// exhaust the session's memory with one unterminated write.
-pub const LINE_BYTES: usize = 8 * 1024;
+pub use wire_frame::LINE_BYTES;
 /// How many lines a stream relays at once, and how many a second after that:
 /// enough for an app's start-up and a warning burst, too little to bury the
 /// log.
@@ -262,8 +262,7 @@ impl AppOutput {
     ) {
         let mut bucket = Bucket::full();
         let mut chunk = [0_u8; 4096];
-        let mut partial = Vec::with_capacity(LINE_BYTES.min(chunk.len()));
-        let mut truncated = false;
+        let mut lines = wire_frame::BoundedLines::new(LINE_BYTES);
         let mut received = 0_usize;
         loop {
             let read = match reader.read(&mut chunk) {
@@ -273,21 +272,15 @@ impl AppOutput {
                 Err(_) => break,
             };
             let bytes = chunk.get(..read).unwrap_or_default();
-            for &byte in bytes {
-                if byte == b'\n' {
-                    self.keep(stream, &mut partial, &mut truncated, file, &mut bucket);
-                } else if partial.len() < LINE_BYTES {
-                    partial.push(byte);
-                } else {
-                    truncated = true;
-                }
-            }
+            lines.push(bytes, |partial, truncated| {
+                self.keep(stream, partial, truncated, file, &mut bucket);
+            });
             received = received.saturating_add(read);
             self.keep_position(stream, received);
         }
-        if !partial.is_empty() || truncated {
-            self.keep(stream, &mut partial, &mut truncated, file, &mut bucket);
-        }
+        lines.finish(|partial, truncated| {
+            self.keep(stream, partial, truncated, file, &mut bucket);
+        });
         // A stream that ends with lines the log never passed on says so even when no later line
         // is: an app that chatters once and exits would otherwise leave the log looking as if
         // everything it wrote had been kept.
@@ -299,17 +292,15 @@ impl AppOutput {
     fn keep(
         &self,
         stream: &'static str,
-        partial: &mut Vec<u8>,
-        truncated: &mut bool,
+        partial: &[u8],
+        truncated: bool,
         file: Option<&Mutex<std::fs::File>>,
         bucket: &mut Bucket,
     ) {
         let mut said = String::from_utf8_lossy(partial).into_owned();
-        if *truncated {
+        if truncated {
             said.push_str("… [truncated]");
         }
-        partial.clear();
-        *truncated = false;
         if let Some(file) = file.filter(|_| stream == "stderr")
             && let Ok(mut file) = file.lock()
         {
@@ -487,12 +478,10 @@ mod tests {
         {
             let app = output();
             let mut bucket = Bucket::full();
-            let mut partial = Vec::new();
-            let mut truncated = false;
             for _ in 0..5000 {
                 // The bucket refilled between each, as lines over time are.
                 bucket.tokens = BURST_LINES;
-                app.keep("stdout", &mut partial, &mut truncated, None, &mut bucket);
+                app.keep("stdout", b"", false, None, &mut bucket);
             }
             assert_eq!(app.relayed.load(Ordering::Relaxed), RELAY_LINES_MAX);
         }

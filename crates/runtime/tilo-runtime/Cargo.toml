@@ -167,6 +167,8 @@ fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands
 # in process, and Linux programs in the local hosted-VM service.
 ush = { path = "../../vm/ush", features = ["quic"] }
+# Bounded line cutting for a tilolang process's stderr relay.
+wire-frame = { path = "../../system/wire-frame" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]

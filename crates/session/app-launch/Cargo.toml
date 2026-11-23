@@ -42,6 +42,8 @@ tilo-service = { path = "../service" }
 # The log target an app's own output is relayed under, which the session log
 # always keeps.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+# Bounded line cutting for what an app writes to its standard streams.
+wire-frame = { path = "../../system/wire-frame" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 # Whether a process the session met is still that process, and still running.
 tilo-process = { path = "../../platform/tilo-process" }
