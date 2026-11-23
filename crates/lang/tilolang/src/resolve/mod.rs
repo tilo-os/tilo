@@ -821,9 +821,29 @@ impl Resolver<'_> {
             "Bool" => *have == Ty::Bool,
             "Int" => *have == Ty::Int,
             "Time" => *have == Ty::Time,
+            "Date" => *have == Ty::Date,
             "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
             "List<File>" => *have == Ty::List(Box::new(Ty::File)),
-            _ => false,
+            other => {
+                // A reference to one of the service's other kinds, where it is one
+                // (`Option<caldav.calendar>`).
+                let Some(inner) = other
+                    .strip_prefix("Option<")
+                    .and_then(|r| r.strip_suffix('>'))
+                else {
+                    return false;
+                };
+                match have {
+                    Ty::Option(item) => match item.as_ref() {
+                        Ty::Record(key) => self
+                            .env
+                            .type_info(key)
+                            .is_some_and(|t| t.origin.as_deref() == Some(inner)),
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            }
         }
     }
 

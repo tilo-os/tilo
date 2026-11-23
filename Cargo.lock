@@ -23656,6 +23656,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-calendar"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "calendar-model",
+ "jiff",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-http",
+ "tilo-dav",
+ "tilo-document",
+ "tilo-net",
+ "tilo-test-env",
+ "tilolang-tilo",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-cli"
 version = "0.1.0"
 dependencies = [

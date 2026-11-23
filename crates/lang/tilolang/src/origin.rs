@@ -93,6 +93,22 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          passed over.",
     ),
     (
+        "caldav.check",
+        "Asks a calendar account for its calendars now: (the account's key). What its server \
+         holds comes in as it does when the server is heard from.",
+    ),
+    (
+        "caldav.answer",
+        "Answers an invitation: (the account's key, the event's key, the address invited, \
+         `accepted`, `declined` or `tentative`). The person's own answer goes to its server, and \
+         their status on the attendee says it.",
+    ),
+    (
+        "caldav.import",
+        "Puts an invitation's iCalendar text into a calendar, once: (the account's key, the \
+         calendar's key, the text).",
+    ),
+    (
         "youtube.search",
         "Searches YouTube's catalogue for the query, as typed: (the query, the kinds it shows, \
          how long its videos run, how recent they are). The channels, playlists and videos it \
@@ -451,6 +467,125 @@ pub const KINDS: &[OriginKind] = &[
                 "kind",
                 "Text",
                 "Its kind, as its app publishes it (`tube.channel`).",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "caldav.calendar",
+        doc: "A calendar: one the workspace's own, or one an account's server holds, which the \
+              system keeps in step with it. Its entries are `caldav.event` records that name it.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The calendar's id: the address its server keeps it at, or one the app gives a \
+                 calendar of the workspace's own.",
+            ),
+            field(
+                "account",
+                "Text",
+                "The key of the account whose server holds it; empty for a calendar of the \
+                 workspace's own, which no server is ever asked about.",
+            ),
+            people("name", "Text", "Its name, as the person reads it."),
+            field(
+                "writable",
+                "Bool",
+                "Whether its server lets its person write it, and the account is not read-only.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "caldav.attendee",
+        doc: "Somebody an entry names: who organises it, or who it invites.",
+        derived: false,
+        fields: &[
+            field("name", "Text", "Their name, as the entry says it."),
+            field("email", "Text", "Their address."),
+            field(
+                "status",
+                "Text",
+                "Whether they come: `needs-action`, `accepted`, `declined` or `tentative`.",
+            ),
+            field(
+                "role",
+                "Text",
+                "What they are to the entry: `required`, `optional` or `chair`.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "caldav.event",
+        doc: "One entry of a calendar, as its server holds it. The fields people change are \
+              written to the server; the rest are the server's.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The entry's id: its `UID`, the name its server and every client know it by.",
+            ),
+            field(
+                "href",
+                "Text",
+                "Where its server keeps it; empty for an entry no server holds.",
+            ),
+            people("title", "Text", "What it is called."),
+            people("start", "Time", "When it starts."),
+            people("end", "Time", "When it ends."),
+            people("all_day", "Bool", "Whether it lasts whole days."),
+            people(
+                "timezone",
+                "Text",
+                "The time zone its wall time is read in: an IANA name, or `floating` for wall \
+                 time nowhere in particular.",
+            ),
+            people("location", "Text", "Where it is."),
+            people("notes", "Text", "What it says: its `DESCRIPTION`, as text."),
+            field(
+                "attendees",
+                "Collection<caldav.attendee>",
+                "Who organises it and who it invites.",
+            ),
+            people(
+                "categories",
+                "Set<Text>",
+                "What it is filed under, as its server's `CATEGORIES`.",
+            ),
+            people(
+                "recurrence",
+                "Text",
+                "How it repeats, as its `RRULE` (`FREQ=WEEKLY;INTERVAL=2`); empty for one \
+                 occurrence.",
+            ),
+            people(
+                "exdates",
+                "Set<Text>",
+                "The days it is left out on, `YYYY-MM-DD` each.",
+            ),
+            field(
+                "day",
+                "Date",
+                "The day it starts on, read in its time zone: what a calendar sorts and counts \
+                 it by.",
+            ),
+            people(
+                "calendar",
+                "Option<caldav.calendar>",
+                "The calendar it is in. A change to it moves the entry: written to the calendar \
+                 it names, and taken out of the one it was in.",
+            ),
+            field(
+                "recurrence_of",
+                "Option<caldav.event>",
+                "The repeating entry this is one occurrence of, changed or cancelled; none for \
+                 an entry of its own.",
+            ),
+            field(
+                "original_start",
+                "Time",
+                "The moment this occurrence would have started, where it is one of a repeat's.",
             ),
         ],
     },
