@@ -162,15 +162,21 @@ impl Layout {
             .min()
     }
 
-    /// The active workspace's selected strip: its recorded one while that
-    /// strip exists, else its first.
-    pub fn active_strip_id(&self) -> Option<StripId> {
-        let workspace = self.active_workspace()?;
+    /// The strip `workspace` shows: its recorded one while that strip exists,
+    /// else its first.
+    #[must_use]
+    pub fn active_strip_for(&self, workspace: &Workspace) -> Option<StripId> {
         self.active_strip
             .get(&workspace.id())
             .copied()
             .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
             .or_else(|| workspace.strips.first().map(|strip| strip.id))
+    }
+
+    /// The active workspace's selected strip: its recorded one while that
+    /// strip exists, else its first.
+    pub fn active_strip_id(&self) -> Option<StripId> {
+        self.active_strip_for(self.active_workspace()?)
     }
 
     /// Whether this device lays the desktop out across several displays,

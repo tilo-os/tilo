@@ -1220,7 +1220,7 @@ fn admit_chrome(
                 .workspaces
                 .iter()
                 .find(|workspace| {
-                    active_strip(tree, workspace) == Some(strip)
+                    tree.active_strip_for(workspace) == Some(strip)
                         && workspace.strips.iter().any(|held| held.id == strip)
                 })
                 .ok_or_else(|| "Strip is no longer active".to_owned())?;
@@ -1411,7 +1411,9 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &Layout) -> Result<Admitted
 
 fn admit_open(tree: &Layout, app: &str) -> Result<Admitted, String> {
     let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
-    let strip = active_strip(tree, workspace).ok_or("Strip unavailable")?;
+    let strip = tree
+        .active_strip_for(workspace)
+        .ok_or("Strip unavailable")?;
     if app.is_empty() {
         return Err("Application unavailable".into());
     }
@@ -1462,7 +1464,7 @@ fn window_here(tab: &tilo_desktop_model::Tab, app: &str) -> bool {
 /// rather than to a second copy that splits their place in it.
 pub fn window_of_app(tree: &Layout, app: &str) -> Option<RouteIds> {
     let workspace = tree.active_workspace()?;
-    let shown = active_strip(tree, workspace);
+    let shown = tree.active_strip_for(workspace);
     let strips = workspace
         .strips
         .iter()
@@ -1513,9 +1515,7 @@ fn admit_pan(tree: &Layout, strip: &str, offset: f64) -> Result<Admitted, String
         return Err("Invalid pan offset".into());
     }
     let strip = StripId(id(strip)?);
-    let shown = tree
-        .active_workspace()
-        .and_then(|workspace| active_strip(tree, workspace));
+    let shown = tree.active_strip_id();
     if shown != Some(strip) {
         return Err("Strip is no longer active".into());
     }
@@ -1538,17 +1538,13 @@ pub fn locate(tree: &Layout, ids: RouteIds) -> Option<&WindowGroup> {
 
 /// The strip a workspace shows: its recorded active strip, else its first.
 pub fn active_strip(tree: &Layout, workspace: &Workspace) -> Option<StripId> {
-    tree.active_strip
-        .get(&workspace.id())
-        .copied()
-        .filter(|id| workspace.strips.iter().any(|s| s.id == *id))
-        .or_else(|| workspace.strips.first().map(|s| s.id))
+    tree.active_strip_for(workspace)
 }
 
 /// The focused window of the active workspace.
 pub fn active_route(tree: &Layout) -> Option<RouteIds> {
     let workspace = tree.active_workspace()?;
-    let strip = active_strip(tree, workspace)?;
+    let strip = tree.active_strip_for(workspace)?;
     let group_id = tree.resolve_active_group(strip, |_| false)?;
     let group = workspace
         .strips
@@ -1747,10 +1743,7 @@ pub fn snapshot_with(
     }
     let active = active_route(tree);
     let active_group = active.and_then(|ids| locate(tree, ids));
-    let shown_strip = tree
-        .active_workspace()
-        .and_then(|w| active_strip(tree, w))
-        .map(|s| s.0.to_string());
+    let shown_strip = tree.active_strip_id().map(|s| s.0.to_string());
     let desktop_pan = presentation.pan.clone().filter(|pan| {
         pan.workspace == tree.active.to_string() && Some(&pan.strip) == shown_strip.as_ref()
     });
