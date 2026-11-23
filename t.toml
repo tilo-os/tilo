@@ -6557,6 +6557,9 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 # that deletes the Rust shell or app proves the replacement lost nothing. `scripts/headless-examples/walk.sh WALK`
 # runs it and brings back the page (walk.md, compare.md) with the baseline's shots beside this
 # tree's; inputs: `only=rust|tl` walks one version, `discover=1` keeps every step's controls.
+# The session runs as an ordinary account in the VM, as a person's desktop runs as the person:
+# Chromium refuses its sandbox as root, and the shell runtime is the person's user service
+# (tools/ci/app-walk.sh).
 [[check]]
 name = "app-walk/{app}"
 run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"

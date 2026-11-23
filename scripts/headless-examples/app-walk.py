@@ -66,7 +66,8 @@ sys.path.insert(0, str(HERE))
 # The session this walks and the tools that act in it: the one harness every
 # check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
 import real_apps  # noqa: E402
-from real_apps import BUILD, Failed, Session, address, prepare, run, until  # noqa: E402
+from real_apps import (  # noqa: E402
+    BUILD, Failed, Session, address, as_account, prepare, run, until)
 
 WALKS = HERE / "app-walks"
 # What a control's identity joins: the record kind it acts on, and the operation,
@@ -1570,13 +1571,19 @@ class Walk:
         self.out.mkdir(parents=True, exist_ok=True)
         log_path = self.out / f"{binary}-{self.variant}.log"
         log = log_path.open("wb")
+        # The stand-in is the person's own program beside the session, as a
+        # service of their login: it runs as the account, and the session
+        # reaches its socket and its ports as the person.
+        argv = [str(path), *args]
+        if self.session.account is not None:
+            argv = [*as_account(self.session.account), *argv]
         if not lines:
-            proc = subprocess.Popen([str(path), *args], stdout=log, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
                                     start_new_session=True)
             self.services.append((proc, log))
             until_value(f"{binary} to be up (see {log_path})", wait or (lambda: True), 30)
             return ""
-        proc = subprocess.Popen([str(path), *args], stdout=subprocess.PIPE, stderr=log,
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=log,
                                 start_new_session=True)
         self.services.append((proc, log))
         # Read the pipe itself, never a buffered reader around it: the reader would take
@@ -2155,7 +2162,7 @@ class Walk:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_text(text)
-        return {"file": str(path)}
+        return {"file": str(self.session.own(path))}
 
     def op_image(self, value) -> dict:
         """Write a picture where a person's file chooser reaches it, and record
@@ -2168,7 +2175,7 @@ class Walk:
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
         path.write_bytes(FIXTURE_PICTURE_PNG)
-        return {"image": str(path)}
+        return {"image": str(self.session.own(path))}
 
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""
