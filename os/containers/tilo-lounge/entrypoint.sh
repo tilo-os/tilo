@@ -28,8 +28,9 @@
 #                               directory, operator.sock)
 #
 # An operator sheds load without stopping the host by writing `spectator-only`
-# or `back-soon` to the workspace's `mode` file in its state directory (`normal`
-# opens it again), which takes effect without a restart; `GET /mode` on this
+# or `back-soon` to
+# $TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/server/mode (`normal`
+# opens it again), which takes effect without a restart; `GET /mode` on the
 # host's listener says which one is in force. The mode a start begins under:
 #   TILO_WORKSPACES_MODE       normal, spectator-only or back-soon
 #
