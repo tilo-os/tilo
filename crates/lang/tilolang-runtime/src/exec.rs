@@ -3156,16 +3156,15 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Denied { reason, .. } | JournalEntry::Failed { reason, .. } => {
             Value::Error(reason.clone())
         }
-        // A read of the clock, a draw and a fetch answer the code that made them where they
-        // are answered; none of them is a step's value.
-        JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
-            Value::Unit
-        }
-        // A write is answered where it is made, and a run that waited answers it there; a
-        // notification and a page's answer are no step's value either.
-        JournalEntry::Wrote { .. } | JournalEntry::Notified | JournalEntry::Page { .. } => {
-            Value::Unit
-        }
+        // A read of the clock, a draw, a fetch and a page's answer answer the code that made
+        // them where they are answered; a write is answered where it is made, and a run that
+        // waited answers it there. None of them is a step's value.
+        JournalEntry::Clock(_)
+        | JournalEntry::Random { .. }
+        | JournalEntry::Web { .. }
+        | JournalEntry::Wrote { .. }
+        | JournalEntry::Notified
+        | JournalEntry::Page { .. } => Value::Unit,
     }
 }
 

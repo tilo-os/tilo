@@ -74,7 +74,7 @@ mod cases {
             "add_stroke",
             vec![
                 Value::resource(&art),
-                Value::None,
+                Value::none(),
                 Value::List(vec![
                     Value::Float(10.0),
                     Value::Float(20.0),
@@ -117,7 +117,7 @@ mod cases {
             "fill_selection",
             vec![
                 Value::resource(&art),
-                Value::None,
+                Value::none(),
                 Value::text("#d24b3a"),
             ],
         );

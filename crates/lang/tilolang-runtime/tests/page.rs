@@ -10,7 +10,7 @@ mod cases {
     use serde_json::json;
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::run::JournalEntry;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Store, Value};
+    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
 
     const READER: &str = r#"app so.tilo.pagedemo "Page demo"
 
@@ -56,7 +56,6 @@ action look(f: Feed) uses page {
 
     struct World {
         rt: Runtime,
-        store: AmStore,
         reader: App,
         feed: tilolang_runtime::ResourceRef,
     }
@@ -70,12 +69,7 @@ action look(f: Feed) uses page {
         }
         reader.load(&rt);
         let feed = rt.create("Feed").unwrap();
-        World {
-            rt,
-            store,
-            reader,
-            feed,
-        }
+        World { rt, reader, feed }
     }
 
     fn feed(rt: &Runtime, feed: &tilolang_runtime::ResourceRef) -> String {

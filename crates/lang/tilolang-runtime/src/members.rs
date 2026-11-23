@@ -319,7 +319,7 @@ impl Core {
                     if let Some(vs) = self.frames.borrow_mut().view_mut() {
                         vs.reads.push((at.id_string(), field.id.clone()));
                     }
-                    if let Ok(Value::Bool(true)) = self.read_value(at, &field, None) {
+                    if self.read_value(at, &field, None) == Ok(Value::Bool(true)) {
                         return Some(self.read_members().iter().map(Member::who).collect());
                     }
                 }

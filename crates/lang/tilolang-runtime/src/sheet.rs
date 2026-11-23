@@ -7,7 +7,6 @@
 //! reference. What the engine answers comes back as rows of texts a view reads without a
 //! document: a sheet's name, then its cells.
 
-use crate::abi::Imp;
 use crate::blob::{BlobHost, FileValue};
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
@@ -170,11 +169,6 @@ impl Core {
             yes: word("sheets-notion-yes", "Yes"),
             no: word("sheets-notion-no", "No"),
         }
-    }
-
-    /// Whether `imp` is one of the spreadsheet calls.
-    pub(crate) fn is_sheet_import(imp: Imp) -> bool {
-        matches!(imp, Imp::SheetFile | Imp::SheetOfFile)
     }
 }
 

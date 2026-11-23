@@ -119,8 +119,8 @@ action open_window(resource: host.Resource) {
         fn choose(
             &self,
             _request: &tilolang_runtime::blob::FileRequest,
-        ) -> Result<Option<tilolang_runtime::blob::FileValue>, String> {
-            Ok(None)
+        ) -> Result<Vec<tilolang_runtime::blob::FileValue>, String> {
+            Ok(Vec::new())
         }
 
         fn save(

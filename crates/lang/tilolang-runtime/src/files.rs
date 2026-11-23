@@ -249,7 +249,7 @@ impl Core {
                 let path = self.text(a.h(0)?)?;
                 self.result(
                     host.list(&path)
-                        .map(|entries| Value::List(entries.iter().map(|entry| entry.value()).collect())),
+                        .map(|entries| Value::List(entries.iter().map(Entry::value).collect())),
                 )
             }
             Imp::FileStat => {
