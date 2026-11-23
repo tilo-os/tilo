@@ -23597,6 +23597,7 @@ dependencies = [
  "tilo-content",
  "tilo-failure",
  "tilo-files",
+ "tilo-media",
  "tilo-render-protocol",
  "tilo-server-protocol",
  "tilo-startup-metrics",

@@ -8,19 +8,19 @@ description = "The calendar origin of tilolang packages: the logic that keeps a 
 
 [dependencies]
 # The workspace's accounts and their sign-ins, as the session tells the connector them.
-accounts = { path = "../../system/accounts", optional = true }
+accounts = { path = "../accounts", optional = true }
 # The iCalendar reader and writer, and the event a server's entry holds: the same code the
 # Calendar app reads and writes its records with.
 calendar-model = { path = "../../../apps/calendar-model", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
-tilo-dav = { path = "../../system/tilo-dav", default-features = false, features = ["client"], optional = true }
+tilo-dav = { path = "../tilo-dav", default-features = false, features = ["client"], optional = true }
 # The rich text an entry's notes are kept as.
-tilo-document = { path = "../../doc/tilo-document", optional = true }
+tilo-document = { path = "../../sdk/tilo-document", optional = true }
 # Whether the device is online: an unreachable calendar server is tried again when the network
 # comes back, followed on a thread of its own.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tokio = { workspace = true, features = ["rt"], optional = true }
 jiff.workspace = true
 serde = { workspace = true, features = ["derive"] }

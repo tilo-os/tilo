@@ -2,11 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-<<<<<<< HEAD
-include = ["*", "tl-notes", "tl-tube", "tl-photos"]
-=======
-include = ["*", "tl-calendar", "tl-notes", "tl-tube"]
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
+include = ["*", "tl-calendar", "tl-notes", "tl-tube", "tl-photos"]
 
 [collections.desktop]
 extends = ["default"]

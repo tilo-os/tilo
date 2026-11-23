@@ -36,11 +36,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Directory names under apps/. The session installs these or a subset.
 # TILO_NESTED_APPS builds fewer (a list of the same names, possibly empty):
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
-<<<<<<< HEAD
-apps=${TILO_NESTED_APPS-"code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity calendar shortcuts"}
-=======
-apps=${TILO_NESTED_APPS-"code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity photos shortcuts"}
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
+apps=${TILO_NESTED_APPS-"code-editor word-processor chat settings sheets tasks file-explorer browser terminal pdf-viewer activity shortcuts"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0

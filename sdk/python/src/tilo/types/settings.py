@@ -637,11 +637,7 @@ RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
 
 class Root(Resource):
     """Settings — `settings.root`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     def inspect_input_sources(self,
         *,
         query: str | None = None,
@@ -730,11 +726,7 @@ class Root(Resource):
 
 class Appearance(Resource):
     """Appearance — `settings.appearance`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     mode: str
     dark_theme: str
     light_theme: str
@@ -784,11 +776,7 @@ class Appearance(Resource):
 
 class AppearanceDevice(Resource):
     """Appearance on this device — `settings.appearance-device`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def distribution_defaults(self) -> Any | None:
         """Read only."""
@@ -797,11 +785,7 @@ class AppearanceDevice(Resource):
 
 class Accessibility(Resource):
     """Accessibility — `settings.accessibility`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     large_cursor: bool
     cursor_size: int
     cursor_theme: str
@@ -857,21 +841,13 @@ class Accessibility(Resource):
 
 class AccessibilityDevice(Resource):
     """Accessibility on this device — `settings.accessibility-device`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     apply_to_sign_in: bool
 
 
 class Input(Resource):
     """Input — `settings.input`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     touchpad_natural_scroll: bool
     mouse_natural_scroll: bool
     tap_to_click: bool
@@ -965,11 +941,7 @@ class Input(Resource):
 
 class InputDevice(Resource):
     """Input on this device — `settings.input-device`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     touchpad_enabled: bool
     touchpad_disabled_on_external_mouse: bool
     @property
@@ -1164,11 +1136,7 @@ class InputDevice(Resource):
 
 class TextAssistance(Resource):
     """Spelling and text — `settings.text-assistance`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     check_spelling: bool
     auto_correct: bool
     spelling_language: str
@@ -1176,11 +1144,7 @@ class TextAssistance(Resource):
 
 class Power(Resource):
     """Power — `settings.power`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     auto_suspend: bool
     suspend_minutes: int
     battery_suspend_minutes: int | None
@@ -1219,11 +1183,7 @@ class Power(Resource):
 
 class Widgets(Resource):
     """Widgets — `settings.widgets`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     music: WidgetPrefs
     team: WidgetPrefs
     calendar: WidgetPrefs
@@ -1232,11 +1192,7 @@ class Widgets(Resource):
 
 class SearchHistory(Resource):
     """Search history — `settings.search_history`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     chosen: str
     chosen_for_text: str
     places: Any
@@ -1244,11 +1200,7 @@ class SearchHistory(Resource):
 
 class Updates(Resource):
     """Updates — `settings.updates`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def auto(self) -> bool:
         """Read only."""
@@ -1281,11 +1233,7 @@ class Updates(Resource):
 
 class Notifications(Resource):
     """Notifications — `settings.notifications`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     do_not_disturb: bool
     show_banners: bool
     show_previews: bool
@@ -1322,11 +1270,7 @@ class Notifications(Resource):
 
 class Audio(Resource):
     """Sound — `settings.audio`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     system_sounds: SystemSoundPrefs
     balance: float
     @property
@@ -1361,11 +1305,7 @@ class Audio(Resource):
 
 class AudioDevice(Resource):
     """Sound on this device — `settings.audio-device`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def output_device(self) -> str | None:
         """Read only."""
@@ -1398,11 +1338,7 @@ class AudioDevice(Resource):
 
 class Display(Resource):
     """Displays — `settings.display`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def auto_brightness(self) -> bool:
         """Read only."""
@@ -1436,11 +1372,7 @@ class Display(Resource):
 
 class NightLight(Resource):
     """Night light — `settings.night-light`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     night_light: bool
     night_light_temperature: int
     night_light_schedule: bool
@@ -1448,11 +1380,7 @@ class NightLight(Resource):
 
 class Locale(Resource):
     """Region and language — `settings.locale`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     currency: Currency
     date_format: DateStyle
     time_format: TimeStyle
@@ -1463,11 +1391,7 @@ class Locale(Resource):
 
 class Continuity(Resource):
     """Continuity — `settings.continuity`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -1540,11 +1464,7 @@ class Continuity(Resource):
 
 class Shortcuts(Resource):
     """Keyboard shortcuts — `settings.shortcuts`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def bindings(self) -> Any:
         """Read only."""
@@ -1597,11 +1517,7 @@ class Shortcuts(Resource):
 
 class ShellViews(Resource):
     """Shell views — `shell-views`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def bindings(self) -> dict[str, Binding]:
         """Read only."""
@@ -1654,31 +1570,19 @@ class ShellViews(Resource):
 
 class DesktopControls(Resource):
     """Desktop controls — `settings.desktop-controls`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     vim_mode: bool
 
 
 class DesktopControlsDevice(Resource):
     """Desktop controls on this device — `settings.desktop-controls-device`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     hide_top_bar: bool
 
 
 class AgentProviders(Resource):
     """Agent model providers — `settings.agent-providers`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def config(self) -> ProviderConfig:
         """Read only."""
@@ -1707,11 +1611,7 @@ class AgentProviders(Resource):
 
 class HostedAgentProviders(Resource):
     """Hosted agent model providers — `settings.hosted-agent-providers`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def hosted(self) -> HostedProfiles:
         """Read only."""
@@ -1732,11 +1632,7 @@ class HostedAgentProviders(Resource):
 
 class DefaultApps(Resource):
     """Default apps — `settings.default-apps`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def handlers(self) -> dict[str, str]:
         """Read only."""
@@ -1761,21 +1657,13 @@ class DefaultApps(Resource):
 
 class Clock(Resource):
     """Clock — `settings.clock`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     automatic_zone: bool
 
 
 class DisplayPlacement(Resource):
     """Display layout — `settings.display-placement`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def placement(self) -> Any:
         """Read only."""
@@ -1796,11 +1684,7 @@ class DisplayPlacement(Resource):
 
 class AutomaticDisplay(Resource):
     """Automatic display input — `settings.automatic-display`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def automatic_display_input(self) -> bool:
         """Read only."""
@@ -1821,11 +1705,7 @@ class AutomaticDisplay(Resource):
 
 class DisplayChange(Resource):
     """Display change — `settings.display-change`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def id(self) -> int:
         """Read only."""
@@ -1858,11 +1738,7 @@ class DisplayChange(Resource):
 
 class OskSources(Resource):
     """On-screen keyboard layouts — `settings.osk-sources`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     @property
     def layout(self) -> str:
         """Read only."""
@@ -1891,11 +1767,7 @@ class OskSources(Resource):
 
 class DeviceVpn(Resource):
     """Your devices as a VPN — `settings.device-vpn`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     exit: bool
     @property
     def through(self) -> Any | None:
@@ -1969,21 +1841,13 @@ class DeviceVpn(Resource):
 
 class Identity(Resource):
     """Your colour — `settings.identity`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     colour: str | None
 
 
 class NetworkUsage(Resource):
     """Data usage — `settings.network-usage`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     reset_day: Any
     limit_gb: int
     @property
@@ -2087,11 +1951,7 @@ class McpServer(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-<<<<<<< HEAD
     __surface__ = "so.tilo.settings@283626c109ae7b8d"
-=======
-    __surface__ = "so.tilo.settings@d4364d82d8a5ad57"
->>>>>>> 76216f223d7 (feat(calendar): a tilolang calendar replaces the native app)
     accounts: list[Entry[ListedAccount]]
 
     def publish_browser_identity(self,
