@@ -590,6 +590,7 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
     resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, false>(&[root], node_map, focused, scale, resources)
+        .0
 }
 
 /// Adapt the redacted semantic tree to native-provider requirements.
@@ -622,7 +623,7 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     scale: f64,
     resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources).0
 }
 
 pub(crate) fn build_tree_update_bound<S: BuildHasher>(
@@ -631,7 +632,7 @@ pub(crate) fn build_tree_update_bound<S: BuildHasher>(
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, &[])
+    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, &[]).0
 }
 
 pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
@@ -640,6 +641,28 @@ pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
+    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, &[]).0
+}
+
+/// [`build_tree_update_bound`] with each node's [`AccessNode::title`] beside
+/// its id: how a test finds a row by the line it is titled with.
+pub(crate) fn build_tree_update_with_titles_bound<S: BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+) -> (TreeUpdate, Vec<(AkNodeId, String)>) {
+    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, &[])
+}
+
+/// [`build_presentation_tree_bound`] with each node's
+/// [`AccessNode::title`] beside its id.
+pub(crate) fn build_presentation_tree_with_titles_bound<S: BuildHasher>(
+    roots: &[&dyn Widget],
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+) -> (TreeUpdate, Vec<(AkNodeId, String)>) {
     build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, &[])
 }
 
@@ -652,7 +675,7 @@ pub(crate) fn build_presentation_with_resources_bound<S: BuildHasher>(
     scale: f64,
     resources: &[tilo_actions::ResourceSpec],
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, resources).0
 }
 
 fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
@@ -661,7 +684,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     focused: Option<TaffyNodeId>,
     scale: f64,
     resources: &[tilo_actions::ResourceSpec],
-) -> TreeUpdate {
+) -> (TreeUpdate, Vec<(AkNodeId, String)>) {
     let ptr_to_taffy = reverse_node_map::<S, BOUND>(roots, node_map);
 
     let focused_ak = focused.map(|t| AkNodeId(u64::from(t).saturating_add(1)));
@@ -672,6 +695,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         focused,
         walk_counter: 0,
         nodes: Vec::new(),
+        titles: Vec::new(),
         active_descendant: None,
         owned_active_descendant: None,
         routes: Routes::default(),
@@ -687,6 +711,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     let mut root_children = top.children;
     let TreeWalk {
         mut nodes,
+        titles,
         active_descendant,
         ..
     } = tree_walk;
@@ -710,12 +735,15 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         _ => ROOT_ID,
     };
 
-    TreeUpdate {
-        nodes,
-        tree: Some(TreeInfo::new(ROOT_ID)),
-        tree_id: accesskit::TreeId::ROOT,
-        focus,
-    }
+    (
+        TreeUpdate {
+            nodes,
+            tree: Some(TreeInfo::new(ROOT_ID)),
+            tree_id: accesskit::TreeId::ROOT,
+            focus,
+        },
+        titles,
+    )
 }
 
 fn append_resource_nodes(
@@ -793,6 +821,9 @@ struct TreeWalk<'m, const BOUND: bool> {
     focused: Option<TaffyNodeId>,
     walk_counter: u64,
     nodes: Vec<(AkNodeId, AkNode)>,
+    /// Each exported node's [`AccessNode::title`], by its node id: the line a
+    /// row is found by, beside the joined name assistive technology reads.
+    titles: Vec<(AkNodeId, String)>,
     active_descendant: Option<AkNodeId>,
     owned_active_descendant: Option<AkNodeId>,
     routes: Routes,
@@ -900,6 +931,9 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
         ak.set_children(my_children);
 
         self.nodes.push((id, ak));
+        if let Some(title) = &access.title {
+            self.titles.push((id, title.clone()));
+        }
         parent.children.push(id);
     }
 
@@ -963,6 +997,9 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
         ak.set_children(my_children);
 
         self.nodes.push((id, ak));
+        if let Some(title) = &access.title {
+            self.titles.push((id, title.clone()));
+        }
         parent.children.push(id);
     }
 }

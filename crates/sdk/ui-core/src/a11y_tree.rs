@@ -277,6 +277,9 @@ pub struct SemanticNode {
     pub role: Role,
     /// Already i18n-resolved.
     pub name: Option<String>,
+    /// The row's own title, the line its [`name`](Self::name) starts with, kept
+    /// apart from the rest of it ([`AccessNode::title`](crate::a11y::AccessNode::title)).
+    pub title: Option<String>,
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
     /// What is said after the name: a dialog's situation and keys.
@@ -408,6 +411,7 @@ impl SemanticTree {
                 durable_identity: true,
                 role: Role::Window,
                 name: Some(crate::i18n::widget_format("window-root-name", &[])),
+                title: None,
                 value: None,
                 description: None,
                 state: AccessState::default(),
@@ -646,6 +650,7 @@ impl SemanticTree {
                 durable_identity: true,
                 role: Role::Window,
                 name: Some(crate::i18n::widget_format("window-root-name", &[])),
+                title: None,
                 value: None,
                 description: None,
                 state: AccessState::default(),
@@ -1544,6 +1549,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             durable_identity: durable,
             role: access.role,
             name: access.name.clone(),
+            title: access.title.clone(),
             value: if access.state.protected {
                 None
             } else {
@@ -1620,6 +1626,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             durable_identity: durable,
             role: access.role,
             name: access.name.clone(),
+            title: access.title.clone(),
             value: if access.state.protected {
                 None
             } else {
@@ -1960,6 +1967,7 @@ mod tests {
                     durable_identity: true,
                     role: Role::Button,
                     name: Some("Save".into()),
+                    title: None,
                     value: None,
                     description: None,
                     state: AccessState::default(),

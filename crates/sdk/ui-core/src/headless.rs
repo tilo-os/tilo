@@ -33,7 +33,10 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::AccessNode;
-use crate::accesskit_bridge::{build_presentation_tree_bound, build_tree_update_bound};
+use crate::accesskit_bridge::{
+    build_presentation_tree_bound, build_presentation_tree_with_titles_bound,
+    build_tree_update_bound, build_tree_update_with_titles_bound,
+};
 use crate::app_core::{AppCore as _, ControlCore as _, KeyCore as _};
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
@@ -4939,6 +4942,23 @@ impl FrameHarness {
     /// A host that draws at a device scale converts them to the screen with
     /// the rest of its layout, and never divides them by that scale again.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
+        self.a11y_export().0
+    }
+
+    /// Every row title the exported accessibility tree carries, with the id of
+    /// the node that says it: the line a row is titled with, apart from the
+    /// rest of its accessible name.
+    pub fn a11y_row_titles(&self) -> Vec<(accesskit::NodeId, String)> {
+        self.a11y_export().1
+    }
+
+    /// The exported accessibility tree and, beside it, each node's row title.
+    fn a11y_export(
+        &self,
+    ) -> (
+        Vec<(accesskit::NodeId, accesskit::Node)>,
+        Vec<(accesskit::NodeId, String)>,
+    ) {
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
         if self.history.is_none()
@@ -4947,21 +4967,21 @@ impl FrameHarness {
                 .as_deref()
                 .is_some_and(|p| p.is_presented())
         {
-            return build_tree_update_bound(
+            let (update, titles) = build_tree_update_with_titles_bound(
                 self.root.as_ref(),
                 &exported.nodes,
                 exported.focus(self.focused),
                 1.0,
-            )
-            .nodes;
+            );
+            return (update.nodes, titles);
         }
-        build_presentation_tree_bound(
+        let (update, titles) = build_presentation_tree_with_titles_bound(
             &self.presentation_roots(),
             &exported.nodes,
             exported.focus(self.focused),
             1.0,
-        )
-        .nodes
+        );
+        (update.nodes, titles)
     }
 
     /// The whole accessibility tree as one update, as the native runner hands it to a platform adapter
@@ -4987,17 +5007,36 @@ impl FrameHarness {
 
     /// The id of the exported accessibility node whose accessible name is
     /// `name` — the handle a headless test uses to address an element that has
-    /// no widget of it (a table row, a clip on a timeline track).
+    /// no widget of it (a table row, a clip on a timeline track) — or whose row
+    /// title is exactly `name`: a list row is named by all of its text, its
+    /// title and its secondary line, so the line it is titled with is how a
+    /// test finds it, whole and never as part of another row's title.
     ///
-    /// Returns `None` when nothing has that name this frame, which is a
-    /// meaningful failure: an element a test cannot name is one a screen-reader
-    /// user cannot find either.
+    /// Returns `None` when nothing has that name or title this frame, which is
+    /// a meaningful failure: an element a test cannot name is one a
+    /// screen-reader user cannot find either.
     pub fn a11y_node_named(&self, name: &str) -> Option<accesskit::NodeId> {
-        self.drain_component_wakes();
-        self.a11y_nodes()
-            .into_iter()
-            .find(|(_, n)| n.label() == Some(name))
-            .map(|(id, _)| id)
+        self.a11y_nodes_named(name).into_iter().next()
+    }
+
+    /// The ids of every exported node whose accessible name is `name`, or whose
+    /// row title is exactly `name`, in tree order: a list row is named by all
+    /// of its text, its title and its secondary line, so the line it is titled
+    /// with finds it, whole and never as part of another row's title. Nodes
+    /// named `name` come before rows titled it.
+    pub fn a11y_nodes_named(&self, name: &str) -> Vec<accesskit::NodeId> {
+        let (nodes, titles) = self.a11y_export();
+        let titled: std::collections::HashMap<_, _> = titles.into_iter().collect();
+        let mut named: Vec<accesskit::NodeId> = nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some(name))
+            .map(|(id, _)| *id)
+            .collect();
+        named.extend(nodes.iter().filter_map(|(id, node)| {
+            (node.label() != Some(name) && titled.get(id).is_some_and(|title| title == name))
+                .then_some(*id)
+        }));
+        named
     }
 
     /// The accessibility node the exported tree currently marks focused — what a screen reader would be

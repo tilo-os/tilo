@@ -317,6 +317,14 @@ pub struct AccessNode {
     pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
+    /// The row's own title, the line its [`name`](Self::name) starts with, kept
+    /// apart from everything said after it. A list row's name joins its title
+    /// and its secondary line ("Grace Hopper, Welcome to the lab"); this is
+    /// the title alone, so a person or a test looking for a row by the line it
+    /// is titled with finds it whatever the rest says. `None` for anything
+    /// that is not a row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// `name` is a fallback the widget found for itself (the value it shows) rather than words given
     /// for it.
     #[serde(default, skip_serializing_if = "not")]
@@ -440,6 +448,7 @@ impl AccessNode {
             semantic_key: None,
             action_target: None,
             name: None,
+            title: None,
             name_found: false,
             description: None,
             value: None,
@@ -592,6 +601,13 @@ impl AccessNode {
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
+        self
+    }
+
+    /// The title the node's [`name`](Self::name) starts with, kept apart for
+    /// anything looking the node up by the line it is titled with.
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into()).filter(|title| !title.is_empty());
         self
     }
 
