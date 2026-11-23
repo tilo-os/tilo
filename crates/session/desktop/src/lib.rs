@@ -19,7 +19,6 @@ pub mod display_identify;
 pub mod edges;
 pub mod emoji;
 pub mod feedback;
-pub mod feedback_picker;
 pub mod follow_banner;
 pub mod here;
 pub mod launchpad;
