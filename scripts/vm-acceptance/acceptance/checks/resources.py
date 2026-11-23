@@ -1519,11 +1519,14 @@ printf '%s' __SECRET__ | jq -c --arg invocation "$(cat /proc/sys/kernel/random/u
   '{version: 2, message: {Invoke: {invocation: $invocation,
     target: {provider: "greeter", address: {resource: "greeter", action: "sign-in"}},
     argument: {Json: .}}}}' \
-  | tilo-control --socket "$gsock" raw - >/tmp/acc-signin.out 2>&1
+  | timeout 20 tilo-control --socket "$gsock" raw - >/tmp/acc-signin.out 2>&1
 um= sess= shell= frame= usable=
-i=0
-while [ $i -lt 1500 ]; do
-  i=$((i + 1)); t=$(now)
+# Bounded by the clock, not a count of polls: a state-dump that hangs takes up to 3 s
+# a poll, and the probe must still print what it saw well inside its ssh timeout.
+deadline=$(awk -v t="$t0" 'BEGIN { printf "%.3f", t + __WAIT_S__ }')
+while :; do
+  t=$(now)
+  awk -v t="$t" -v d="$deadline" 'BEGIN { exit !(t < d) }' || break
   [ -n "$um" ] || { systemctl is-active -q "user@$uid.service" && um=$t; }
   [ -n "$sess" ] || { pgrep -u "$uid" -f '^/bin/bash /usr/libexec/tilo-session' >/dev/null && sess=$t; }
   # The wrapper starts the compositor from bash under the same process name; the
@@ -1536,6 +1539,7 @@ while [ $i -lt 1500 ]; do
   sleep 0.02
 done
 grep -m1 '^FRAME-LIFECYCLE serial=[0-9]* event=render-retired ' "$log" 2>/dev/null
+[ -n "$frame" ] || { echo "LOG $(ls -l "$log" 2>&1)"; grep -am3 'FRAME-LIFECYCLE' "$log" 2>/dev/null | cut -c1-300; }
 echo "SIGNIN t0=$t0 user_manager=$um session=$sess shell=$shell first_frame_us=$frame usable=$usable"
 cut -c1-300 /tmp/acc-signin.out
 """
@@ -1551,6 +1555,9 @@ sleep 3
 echo "SIGNED-OUT shell=$(pgrep -u __USER__ -x tilo-session | head -1)"
 """
 SIGNIN_LINE = re.compile(r"^SIGNIN (.*)$", re.M)
+# How long the sign-in probe waits for every step of the session's start, from the
+# sign-in request: the old loop of 1500 polls ran 30 s when each poll was quick.
+SIGN_IN_WAIT_S = 60
 
 
 def dev_account() -> tuple[str, str]:
@@ -1589,8 +1596,9 @@ def parse_sign_in(text: str) -> dict:
 
 def sign_in(ctx, user: str, secret: str, label: str) -> dict:
     script = SIGN_IN.replace("__USER__", shlex.quote(user)).replace(
-        "__SECRET__", shlex.quote(json.dumps({"password": secret})))
-    text = ctx.vm.root_exec(script, timeout=120)
+        "__SECRET__", shlex.quote(json.dumps({"password": secret}))).replace(
+        "__WAIT_S__", str(SIGN_IN_WAIT_S))
+    text = ctx.vm.root_exec(script, timeout=SIGN_IN_WAIT_S + 60)
     ctx.write(f"R08-sign-in-{label}.txt", text)
     return parse_sign_in(text)
 
