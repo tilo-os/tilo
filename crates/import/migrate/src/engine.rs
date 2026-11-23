@@ -791,14 +791,31 @@ impl Lander<'_> {
         kind: &str,
         land: impl FnOnce(&mut dyn Workspace, &Invocation) -> Result<Landed>,
     ) -> Result<()> {
+        self.once_of(key, kind, 1, land)
+    }
+
+    /// Land one item, `key`, that holds `count` things of `kind` (an address book's contacts),
+    /// unless the workspace has it.
+    ///
+    /// # Errors
+    /// The run was stopped, the workspace refused, or the journal could not be kept.
+    pub fn once_of(
+        &mut self,
+        key: &str,
+        kind: &str,
+        count: usize,
+        land: impl FnOnce(&mut dyn Workspace, &Invocation) -> Result<Landed>,
+    ) -> Result<()> {
         if self.has(key) {
             self.journal.already_there = self.journal.already_there.saturating_add(1);
             return Ok(());
         }
         self.stop_asked()?;
         self.started()?;
-        let landed = land(&mut *self.workspace, self.invocation)?;
-        self.noted(key, kind, &landed)
+        match land(&mut *self.workspace, self.invocation)? {
+            Landed::One => self.landed([key.to_owned()], kind, count),
+            already @ Landed::Already => self.noted(key, kind, &already),
+        }
     }
 
     /// Land those of `items` the workspace lacks, together, as `kind`.

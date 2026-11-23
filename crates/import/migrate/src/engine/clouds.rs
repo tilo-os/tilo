@@ -283,7 +283,7 @@ fn connected_account(cx: &super::Cx<'_>, source: &Source, named: Option<&str>) -
 
 /// The drive `account` names, reached with `credentials`.
 #[cfg(target_os = "linux")]
-pub(super) fn open_with(
+pub(crate) fn open_with(
     account: &Account,
     credentials: Arc<dyn cloud_source::CredentialSource>,
 ) -> Result<Arc<dyn CloudSource>> {
@@ -295,7 +295,7 @@ pub(super) fn open_with(
 
 /// The drive `account` names: Files' providers are Linux's for now.
 #[cfg(not(target_os = "linux"))]
-pub(super) fn open_with(
+pub(crate) fn open_with(
     account: &Account,
     _: Arc<dyn cloud_source::CredentialSource>,
 ) -> Result<Arc<dyn CloudSource>> {

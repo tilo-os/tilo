@@ -86,12 +86,12 @@ impl Tasks {
             ));
         }
         let title = text(args, "title");
-        if let Some(refused) = &self.refused_title
-            && title == *refused
+        if let Some(refused_title) = &self.refused_title
+            && title == *refused_title
         {
             bail!(refused("An issue's title fits on a line"));
         }
-        let (url, reference) = self
+        let (url, _) = self
             .origins
             .get(&id_of(&text(args, "origin")))
             .cloned()
@@ -145,11 +145,20 @@ impl Tasks {
                 issue.project = args.get("p").and_then(Value::as_str).map(str::to_owned);
             }
             "move_to" => {
-                issue.parent = args.get("parent").and_then(Value::as_str).map(str::to_owned);
+                issue.parent = args
+                    .get("parent")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
             }
             "relate" => issue.links.push(text(args, "other")),
-            "assign" | "estimate" | "schedule" | "label" | "set_priority_none"
-            | "set_priority_low" | "set_priority_medium" | "set_priority_high"
+            "assign"
+            | "estimate"
+            | "schedule"
+            | "label"
+            | "set_priority_none"
+            | "set_priority_low"
+            | "set_priority_medium"
+            | "set_priority_high"
             | "set_priority_urgent" => {}
             other => bail!(refused(format!("Tasks has no {other} here"))),
         }
@@ -167,21 +176,23 @@ impl Workspace for Tasks {
             "tasks#open" => Ok(Answer::of(None)),
             "so.tilo.tasks#new_project" => {
                 self.areas += 1;
-                Ok(Answer::of(Some(json!({"id": format!("area-{}", self.areas)}))))
+                Ok(Answer::of(Some(
+                    json!({"id": format!("area-{}", self.areas)}),
+                )))
             }
             "so.tilo.tasks#add_origin" => {
                 self.made += 1;
                 let id = format!("origin-{}", self.made);
-                self.origins.insert(
-                    id.clone(),
-                    (text(&args, "url"), text(&args, "reference")),
-                );
+                self.origins
+                    .insert(id.clone(), (text(&args, "url"), text(&args, "reference")));
                 Ok(Answer::of(Some(json!({"id": id}))))
             }
             "so.tilo.tasks#import_issue" => self.import_issue(&args),
             "so.tilo.contacts#named_or_new" => {
                 self.contacts += 1;
-                Ok(Answer::of(Some(json!({"id": format!("contact-{}", self.contacts)}))))
+                Ok(Answer::of(Some(
+                    json!({"id": format!("contact-{}", self.contacts)}),
+                )))
             }
             "so.tilo.lang.discussion#comment" => self.comment(&args).map(|()| Answer::of(None)),
             other => {
@@ -191,7 +202,8 @@ impl Workspace for Tasks {
                 let Some((address, verb)) = rest.rsplit_once('#') else {
                     bail!("no action {other}");
                 };
-                self.apply_item(address, verb, &args).map(|()| Answer::of(None))
+                self.apply_item(address, verb, &args)
+                    .map(|()| Answer::of(None))
             }
         }
     }
@@ -271,9 +283,7 @@ fn reviewed(place: &Place) {
         title: "Acme".into(),
         groups: Vec::new(),
     });
-    place
-        .keep(&place.path(LINEAR, "service.json"), &journal)
-        .unwrap();
+    place.keep_field(LINEAR, "service", &journal).unwrap();
 }
 
 /// One import of `issues` into `tasks`, as `tilo migrate start linear` makes it once Linear answered.
@@ -385,7 +395,10 @@ fn a_run_cut_off_part_way_is_finished_by_the_next_without_making_anything_twice(
     let cut = invocation(&place, &mut tasks, &issues, "invocation-1");
     assert!(cut.is_err());
     let made = tasks.issues.len();
-    assert!(made > 0 && made < 450, "{made} issues were made before the cut");
+    assert!(
+        made > 0 && made < 450,
+        "{made} issues were made before the cut"
+    );
     assert_eq!(landed(&place), 0, "an unfinished hand-over lands nothing");
 
     tasks.drops_after = None;
@@ -460,13 +473,12 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
     let made = |at: usize| &tasks.issues[&by_page(&tasks, &page(at)).unwrap()];
     assert_eq!(made(250).parent, by_page(&tasks, &page(10)));
     let fifteen = by_page(&tasks, &page(15)).unwrap();
-    assert!(
-        made(260).links.contains(&fifteen),
-        "{:?}",
-        made(260).links
-    );
+    assert!(made(260).links.contains(&fifteen), "{:?}", made(260).links);
     let long = made(290);
-    assert_eq!(long.title.chars().count(), issues[290].title.chars().count());
+    assert_eq!(
+        long.title.chars().count(),
+        issues[290].title.chars().count()
+    );
     assert_eq!(long.body, issues[290].body, "its description is kept whole");
 }
 

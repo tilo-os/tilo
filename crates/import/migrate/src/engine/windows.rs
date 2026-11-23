@@ -42,7 +42,9 @@ impl Source for Windows {
             }
         } else {
             Here {
-                unavailable: Some("Windows keeps these folders; this computer runs no Windows".into()),
+                unavailable: Some(
+                    "Windows keeps these folders; this computer runs no Windows".into(),
+                ),
                 ..Here::default()
             }
         }
@@ -196,9 +198,10 @@ fn parse(bytes: &[u8]) -> Result<Vec<Named>, String> {
 
 /// What a person calls a folder Windows names `label`.
 fn label_of(role: Role, label: &str, path: &Path) -> String {
-    let name = path
-        .file_name()
-        .map_or_else(|| label.to_owned(), |name| name.to_string_lossy().into_owned());
+    let name = path.file_name().map_or_else(
+        || label.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     match role {
         Role::Known => name,
         Role::OneDrive => format!("OneDrive ({name})"),

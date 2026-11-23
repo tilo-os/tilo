@@ -15,7 +15,6 @@
 //! moved it.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use crate::service::{
@@ -66,7 +65,6 @@ const IMPORT_ISSUE: &str = "import_issue";
 const EDIT_TEXT: &str = "edit-text";
 const FILE: &str = "file";
 const MOVE_TO: &str = "move_to";
-const SET_STATUS: &str = "set_status";
 const ESTIMATE: &str = "estimate";
 const SCHEDULE: &str = "schedule";
 const LABEL: &str = "label";
@@ -856,11 +854,7 @@ impl Landing<'_, '_> {
     /// Make those of `issues` no import made yet, keeping each one's address by its page the
     /// moment Tasks answers it. A sub-issue whose parent is already here is moved under it; one
     /// whose parent has not come over yet waits for it.
-    fn make_all(
-        &mut self,
-        issues: &[IncomingIssue],
-        refused: &mut Vec<RefusedItem>,
-    ) -> Result<()> {
+    fn make_all(&mut self, issues: &[IncomingIssue], refused: &mut Vec<RefusedItem>) -> Result<()> {
         for issue in issues {
             if self.kept.issues.contains_key(&issue.url) {
                 continue;
@@ -882,7 +876,10 @@ impl Landing<'_, '_> {
         let service = service_name(&issue.source);
         let made = self.act(TASKS_APP, ADD_ORIGIN, origin_args(issue, service))?;
         let origin = created_id(&made).ok_or_else(|| {
-            anyhow!("Tasks made an origin for {} but did not say its id: {made:?}", issue.key)
+            anyhow!(
+                "Tasks made an origin for {} but did not say its id: {made:?}",
+                issue.key
+            )
         })?;
         let made = self.act(
             TASKS_APP,
@@ -895,7 +892,10 @@ impl Landing<'_, '_> {
             }),
         )?;
         let id = created_id(&made).ok_or_else(|| {
-            anyhow!("Tasks made {} but did not say its id: {made:?}", issue.identifier)
+            anyhow!(
+                "Tasks made {} but did not say its id: {made:?}",
+                issue.identifier
+            )
         })?;
         // The address the issue is changed at, kept before anything else is asked of it.
         let address = Self::task_address(&id);
@@ -927,11 +927,9 @@ impl Landing<'_, '_> {
                 Ok(()) => {
                     self.kept.applied.insert(issue.url.clone());
                 }
-                Err(error) if refused_for_good(&error) => refused.push(refusal(
-                    &issue.key,
-                    &reference_of(&issue.url),
-                    &error,
-                )),
+                Err(error) if refused_for_good(&error) => {
+                    refused.push(refusal(&issue.key, &reference_of(&issue.url), &error))
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -982,7 +980,11 @@ impl Landing<'_, '_> {
         }
         // Someone given the issue before they joined the workspace is a contact of its book:
         // found by the name the service had for them, or added, and the task is theirs.
-        if let Some(name) = issue.assignee.as_deref().and_then(|who| who.strip_prefix("outside:")) {
+        if let Some(name) = issue
+            .assignee
+            .as_deref()
+            .and_then(|who| who.strip_prefix("outside:"))
+        {
             match self.assign_contact(&path, name) {
                 // The workspace keeps no address book here: the issue still lands, unassigned.
                 Err(error) if refused_for_good(&error) => {}
@@ -1544,7 +1546,7 @@ fn page_path(pages: &[IncomingPage], page: &IncomingPage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migrate::workspace::{Answer, Refused};
+    use crate::engine::writer::{Answer, Refused};
 
     #[test]
     fn a_note_an_earlier_run_imported_is_told_by_its_code() {

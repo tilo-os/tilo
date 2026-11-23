@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 /// How often a step the workspace said to ask again is asked again before the run gives up: each

@@ -105,7 +105,10 @@ impl Source for SignedIn {
             };
         }
         Here {
-            here: Some(serde_json::json!(format!("{} account(s)", scan.found.len()))),
+            here: Some(serde_json::json!(format!(
+                "{} account(s)",
+                scan.found.len()
+            ))),
             next: Some(format!("tilo migrate review {}", row.key)),
             ..Here::default()
         }
@@ -203,8 +206,16 @@ fn scan(home: &Path) -> Scan {
     let config = config_dir(home);
     let mut scan = Scan::default();
     for (relative, origin, label) in [
-        ("goa-1.0/accounts.conf", Origin::Gnome, "GNOME Online Accounts"),
-        ("Nextcloud/nextcloud.cfg", Origin::Nextcloud, "the Nextcloud app's accounts"),
+        (
+            "goa-1.0/accounts.conf",
+            Origin::Gnome,
+            "GNOME Online Accounts",
+        ),
+        (
+            "Nextcloud/nextcloud.cfg",
+            Origin::Nextcloud,
+            "the Nextcloud app's accounts",
+        ),
         ("rclone/rclone.conf", Origin::Rclone, "rclone's accounts"),
     ] {
         match metadata(&config, &config.join(relative)) {
@@ -500,9 +511,7 @@ fn tilo(config: &Path, scan: &mut Scan) {
     let listed = (|| -> Result<Vec<Account>, ()> {
         // The home's `tilo` folder is read as part of the wider config folder: a redirected
         // folder is not read.
-        let Some(bytes) =
-            metadata_bytes(config, &accounts::person::staged_path_in(&root))?
-        else {
+        let Some(bytes) = metadata_bytes(config, &accounts::person::staged_path_in(&root))? else {
             return Ok(Vec::new());
         };
         let record = tilo_resource::Replica::<accounts::person::AccountList>::load(&bytes)
@@ -512,7 +521,8 @@ fn tilo(config: &Path, scan: &mut Scan) {
         Ok(record.all())
     })();
     let Ok(listed) = listed else {
-        scan.unreadable.push("this computer's Tilo accounts could not be read".to_owned());
+        scan.unreadable
+            .push("this computer's Tilo accounts could not be read".to_owned());
         return;
     };
     for account in listed {
@@ -583,7 +593,12 @@ fn windows(scan: &mut Scan) {
 #[cfg(windows)]
 fn windows_accounts() -> Result<Vec<String>, String> {
     let mut command = std::process::Command::new("powershell.exe");
-    command.args(["-NoProfile", "-NonInteractive", "-Command", ONEDRIVE_ACCOUNTS]);
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        ONEDRIVE_ACCOUNTS,
+    ]);
     let output = bounded_command::run_prepared(
         command,
         None,
@@ -627,7 +642,10 @@ fn parse_onedrive(bytes: &[u8]) -> Result<Vec<String>, String> {
     }
     let mut emails: Vec<String> = Vec::new();
     for row in rows {
-        if !emails.iter().any(|kept| kept.eq_ignore_ascii_case(&row.email)) {
+        if !emails
+            .iter()
+            .any(|kept| kept.eq_ignore_ascii_case(&row.email))
+        {
             emails.push(row.email);
         }
     }
@@ -802,7 +820,10 @@ fn nextcloud_password(config: &Path, found: &Found) -> Result<Zeroizing<String>>
         nextcloud(text, &mut scan);
     }
     if !scan.found.iter().any(|now| now == found) {
-        bail!("{} changed in the Nextcloud app since it was reviewed", found.label);
+        bail!(
+            "{} changed in the Nextcloud app since it was reviewed",
+            found.label
+        );
     }
     let request = tilo_secrets::owner_migration::NextcloudCredential::new(
         found.server.as_deref().unwrap_or_default(),

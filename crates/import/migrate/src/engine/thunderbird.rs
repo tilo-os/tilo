@@ -35,6 +35,59 @@ const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
 /// The person's mail accounts on the server that keeps their workspace, which only they add to.
 pub const MAIL_ACCOUNTS: &str = "workspace/mail-accounts";
 
+/// Thunderbird's profiles in this computer's home.
+pub struct Thunderbird;
+
+impl super::Source for Thunderbird {
+    fn here(&self, cx: &super::Cx<'_>, row: &'static super::registry::Row) -> super::Here {
+        let scan = crate::thunderbird::scan(cx.home);
+        if scan.reviewed.is_empty() {
+            return super::Here {
+                unavailable: Some(if scan.problems.is_empty() {
+                    "no Thunderbird profile on this computer".to_owned()
+                } else {
+                    format!(
+                        "no Thunderbird profile could be read: {}",
+                        scan.problems_text()
+                    )
+                }),
+                ..super::Here::default()
+            };
+        }
+        super::Here {
+            here: Some(json!(format!("{} profile(s)", scan.reviewed.len()))),
+            next: Some(format!("tilo migrate review {}", row.key)),
+            ..super::Here::default()
+        }
+    }
+
+    fn review(
+        &self,
+        cx: &super::Cx<'_>,
+        row: &'static super::registry::Row,
+        profile: Option<&str>,
+    ) -> Result<Review> {
+        let mut review = review(cx.home, profile)?;
+        super::keep_chosen(&mut review, cx.place.review(row.key)?.as_ref());
+        Ok(review)
+    }
+
+    fn summary(&self, _: &'static super::registry::Row, review: &Review) -> String {
+        summary(review)
+    }
+
+    fn land(
+        &self,
+        cx: &super::Cx<'_>,
+        _: &'static super::registry::Row,
+        review: &Review,
+        _: Option<&super::files::Sink>,
+        lander: &mut Lander<'_>,
+    ) -> Result<()> {
+        land(cx.home, review, lander)
+    }
+}
+
 /// The review of the Thunderbird profile at `home`: `profile` names one when there are
 /// several; the default profile otherwise. Nothing is chosen until the person says.
 ///
@@ -252,21 +305,26 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
         let cards = crate::thunderbird::address_book(home, &profile.source_id, &book.source_id)
             .map_err(|why| anyhow!(why))?;
         let key = format!("contacts/{}", book.name);
-        lander.once(&key, "contacts", |workspace, run| {
-            // The book goes over as the file every address book reads: Contacts imports its
-            // cards, so nothing here decides what a card means.
-            let content = workspace.put(cards.as_bytes())?;
-            workspace.act(
-                run,
-                IMPORT_VCARDS,
-                json!({"file": {
-                    "content": content,
-                    "name": format!("{}.vcf", book.name),
-                    "media": "text/vcard",
-                }}),
-            )?;
-            Ok(Landed::One)
-        })?;
+        lander.once_of(
+            &key,
+            "contacts",
+            count(book.contacts).max(1),
+            |workspace, run| {
+                // The book goes over as the file every address book reads: Contacts imports its
+                // cards, so nothing here decides what a card means.
+                let content = workspace.put(cards.as_bytes())?;
+                workspace.act(
+                    run,
+                    IMPORT_VCARDS,
+                    json!({"file": {
+                        "content": content,
+                        "name": format!("{}.vcf", book.name),
+                        "media": "text/vcard",
+                    }}),
+                )?;
+                Ok(Landed::One)
+            },
+        )?;
     }
     for calendar in &profile.calendars {
         if !chosen.contains(format!("calendar/{}", calendar.name).as_str()) {

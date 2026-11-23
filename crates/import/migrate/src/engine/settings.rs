@@ -110,7 +110,11 @@ fn review(home: &Path, source: &str) -> Result<Review> {
         .map(|name| {
             let (count, bytes) = match local.files(&name) {
                 Ok((found, unread)) => {
-                    unreadable.extend(unread);
+                    unreadable.extend(
+                        unread
+                            .iter()
+                            .map(|problem| format!("{}: {}", problem.name, problem.why)),
+                    );
                     (found.len(), found.iter().map(|entry| entry.size).sum())
                 }
                 Err(error) => {
