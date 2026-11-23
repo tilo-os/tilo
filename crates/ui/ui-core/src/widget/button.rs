@@ -790,6 +790,10 @@ impl Button {
     }
 }
 
+/// The chroma of a destructive button's danger wash: enough to read as the danger hue beside the
+/// neutral secondary face, far below the status tones' own.
+const DANGER_WASH_CHROMA: f32 = 0.035;
+
 /// What a button does: a role is its whole appearance, so an app never picks a fill, an ink, an
 /// edge or a radius for one.
 ///
@@ -797,7 +801,7 @@ impl Button {
 /// |---|---|---|
 /// | `Primary` | the one main action of a view | inverted: primary ink as the fill, the content surface as the label |
 /// | `Secondary` | every other action | a raised control with a derived edge and primary ink |
-/// | `Destructive` | deletes, removes or revokes something | the secondary face lettered in danger ink; filled only inside the confirmation step |
+/// | `Destructive` | deletes, removes or revokes something | the secondary face in a wash of the danger hue, lettered in danger ink; filled solid only inside the confirmation step |
 /// | `Plain` | inline text actions, toolbar glyphs, close buttons | nothing at rest, a lift of its ground under the pointer; a labelled one's ink sits on its layout edge and its lift and hit area reach outward |
 /// | `Key` | a keypad or keyboard key (a calculator digit, an on-screen key, a one-letter toggle) | a faint lift of its ground at rest, its label in `Title` |
 /// | `Bar` | a control of the shell's top bar or a window's bar | the bar control ([`crate::widget::BarControlFace`]): nothing at rest, half a lift under the pointer, a whole lift while pressed or on, its icon in secondary ink until then |
@@ -899,8 +903,24 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             (fill, None, ink)
         }
         ButtonRole::Secondary | ButtonRole::Destructive => {
-            let rest = colors.surfaces.raised;
-            let (hover, active) = (colors.lift_on(rest, 0.5), colors.lift_on(rest, 1.0));
+            // A destructive action wears a wash of the danger hue at the raised surface's
+            // lightness, so the roles read as one family: the raised neutral, a tone's wash, the
+            // accent's fill. Built in OKLCH, so a cool or warm neutral never bends its hue.
+            let raised = colors.surfaces.raised;
+            let wash = |neutral: Color| {
+                if role == ButtonRole::Destructive {
+                    let l = crate::color::Oklch::from_color(neutral).l;
+                    let danger = crate::color::Oklch::from_color(colors.semantic.danger);
+                    crate::color::oklch(l, DANGER_WASH_CHROMA, danger.h)
+                } else {
+                    neutral
+                }
+            };
+            let (rest, hover, active) = (
+                wash(raised),
+                wash(colors.lift_on(raised, 0.5)),
+                wash(colors.lift_on(raised, 1.0)),
+            );
             let fill = if interact.pressed {
                 active
             } else if interact.hovered {

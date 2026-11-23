@@ -530,11 +530,22 @@ tilo_test_env::scenario! {
 
             for interact in [rest, hover, press] {
                 let (fill, edge, ink) = face_colors(&theme, ButtonRole::Destructive, interact);
-                assert_eq!(fill, face_colors(&theme, ButtonRole::Secondary, interact).0);
+                let neutral = face_colors(&theme, ButtonRole::Secondary, interact).0;
+                // High contrast keeps the black face, so its danger lettering alone marks it.
+                if !colors.palette.high_contrast {
+                    assert_ne!(fill, neutral, "{}: a destructive face wears a wash", theme.name);
+                    let hue = |c| crate::color::Oklch::from_color(c).h;
+                    let off = (hue(fill) - hue(colors.semantic.danger)).rem_euclid(360.0);
+                    assert!(
+                        off.min(360.0 - off) <= 20.0,
+                        "{}: the wash is the danger hue",
+                        theme.name
+                    );
+                }
                 assert_eq!(edge, face_colors(&theme, ButtonRole::Secondary, interact).1);
                 assert!(
                     contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
-                    "{}: danger ink on the neutral face",
+                    "{}: danger ink on the danger wash",
                     theme.name
                 );
                 assert_ne!(

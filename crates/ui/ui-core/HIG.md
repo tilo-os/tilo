@@ -1284,7 +1284,7 @@ these intents (`colors.intent`):
 | selection | `intent.selection` / `lift_on(ground, t)` | a selected row, tab, segment or item, and a menu's armed row at the overlay step (§9.3) |
 | your colour | `intent.you` (= `border_focus`) | the keyboard focus ring (never focus a click gave), the text caret, selection handles, a drop or insertion indicator |
 | selection tint | `intent.selection_tint` | the text-selection highlight (your colour, translucent) |
-| status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a neutral control, filled only inside the confirmation step |
+| status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a wash of the danger hue, filled solid only inside the confirmation step |
 | presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a member's cursor, selection, avatar and attribution; chart and tag series |
 
 Links are primary ink with an underline. An "active" icon is primary ink, an
@@ -1351,7 +1351,8 @@ edge kept at full strength, so rest and disabled never look the same.
 
 | Control | Rest fill | Rest edge |
 |---|---|---|
-| Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
+| Button `Secondary` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)` |
+| Button `Destructive` | the danger hue at the raised surface's lightness and a low chroma (`DANGER_WASH_CHROMA`) (hover and press lift it as above), lettered in danger ink | `edge_on(raised)` |
 | Button `Primary` | `intent.inverted` (hover `inverted_hover`, press `Colors::inverted_pressed`, the hover step taken twice) | none; label `intent.on_inverted` |
 | Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toggle that is on (`Button::toggled(true)`, a toolbar toggle) is `intent.selection` |
 | Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |

@@ -55,8 +55,8 @@ no appearance to get wrong.
   value is not an on state.
 - **Buttons:** primary is the accent fill with a white label; secondary the
   raised level; quiet (`ButtonRole::Plain`) has no fill and lifts on hover;
-  destructive is secondary with a danger label, filled only inside the
-  confirmation step, where Return is still the safe answer.
+  destructive wears a wash of the danger hue with a danger label,
+  filled solid only inside the confirmation step, where Return is still the safe answer.
 - **Lifts:** hover and press are neutral lifts of the ground they stand on;
   only a *selected* row, tab or segment carries the accent's faint tint
   (`Colors::selected_on`). A menu's armed row is the neutral lift.

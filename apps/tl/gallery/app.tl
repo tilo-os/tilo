@@ -350,8 +350,11 @@ view parts(g: Gallery, last: State<Text>) {
             ui.Chip("ada@example.com") {
                 on remove: set(last, "Removed ada@example.com")
             }
-            ui.Avatar(workspace.me, name: "Ada Lovelace")
-            ui.Avatar(name: "Grace Hopper", square: true)
+            // The people who look after it wrap together, each a circle in their own colour.
+            row(gap: .related, align: .center) {
+                ui.Avatar(workspace.me, name: "Ada Lovelace")
+                ui.Avatar(name: "Grace Hopper")
+            }
         }
     }
     part("Text input", "One line a person types, kept in the field it is bound to.") {
