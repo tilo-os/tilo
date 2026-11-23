@@ -239,6 +239,91 @@ fn lines_or_eof_accept_a_final_line_at_eof_within_the_bound() {
     ));
 }
 
+#[test]
+fn bounded_lines_cut_at_the_bound_across_chunks_and_eof() {
+    assert_eq!(LINE_BYTES, 8 * 1024);
+
+    let run = |max_len: usize, chunks: &[&[u8]]| -> Vec<(Vec<u8>, bool)> {
+        let mut cutter = BoundedLines::new(max_len);
+        let mut out = Vec::new();
+        for chunk in chunks {
+            cutter.push(chunk, |kept, truncated| {
+                out.push((kept.to_vec(), truncated));
+            });
+        }
+        cutter.finish(|kept, truncated| {
+            out.push((kept.to_vec(), truncated));
+        });
+        // A second finish after flushing emits nothing.
+        cutter.finish(|kept, truncated| {
+            out.push((kept.to_vec(), truncated));
+        });
+        out
+    };
+
+    // Exact bound, one byte over, far over, two long lines in a row, empty lines,
+    // and a last line without a newline.
+    assert_eq!(run(4, &[b"abcd\n"]), vec![(b"abcd".to_vec(), false)]);
+    assert_eq!(run(4, &[b"abcde\n"]), vec![(b"abcd".to_vec(), true)]);
+    let huge = format!("{}Z\n", "x".repeat(64 * 1024));
+    assert_eq!(
+        run(8, &[huge.as_bytes()]),
+        vec![(b"xxxxxxxx".to_vec(), true)]
+    );
+    assert_eq!(
+        run(4, &[b"12345678\nabcdefgh\nok\n"]),
+        vec![
+            (b"1234".to_vec(), true),
+            (b"abcd".to_vec(), true),
+            (b"ok".to_vec(), false),
+        ]
+    );
+    assert_eq!(
+        run(4, &[b"one\ntail"]),
+        vec![(b"one".to_vec(), false), (b"tail".to_vec(), false)]
+    );
+    assert_eq!(
+        run(4, &[b"one\ntail-over"]),
+        vec![(b"one".to_vec(), false), (b"tail".to_vec(), true)]
+    );
+    assert_eq!(
+        run(4, &[b"\n\n"]),
+        vec![(Vec::new(), false), (Vec::new(), false)]
+    );
+    assert_eq!(run(4, &[b""]), Vec::new());
+
+    // Chunk boundary in the middle of a line and right across the bound.
+    assert_eq!(
+        run(4, &[b"ab", b"cd", b"\nef", b"gh", b"i", b"jk\n", b"end"]),
+        vec![
+            (b"abcd".to_vec(), false),
+            (b"efgh".to_vec(), true),
+            (b"end".to_vec(), false),
+        ]
+    );
+
+    // Chunk boundary in the middle of multi-byte UTF-8 characters (`é` and `🦀`).
+    let text = "héllo 🦀\n";
+    let raw = text.as_bytes();
+    for split in 1..raw.len() {
+        let (left, right) = raw.split_at(split);
+        let lines = run(LINE_BYTES, &[left, right]);
+        assert_eq!(lines.len(), 1, "split={split}");
+        assert!(!lines[0].1, "split={split}");
+        assert_eq!(
+            std::str::from_utf8(&lines[0].0).unwrap(),
+            "héllo 🦀",
+            "split={split}"
+        );
+    }
+
+    // Bound landing mid-codepoint keeps exact raw bytes and marks truncation.
+    let cut_mid_char = run(2, &["é".as_bytes(), "🦀\n".as_bytes()]);
+    assert_eq!(cut_mid_char, vec![("é".as_bytes().to_vec(), true)]);
+    let cut_inside_char = run(3, &[&raw[..4], &raw[4..]]);
+    assert_eq!(cut_inside_char, vec![(raw[..3].to_vec(), true)]);
+}
+
 #[cfg(feature = "tokio")]
 mod asynchronous {
     use super::*;

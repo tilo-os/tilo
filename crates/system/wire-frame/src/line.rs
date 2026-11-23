@@ -4,6 +4,76 @@ use std::io::{BufRead, Read};
 
 use crate::FrameError;
 
+/// The most bytes kept of one relayed output line: reading to a newline would
+/// let an untrusted child process exhaust memory with one unterminated write.
+pub const LINE_BYTES: usize = 8 * 1024;
+
+/// Splits incoming byte chunks on `\n`, keeping at most `max_len` bytes of each
+/// line and dropping the rest of an overlong line up to its `\n`.
+///
+/// The internal buffer holds at most `max_len` bytes. Each line is handed out
+/// as its kept bytes and whether any bytes past `max_len` were dropped.
+#[derive(Debug)]
+pub struct BoundedLines {
+    max_len: usize,
+    partial: Vec<u8>,
+    truncated: bool,
+}
+
+impl BoundedLines {
+    /// A line cutter keeping at most `max_len` bytes per line.
+    #[must_use]
+    pub const fn new(max_len: usize) -> Self {
+        Self {
+            max_len,
+            partial: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    /// Feed `bytes` as they arrive, calling `on_line(kept, truncated)` for each
+    /// `\n`-terminated line.
+    pub fn push(&mut self, mut bytes: &[u8], mut on_line: impl FnMut(&[u8], bool)) {
+        while !bytes.is_empty() {
+            if let Some(end) = bytes.iter().position(|&byte| byte == b'\n') {
+                let Some((head, tail)) = bytes.split_at_checked(end) else {
+                    break;
+                };
+                self.append(head);
+                on_line(&self.partial, self.truncated);
+                self.partial.clear();
+                self.truncated = false;
+                bytes = tail.get(1..).unwrap_or_default();
+            } else {
+                self.append(bytes);
+                break;
+            }
+        }
+    }
+
+    /// End the stream, calling `on_line(kept, truncated)` once if any bytes
+    /// arrived after the last `\n`.
+    pub fn finish(&mut self, on_line: impl FnOnce(&[u8], bool)) {
+        if !self.partial.is_empty() || self.truncated {
+            on_line(&self.partial, self.truncated);
+            self.partial.clear();
+            self.truncated = false;
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        let room = self.max_len.saturating_sub(self.partial.len());
+        if bytes.len() <= room {
+            self.partial.extend_from_slice(bytes);
+        } else {
+            if let Some(kept) = bytes.get(..room) {
+                self.partial.extend_from_slice(kept);
+            }
+            self.truncated = true;
+        }
+    }
+}
+
 /// Read the next line of at most `max_len` bytes, without its `\n`, or
 /// `None` if the stream ended cleanly before it began.
 ///
