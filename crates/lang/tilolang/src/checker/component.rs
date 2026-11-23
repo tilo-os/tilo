@@ -1721,8 +1721,10 @@ pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
 /// takes a field of whichever enum the app declares.
 fn binds(ty: &Type, field: &Ty) -> bool {
     match ty {
-        Type::Enum => matches!(field, Ty::Enum(_))
-            || matches!(field, Ty::Option(inner) if matches!(**inner, Ty::Enum(_))),
+        Type::Enum => {
+            matches!(field, Ty::Enum(_))
+                || matches!(field, Ty::Option(inner) if matches!(**inner, Ty::Enum(_)))
+        }
         other => binding_types(other).contains(field),
     }
 }

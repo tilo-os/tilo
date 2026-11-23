@@ -2665,7 +2665,8 @@ pub fn show_bound<S: std::hash::BuildHasher>(
             changed |= match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),
                 Value::Int(number_of) if flag => reconciler.set_flag(&key, *number_of != 0),
-                Value::Int(number_of) if number => {
+                Value::Int(number_of) if number =>
+                {
                     #[expect(
                         clippy::cast_precision_loss,
                         reason = "a setting's whole number is far inside f64"

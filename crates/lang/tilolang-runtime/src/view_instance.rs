@@ -14,8 +14,9 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    CALL_ACTION, RUN_LINE_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
-    SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
+    CALL_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION,
+    REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION,
+    UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -1305,7 +1306,7 @@ impl ViewInstance {
             (Ty::Enum(key), Value::Text(case)) => case_of(key, case)?,
             (Ty::Int, Value::Float(number)) => Value::Int(whole(*number)),
             (Ty::Float, Value::Int(number)) => Value::Float(integer(*number)),
-            (Ty::Option(inner), Value::Opt(_)) => value.clone(),
+            (Ty::Option(_), Value::Opt(_)) => value.clone(),
             (Ty::Option(inner), given) => match (&**inner, given) {
                 (Ty::Text, Value::Text(text)) if text.is_empty() => Value::none(),
                 (Ty::Enum(key), Value::Text(case)) => Value::some(case_of(key, case)?),

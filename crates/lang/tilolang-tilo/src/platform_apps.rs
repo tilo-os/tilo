@@ -163,7 +163,11 @@ const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
     ("identity", "Identity", "settings:settings.identity"),
     ("night_light", "NightLight", "settings:settings.night-light"),
     ("audio", "Audio", "settings:settings.audio"),
-    ("audio_device", "AudioDevice", "settings:settings.audio-device"),
+    (
+        "audio_device",
+        "AudioDevice",
+        "settings:settings.audio-device",
+    ),
     (
         "desktop_controls",
         "DesktopControls",
