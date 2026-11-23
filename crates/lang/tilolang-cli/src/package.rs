@@ -339,47 +339,202 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> String + '_ {
 /// Errors A package does not compile (the message lists the errors by file), or a file cannot be
 /// written, or a generated manifest does not validate.
 pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<BuiltApp>, String> {
-    assembled(options, identity)?
-        .into_iter()
-        .map(|app| deliver(app, options, identity))
-        .collect()
+    let apps = assembled(options, identity)?;
+    deliver_all(apps, options, identity)
 }
 
-/// Stage, pack and sign an app as the `.tapp` a session installs.
-fn deliver(
+/// Find the deepest existing directory at or above `out` so the staging area
+/// lives on the same filesystem without creating `out` before the build passes.
+fn staging_parent(out: &Path) -> Result<PathBuf, String> {
+    match std::fs::metadata(out) {
+        Ok(meta) if meta.is_dir() => return Ok(out.to_path_buf()),
+        Ok(_) => return Err(format!("{}: not a directory", out.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io(out)(error)),
+    }
+    let mut cursor = out.parent();
+    while let Some(dir) = cursor {
+        if dir.as_os_str().is_empty() {
+            return Ok(PathBuf::from("."));
+        }
+        match std::fs::metadata(dir) {
+            Ok(meta) if meta.is_dir() => return Ok(dir.to_path_buf()),
+            Ok(_) => return Err(format!("{}: not a directory", dir.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                cursor = dir.parent();
+            }
+            Err(error) => return Err(io(dir)(error)),
+        }
+    }
+    Ok(PathBuf::from("."))
+}
+
+/// Create `out` and any missing parent directories, returning the directories
+/// created (outermost first) so a failed publish can remove them.
+fn ensure_output_dirs(out: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut missing = Vec::new();
+    let mut cursor = Some(out);
+    while let Some(dir) = cursor {
+        if dir.as_os_str().is_empty() || dir.exists() {
+            break;
+        }
+        missing.push(dir.to_path_buf());
+        cursor = dir.parent();
+    }
+    missing.reverse();
+    let mut created = Vec::new();
+    for dir in missing {
+        match std::fs::create_dir(&dir) {
+            Ok(()) => created.push(dir),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+            Err(error) => {
+                for made in created.into_iter().rev() {
+                    let _ = std::fs::remove_dir(&made);
+                }
+                return Err(io(&dir)(error));
+            }
+        }
+    }
+    Ok(created)
+}
+
+struct StagedApp {
     app: Assembled,
+    name: String,
+    stage_dir: PathBuf,
+    stage_tapp: PathBuf,
+}
+
+/// Stage, pack, sign and verify every app in `apps` inside a temporary
+/// directory, then publish all of them into `options.out`. Any failure at any
+/// step leaves `options.out` untouched (and absent when it did not exist).
+fn deliver_all(
+    apps: Vec<Assembled>,
     options: &BuildOptions,
     identity: &SigningIdentity,
-) -> Result<BuiltApp, String> {
-    let staged = options.out.join(short_name(&app.app));
-    let payload = staged.join("payload");
-    if payload.exists() {
-        std::fs::remove_dir_all(&payload).map_err(io(&payload))?;
+) -> Result<Vec<BuiltApp>, String> {
+    let parent = staging_parent(&options.out)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".tilolang-build-")
+        .tempdir_in(&parent)
+        .map_err(io(&parent))?;
+
+    let mut staged = Vec::with_capacity(apps.len());
+    for app in apps {
+        let name = short_name(&app.app).to_owned();
+        let stage_dir = staging.path().join(&name);
+        let stage_payload = stage_dir.join("payload");
+        app.bundle
+            .write(&stage_payload)
+            .map_err(|error| error.to_string())?;
+        if let Some(icon) = &app.meta.icon {
+            let path = stage_payload.join(ICON_FILE);
+            std::fs::write(&path, icon_artwork(icon)?).map_err(io(&path))?;
+        }
+        let stage_manifest = stage_dir.join("manifest.toml");
+        std::fs::write(&stage_manifest, &app.manifest).map_err(io(&stage_manifest))?;
+        let final_manifest = options.out.join(&name).join("manifest.toml");
+        let manifest = Manifest::from_toml_str(&app.manifest)
+            .map_err(|error| format!("{}: {error}", final_manifest.display()))?;
+        let packed = tilo_app_package::pack::pack(&stage_payload, &manifest, identity)
+            .map_err(|error| format!("{}: {error}", app.app))?;
+        let stage_tapp = staging.path().join(format!("{name}.tapp"));
+        let final_tapp = options.out.join(format!("{name}.tapp"));
+        tilo_app_package::tapp::write_file(
+            &stage_tapp,
+            &packed.meta,
+            Some(&packed as &dyn tilo_app_package::BlobSource),
+            tilo_app_package::tapp::WriteOptions::replace(),
+        )
+        .map_err(|error| format!("{}: {error}", final_tapp.display()))?;
+        staged.push(StagedApp {
+            app,
+            name,
+            stage_dir,
+            stage_tapp,
+        });
     }
-    app.bundle
-        .write(&payload)
-        .map_err(|error| error.to_string())?;
-    if let Some(icon) = &app.meta.icon {
-        let path = payload.join(ICON_FILE);
-        std::fs::write(&path, icon_artwork(icon)?).map_err(io(&path))?;
+
+    publish_staged(staged, &options.out, staging.path())
+}
+
+fn publish_staged(
+    staged: Vec<StagedApp>,
+    out: &Path,
+    staging_root: &Path,
+) -> Result<Vec<BuiltApp>, String> {
+    let created_dirs = ensure_output_dirs(out)?;
+    let mut published_dirs: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut published_tapps: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let mut built = Vec::with_capacity(staged.len());
+
+    let result: Result<(), String> = (|| {
+        for item in staged {
+            let final_dir = out.join(&item.name);
+            let backup_dir = if final_dir.symlink_metadata().is_ok() {
+                let backup = staging_root.join(format!(".backup-dir-{}", item.name));
+                std::fs::rename(&final_dir, &backup).map_err(io(&final_dir))?;
+                Some(backup)
+            } else {
+                None
+            };
+            if let Err(error) = std::fs::rename(&item.stage_dir, &final_dir) {
+                if let Some(backup) = backup_dir {
+                    let _ = std::fs::rename(&backup, &final_dir);
+                }
+                return Err(io(&final_dir)(error));
+            }
+            published_dirs.push((final_dir.clone(), backup_dir));
+
+            let final_tapp = out.join(format!("{}.tapp", item.name));
+            let backup_tapp = match final_tapp.symlink_metadata() {
+                Ok(meta) if meta.is_file() => {
+                    let backup = staging_root.join(format!(".backup-tapp-{}", item.name));
+                    std::fs::hard_link(&final_tapp, &backup).map_err(io(&final_tapp))?;
+                    Some(backup)
+                }
+                _ => None,
+            };
+            if let Err(error) = std::fs::rename(&item.stage_tapp, &final_tapp) {
+                return Err(io(&final_tapp)(error));
+            }
+            published_tapps.push((final_tapp.clone(), backup_tapp));
+
+            built.push(BuiltApp {
+                app: item.app.app,
+                title: item.app.title,
+                meta: item.app.meta,
+                digest: item.app.digest,
+                payload: final_dir.join("payload"),
+                manifest: final_dir.join("manifest.toml"),
+                tapp: final_tapp,
+            });
+        }
+        tilo_files::native::atomic::sync_directory(out).map_err(io(out))?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        for (final_tapp, backup_tapp) in published_tapps.into_iter().rev() {
+            if let Some(backup) = backup_tapp {
+                let _ = std::fs::rename(&backup, &final_tapp);
+            } else {
+                let _ = std::fs::remove_file(&final_tapp);
+            }
+        }
+        for (final_dir, backup_dir) in published_dirs.into_iter().rev() {
+            let _ = std::fs::remove_dir_all(&final_dir);
+            if let Some(backup) = backup_dir {
+                let _ = std::fs::rename(&backup, &final_dir);
+            }
+        }
+        for dir in created_dirs.into_iter().rev() {
+            let _ = std::fs::remove_dir(&dir);
+        }
+        return Err(error);
     }
-    let manifest_path = staged.join("manifest.toml");
-    std::fs::write(&manifest_path, &app.manifest).map_err(io(&manifest_path))?;
-    let manifest = Manifest::from_toml_str(&app.manifest)
-        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-    let packed = tilo_app_package::pack::pack(&payload, &manifest, identity)
-        .map_err(|error| format!("{}: {error}", app.app))?;
-    let tapp = options.out.join(format!("{}.tapp", short_name(&app.app)));
-    write_tapp(&tapp, &packed)?;
-    Ok(BuiltApp {
-        app: app.app,
-        title: app.title,
-        meta: app.meta,
-        digest: app.digest,
-        payload,
-        manifest: manifest_path,
-        tapp,
-    })
+
+    Ok(built)
 }
 
 /// Compile the packages of `options` in dependency order, writing each one's ids lock and source
@@ -454,18 +609,20 @@ pub fn deliver_compiled(
     let bundle = Bundle::new(compiled, imports.iter().copied());
     let manifest = manifest_text(meta, &bundle.catalogues(), options, &publisher);
     let digest = digest(&manifest, &bundle)?;
-    deliver(
-        Assembled {
+    let mut apps = deliver_all(
+        vec![Assembled {
             app: meta.app.clone(),
             title: meta.title.clone(),
             meta: meta.clone(),
             manifest,
             bundle,
             digest,
-        },
+        }],
         options,
         identity,
-    )
+    )?;
+    apps.pop()
+        .ok_or_else(|| format!("{}: nothing was delivered", meta.app))
 }
 
 /// A build of one app as the directory a running desktop app follows it takes it: the bundle
@@ -521,16 +678,12 @@ pub(crate) fn write_tapp(
     path: &Path,
     packed: &tilo_app_package::pack::Packed,
 ) -> Result<(), String> {
-    use std::io::Write as _;
-    tilo_files::native::atomic::write_streaming(path, |temp| {
-        let mut archive = tilo_app_package::tapp::write(
-            std::io::BufWriter::new(&mut *temp),
-            &packed.meta,
-            Some(packed as &dyn tilo_app_package::BlobSource),
-        )
-        .map_err(std::io::Error::other)?;
-        archive.flush()?;
-        Ok(())
-    })
+    tilo_app_package::tapp::write_file(
+        path,
+        &packed.meta,
+        Some(packed as &dyn tilo_app_package::BlobSource),
+        tilo_app_package::tapp::WriteOptions::replace(),
+    )
+    .map(|_| ())
     .map_err(|error| format!("{}: {error}", path.display()))
 }
