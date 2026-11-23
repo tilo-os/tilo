@@ -213,7 +213,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 28] = [
+const VERBS: [Verb; 29] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -417,6 +417,16 @@ const VERBS: [Verb; 28] = [
         check: "",
         kind: roles::GOVERNANCE_KIND,
         params: key_params,
+    },
+    Verb {
+        id: FETCH_GRANT,
+        label: "Grant your page the host's fetch proxy token",
+        // Reaching the workspace at all is the check: its roster is what decides
+        // which devices ask, and the token names the one asking. A host that
+        // serves no proxy grants none, and answers so.
+        check: "",
+        kind: ActionKind::Read,
+        params: Vec::new,
     },
 ];
 
@@ -1585,8 +1595,8 @@ impl Workspaces {
 
     /// Answer one of the host's own operations `request` asks for, as the device `certificate`
     /// certifies: a page's whole administration as one action
-    /// ([`Self::administer_invoke`]), a page's fetch proxy token ([`FETCH_GRANT`]), else one of
-    /// the operations the catalogue publishes ([`Self::account_invoke`]).
+    /// ([`Self::administer_invoke`]), else one of the operations the catalogue publishes
+    /// ([`Self::account_invoke`]).
     async fn host_operation_invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -1602,37 +1612,21 @@ impl Workspaces {
         {
             return Box::pin(self.administer_invoke(caller, certificate, request)).await;
         }
-        // A page's token for the host's fetch proxy, minted for the device that asks.
-        if request.target.address.resource == HOST_WORKSPACES_RESOURCE
-            && request.target.address.action == FETCH_GRANT
-        {
-            return self.fetch_grant(certificate).await;
-        }
         Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None)).await
     }
 
-    /// Grant the device `certificate` names a token for this host's fetch
-    /// proxy ([`FETCH_GRANT`]): a page sends it with each request it makes
-    /// through the proxy, which admits the person and device it names. Only a
-    /// person this host admits — its own, or a member of a workspace it serves
-    /// — is granted one, the same people the session handshake admitted. A
-    /// host that serves no proxy grants nothing.
-    async fn fetch_grant(&self, certificate: &DeviceCert) -> Result<Value, ActionCallError> {
-        let host = &self.inner.host;
-        let person = certificate.user_public_key;
-        if !crate::workspace_access::admits_person(
-            &host.workspaces,
-            host.cert.user_public_key,
-            person,
-        )
-        .await
-        {
-            return Err(ActionCallError::Refused {
-                reason: "the fetch proxy is for members of a workspace on this host".into(),
-            });
-        }
-        let token = if host.fetch_grants.served() {
-            host.fetch_grants.grant(person, certificate.device_public_key)
+    /// Grant the device that asked a token for this host's fetch proxy
+    /// ([`FETCH_GRANT`]): a page sends it with each request it makes through
+    /// the proxy, which admits the person and device it names. The workspace's
+    /// roster is what let the device ask at all ([`Self::governance_invoke`]);
+    /// the token names it. A host that serves no proxy grants none.
+    fn fetch_grant(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
+        let device = call.device;
+        let token = if self.inner.host.fetch_grants.served() {
+            self.inner
+                .host
+                .fetch_grants
+                .grant(device.user_public_key, device.device_public_key)
         } else {
             None
         };
@@ -2004,6 +1998,7 @@ impl Workspaces {
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
             governance::CALL => self.call_action(call).await,
+            FETCH_GRANT => self.fetch_grant(call),
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
             KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,

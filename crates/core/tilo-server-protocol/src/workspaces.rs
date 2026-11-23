@@ -871,10 +871,10 @@ pub const ADMINISTER_WORKSPACES: &str = "workspace.administer";
 /// Grant the asking device a token for the host's fetch proxy: the bearer
 /// token a page sends with each request it makes through its host
 /// ([`FETCH_PATH`](crate::web::FETCH_PATH), as `tilo_net::proxy` names it).
-/// The device proves itself by the signed invocation it asks with; the host
-/// answers `{"token": "<hex>"}` ([`fetch_grant_answer`]), or `{"token":
-/// null}` when it serves no proxy. Only a device of a person the host admits
-/// — its own person, or a member of a workspace it serves — is granted one.
+/// Asked in a workspace the page is in, as one of that workspace's actions:
+/// its roster decides whether the device may ask, and the host answers
+/// `{"token": "<hex>"}` ([`fetch_grant_answer`]) naming that device, or
+/// `{"token": null}` when it serves no proxy.
 pub const FETCH_GRANT: &str = "workspace.fetch-grant";
 
 /// The scope a device with no certificate from its host yet asks the entry in: it names no
@@ -1533,16 +1533,19 @@ pub fn administered_reply(value: &serde_json::Value) -> Result<WorkspacesReply, 
     serde_json::from_value(reply).map_err(|error| error.to_string())
 }
 
-/// The [`FETCH_GRANT`] ask under `invocation`: a page asks its host for the
-/// token its proxied requests carry, over the one actions transport rather
-/// than a request kind of its own.
+/// The [`FETCH_GRANT`] ask in `workspace`, under `invocation`: a page asks the
+/// workspace's host for the token its proxied requests carry, as one of that
+/// workspace's actions rather than a request kind of its own.
 #[must_use]
-pub fn fetch_grant_invoke(invocation: tilo_actions::InvocationId) -> InvokeRequest {
+pub fn fetch_grant_invoke(
+    workspace: &str,
+    invocation: tilo_actions::InvocationId,
+) -> InvokeRequest {
     InvokeRequest {
         invocation,
         target: RemoteActionTarget {
-            provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), FETCH_GRANT),
+            provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: tilo_actions::remote::workspace_governance_address(workspace, FETCH_GRANT),
         },
         argument: InvokeArgument::None,
         context: None,

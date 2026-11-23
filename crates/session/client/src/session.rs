@@ -392,6 +392,7 @@ fn session_task(
         dialing: BTreeSet::new(),
         sent: BTreeSet::new(),
         actions: None,
+        fetch_grant_asked: false,
         lent,
         barriers: Vec::new(),
         governance_answered: BTreeMap::new(),
@@ -592,6 +593,9 @@ struct Task {
     sent: BTreeSet<(WorkspaceId, [u8; 32])>,
     /// The link this session asks its host's action service on, once it is up.
     actions: Option<tilo_server_client::link::Link>,
+    /// Whether this session asked its host for its fetch proxy token: asked once, in a workspace
+    /// it is in, and the answer kept for [`Link::fetch_proxy_session`].
+    fetch_grant_asked: bool,
     /// The device service's member copies, for a session lent them: it dials no link of its own.
     lent: Option<LentParts>,
     /// Each waits for the writes that were in this device's ownership when it was called, and
@@ -859,30 +863,34 @@ impl Task {
             return;
         }
         match self.reach(Purpose::Actions).await {
-            Ok(link) => {
-                self.actions = Some(link);
-                self.request_fetch_grant();
-            }
+            Ok(link) => self.actions = Some(link),
             Err(error) => {
                 tracing::info!(%error, "the host did not answer its action service");
             }
         }
     }
 
-    /// Ask the host for this session's fetch proxy token, as soon as its actions link is up: the
-    /// page sends it with each request it makes through the host's proxy
-    /// ([`crate::Link::fetch_proxy_session`]). A host that serves no proxy, or refuses this device,
-    /// leaves the page with none.
-    fn request_fetch_grant(&self) {
+    /// Ask the host for this session's fetch proxy token, in one of the workspaces this page is
+    /// in: the page sends it with each request it makes through the host's proxy
+    /// ([`crate::Link::fetch_proxy_session`]). The workspace's roster is what decides the ask, so
+    /// a page in no workspace here has none, and a host that serves no proxy mints none.
+    fn request_fetch_grant(&mut self) {
+        if self.fetch_grant_asked {
+            return;
+        }
         let Some(link) = self.actions.clone() else {
             return;
         };
+        let Some(&workspace_id) = self.links.keys().next() else {
+            return;
+        };
+        self.fetch_grant_asked = true;
         let signer = Arc::clone(&self.signer);
         let cert = self.config.cert.clone();
         let host = self.config.server_cert.device_public_key;
         let reports = Arc::clone(&self.reports);
         n0_future::task::spawn(async move {
-            let Some(token) = ask_fetch_grant(&link, signer, &cert, host).await else {
+            let Some(token) = ask_fetch_grant(&link, signer, &cert, host, workspace_id).await else {
                 return;
             };
             if reports.status().phase != TransportPhase::Closed {
@@ -976,6 +984,7 @@ impl Task {
         match dialed {
             Ok(()) => {
                 self.link_up(workspace_id);
+                self.request_fetch_grant();
                 Ok(())
             }
             Err(error) => {
@@ -4461,38 +4470,28 @@ fn entry_state(entered: &tilo_server_protocol::entering::Entered) -> crate::Entr
     }
 }
 
-/// Ask the host for this device's fetch proxy token, on the actions link: the
+/// Ask the host for this device's fetch proxy token, in `workspace_id`: the
 /// token the page sends with each request it makes through the proxy
 /// ([`tilo_server_protocol::workspaces::FETCH_GRANT`]), or none when the host
-/// serves no proxy or refuses this device.
+/// serves no proxy or its roster refuses this device.
 async fn ask_fetch_grant(
     link: &tilo_server_client::link::Link,
     signer: Arc<dyn tilo_server_client::DeviceSigner>,
     cert: &DeviceCert,
     host: [u8; 32],
+    workspace_id: WorkspaceId,
 ) -> Option<[u8; 32]> {
     use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
-    let mut invoke = tilo_server_protocol::workspaces::fetch_grant_invoke(
+    let workspace = workspace_id.to_string();
+    let invoke = tilo_server_protocol::workspaces::fetch_grant_invoke(
+        &workspace,
         tilo_actions::InvocationId::new(),
     );
-    // No workspace's roster names the device here, so the host reads who asks
-    // from the invocation this device signs.
-    invoke.signed = Some(Box::new(
-        tilo_server_protocol::invocation::sign_invocation(
-            "",
-            &invoke,
-            cert,
-            signer.as_ref(),
-            tilo_clock::unix_now_ns(),
-        )
-        .await
-        .ok()?,
-    ));
     let frame = ask_action(
         link,
         signer,
         cert.device_public_key,
-        "",
+        &workspace,
         host,
         RemoteActionMessage::Invoke(invoke),
     )

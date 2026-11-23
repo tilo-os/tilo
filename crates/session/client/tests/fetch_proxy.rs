@@ -1,8 +1,8 @@
 //! A page's apps read a site without CORS headers through the workspace
-//! host it is admitted to: the page asks the host for a token over its
+//! host it is admitted to: the page asks the workspace for a token over its
 //! actions link, sends it with each proxied request, and the answer reads
-//! like the site's own (tilo-net wire protocol v1). A person the host admits
-//! no workspace of is refused the token.
+//! like the site's own (tilo-net wire protocol v1). A person the workspace
+//! holds no place for is refused the token.
 
 #![allow(
     clippy::unwrap_used,
@@ -15,11 +15,12 @@ use test_http::{Reply, Responder};
 use tilo_net::proxy::{self, Proxy};
 use tilo_net::{HeaderMap, HeaderValue, Url};
 use tilo_server::web::FetchProxySetup;
-use tilo_session_client::Link;
+use tilo_session_client::{Link, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, start_host_plain, start_host_serving, start_peer, wait_for,
+    HostSettings, WORKSPACE, enrol, place, start_host_plain, start_host_serving, start_peer,
+    wait_for, workspace,
 };
 
 /// What an Invidious instance answers `/api/v1/trending` with, trimmed to
@@ -103,12 +104,16 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     .await;
     let plain = host.web.plain_origin.clone().unwrap();
     let plain = plain.replace("localhost", "127.0.0.1");
+    // The page's workspace, placed on the host with the browser's device in
+    // it: the workspace whose roster lets the page ask for the token.
+    place(&host.server, &laptop.cert).await;
     let peer = start_peer(
         host.iroh(),
         laptop.cert.clone(),
         host_device.cert.clone(),
         laptop.key.clone(),
     );
+    peer.join_placed(WORKSPACE, "Workspace").unwrap();
     let token = session(&peer).await;
 
     let directory = Responder::start(vec![
@@ -159,34 +164,50 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
         }
     })
     .await;
-    // A person this host admits no workspace of asks for a token over its own
-    // actions link and is refused one, so their page has nothing to send the
+    // A person this host admits no workspace of asks for a token in the
+    // workspace the page above is in: its roster gives the outsider no place,
+    // so the ask is refused and the outsider's page has nothing to send the
     // proxy.
     let (outsider_root, _) = UserIdentity::generate("Mallory", 2);
     let outsider_device = enrol(&outsider_root, "browser", DeviceCapabilities::member());
-    let outsider = start_peer(
-        host.iroh(),
+    let outsider = tilo_session_client::device::Device::of(
+        start_peer(
+            host.iroh(),
+            outsider_device.cert.clone(),
+            host_device.cert.clone(),
+            outsider_device.key.clone(),
+        ),
         outsider_device.cert.clone(),
         host_device.cert.clone(),
-        outsider_device.key.clone(),
+        "browser",
     );
-    wait_for("the host to refuse the outsider", || {
-        let refused = !outsider.status().failures.is_empty();
-        async move { refused.then_some(()) }
+    // Its session reaches the host's actions link before it asks.
+    wait_for("the outsider's session", || {
+        let connected =
+            outsider.session().status().phase == tilo_session_client::TransportPhase::Connected;
+        async move { connected.then_some(()) }
     })
     .await;
-    // The grant is asked as soon as the actions link opens, before the
-    // workspace links are dialled; a token arriving late would still be a
-    // token the proxy takes.
-    let settled = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
-    while tokio::time::Instant::now() < settled {
-        assert_eq!(
-            outsider.fetch_proxy_session(),
-            None,
-            "a page of a person the host admits no workspace of was granted a token"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let asked = outsider
+        .actions(workspace())
+        .invoke(
+            &outsider.caller(),
+            tilo_server_protocol::workspaces::fetch_grant_invoke(
+                &WORKSPACE,
+                tilo_actions::InvocationId::new(),
+            ),
+        )
+        .await
+        .expect("the host answers the outsider")
+        .expect("the ask is carried");
+    assert!(
+        matches!(
+            asked.status,
+            tilo_actions::remote::ReceiptStatus::Rejected { .. }
+        ),
+        "{asked:?}"
+    );
+    assert_eq!(outsider.session().fetch_proxy_session(), None);
     outsider.close();
     peer.close();
 }

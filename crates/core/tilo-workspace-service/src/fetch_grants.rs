@@ -1,6 +1,6 @@
-//! The tokens a host's fetch proxy takes: a page asks its host for one over
-//! the host's action service ([`tilo_server_protocol::workspaces::FETCH_GRANT`])
-//! and sends it with each request it makes through the proxy
+//! The tokens a host's fetch proxy takes: a page asks for one in the workspace
+//! it is in ([`tilo_server_protocol::workspaces::FETCH_GRANT`]) and sends it
+//! with each request it makes through the proxy
 //! ([`tilo_server_protocol::web::FETCH_PATH`]), which admits the person and
 //! device each names. A host that serves no proxy mints none.
 
