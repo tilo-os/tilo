@@ -77,7 +77,6 @@ impl Reader {
         Self {
             person: who.person.clone(),
             agent: acting.agent_id().map(str::to_owned),
-            delegated: who.caller.is_session_delegated(),
             on_turn: who.caller.turn().is_some(),
             user: who.caller.user_public_key().copied(),
             device: who.caller.device_public_key().copied(),

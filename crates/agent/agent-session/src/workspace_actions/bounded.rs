@@ -519,15 +519,13 @@ pub(super) fn bounded(
     let agent = caller.acting().agent_id()?;
     // An agent acts on the admission of the key its person certified for it, bounded by the
     // person it acts for.
-    let person_caller = caller.delegating_person().or_else(|| {
-        let person =
-            Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
-        Some(match caller.workspace() {
-            Some(workspace) => person.in_workspace(workspace),
-            None => person,
-        })
-    })?;
-    // An agent device on a turn answers the person whose message caused it, whoever the agent
+    let person_caller =
+        Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
+    let person_caller = match caller.workspace() {
+        Some(workspace) => person_caller.in_workspace(workspace),
+        None => person_caller,
+    };
+    // An agent on a turn answers the person whose message caused it, whoever the agent
     // belongs to: that person is who it is decided for and what is kept from.
     let person = if caller.roster_created_at().is_some() {
         caller.acting().acted_for_person()?.into()
