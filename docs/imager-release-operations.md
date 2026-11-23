@@ -27,7 +27,8 @@ Pushing a protected `imager-vMAJOR.MINOR.PATCH` tag runs the same checks on the
 tag, then:
 
 1. `sign/linux-{arch}` signs the Linux downloads with the release key and adds
-   its public half and fingerprint; `sign/windows-{arch}` Authenticode-signs the
+   its public half and fingerprint; `sign/medium-{arch}` signs the installer
+   medium with the same key; `sign/windows-{arch}` Authenticode-signs the
    Windows packages; the macOS checks sign and notarize theirs.
 2. `release-assets/imager` takes the signed outputs and requires every
    signature.

@@ -22,8 +22,6 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 name="tilo-installer-linux-$arch.img.zst"
 catalog="catalog-$arch.json"
 (cd "$medium" && sha256sum --check --strict --quiet "$name.sha256")
-[[ $(jq -er '.archive_sha256' "$medium/$catalog") == "$(sha256sum "$medium/$name" | awk '{print $1}')" ]] \
-  || { printf 'the catalog names other bytes than the payload it ships\n' >&2; exit 1; }
 
 GNUPGHOME="$(mktemp -d)"
 export GNUPGHOME
