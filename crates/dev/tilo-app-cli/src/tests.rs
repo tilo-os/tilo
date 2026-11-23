@@ -4457,9 +4457,9 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         "atspi",
     ];
     // A fork only an engine library's graph uses (rustypipe, which Music and
-    // Tube load from the YouTube engine) is vendored here: the workspace
-    // patches it by the vendored path, and a path SDK's app repeats that path,
-    // while a registry build fetches the release like every other crate.
+    // Tube load from the YouTube engine) is vendored here and patched by that
+    // path, but it is not the SDK's: an app links nothing that uses it, so its
+    // patch stays out of the app.
     let engine_forks = ["rustypipe"];
     for name in engine_forks {
         let patch = workspace_patches
@@ -4475,7 +4475,10 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     }
     // No fork is fetched from another git host, which would fail every build of
     // the app whenever that host is down.
-    let pinned_as_workspace = |_patches: &toml::Table| {
+    let pinned_as_workspace = |patches: &toml::Table| {
+        for name in engine_forks {
+            assert!(!patches.contains_key(name), "{name}");
+        }
         for (name, patch) in workspace_patches {
             assert!(patch.get("git").is_none(), "{name} is fetched from git");
         }
@@ -4504,19 +4507,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
             assert!(
                 app.join(path).join("Cargo.toml").is_file(),
                 "{name} -> {path}"
-            );
-        }
-        for name in engine_forks {
-            let vendored = patches
-                .get(name)
-                .and_then(|patch| patch.get("path"))
-                .and_then(toml::Value::as_str)
-                .unwrap_or_else(|| {
-                    panic!("{name} is not repeated by its vendored path: {patches:#?}")
-                });
-            assert!(
-                vendored.ends_with("vendor/rustypipe"),
-                "{name} -> {vendored}"
             );
         }
         pinned_as_workspace(patches);
@@ -4614,9 +4604,6 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         );
         let patches = manifest["patch"]["crates-io"].as_table().unwrap();
         for name in forks {
-            assert_eq!(patches[name]["rev"].as_str(), Some(rev), "{name}");
-        }
-        for name in engine_forks {
             assert_eq!(patches[name]["rev"].as_str(), Some(rev), "{name}");
         }
         pinned_as_workspace(patches);
