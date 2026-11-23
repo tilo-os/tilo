@@ -4431,7 +4431,8 @@ arch = ["aarch64", "x86_64"]
 name = "package/macos-{arch}"
 run = '''set -eu
 case "${T_REF:-}" in tag:imager-v*) export TILO_VERSION="${T_REF#tag:imager-v}" ;; esac
-bash apps/imager/packaging/package-macos.sh {arch} /target/macos/{arch}/build/imager /target/macos/{arch}/package
+TILO_IMAGER_BINARY="${TILO_IMAGER_BINARY:-/target/macos/{arch}/build/imager}"
+bash apps/imager/packaging/package-macos.sh {arch} "$TILO_IMAGER_BINARY" /target/macos/{arch}/package
 '''
 needs = ["build/macos-{arch}"]
 requires = ["os=macos", "arch=arm64"]

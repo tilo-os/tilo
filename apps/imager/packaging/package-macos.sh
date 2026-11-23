@@ -78,7 +78,7 @@ if [ -n "$identity" ]; then
 else
   sign+=(--timestamp=none --sign -)
 fi
-"${sign[@]}" --identifier so.tilo.imager "$app/Contents/MacOS/tilo-imager-bin"
+"${sign[@]}" "$app/Contents/MacOS/tilo-imager-bin"
 "${sign[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
