@@ -41,6 +41,8 @@ use records::{bundle, founding_document};
 mod document_index;
 #[cfg(test)]
 mod index_walk_tests;
+#[cfg(test)]
+mod journey_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
