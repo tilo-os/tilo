@@ -544,6 +544,107 @@ mod tests {
         assert_eq!(resource.parent.as_deref(), Some(TRASH_ROOT));
     }
 
+    /// A store holding the tree, with the system's node type declared: what a device's workspace
+    /// service is when it writes files.
+    fn tree_store() -> tilo_resource_store::Store {
+        let mut store = tilo_resource_store::Store::new();
+        store.declare(schema());
+        store
+    }
+
+    /// The writes `count` files named `prefix` under `parent` make, as one batch.
+    fn a_copy_of(count: usize, parent: &str, prefix: &str) -> Command {
+        let stamp = stamp();
+        let mut commands = Vec::with_capacity(count);
+        for n in 0..count {
+            let name = format!("{prefix}{n}.txt");
+            let entry = TreeEntry {
+                parent: Some(parent.to_owned()),
+                name: FileNameV1(name.clone().into_bytes()),
+                kind: FileNodeKind::File,
+                hash: None,
+                size: u64::try_from(n).unwrap_or(u64::MAX),
+                mtime: 1,
+                author: Some("person:me".to_owned()),
+                document_id: None,
+            };
+            let now = Node::of(&entry, &format!("{prefix}-{n}"));
+            let action = FileAction::Create {
+                node: now.key.clone(),
+                document_id: fs_protocol::files::FileDocumentId::new(),
+                parent: parent.to_owned(),
+                name: FileNameV1(name.into_bytes()),
+                kind: FileNodeKind::File,
+                hash: None,
+                size: now.size,
+                mtime: 1,
+                author: "person:me".to_owned(),
+            };
+            commands.push(write(&action, &now, &stamp).expect("a create writes its node"));
+        }
+        Command::Batch(commands)
+    }
+
+    /// The page of `parent`'s children, as a folder listing asks for it.
+    fn page(parent: &str, limit: usize) -> tilo_resource_store::Query {
+        use tilo_resource_store::Filter;
+        tilo_resource_store::Query {
+            kind: NODE_KIND.to_owned(),
+            filters: vec![Filter::Is(
+                tilo_resource_store::PARENT.to_owned(),
+                tilo_resource_store::Value::Text(parent_resource(parent)),
+            )],
+            order: tilo_resource_store::Order::default(),
+            after: None,
+            limit,
+        }
+    }
+
+    /// A folder of ten thousand files opens in under the walk's budget, and a page far down it
+    /// reads in a scroll's.
+    #[test]
+    fn a_folder_of_ten_thousand_opens_and_scrolls_in_time() {
+        /// A folder's first page must open in this long.
+        const OPEN: std::time::Duration = std::time::Duration::from_millis(289);
+        /// A page far down a folder must read in this long.
+        const SCROLL: std::time::Duration = std::time::Duration::from_millis(25);
+        let mut store = tree_store();
+        let batch = a_copy_of(10_000, ROOT_ID, "file-");
+        tilo_resource_store::wire::write(&mut store, batch).expect("the copy is written");
+        let started = std::time::Instant::now();
+        let first = store.query(&page(ROOT_ID, 10_000), &|_| true);
+        let open = started.elapsed();
+        assert_eq!(first.resources.len(), 10_000);
+        assert!(open <= OPEN, "ten thousand children opened in {open:?}");
+        // The first half's last cursor starts a page a reader far down the list shows.
+        let half = store.query(&page(ROOT_ID, 5_000), &|_| true);
+        let mut below = page(ROOT_ID, 50);
+        below.after = half.next;
+        let started = std::time::Instant::now();
+        let shown = store.query(&below, &|_| true);
+        let scroll = started.elapsed();
+        assert_eq!(shown.resources.len(), 50);
+        assert!(scroll <= SCROLL, "a page far down read in {scroll:?}");
+    }
+
+    /// A copy of ten thousand files writes faster than a thousand nodes a second: the rate a
+    /// workspace's files are put at, not a wall clock a shared machine can spoil.
+    #[test]
+    fn a_copy_of_ten_thousand_files_writes_over_a_thousand_a_second() {
+        let mut store = tree_store();
+        let batch = a_copy_of(10_000, ROOT_ID, "file-");
+        let started = std::time::Instant::now();
+        let written = tilo_resource_store::wire::write(&mut store, batch).expect("the copy");
+        let took = started.elapsed();
+        assert!(!written.is_empty());
+        let per_second = 10_000.0 / took.as_secs_f64().max(f64::MIN_POSITIVE);
+        assert!(
+            per_second >= 1_000.0,
+            "a copy wrote {per_second:.0} nodes a second ({took:?})"
+        );
+        assert_eq!(store.count(NODE_KIND, &[], &|_| true), 10_000);
+    }
+
     #[test]
     fn the_chunk_bookkeeping_is_no_write_of_a_node() {
         assert!(
