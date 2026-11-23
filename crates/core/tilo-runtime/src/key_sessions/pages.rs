@@ -107,7 +107,10 @@ impl Inner {
         let workspace = sessions
             .workspace(workspace_id)
             .ok_or(PageRefusal::Elsewhere)?;
-        Ok((workspace, sessions.dispatch()))
+        let dispatch = sessions
+            .dispatch(&workspace)
+            .ok_or_else(|| unavailable("this device answers no actions in that workspace"))?;
+        Ok((workspace, dispatch))
     }
 
     fn hold(&self, held: Held) -> u64 {

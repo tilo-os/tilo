@@ -133,6 +133,7 @@ impl Keeping {
             keys,
             endpoint,
             relay,
+            app_serving,
         } = on;
         cfg.state_root = dir.to_path_buf();
         let (server, protocols) = runtime
@@ -143,7 +144,7 @@ impl Keeping {
                 keys,
                 endpoint,
                 joined,
-                app_serving: None,
+                app_serving,
             }))
             .map_err(|error| io::Error::other(format!("what this server keeps: {error}")))?;
         // A server serves its own web UI where its configuration places one, unless its
@@ -228,6 +229,9 @@ pub(crate) struct On<'a> {
     pub(crate) endpoint: iroh::Endpoint,
     /// The packet relay the device's endpoint is reached through.
     pub(crate) relay: PacketRelay,
+    /// What answers the apps' actions and serves their pages as a browser opens them: this
+    /// device's keys' sessions ([`crate::key_sessions`]).
+    pub(crate) app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
 }
 
 /// What this server keeps, for as long as it runs.

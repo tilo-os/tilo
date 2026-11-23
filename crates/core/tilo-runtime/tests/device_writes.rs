@@ -37,12 +37,18 @@ fn a_computers_own_tasks_are_made_and_answered_done() {
                     )
                     .await,
             );
-            assert!(!is_error, "so.tilo.tasks#new_task {title} as the person: {answer}");
+            assert!(
+                !is_error,
+                "so.tilo.tasks#new_task {title} as the person: {answer}"
+            );
             assert!(!answer.contains("pending"), "{title} settled: {answer}");
         }
         let (issues, is_error) = said(
             &computer
-                .tool("tilo_read", &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}))
+                .tool(
+                    "tilo_read",
+                    &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}),
+                )
                 .await,
         );
         assert!(!is_error, "{issues}");

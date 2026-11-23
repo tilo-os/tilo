@@ -50,9 +50,10 @@ pub trait Sessions: Send + Sync {
     /// The broker does not admit a session for the key.
     fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(SessionHost, Caller), String>;
 
-    /// The device's dispatch itself, which admits each call as the caller it carries: what a
-    /// web page of the workspace asks as its person ([`Pages`]).
-    fn dispatch(&self) -> SessionHost;
+    /// `workspace`'s dispatch, which admits each call as the caller it carries: what a web page
+    /// of the workspace asks as its person ([`Pages`]). `None` when this device answers no
+    /// actions there.
+    fn dispatch(&self, workspace: &str) -> Option<SessionHost>;
 }
 
 /// The record actions of the workspaces a device hosts, answered for its

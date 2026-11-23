@@ -30,6 +30,7 @@ mod content;
 #[cfg(unix)]
 pub mod control;
 mod files_tree;
+#[cfg(test)]
 pub(crate) mod first_workspace;
 #[cfg(test)]
 mod flow_laptop_phone_server;

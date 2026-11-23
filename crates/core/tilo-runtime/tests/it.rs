@@ -106,6 +106,8 @@ mod hosted_web_call;
 mod invocations;
 #[path = "joining.rs"]
 mod joining;
+#[path = "keeping_pages.rs"]
+mod keeping_pages;
 #[path = "machine_secrets.rs"]
 mod machine_secrets;
 #[path = "migrate_engine.rs"]

@@ -225,8 +225,11 @@ impl Sessions for DeviceRuns {
         Ok((Arc::new(self.broker.clone()), caller))
     }
 
-    fn dispatch(&self) -> SessionHost {
-        Arc::new(self.broker.clone())
+    fn dispatch(&self, workspace: &str) -> Option<SessionHost> {
+        if workspace != self.workspace {
+            return None;
+        }
+        Some(Arc::new(self.broker.clone()))
     }
 }
 

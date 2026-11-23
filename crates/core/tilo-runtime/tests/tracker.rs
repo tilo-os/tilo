@@ -149,7 +149,9 @@ fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
             // The first page builds what the listing reads; every page after it
             // pays its own rows.
             let (status, warm) = key
-                .get(&format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40"))
+                .get(&format!(
+                    "{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40"
+                ))
                 .await;
             assert_eq!(status, 200, "{warm}");
             // What one call of the API costs before it reads a row: a listing of
@@ -202,7 +204,9 @@ fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
                 // A page answers a thousand rows (the listing's bound): a tracker this size is
                 // listed in two calls, and each is still one answer's worth of memory.
                 let (status, page) = key
-                    .get(&format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=1000"))
+                    .get(&format!(
+                        "{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=1000"
+                    ))
                     .await;
                 assert_eq!(status, 200, "{page}");
                 assert_eq!(
@@ -247,8 +251,10 @@ fn a_tracker_is_listed_whole_from_its_records() {
                 took.len(),
                 began.elapsed()
             );
-            let names: std::collections::HashSet<&str> =
-                rows.iter().filter_map(|row| row["label"].as_str()).collect();
+            let names: std::collections::HashSet<&str> = rows
+                .iter()
+                .filter_map(|row| row["label"].as_str())
+                .collect();
             assert_eq!(
                 names.len(),
                 SIZE,
@@ -396,7 +402,9 @@ fn a_trackers_listing_holds_no_other_request() {
         let tracker = async {
             let began = Instant::now();
             let (status, page) = key
-                .get(&format!("{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40"))
+                .get(&format!(
+                    "{base}/resources?path=so.tilo.tasks/tl:so.tilo.tasks&limit=40"
+                ))
                 .await;
             (status, page, began.elapsed())
         };

@@ -337,7 +337,9 @@ fn an_outside_agent_runs_an_action_and_reads_a_view() {
             wrote["isError"], false,
             "the agent writes an issue: {wrote}"
         );
-        let viewed = customer.tool("tilo_view", &json!({"path": "so.tilo.tasks"})).await;
+        let viewed = customer
+            .tool("tilo_view", &json!({"path": "so.tilo.tasks"}))
+            .await;
         assert_eq!(viewed["isError"], false, "{viewed}");
         assert!(
             viewed.to_string().contains("Checklist of cus_0"),

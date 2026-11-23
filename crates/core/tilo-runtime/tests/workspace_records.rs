@@ -80,7 +80,10 @@ fn a_create_answers_the_issue_it_made_and_the_issue_reads_back() {
         );
         let (issues, is_error) = said(
             &agent
-                .tool("tilo_read", &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}))
+                .tool(
+                    "tilo_read",
+                    &json!({"path": "so.tilo.tasks/tl:so.tilo.tasks"}),
+                )
                 .await,
         );
         assert!(!is_error, "{issues}");

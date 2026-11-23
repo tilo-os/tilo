@@ -522,7 +522,11 @@ impl Daemon {
         // The device's workspace service, holding the member copies of the
         // workspaces the login takes part in, or the workspace founded here.
         stage("opening the device's workspace service");
-        let key_sessions = founded.map(|_| crate::key_sessions::KeySessions::new());
+        // What answers the person's keys and serves the workspaces' apps as pages: a computer
+        // that founded its person's workspace, and a keeping server, which shows the pages its
+        // web listener serves.
+        let key_sessions =
+            (founded.is_some() || keeping.is_some()).then(crate::key_sessions::KeySessions::new);
         // A device a ticket made takes the work of the server it enters through; a server
         // keeps the workspaces placed on it and takes none.
         let member = joined && keeping.is_none();
@@ -560,6 +564,7 @@ impl Daemon {
             .then(|| take_work::Server::from_login(home.get().as_ref()))
             .flatten();
         // What a server keeps beyond its copies, on the workspace service it governs.
+        let serves_pages = keeping.is_some();
         let kept = match (keeping, relay, itself) {
             (Some(keeping), Some(relay), Some(itself)) => {
                 stage("keeping what this server keeps");
@@ -571,6 +576,10 @@ impl Daemon {
                     keys: workspaces.keys(),
                     endpoint: workspaces.endpoint(),
                     relay,
+                    app_serving: key_sessions.as_ref().map(|sessions| {
+                        Arc::clone(sessions)
+                            as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
+                    }),
                 })?)
             }
             _ => None,
@@ -769,7 +778,7 @@ impl Daemon {
                 key_sessions,
                 (&broker, &invocations, &apps),
                 &workspaces,
-                (&workspace_id, &actor),
+                (&actor, founded, serves_pages),
                 &policy_origin,
             )?;
         }
@@ -3285,38 +3294,52 @@ fn start_triggers(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
         ));
 }
 
-/// Answer the record actions of the workspace founded here (`workspace`, as
-/// `actor`) for the person's keys from `broker` from now on. The host opened
-/// before the broker and refused them as not running yet until now.
+/// Answer the person's keys from the broker from now on, and serve the workspaces' pages
+/// through the daemon's apps: the workspace founded here when this computer founded one
+/// (`founded`), else every workspace a keeping server (`serving`) holds.
 fn serve_key_sessions(
     key_sessions: &crate::key_sessions::KeySessions,
     (broker, invocations, apps): (&BrokerHandle, &Arc<Invocations>, &Arc<apps::Apps>),
     workspaces: &Arc<ServiceWorkspaces>,
-    (workspace, actor): (&str, &str),
+    (actor, founded, serving): (&str, Option<collab_types::WorkspaceId>, bool),
     policy_origin: &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
 ) -> io::Result<()> {
     let broker = broker
         .app_action_broker()
         .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
+    let policy_time = policy_origin.capture().map_err(io::Error::other)?;
+    let sessions: Arc<dyn crate::key_sessions::Sessions> = match founded {
+        Some(workspace) => {
+            let workspace = workspace.to_string();
+            let provider =
+                action_provider(&broker, workspaces, None, invocations, actor, &workspace)?;
+            Arc::new(host_runs::HostRuns {
+                provider,
+                workspace,
+                actor: actor.to_owned(),
+                policy_time,
+            })
+        }
+        None if serving => Arc::new(host_runs::KeptRuns {
+            broker,
+            workspaces: Arc::clone(workspaces),
+            apps: Arc::clone(apps),
+            invocations: Arc::clone(invocations),
+            actor: actor.to_owned(),
+            policy_time,
+        }),
+        None => {
+            return Err(io::Error::other(
+                "this device serves no workspace for its person's keys",
+            ));
+        }
+    };
     key_sessions.serve(
         Arc::new(PersonalDevices::new(
             workspaces.copies().clone(),
             workspaces.device_cert(),
         )),
-        Arc::new(host_runs::HostRuns {
-            provider: RuntimeActionProvider {
-                broker,
-                workspace: workspace.to_owned(),
-                workspaces: Arc::clone(workspaces),
-                apps: None,
-                session: None,
-                tickets: None,
-                invocations: Arc::clone(invocations),
-            },
-            workspace: workspace.to_owned(),
-            actor: actor.to_owned(),
-            policy_time: policy_origin.capture().map_err(io::Error::other)?,
-        }),
+        sessions,
     );
     #[cfg(unix)]
     key_sessions
@@ -3325,6 +3348,40 @@ fn serve_key_sessions(
     #[cfg(not(unix))]
     let _ = apps;
     Ok(())
+}
+
+/// `workspace`'s dispatch as a key's run or a page of it reaches it: the broker's certified
+/// local action provider, admitted for `actor` and kept for one workspace.
+///
+/// # Errors
+/// The workspace is not one this device may act in, or its admission cannot be opened.
+pub(super) fn action_provider(
+    broker: &AppActionBroker,
+    workspaces: &Arc<ServiceWorkspaces>,
+    apps: Option<Arc<apps::Apps>>,
+    invocations: &Arc<Invocations>,
+    actor: &str,
+    workspace: &str,
+) -> io::Result<RuntimeActionProvider> {
+    let admitting = Arc::clone(workspaces);
+    let (named, actor) = (workspace.to_owned(), actor.to_owned());
+    let admission = block_on_owned(async move { admitting.admit_execution(&named, &actor).await })
+        .map_err(io::Error::other)?;
+    let provider = broker
+        .certified_local_action_provider(admission.caller(), admission.presentation())
+        .map_err(io::Error::other)?;
+    admission
+        .check(workspaces.copies())
+        .map_err(io::Error::other)?;
+    Ok(RuntimeActionProvider {
+        broker: broker.clone(),
+        workspace: workspace.to_owned(),
+        workspaces: Arc::clone(workspaces),
+        apps,
+        session: None,
+        tickets: None,
+        invocations: Arc::clone(invocations),
+    })
 }
 
 /// Apps' views on this device's web pages: each an instance of the app this daemon starts for

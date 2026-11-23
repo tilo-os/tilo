@@ -32,12 +32,7 @@ fn median(times: &mut [Duration]) -> Duration {
 fn a_persons_requests_go_before_an_agents_bulk_import() {
     host::run(|host| async move {
         let import = host.agent();
-        let (first, failed) = act(
-            &import,
-            "so.tilo.tasks#new_tasks",
-            listed_issues(0, LIST),
-        )
-        .await;
+        let (first, failed) = act(&import, "so.tilo.tasks#new_tasks", listed_issues(0, LIST)).await;
         assert!(
             !failed,
             "the agent brings its tracker into the workspace the daemon serves: {first}"
@@ -52,7 +47,9 @@ fn a_persons_requests_go_before_an_agents_bulk_import() {
             async move {
                 let started = Instant::now();
                 let (status, answer) = person
-                    .get(&format!("/v1/workspaces/{workspace}/resources/so.tilo.tasks"))
+                    .get(&format!(
+                        "/v1/workspaces/{workspace}/resources/so.tilo.tasks"
+                    ))
                     .await;
                 let listing = started.elapsed();
                 assert_eq!(status, 200, "{answer}");
