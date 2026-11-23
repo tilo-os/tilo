@@ -13,7 +13,6 @@
 //! answer the record itself, or, where only they can type what it takes, none, and opening it
 //! shows the ask. Once the record is answered anywhere, the thing waits no more.
 
-
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
@@ -32,7 +31,6 @@ use tilo_user_identity::DeviceCert;
 
 use super::person_settings::answer;
 use super::{ToTell, WeakWorkspaces, Workspaces};
-
 
 /// Who asks, as the system names `caller`: its agent by the name its key goes by, else the
 /// person's own device.
@@ -65,9 +63,11 @@ pub(crate) fn approved_or_asks(
 
 /// The person `caller` asks, as their key.
 fn asked_person(caller: &Caller) -> Option<[u8; 32]> {
-    hex::decode(asked::asked_person(caller)?).ok()?.try_into().ok()
+    hex::decode(asked::asked_person(caller)?)
+        .ok()?
+        .try_into()
+        .ok()
 }
-
 
 /// The id the record `record` is told under in its person's log.
 fn told_id(record: &RecordRef) -> String {
@@ -257,10 +257,10 @@ impl Workspaces {
             self.inner.asked_store.get(),
             self.inner.asked_dispatch.get(),
         ) {
-            let _ = self
-                .inner
-                .asked_records
-                .set(self.told(store.for_dispatch(Arc::downgrade(dispatch))));
+            let _ =
+                self.inner.asked_records.set(self.told(
+                    store.for_dispatch(super::actions::HOST_DISPATCH, Arc::downgrade(dispatch)),
+                ));
         }
     }
 

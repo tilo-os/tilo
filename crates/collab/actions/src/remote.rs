@@ -44,7 +44,7 @@ mod caller;
 pub mod environment_device;
 pub mod linux_apps;
 pub mod mcp_server;
-pub use caller::{Caller, device_agent_id};
+pub use caller::{Caller, KeptCaller, device_agent_id};
 pub mod signed_invocation;
 pub use signed_invocation::{SignedCall, SignedInvocation};
 mod catalogue;
@@ -244,6 +244,15 @@ pub const WORKSPACE_INVITATIONS: &str = "invitations";
 /// The addresses left at a workspace's entry while it takes people by
 /// invitation, under its governance root (`workspace/waiting`).
 pub const WORKSPACE_WAITING: &str = "waiting";
+/// The grants of a workspace's policy, under its governance root (`workspace/permissions`).
+pub const WORKSPACE_PERMISSIONS: &str = "permissions";
+/// One grant of a workspace's policy (`workspace/permissions/<grant>`, by its id): what takes
+/// it back is published on it.
+pub const WORKSPACE_PERMISSION: &str = "permissions/*";
+/// The operation a workspace's grant is taken back by, published as
+/// `workspace/permissions/<grant>#revoke`: by the person who gave it, or by whoever the
+/// workspace's policy lets revoke grants.
+pub const WORKSPACE_GRANT_REVOKE: &str = "grant.revoke";
 
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
@@ -251,7 +260,7 @@ pub const WORKSPACE_WAITING: &str = "waiting";
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`.
-pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 23] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -290,6 +299,7 @@ pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 22] = [
         Some(WORKSPACE_APPS),
         "withdraw-bot-request",
     ),
+    (WORKSPACE_GRANT_REVOKE, Some(WORKSPACE_PERMISSION), "revoke"),
 ];
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
@@ -300,6 +310,15 @@ pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> Strin
         Some(child) => format!("{root}/{child}"),
         None => root,
     }
+}
+
+/// The resource of the grant `grant` (its id) among `workspace`'s permissions.
+#[must_use]
+pub fn workspace_permission(workspace: &str, grant: &str) -> String {
+    format!(
+        "{}/{grant}",
+        workspace_governance_child(workspace, Some(WORKSPACE_PERMISSIONS))
+    )
 }
 
 /// The resource of the person `person` (their user public key in hex) among `workspace`'s people.
@@ -317,8 +336,11 @@ pub fn workspace_member(workspace: &str, person: &str) -> String {
 pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
     match WORKSPACE_GOVERNANCE_PUBLISHED
         .iter()
-        .find(|(granted, child, _)| *granted == operation && *child != Some(WORKSPACE_MEMBER))
-    {
+        .find(|(granted, child, _)| {
+            *granted == operation
+                && *child != Some(WORKSPACE_MEMBER)
+                && *child != Some(WORKSPACE_PERMISSION)
+        }) {
         Some((_, child, action)) => {
             ActionAddress::new(workspace_governance_child(workspace, *child), *action)
         }
@@ -345,6 +367,8 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
     let action = address.action.as_str();
     let child = if workspace_person(address).is_some() {
         Some(WORKSPACE_MEMBER)
+    } else if workspace_grant(address).is_some() {
+        Some(WORKSPACE_PERMISSION)
     } else {
         child
     };
@@ -376,6 +400,17 @@ pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
         && person.len() == 64
         && person.bytes().all(|byte| byte.is_ascii_hexdigit()))
     .then_some(person)
+}
+
+/// The grant `address` is on, by its id, when it is one of a workspace's permissions
+/// (`workspace/permissions/<grant>`).
+#[must_use]
+pub fn workspace_grant(address: &ActionAddress) -> Option<&str> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let (permissions, grant) = named.split_once('/')?.1.split_once('/')?;
+    (permissions == WORKSPACE_PERMISSIONS && !grant.is_empty()).then_some(grant)
 }
 
 /// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon

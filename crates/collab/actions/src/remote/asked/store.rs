@@ -4,15 +4,21 @@
 //! is shown and the dispatch that keeps it. An answer is admitted only from the person the
 //! record asks, only while it is asked, and only once: the record leaves asked before the call
 //! is handed back, so a second answer, or the same one again, finds nothing to answer.
+//!
+//! A record that waits is kept in the host's own state as well ([`AskedKeeping`]): the call
+//! is suspended in it, and once the host started again it waits in it still, for its person
+//! to answer as before. An approve then admits it as a new call under its id, for the caller
+//! kept with it.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use tilo_lock::MutexRecover as _;
 
 use super::super::{ActionCallError, Caller, Completer, InvokeRequest, Pending, pending};
 use super::{
-    Approval, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedRecords, Offer,
-    RecordRef, Resolve, answering_person, asked_person,
+    Approval, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
+    KeptAsk, Offer, RecordRef, Resolve, answering_person, asked_person,
 };
 use crate::outcome::InvocationId;
 
@@ -46,7 +52,25 @@ struct Record {
     /// Whether the approved call was admitted from a frame once already
     /// ([`AskedStore::admits_approval`]).
     relayed: bool,
-    dispatch: Weak<dyn AskedDispatch>,
+    /// The dispatch that keeps the call, by its name ([`AskedStore::for_dispatch`]).
+    dispatch: String,
+    /// What it needs to admit the call again ([`AskedDispatch::context`]).
+    context: serde_json::Value,
+}
+
+impl Record {
+    fn kept(&self) -> KeptAsk {
+        KeptAsk {
+            at: self.at.clone(),
+            person: self.person.clone(),
+            caller: self.caller.kept(),
+            request: self.request.clone(),
+            facts: self.facts.clone(),
+            asked_at_ms: self.asked_at_ms,
+            dispatch: self.dispatch.clone(),
+            context: self.context.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -88,12 +112,16 @@ impl Kept {
 pub struct AskedStore {
     kept: Mutex<Kept>,
     grants: OnceLock<Arc<dyn AskedGrants>>,
+    keeping: OnceLock<Arc<dyn AskedKeeping>>,
+    /// Each dispatch that keeps calls here, by its name.
+    dispatches: Mutex<HashMap<String, Weak<dyn AskedDispatch>>>,
 }
 
 /// One dispatch's way into an [`AskedStore`]: what it writes is kept as its own, so a person's
 /// approve of it comes back to it.
 struct DispatchRecords {
     store: Arc<AskedStore>,
+    name: String,
     dispatch: Weak<dyn AskedDispatch>,
 }
 
@@ -104,17 +132,81 @@ impl AskedStore {
         let _ = self.grants.set(grants);
     }
 
-    /// The records `dispatch` writes its waiting calls through: an approve of one is handed
-    /// back to it.
+    /// Keep every record that waits through `keeping` as well, and wait in this store again
+    /// for each of `earlier`, the records it kept before the host started: once.
+    ///
+    /// # Errors
+    /// A store that keeps its records somewhere already.
+    pub fn keep_through(
+        &self,
+        keeping: Arc<dyn AskedKeeping>,
+        earlier: Vec<KeptAsk>,
+    ) -> Result<(), String> {
+        self.keeping
+            .set(keeping)
+            .map_err(|_| "this store keeps its records already".to_owned())?;
+        let mut kept = self.kept.lock_recover();
+        for ask in earlier {
+            if kept.find(&ask.at).is_some() {
+                continue;
+            }
+            kept.records.push(Record {
+                invocation: ask.request.invocation,
+                at: ask.at,
+                person: ask.person,
+                caller: ask.caller.restored(),
+                request: ask.request,
+                facts: ask.facts,
+                asked_at_ms: ask.asked_at_ms,
+                status: Status::Asked,
+                relayed: false,
+                dispatch: ask.dispatch,
+                context: ask.context,
+            });
+        }
+        kept.moved();
+        Ok(())
+    }
+
+    /// The records the dispatch `name` writes its waiting calls through: an approve of one is
+    /// handed back to it, also one it wrote before the host started again under that name.
     #[must_use]
     pub fn for_dispatch(
         self: &Arc<Self>,
+        name: &str,
         dispatch: Weak<dyn AskedDispatch>,
     ) -> Arc<dyn AskedRecords> {
+        self.dispatches
+            .lock_recover()
+            .insert(name.to_owned(), dispatch.clone());
         Arc::new(DispatchRecords {
             store: Arc::clone(self),
+            name: name.to_owned(),
             dispatch,
         })
+    }
+
+    /// The dispatch `name`, while it runs.
+    fn dispatch(&self, name: &str) -> Weak<dyn AskedDispatch> {
+        self.dispatches
+            .lock_recover()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| -> Weak<dyn AskedDispatch> { Weak::<Gone>::new() })
+    }
+
+    /// Keep `record` where the host keeps the records that wait, if it keeps them anywhere.
+    fn keep(&self, record: &KeptAsk) {
+        if let Some(keeping) = self.keeping.get() {
+            keeping.keep(record);
+        }
+    }
+
+    /// Forget the record `at` where the host keeps them: it waits no more.
+    fn forget(&self, at: &RecordRef) {
+        if let Some(keeping) = self.keeping.get() {
+            keeping.forget(at);
+        }
     }
 
     /// The record kept here under the address `record`, with the workspace it is in.
@@ -134,7 +226,7 @@ impl AskedStore {
         caller: &Caller,
         request: &InvokeRequest,
         facts: &AskedFacts,
-        dispatch: Weak<dyn AskedDispatch>,
+        (name, dispatch): (&str, &Weak<dyn AskedDispatch>),
     ) -> Result<RecordRef, String> {
         let person = asked_person(caller).ok_or("the call acts for no person to ask")?;
         let at = RecordRef {
@@ -151,7 +243,12 @@ impl AskedStore {
                 Err(ANSWERED.to_owned())
             };
         }
-        kept.records.push(Record {
+        let context = dispatch
+            .upgrade()
+            .map_or(serde_json::Value::Null, |dispatch| {
+                dispatch.context(request.invocation)
+            });
+        let record = Record {
             at: at.clone(),
             invocation: request.invocation,
             person,
@@ -161,8 +258,11 @@ impl AskedStore {
             asked_at_ms: tilo_clock::unix_now_ms(),
             status: Status::Asked,
             relayed: false,
-            dispatch,
-        });
+            dispatch: name.to_owned(),
+            context,
+        };
+        self.keep(&record.kept());
+        kept.records.push(record);
         kept.moved();
         Ok(at)
     }
@@ -201,18 +301,24 @@ impl AskedStore {
         answering: &Caller,
         answer: &Resolve,
     ) -> Pending<Result<(), ActionCallError>> {
-        match self.admit(at, answering, answer) {
+        let admitted = self.admit(at, answering, answer);
+        if admitted.is_ok() {
+            self.forget(at);
+        }
+        match admitted {
             Err(error) => Pending::ready(Err(error)),
-            Ok(Admitted::Declined(caller, invocation, dispatch)) => Pending::ready(
-                dispatch
-                    .upgrade()
-                    .ok_or_else(gone)
-                    .and_then(|dispatch| dispatch.declined(&caller, invocation)),
-            ),
-            Ok(Admitted::Approved(caller, request, dispatch)) => {
-                Pending::ready(readmit(&dispatch, &caller, request))
+            Ok(Admitted::Declined(caller, invocation, dispatch)) => {
+                Pending::ready(match self.dispatch(&dispatch).upgrade() {
+                    Some(dispatch) => dispatch.declined(&caller, invocation),
+                    // The call ended with the dispatch that kept it: nothing runs it.
+                    None => Ok(()),
+                })
             }
-            Ok(Admitted::Granting(caller, request, dispatch, grant, person)) => {
+            Ok(Admitted::Approved(caller, request, (dispatch, context))) => Pending::ready(
+                readmit(&self.dispatch(&dispatch), &caller, request, &context),
+            ),
+            Ok(Admitted::Granting(caller, request, (dispatch, context), grant, person)) => {
+                let dispatch = self.dispatch(&dispatch);
                 let Some(grants) = self.grants.get() else {
                     self.reopen(at);
                     return Pending::ready(Err(refused(
@@ -225,7 +331,7 @@ impl AskedStore {
                 let reopen = move || store.reopen(&at);
                 written.then(move |written| {
                     let result = match written {
-                        Some(Ok(())) => readmit(&dispatch, &caller, *request),
+                        Some(Ok(())) => readmit(&dispatch, &caller, *request, &context),
                         Some(Err(why)) => {
                             reopen();
                             Err(refused(&format!("The grant was not written: {why}")))
@@ -281,6 +387,7 @@ impl AskedStore {
         };
         let caller = record.caller.clone();
         let dispatch = record.dispatch.clone();
+        let context = record.context.clone();
         let admitted = if answer.resolution == Offer::Decline {
             record.status = Status::Declined;
             Admitted::Declined(caller, record.invocation, dispatch)
@@ -295,11 +402,11 @@ impl AskedStore {
                 Some(grant) => Admitted::Granting(
                     caller,
                     Box::new(request),
-                    dispatch,
+                    (dispatch, context),
                     grant,
                     person.to_owned(),
                 ),
-                None => Admitted::Approved(caller, request, dispatch),
+                None => Admitted::Approved(caller, request, (dispatch, context)),
             }
         };
         kept.moved();
@@ -315,21 +422,49 @@ impl AskedStore {
             .filter(|record| record.status == Status::Running)
         {
             record.status = Status::Asked;
+            let ask = record.kept();
             kept.moved();
+            drop(kept);
+            self.keep(&ask);
         }
     }
 }
 
+/// The dispatch that keeps a call, by its name, and what it needs to admit it again.
+type KeptBy = (String, serde_json::Value);
+
 enum Admitted {
-    Declined(Caller, InvocationId, Weak<dyn AskedDispatch>),
-    Approved(Caller, InvokeRequest, Weak<dyn AskedDispatch>),
+    Declined(Caller, InvocationId, String),
+    Approved(Caller, InvokeRequest, KeptBy),
     Granting(
         Caller,
         Box<InvokeRequest>,
-        Weak<dyn AskedDispatch>,
+        KeptBy,
         tilo_action_policy::Grant,
         String,
     ),
+}
+
+/// No dispatch: what a call whose dispatch is not running is handed back to.
+struct Gone;
+
+impl AskedDispatch for Gone {
+    fn context(&self, _: InvocationId) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    fn readmit(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+        _: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        Err(gone())
+    }
+
+    fn declined(&self, _: &Caller, _: InvocationId) -> Result<(), ActionCallError> {
+        Ok(())
+    }
 }
 
 fn refused(reason: &str) -> ActionCallError {
@@ -348,11 +483,12 @@ fn readmit(
     dispatch: &Weak<dyn AskedDispatch>,
     caller: &Caller,
     request: InvokeRequest,
+    context: &serde_json::Value,
 ) -> Result<(), ActionCallError> {
     dispatch
         .upgrade()
         .ok_or_else(gone)
-        .and_then(|dispatch| dispatch.readmit(caller, request))
+        .and_then(|dispatch| dispatch.readmit(caller, request, context))
 }
 
 /// The app a call's target names: a record's app, an app's own provider, or the provider.
@@ -454,8 +590,13 @@ impl AskedRecords for DispatchRecords {
         request: &InvokeRequest,
         facts: &AskedFacts,
     ) -> Result<RecordRef, String> {
-        self.store
-            .write(workspace, caller, request, facts, self.dispatch.clone())
+        self.store.write(
+            workspace,
+            caller,
+            request,
+            facts,
+            (&self.name, &self.dispatch),
+        )
     }
 
     fn asked_of(&self, person: &[u8; 32]) -> Vec<Asked> {

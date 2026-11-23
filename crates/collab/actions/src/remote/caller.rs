@@ -697,6 +697,78 @@ impl Caller {
     pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
         self.device_public_key.as_ref()
     }
+
+    /// This caller as the host keeps it beside a call that waits for its person's yes, to admit
+    /// the call again for it after a restart ([`KeptCaller`]). The execution it ran in is not
+    /// kept: it ended with the process.
+    #[must_use]
+    pub(crate) fn kept(&self) -> KeptCaller {
+        KeptCaller {
+            acting: self.acting.clone(),
+            user_public_key: self.user_public_key,
+            device_public_key: self.device_public_key,
+            workspace: self.workspace.clone(),
+            session_delegated: self.session_delegated,
+            within: self.ceiling().map(|reach| (reach.kind, reach.privileged)),
+            turn: self.turn.clone(),
+            roster_created_at: self.roster_created_at,
+            approved_as: self.approved_as.clone(),
+            turn_person: self.turn_person,
+            agent_name: self.agent_name.clone(),
+            asked: self.asked.clone(),
+            bound: self.bound.clone(),
+            own_bound: self.own_bound.clone(),
+        }
+    }
+}
+
+/// A [`Caller`] as a host keeps it in its own state, beside a call that waits for its
+/// person's yes: everything the transport admitted of it but the execution it ran in. Only
+/// this crate makes a caller of it again ([`KeptCaller::restored`]), for the call it was kept
+/// with, so a payload still cannot say who sent it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptCaller {
+    acting: Acting,
+    user_public_key: Option<[u8; 32]>,
+    device_public_key: Option<[u8; 32]>,
+    workspace: Option<String>,
+    session_delegated: bool,
+    within: Option<(tilo_action_policy::ActionKind, bool)>,
+    turn: Option<tilo_action_policy::turn::Turn>,
+    roster_created_at: Option<i64>,
+    approved_as: Option<String>,
+    turn_person: Option<[u8; 32]>,
+    agent_name: Option<String>,
+    asked: Option<String>,
+    bound: Vec<tilo_action_policy::Rule>,
+    own_bound: Option<Vec<tilo_action_policy::Rule>>,
+}
+
+impl KeptCaller {
+    /// The caller this was kept from, with no execution of its own.
+    pub(crate) fn restored(self) -> Caller {
+        Caller {
+            acting: self.acting,
+            user_public_key: self.user_public_key,
+            device_public_key: self.device_public_key,
+            workspace: self.workspace,
+            execution: None,
+            session_delegated: self.session_delegated,
+            within: within::Within::of(
+                self.within
+                    .map(|(kind, privileged)| tilo_action_policy::Reach { kind, privileged }),
+            ),
+            turn: self.turn,
+            roster_created_at: self.roster_created_at,
+            approved_as: self.approved_as,
+            turn_person: self.turn_person,
+            agent_name: self.agent_name,
+            asked: self.asked,
+            bound: self.bound,
+            own_bound: self.own_bound,
+        }
+    }
 }
 
 #[cfg(test)]

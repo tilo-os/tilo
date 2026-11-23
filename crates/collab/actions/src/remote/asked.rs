@@ -363,10 +363,15 @@ pub fn same_call(a: &super::InvokeRequest, b: &super::InvokeRequest) -> bool {
 /// The dispatch that keeps a call waiting in its asked record, as the person's answer reaches
 /// it: the only place a call carrying their approve is admitted again.
 pub trait AskedDispatch: Send + Sync {
+    /// What this dispatch needs, beside the call and its caller, to admit `invocation` again
+    /// once it no longer remembers it (the host restarted): kept with its record.
+    fn context(&self, invocation: super::InvocationId) -> serde_json::Value;
+
     /// Admit `request` again under its id for `caller`, who asked for it, carrying the person's
     /// approve ([`super::InvokeRequest::approval`]): only where it still waits in its asked
-    /// record for the same call. It runs under `caller`'s grants as they stand now, and how it
-    /// goes reaches `caller` as every invocation of theirs does.
+    /// record for the same call, or, where this dispatch no longer remembers it, as a new call
+    /// under that id, with `context` ([`Self::context`]). It runs under `caller`'s grants as
+    /// they stand now, and how it goes reaches `caller` as every invocation of theirs does.
     ///
     /// # Errors
     /// Why it was not admitted again.
@@ -374,9 +379,11 @@ pub trait AskedDispatch: Send + Sync {
         &self,
         caller: &super::Caller,
         request: super::InvokeRequest,
+        context: &serde_json::Value,
     ) -> Result<(), super::ActionCallError>;
 
     /// End `invocation`, which `caller` asked for, declined by the person: `caller` is told so.
+    /// One this dispatch no longer remembers ended already.
     ///
     /// # Errors
     /// Why it could not be ended.
@@ -385,6 +392,36 @@ pub trait AskedDispatch: Send + Sync {
         caller: &super::Caller,
         invocation: super::InvocationId,
     ) -> Result<(), super::ActionCallError>;
+}
+
+/// An asked record as the host keeps it in its own state: the call that waits, who asked it,
+/// what its person is shown, and what its dispatch needs to admit it again, so the call waits
+/// across the host's restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeptAsk {
+    pub at: RecordRef,
+    /// The person asked, their root key in hex.
+    pub person: String,
+    pub caller: super::KeptCaller,
+    pub request: super::InvokeRequest,
+    pub facts: AskedFacts,
+    pub asked_at_ms: u64,
+    /// The dispatch that keeps the call, by the name it gave the store.
+    pub dispatch: String,
+    /// What that dispatch needs to admit it again ([`AskedDispatch::context`]).
+    pub context: serde_json::Value,
+}
+
+/// Where a host keeps the asked records that wait, across its restarts: each kept once it is
+/// written, and forgotten once it is answered, in that order. The host reads what it kept back
+/// when it starts ([`AskedStore::keep_through`]).
+pub trait AskedKeeping: Send + Sync {
+    /// Keep `ask`, in place of the one kept under its record.
+    fn keep(&self, ask: &KeptAsk);
+
+    /// Forget the record `at`: it waits no more.
+    fn forget(&self, at: &RecordRef);
 }
 
 /// What writes the grant a person gives with an approve

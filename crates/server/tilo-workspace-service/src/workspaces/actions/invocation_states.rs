@@ -71,17 +71,26 @@ pub(super) async fn ended(
         Ok(Err(ActionCallError::ConfirmationRequired(facts)))
             if call.request.approval().is_none() =>
         {
-            match call
+            // What a person's approve admits it again with, there before its record is
+            // written, which keeps it too.
+            actions
+                .shared
+                .asked_calls
+                .lock_recover()
+                .insert(invocation, (call.workspace_id, call.certificate.clone()));
+            let kept = call
                 .workspaces
                 .keep_asked(call.workspace_id, &call.caller, &call.request, &facts)
-                .await
-            {
+                .await;
+            if !matches!(kept, Some(Ok(_))) {
+                actions
+                    .shared
+                    .asked_calls
+                    .lock_recover()
+                    .remove(&invocation);
+            }
+            match kept {
                 Some(Ok(record)) => {
-                    actions
-                        .shared
-                        .asked_calls
-                        .lock_recover()
-                        .insert(invocation, (call.workspace_id, call.certificate.clone()));
                     let state = InvocationState::new(invocation, record.waiting(invocation));
                     let receipt = state.receipt();
                     actions.log().complete(&invocation, state);

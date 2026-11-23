@@ -72,7 +72,7 @@ impl Workspaces {
     }
 
     /// Take back the grants `ids` of `workspace`, written as the host's change to it.
-    async fn revoke_grants(
+    pub(super) async fn revoke_grants(
         &self,
         workspace: &mut GovernedWorkspace,
         at: std::time::SystemTime,

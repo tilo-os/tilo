@@ -393,4 +393,131 @@ async fn approve_and_grant_lets_the_next_such_call_go_unasked() {
         matches!(receipt, InvocationUpdate::Succeeded { .. }),
         "it runs unasked: {receipt:?}"
     );
+
+    // Ada takes the grant back where every grant of the workspace is taken back, and Scout's
+    // next delete asks her again.
+    let revoke = request(
+        tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+        ActionAddress::new(
+            tilo_actions::remote::workspace_permission(&browser.cluster_id, &given.id.0),
+            "revoke",
+        ),
+        InvokeArgument::None,
+    );
+    let revoked = browser.invoke(revoke.clone()).await;
+    assert!(
+        matches!(revoked.status, ReceiptStatus::Completed { .. }),
+        "Ada takes back the grant she gave: {revoked:?}"
+    );
+    let grants = hosted
+        .workspaces()
+        .expect("the host keeps the workspace")
+        .workspace_grants(&browser.cluster_id)
+        .await
+        .unwrap();
+    assert!(
+        grants.iter().all(|grant| grant.id != given.id),
+        "the grant is gone"
+    );
+    let third = delete(&mut browser, "Third");
+    let receipt = invoked(&actions, workspace, &scout, third.clone()).await;
+    assert!(
+        !matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "without the grant it asks again: {receipt:?}"
+    );
+    waits_in(&actions, workspace, &scout, third.invocation).await;
+    let again = browser
+        .invoke(InvokeRequest {
+            invocation: InvocationId::new(),
+            ..revoke
+        })
+        .await;
+    assert!(
+        matches!(
+            &again.status,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::Refused { .. }
+            }
+        ),
+        "a grant taken back is not taken back twice: {again:?}"
+    );
+}
+
+/// A call that waits for its person's yes is suspended in its record, and waits there across
+/// the host's restart: Ada approves it on the host that started again, it runs once, for Scout,
+/// and a second approve finds nothing to answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_waits_for_its_person_across_the_hosts_restart() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let book = browser.create(SHEETS);
+    crate::workspace_actions::saved(&browser.peer.barrier().unwrap()).unwrap();
+    let new_sheet = ActionAddress::new("", "new-sheet");
+    let scout = scout(&root, &host, &browser.cluster_id, true);
+    let waits = request(
+        &resource_provider(&book),
+        new_sheet.clone(),
+        sheet_named("After the restart"),
+    );
+    let actions = hosted.roster.actions.clone();
+    invoked(&actions, browser.workspace, &scout, waits.clone()).await;
+    let at = waits_in(&actions, browser.workspace, &scout, waits.invocation).await;
+    drop(actions);
+
+    // The host stops and starts again on the state it kept.
+    browser.peer.close();
+    drop(browser);
+    let crate::harness::hosted::Hosted {
+        server,
+        web,
+        agents,
+        ..
+    } = hosted;
+    drop(agents);
+    drop(web);
+    Box::pin(server.shutdown()).await;
+    let hosted = start(&root, &host, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+
+    let receipt = browser.invoke(resolve(&at, "approve", None)).await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the record still waits for Ada: {receipt:?}"
+    );
+    arrives(&mut browser, &book, "After the restart").await;
+    let names = after_a_marker(&mut browser, &book, &new_sheet, "Marker").await;
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| name.as_str() == "After the restart")
+            .count(),
+        1,
+        "the approved call ran once: {names:?}"
+    );
+    assert_eq!(
+        refused(&browser.invoke(resolve(&at, "approve", None)).await),
+        asked::ANSWERED,
+        "a second approve runs nothing"
+    );
+    browser.peer.close();
+}
+
+/// Wait until the sheet `name` reached the page's copy of `record`.
+async fn arrives(browser: &mut Browser, record: &DocumentRoute, name: &str) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        if sheet_names(&browser.mount(record))
+            .iter()
+            .any(|sheet| sheet == name)
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{name} never arrived");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

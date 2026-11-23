@@ -17,8 +17,8 @@ use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{
-    AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedRecords, AskedStore, Named, Offer,
-    RecordRef, Resolve,
+    AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords, AskedStore,
+    KeptAsk, Named, Offer, RecordRef, Resolve,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -40,7 +40,17 @@ enum Handed {
 struct Noted(Mutex<Vec<Handed>>);
 
 impl AskedDispatch for Noted {
-    fn readmit(&self, caller: &Caller, request: InvokeRequest) -> Result<(), ActionCallError> {
+    fn context(&self, invocation: InvocationId) -> serde_json::Value {
+        serde_json::json!({ "invocation": invocation.0.to_string() })
+    }
+
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        assert_eq!(*context, self.context(request.invocation));
         self.0
             .lock()
             .unwrap()
@@ -83,15 +93,41 @@ struct Host {
 }
 
 fn host() -> Host {
-    let store = Arc::new(AskedStore::default());
+    host_on(Arc::new(AskedStore::default()))
+}
+
+/// The host's dispatch, keeping its calls in `store`.
+fn host_on(store: Arc<AskedStore>) -> Host {
     let dispatch = Arc::new(Noted::default());
     let weak: std::sync::Weak<dyn AskedDispatch> =
         Arc::downgrade(&(Arc::clone(&dispatch) as Arc<dyn AskedDispatch>));
-    let records = store.for_dispatch(weak);
+    let records = store.for_dispatch("host", weak);
     Host {
         store,
         dispatch,
         records,
+    }
+}
+
+/// The host's own state, as it keeps asked records across its restarts.
+#[derive(Default)]
+struct State(Mutex<Vec<KeptAsk>>);
+
+impl AskedKeeping for State {
+    fn keep(&self, ask: &KeptAsk) {
+        let mut kept = self.0.lock().unwrap();
+        kept.retain(|kept| kept.at != ask.at);
+        kept.push(ask.clone());
+    }
+
+    fn forget(&self, at: &RecordRef) {
+        self.0.lock().unwrap().retain(|kept| kept.at != *at);
+    }
+}
+
+impl State {
+    fn kept(&self) -> Vec<KeptAsk> {
+        self.0.lock().unwrap().clone()
     }
 }
 
@@ -442,4 +478,64 @@ fn a_forged_approve_is_refused() {
     refused(&other, Some(&host.store));
     admit_frame(Some(&host.store), &handed).expect("the call the person approved goes on");
     refused(&handed, Some(&host.store));
+}
+
+/// A call that waits is suspended in its record, which the host keeps in its own state: once
+/// the host started again, it waits for Ada still, her approve hands it to the dispatch that
+/// runs now under the dispatch's name, for the agent that asked and with what the dispatch
+/// kept, and a second approve finds nothing to answer. An answered record is kept no more.
+#[test]
+fn a_call_waits_in_its_record_across_a_restart() {
+    let state = Arc::new(State::default());
+    let before = host();
+    before
+        .store
+        .keep_through(Arc::clone(&state) as Arc<dyn AskedKeeping>, Vec::new())
+        .unwrap();
+    let call = set_alarm();
+    let at = before
+        .records
+        .write_asked(WORKSPACE, &scout(), &call, &facts())
+        .unwrap();
+    assert_eq!(state.kept().len(), 1, "kept once written");
+    drop(before);
+
+    let after = host_on(Arc::new(AskedStore::default()));
+    after
+        .store
+        .keep_through(Arc::clone(&state) as Arc<dyn AskedKeeping>, state.kept())
+        .unwrap();
+    let listed = after.records.asked_of(&ADA);
+    assert_eq!(listed.len(), 1, "it waits for Ada after the restart");
+    assert_eq!(listed[0].record, at);
+    refusal(resolve(
+        &after,
+        &at,
+        &Caller::authenticated(BO, [4; 32]).in_workspace(WORKSPACE),
+        Offer::Approve,
+        None,
+    ));
+    resolve(&after, &at, &ada(), Offer::Approve, None).unwrap();
+    let handed = after
+        .dispatch
+        .0
+        .lock()
+        .unwrap()
+        .drain(..)
+        .collect::<Vec<_>>();
+    let [Handed::Readmit(caller, request)] = handed.as_slice() else {
+        panic!("the dispatch is handed the call once: {handed:?}");
+    };
+    assert_eq!(*caller, scout(), "for the agent that asked");
+    assert!(tilo_actions::remote::asked::same_call(request, &call));
+    assert_eq!(request.invocation, call.invocation);
+    assert!(
+        state.kept().is_empty(),
+        "an answered record is kept no more"
+    );
+    assert_eq!(
+        refusal(resolve(&after, &at, &ada(), Offer::Approve, None)),
+        tilo_actions::remote::asked::ANSWERED
+    );
+    assert!(after.dispatch.0.lock().unwrap().is_empty(), "it ran once");
 }

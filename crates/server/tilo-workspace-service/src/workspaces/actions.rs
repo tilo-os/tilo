@@ -54,8 +54,8 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
-    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,
-    WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
+    WORKSPACE_INVITATIONS, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT, WORKSPACE_MEMBER_PLACED,
     WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_SERVERS, WORKSPACE_WAITING, asked,
     formats, mcp_server, person_accounts, person_connections, person_models, person_telling,
     person_vault, server_account, workspace_governance_address, workspace_governance_child,
@@ -433,6 +433,15 @@ const VERBS: [Verb; 30] = [
         kind: roles::GOVERNANCE_KIND,
         params: key_params,
     },
+    Verb {
+        id: WORKSPACE_GRANT_REVOKE,
+        label: "Revoke a grant",
+        // The person who gave the grant takes it back, or whoever the workspace's policy lets
+        // revoke grants: the handler checks which.
+        check: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: grant_params,
+    },
 ];
 
 fn person_param() -> ActionParam {
@@ -673,6 +682,14 @@ fn app_params() -> Vec<ActionParam> {
     vec![app_param()]
 }
 
+fn grant_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Text,
+        "The grant, by its id: what `workspace/permissions/<grant>` names.",
+    )]
+}
+
 fn key_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "grant",
@@ -905,12 +922,18 @@ fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow>
 fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str) -> InvokeRequest {
     let mut asked = request.clone();
     asked.target.address = ActionAddress::new(workspace_governance_resource(workspace), operation);
-    if let Some(person) = workspace_person(&request.target.address) {
+    let named = workspace_person(&request.target.address)
+        .map(|person| ("person", person))
+        .or_else(|| {
+            tilo_actions::remote::workspace_grant(&request.target.address)
+                .map(|grant| ("grant", grant))
+        });
+    if let Some((name, value)) = named {
         let mut arguments = match asked.argument {
             InvokeArgument::Json(arguments) => arguments,
             _ => Map::new(),
         };
-        arguments.insert("person".into(), person.into());
+        arguments.insert(name.into(), value.into());
         asked.argument = InvokeArgument::Json(arguments);
     }
     asked
@@ -2023,6 +2046,7 @@ impl Workspaces {
             SET_CONNECTOR_SECRET => connector_secret(call.args),
             KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
+            WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
             _ => self.governance_members(action, call).await,
         }
     }
@@ -2097,6 +2121,57 @@ impl Workspaces {
             });
         }
         Ok(json!({"revoked": id}))
+    }
+
+    /// Take back one grant of the workspace's policy (`workspace/permissions/<grant>#revoke`):
+    /// the person who gave it may, from a device of their own, and so may whoever the
+    /// workspace's policy lets revoke grants. The host writes the revocation as its change to
+    /// the workspace, and every member's device decides by the policy without it from then on.
+    async fn revoke_policy_grant(
+        &self,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionCallError> {
+        let id = call.args.required_text("grant")?.to_owned();
+        let governed = self
+            .workspace(call.workspace)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let mut workspace = governed.lock().await;
+        let grant = workspace
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .map_err(|_| ActionCallError::UnknownAction)?
+            .policy
+            .grants
+            .iter()
+            .find(|grant| grant.id.0 == id)
+            .cloned()
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: "This workspace has no grant by that id".into(),
+            })?;
+        let in_person =
+            call.device.capabilities.agent.is_none() || call.device.capabilities.server_key;
+        let gave_it = in_person
+            && grant.granted_by
+                == tilo_action_policy::Grantee::person(hex::encode(call.device.user_public_key));
+        let may_revoke = gave_it
+            || self.permits(
+                call.device,
+                Some(&workspace),
+                WorkspaceOp::Govern(governance::REVOKE),
+                tilo_clock::unix_now_ns(),
+            );
+        if !may_revoke {
+            return Err(ActionCallError::Refused {
+                reason: "Only the person who gave this grant, or someone this workspace lets \
+                         revoke grants, can take it back"
+                    .into(),
+            });
+        }
+        self.revoke_grants(&mut workspace, tilo_clock::wall(), &[grant.id])
+            .await
+            .map_err(ActionCallError::refused)?;
+        Ok(json!({ "revoked": id }))
     }
 
     /// Making the workspace a public workspace, taking it back, and what it is
@@ -3622,8 +3697,45 @@ fn not_waiting() -> ActionCallError {
     }
 }
 
+/// The name the store knows this host's dispatch by, across its restarts.
+pub(super) const HOST_DISPATCH: &str = "host";
+
+/// What this host keeps beside a call that waits for its person's yes, to admit it again
+/// after a restart: the workspace it acts in and the device certificate it was asked under.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AskedContext {
+    workspace: Option<String>,
+    certificate: Option<DeviceCert>,
+}
+
 impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
-    fn readmit(&self, caller: &Caller, request: InvokeRequest) -> Result<(), ActionCallError> {
+    fn context(&self, invocation: InvocationId) -> Value {
+        let Ok(server) = self.server() else {
+            return Value::Null;
+        };
+        let asked = server
+            .shared
+            .asked_calls
+            .lock_recover()
+            .get(&invocation)
+            .cloned();
+        asked
+            .and_then(|(workspace_id, certificate)| {
+                serde_json::to_value(AskedContext {
+                    workspace: workspace_id.map(|id| id.to_string()),
+                    certificate,
+                })
+                .ok()
+            })
+            .unwrap_or(Value::Null)
+    }
+
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &Value,
+    ) -> Result<(), ActionCallError> {
         let server = self.server()?;
         let workspaces = server
             .shared
@@ -3631,12 +3743,28 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             .get()
             .cloned()
             .ok_or_else(not_waiting)?;
-        let (workspace_id, certificate) = server
+        let remembered = server
             .shared
             .asked_calls
             .lock_recover()
-            .remove(&request.invocation)
-            .ok_or_else(not_waiting)?;
+            .remove(&request.invocation);
+        let Some((workspace_id, certificate)) = remembered else {
+            // Kept from before this host started again: admitted as a call of its own under
+            // its id, which the record's approve admits once.
+            let kept = serde_json::from_value::<AskedContext>(context.clone())
+                .map_err(|_| not_waiting())?;
+            let workspace_id = match kept.workspace {
+                Some(workspace) => Some(WorkspaceId::parse(&workspace).ok_or_else(not_waiting)?),
+                None => None,
+            };
+            let here = InWorkspace {
+                server,
+                workspace_id,
+                certificate: kept.certificate,
+            };
+            here.invoke(caller, request).then(|_| {});
+            return Ok(());
+        };
         if !server
             .log()
             .readmit(caller, &request, invocation_states::waits_asked)
@@ -3661,12 +3789,16 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
         let server = self.server()?;
-        server
+        if server
             .shared
             .asked_calls
             .lock_recover()
             .remove(&invocation)
-            .ok_or_else(not_waiting)?;
+            .is_none()
+        {
+            // Kept from before this host started again: it ended with it.
+            return Ok(());
+        }
         let mut log = server.log();
         if !log
             .get(caller, &invocation)

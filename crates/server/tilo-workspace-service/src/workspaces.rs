@@ -31,6 +31,9 @@ mod applications;
 // The grant a person gives with an approve of an asked record.
 #[cfg(not(target_arch = "wasm32"))]
 mod asked_grants;
+// The asked calls that wait, kept in their workspaces' records across the host's restarts.
+#[cfg(not(target_arch = "wasm32"))]
+mod asked_kept;
 mod authored;
 mod authority;
 mod branch;

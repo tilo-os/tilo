@@ -147,9 +147,9 @@ use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
     ActionCallError, ActorPlace, Caller, CataloguePage, CatalogueQuery, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
-    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
-    application_provider_resource, pending, provider_workspace,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, MAX_REMOTE_WAIT, Pending,
+    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_resource,
+    pending, provider_workspace,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, MemberId};
 use tilo_lock::MutexRecover as _;

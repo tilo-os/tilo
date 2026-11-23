@@ -41,9 +41,33 @@ impl Dispatch {
     }
 }
 
+/// The name the store knows this dispatch by, across the host's restarts.
+const DISPATCH: &str = "workspace-actions";
+
 impl AskedDispatch for Dispatch {
-    fn readmit(&self, caller: &Caller, request: InvokeRequest) -> Result<(), ActionCallError> {
-        self.actions()?.readmit(caller, request)
+    fn context(&self, invocation: InvocationId) -> serde_json::Value {
+        // The workspace the call acts in, as its id's text.
+        self.actions()
+            .ok()
+            .and_then(|actions| {
+                actions
+                    .log()
+                    .entries
+                    .get(&invocation)
+                    .and_then(|entry| entry.workspace)
+            })
+            .map_or(serde_json::Value::Null, |workspace| {
+                serde_json::Value::String(workspace.to_string())
+            })
+    }
+
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        self.actions()?.readmit(caller, request, context)
     }
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
@@ -71,7 +95,7 @@ impl WorkspaceActions {
             shared: Arc::downgrade(&self.shared),
             catalogue: self.catalogue.clone(),
         });
-        let records = told(store.for_dispatch(Arc::downgrade(&dispatch)));
+        let records = told(store.for_dispatch(DISPATCH, Arc::downgrade(&dispatch)));
         if self.shared.asked_records.set(records).is_ok() {
             let _ = self.shared.asked_dispatch.set(dispatch);
             let _ = self.shared.asked_store.set(Arc::clone(store));
@@ -128,13 +152,28 @@ impl WorkspaceActions {
 
     /// Admit `request` again under its id, carrying the person's approve: only where the
     /// invocation `caller` asked for still waits in its asked record for the same call.
-    fn readmit(&self, caller: &Caller, request: InvokeRequest) -> Result<(), ActionCallError> {
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        context: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
         let invocation = request.invocation;
         let mut log = self.log();
-        let entry = log
-            .entries
-            .get_mut(&invocation)
-            .ok_or(ActionCallError::UnknownInvocation)?;
+        let Some(entry) = log.entries.get_mut(&invocation) else {
+            // Kept from before the host started again: admitted as a call of its own under
+            // its id, which the record's approve admits once.
+            drop(log);
+            let workspace_id = context
+                .as_str()
+                .and_then(WorkspaceId::parse)
+                .ok_or_else(not_waiting)?;
+            let message = RemoteActionMessage::Invoke(request);
+            self.serve(workspace_id, caller, message)
+                .ok_or_else(not_waiting)?
+                .then(|_| {});
+            return Ok(());
+        };
         let theirs = caller.continues(&entry.caller) || entry.caller.continues(caller);
         if !entry.asked
             || entry.update.is_terminal()
@@ -158,10 +197,10 @@ impl WorkspaceActions {
     /// End `invocation`, which waits in its asked record, as declined by the person.
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
         let mut log = self.log();
-        let entry = log
-            .entries
-            .get_mut(&invocation)
-            .ok_or(ActionCallError::UnknownInvocation)?;
+        // One kept from before the host started again ended with it.
+        let Some(entry) = log.entries.get_mut(&invocation) else {
+            return Ok(());
+        };
         let theirs = caller.continues(&entry.caller) || entry.caller.continues(caller);
         if !entry.asked || entry.update.is_terminal() || !theirs {
             return Err(not_waiting());

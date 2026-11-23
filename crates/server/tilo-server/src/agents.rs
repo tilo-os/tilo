@@ -1876,6 +1876,11 @@ async fn start_app_server(
     let workspaces = server.workspaces();
     if let Some(workspaces) = &workspaces {
         asked.grants_through(workspaces.asked_grants(tokio::runtime::Handle::current()));
+        // Kept in each workspace's record of its invocations too: what waited before a restart
+        // waits again.
+        asked
+            .keep_through(workspaces.asked_keeping(), workspaces.asked_kept().await)
+            .map_err(ServerError::GovernedAccess)?;
         workspaces.keep_asked_in(&asked);
     }
     action_server
