@@ -74,12 +74,30 @@ impl BlobHost for Device {
 }
 
 /// Ada's workspace with an empty book, on `device` for its files.
+///
+/// The app is compiled with the platform packages in hand, as the session has them: `associations`
+/// reads the workspace's contact directory by its named root, and its accounts are the directory's
+/// verbs.
 fn book(device: &Device) -> (Replica, ResourceRef, Vec<Package>) {
-    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[CONTACTS]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[]);
+    let metas = tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
+    let directory = metas
+        .iter()
+        .find(|meta| meta.app == "so.tilo.contacts.directory")
+        .expect("the contact directory's package")
+        .clone();
+    ada.host
+        .runtime()
+        .load_foreign(directory)
+        .expect("the directory is a package of the workspace");
+    let lock = tilolang::IdsLock::parse(CONTACTS.1).expect("the app's ids lock");
+    let compiled = tilolang::compile_package(CONTACTS.0, &lock, &metas)
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = ada.host.load_compiled(&compiled).expect("the app loads");
     ada.host.runtime().set_blobs(device.clone());
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
-    (ada, root, loaded)
+    (ada, root, vec![package])
 }
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
