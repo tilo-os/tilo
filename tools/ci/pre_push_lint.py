@@ -13,15 +13,19 @@ repository's own format check, and Clippy over every target of the host with the
 features the workspace's unified build gives each package (so code behind a
 feature that no default build enables is compiled).
 
-A push lints only what its commits change. The crates that use something it
-renamed or removed, the packages as they ship, and the crates that build for the
-page are t's `clippy`, `clippy-{arch}`, `clippy-idle`, `clippy-shipped` and
-`clippy-page` families' work, on every change: each is keyed by what it reads,
-dependents included, and a miss is named on the head it broke.
+A package that builds directly on one of those through a path dependency is linted
+too, a dev-dependency's test included: a type a push changes breaks the package that
+constructs it while the package that declares it compiles clean. A selected package
+the page family names is also linted for wasm32, a target the host lint cannot see.
+Only the direct dependants are named; what a change reaches through them, and the
+packages as they ship, is t's `clippy`, `clippy-{arch}`, `clippy-idle`,
+`clippy-shipped` and `clippy-page` families' work, on every change: each is keyed by
+what it reads, and a miss is named on the head it broke.
 
 Where t is installed, the lint is t's own per-package checks of the families
 that build with those unified features (`clippy/<package>`, `clippy-idle/...`,
-`clippy-<arch>/...`: the ones whose `unify` names workspace-unify in t.toml). t
+`clippy-<arch>/...`: the ones whose `unify` names workspace-unify in t.toml), and
+`clippy-page/<package>` for a selected package the page family names. t
 keys each by what that package's build reads, its dependencies included, and
 answers a key it has seen from its result cache, whoever ran it: after a rebase
 onto commits that reach none of what a package reads, the push is answered in
@@ -75,7 +79,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 from ci import suites
-from ci.workspace_graph import file_at, lockfile_change, package_maps
+from ci.workspace_graph import file_at, lockfile_change, package_maps, reverse_dependencies
 
 # A changed file is Rust or Cargo when it can change what a package compiles.
 RUST_SUFFIXES = (".rs", ".tl")
@@ -127,6 +131,15 @@ T_TOML = "t.toml"
 # resolves for it: the clippy families that name it in `unify` lint with those features, which is
 # the lint a push gets.
 UNIFY = "workspace-unify"
+# The family that lints the page's wasm32 build. It declares no `unify` - workspace-unify is a
+# host crate that builds nothing for wasm32 - so it stands apart from the unified families.
+PAGE_FAMILY = "clippy-page"
+# The packages that only unify features, generated from the workspace's manifests. Their
+# dependency lists name members they never use, so a change to one reaches no code and names no
+# set of dependants.
+SYNTHETIC = {"workspace-hack", "workspace-unify"}
+# A target kind another package can link against; a package with none cannot be depended on.
+LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 # What an architecture family's `{arch}` is on this machine.
 ARCHITECTURES = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}
 
@@ -381,9 +394,11 @@ def manifest_seeds(root: Path, push: Push, metadata: dict) -> set[str] | None:
 
 
 class Selection(NamedTuple):
-    """What a push is linted as: the packages, and the metadata they were named from."""
+    """What a push is linted as: the packages, the metadata they were named from, and which of
+    them no commit of the push changed - the ones selected because they build on a changed one."""
     native: list[str]
     metadata: dict
+    dependants: list[str] = []
 
 
 def reading_packages(root: Path, paths: list[str]) -> list[str]:
@@ -404,10 +419,36 @@ def whole_workspace(members: set[str], metadata: dict) -> Selection:
     return Selection(sorted(members), metadata)
 
 
+def library(package: dict) -> bool:
+    """Whether a package has a target another member can link against.
+
+    Metadata that names no targets comes from a stub, which says nothing against it.
+    """
+    targets = package.get("targets")
+    return not targets or any(LIBRARY_KINDS & set(target.get("kind", ())) for target in targets)
+
+
+def dependants(seeds: set[str], packages: dict[str, dict], root: Path) -> set[str]:
+    """The members that build directly on one of the seeds through a path dependency.
+
+    A type a push changes breaks the package that constructs it while the package that declares
+    it compiles clean, and a dev-dependency's test breaks the same way. Only the direct
+    dependants are named: a break further along belongs to the dependant that fails first.
+    """
+    reverse = reverse_dependencies(packages, root)
+    reached: set[str] = set()
+    for seed in seeds:
+        if seed in SYNTHETIC or not library(packages.get(seed, {})):
+            continue
+        reached |= reverse.get(seed, set())
+    return reached - seeds
+
+
 def select(root: Path, push: Push, files: set[str]) -> Selection | None:
     """The packages to lint for the host, or None when the push cannot be named.
 
-    Those are the packages the commits own or read the changed files through.
+    Those are the packages the commits own or read the changed files through, and the members
+    that build on one of them.
     """
     metadata = cargo_metadata(root)
     packages, by_dir = package_maps(metadata, root)
@@ -441,7 +482,8 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
                 "the whole workspace is linted")
             return whole_workspace(members, metadata)
         seeds |= reached
-    return Selection(sorted(seeds), metadata)
+    built_on = dependants(seeds, packages, root)
+    return Selection(sorted(seeds | built_on), metadata, sorted(built_on))
 
 
 def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
@@ -486,13 +528,21 @@ def t_checks(root: Path, selected: Iterable[str], members: set[str]) -> tuple[li
 
     Those are the per-package checks (`<family>/<package>`) of t.toml's clippy families that name
     workspace-unify in `unify`, on this machine's architecture: a family's members are its
-    `packages`, or every member its `exclude` leaves.
+    `packages`, or every member its `exclude` leaves. A package the page family names is asked for
+    there as well: its wasm32 build is one the host lint cannot see, and the family declares no
+    `unify`, so it stands apart from the unified families.
     """
     families = tomllib.loads((root / T_TOML).read_text()).get("cargo", [])
     arch = host_architecture()
     owners: dict[str, str] = {}
+    page: set[str] = set()
     for family in families:
-        if family.get("tool") != "clippy" or family.get("unify") != UNIFY:
+        if family.get("tool") != "clippy":
+            continue
+        if family.get("name") == PAGE_FAMILY:
+            page |= set(family.get("packages", ()))
+            continue
+        if family.get("unify") != UNIFY:
             continue
         name = family["name"]
         if "{arch}" in name:
@@ -507,8 +557,10 @@ def t_checks(root: Path, selected: Iterable[str], members: set[str]) -> tuple[li
     for package in selected:
         if package in owners:
             checks.append(f"{owners[package]}/{package}")
-        else:
+        elif package not in page:
             uncovered.append(package)
+        if package in page:
+            checks.append(f"{PAGE_FAMILY}/{package}")
     return checks, uncovered
 
 
@@ -815,7 +867,8 @@ def main(argv: list[str]) -> int:
         return 1
     if options.only is not None:
         only = set(filter(None, options.only.split(",")))
-        selection = Selection(sorted(set(selection.native) & only), selection.metadata)
+        selection = Selection(sorted(set(selection.native) & only), selection.metadata,
+                              sorted(set(selection.dependants) & only))
         if not selection.native:
             say("pre-push: none of the packages asked for is one this range reaches; nothing to lint")
             return 0
@@ -824,8 +877,11 @@ def main(argv: list[str]) -> int:
         return 0
     if options.plan:
         print(f"native: {' '.join(selection.native)}")
+        if selection.dependants:
+            print(f"dependants: {' '.join(selection.dependants)}")
         if lints_through_t():
-            print(f"t: {' '.join(t_checks(root, selection.native, set(package_maps(selection.metadata, root)[0]))[0])}")
+            members = package_maps(selection.metadata, root)[0]
+            print(f"t: {' '.join(t_checks(root, selection.native, set(members))[0])}")
         return 0
     checks = None
     if lints_through_t():
@@ -862,6 +918,8 @@ def main(argv: list[str]) -> int:
             "it with main's changes on main")
         return 0
     say(f"pre-push: linting {packages(len(selection.native))}"
+        + (f", {len(selection.dependants)} of them direct dependants of what changed"
+           if selection.dependants else "")
         + (f" through t ({' '.join(checks)})" if checks else ""))
     checked = (f"{'clippy and rustfmt' if formatting else 'clippy (no rustfmt on PATH)'} "
                f"for {packages(len(selection.native))}")
