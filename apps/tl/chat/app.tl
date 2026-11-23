@@ -943,11 +943,16 @@ action move_category(all: Conversations, c: Category, at: Int = -1) (
     all.channels.move(c, to: place)
 }
 
-/// Changes what a message says. Only its author may.
-action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
+/// Changes what a message says. Only its author may. An agent retrying its answer writes it
+/// again in the same message, naming the new turn.
+action edit(m: Message, body: RichText = m.body, turn: Text = m.turn) (
+    icon: .pencil,
+    label: "Edit",
+) {
     require created(m)?.who == invoker "Only its author can edit a message"
     require not body.is_empty() "Type a message first"
     m.body = body
+    m.turn = turn
 }
 
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
