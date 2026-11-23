@@ -40,7 +40,6 @@ use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::join::{JoinBootstrap, TransportHint};
 use tilo_peer_state::{CopyRole, StatePeer, TransportOrigin};
-use tilo_server_protocol::refusal::Refusal;
 use tilo_server_protocol::{Whose, WorkSetting, WorkspaceId};
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
@@ -597,15 +596,12 @@ async fn dial_holder(
             }
             Err(refusal) => {
                 tracing::debug!(%name, ?refusal, "a holder is unreachable");
-                // A key its person's root revoked is told typed, with the entry the root
-                // signed: this device keeps it as an announced revocation, the path a
-                // workspace's own announcement takes, so every workspace here refuses the
-                // key and a retired server lets go of what it holds.
-                if let Refusal::Revoked(entry) = refusal
-                    && let Some(inner) = workspaces.upgrade()
-                    && let Err(error) = (Workspaces { inner }).take_revocations(vec![entry]).await
-                {
-                    tracing::warn!(%name, %error, "a holder's refusal did not say a revocation");
+                // A key its person's root retired is told typed, with the entry the root
+                // signed: this device keeps it only once the entry verifies, as an announced
+                // revocation is, so every workspace here refuses the key and a retired server
+                // lets go of what it holds.
+                if let Some(inner) = workspaces.upgrade() {
+                    (Workspaces { inner }).take_refusal(refusal).await;
                 }
                 links.set(
                     device,

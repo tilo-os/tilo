@@ -1748,15 +1748,11 @@ impl Workspaces {
                         up.send_replace(false);
                     }
                     Err(refusal @ Refusal::Revoked(_)) => {
-                        tracing::debug!(%name, ?refusal, "a member copy's device says the key is revoked");
-                        // The serving device says the person's root revoked this device's
-                        // key, with the entry the root signed: kept as an announced
-                        // revocation, the path a workspace's own announcement takes.
-                        if let Refusal::Revoked(entry) = refusal
-                            && let Some(workspaces) = workspaces.upgrade()
-                            && let Err(error) = workspaces.take_revocations(vec![entry]).await
-                        {
-                            tracing::warn!(%name, %error, "a device's refusal did not say a revocation");
+                        tracing::debug!(%name, ?refusal, "a member copy's device says the key is retired");
+                        // The serving device says the person's root retired this device's key,
+                        // with the entry the root signed: kept only once the entry verifies.
+                        if let Some(workspaces) = workspaces.upgrade() {
+                            workspaces.take_refusal(refusal).await;
                         }
                     }
                     Err(error) => {
