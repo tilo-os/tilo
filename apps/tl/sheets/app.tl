@@ -430,6 +430,11 @@ action place_sheet(w: Workbook, s: Sheet, before: Sheet) (label: "Move the sheet
     w.sheets.move(s, before: before)
 }
 
+/// Moves a sheet's tab to `at`, the place among the tabs a person sees that a drag reports.
+action move_sheet(w: Workbook, s: Sheet, at: Int) (label: "Move the sheet") {
+    w.sheets.move(s, to: at, among: w.sheets.filter(x -> not x.hidden or x == s))
+}
+
 /// Hides a sheet's tab, or shows it again.
 action set_sheet_hidden(s: Sheet, hidden: Bool) (label: "Hide the sheet", icon: .eye_off) {
     s.hidden = hidden
@@ -490,6 +495,40 @@ action set_cells(w: Workbook, s: Sheet, start: Text, rows: List<List<Text>>, see
     require seen == "" or seen == w.structure.to_text() "Rows, columns or sheets moved since this write was made from; read the sheet again and write against what it answers now"
     let written = rows_json(rows)
     apply_edit(w, "\{\"op\": \"set-cells\", \"sheet\": \{quoted(s.name)}, \"start\": \{quoted(start)}, \"rows\": \{written}}")
+}
+
+// ---------------------------------------------------------------------------------------------
+// The clipboard: the chosen cells out, and what is on it in.
+
+/// Copies the cells a person chose to their clipboard as a table: a line per row and a tab
+/// between columns, which a sheet, a word processor or a mail app reads.
+action copy_cells(text: Text) uses clipboard (label: "Copy", key: "Ctrl+C") {
+    clipboard.copy(text)
+}
+
+/// Cuts the cells a person chose: copies them as `copy_cells` does, then clears them.
+action cut_cells(w: Workbook, s: Sheet, area: Text, text: Text) uses clipboard (
+    label: "Cut",
+    key: "Ctrl+X",
+) {
+    clipboard.copy(text)
+    clear_cells(w, s, area)
+}
+
+/// Writes the table on the person's clipboard into the cells from `at`: a line per row and a tab
+/// between columns. Nothing on the clipboard writes nothing.
+action paste_cells(w: Workbook, s: Sheet, at: Text) uses clipboard (label: "Paste", key: "Ctrl+V") {
+    if let text = clipboard.paste() {
+        if text.trim() != "" {
+            set_cells(w, s, at, text.trim().split("\n").map(line -> line.split("\t")))
+        }
+    }
+}
+
+/// Clears the cells `area` names.
+action clear_cells(w: Workbook, s: Sheet, area: Text) (label: "Clear the cells", did: "cleared cells") {
+    let refs = rows_of_range(area).flat_map(r -> columns_of_range(area).map(c -> "{c}{r}"))
+    write_cells(w, s.name, refs, refs.map(x -> ""))
 }
 
 /// Sets the format of the cells `range` (a code such as `currency:EUR`, `percent` or `date:ISO`),

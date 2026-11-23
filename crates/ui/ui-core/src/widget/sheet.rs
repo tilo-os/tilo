@@ -2111,4 +2111,49 @@ mod find_tests {
         assert!(sheet.searched.is_empty());
         assert!(sheet.matches.is_empty());
     }
+
+    /// Copy, cut and paste are the person's clipboard, which only the app can reach: the grid
+    /// reports the chosen cells as a table and asks the app to paste.
+    #[test]
+    fn copy_cut_and_paste_are_the_clipboard_events() {
+        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let mut sheet = Sheet::new();
+        sheet.set_props(crate::widget::SheetProps {
+            columns: 3,
+            rows: 3,
+            cells: vec![cell("A1", "a"), cell("B1", "b")],
+            selection: Some("A1:B1".to_owned()),
+            copy: Event::View(Intent::new(&queue, "sheet", "copy")),
+            cut: Event::View(Intent::new(&queue, "sheet", "cut")),
+            paste: Event::View(Intent::new(&queue, "sheet", "paste")),
+            ..Default::default()
+        });
+        let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let press = |ch: &str| {
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Character(ch.into()),
+                None,
+                winit::event::ElementState::Pressed,
+            )
+        };
+        assert!(sheet.key(&press("c"), &ctrl));
+        assert!(sheet.key(&press("x"), &ctrl));
+        assert!(sheet.key(&press("v"), &ctrl));
+        let fired = queue.take();
+        assert_eq!(fired.len(), 3);
+        assert_eq!(fired[0].event, "copy");
+        assert_eq!(
+            fired[0].value,
+            Some(Value::Text("a\tb\n".to_owned())),
+            "the chosen cells as a table"
+        );
+        assert_eq!(fired[1].event, "cut");
+        assert_eq!(
+            fired[1].value,
+            Some(Value::Text("a\tb\n".to_owned())),
+            "the cells to copy before clearing"
+        );
+        assert_eq!(fired[2].event, "paste");
+        assert_eq!(fired[2].value, None, "the app reads the clipboard itself");
+    }
 }

@@ -240,6 +240,9 @@ template view grid(
     ) {
         on select(chosen): set(area, chosen).then(set(typed, input_at(s, range_start(chosen))))
         on edit(pairs): edit_cells(w, s, pairs)
+        on copy(text): copy_cells(text)
+        on cut(text): cut_cells(w, s, area, text)
+        on paste: paste_cells(w, s, range_start(area))
         on resized_column(pair): resize_column(s, pair)
         on resized_row(pair): resize_row(s, pair)
         on fill(pair): fill(w, s, pair.at(0) ?? "", pair.at(1) ?? "")
@@ -349,10 +352,15 @@ template view workbook_tabs(
     coloring: State<Bool>,
 ) {
     row(gap: .tight, align: .center) {
-        for tab in w.sheets {
-            if not tab.hidden or tab == s {
-                ui.Button(tab.name, toggled: tab == s, size: .small) {
-                    on press: set(open_sheet, tab).then(set(area, "A1"))
+        // The tabs are a run: a person drags one to the place it should stand.
+        ui.DragRun(axis: .horizontal, distribute: .start, name: "Sheets") {
+            on drop(moved: Sheet, at: Int): move_sheet(w, moved, at)
+            for tab in w.sheets.filter(x -> not x.hidden or x == s) {
+                ui.DragItem(tab, title: tab.name) {
+                    on activate: set(open_sheet, tab).then(set(area, "A1"))
+                    ui.Button(tab.name, toggled: tab == s, size: .small) {
+                        on press: set(open_sheet, tab).then(set(area, "A1"))
+                    }
                 }
             }
         }

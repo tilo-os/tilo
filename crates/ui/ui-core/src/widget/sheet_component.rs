@@ -260,6 +260,18 @@ pub struct SheetProps {
     /// The fill handle was dragged: carries the cells it copies from and the cells it fills.
     #[component(event(value = Vec<String>))]
     pub fill: Event,
+    /// The chosen cells were asked to be copied: carries them as a table, a line per row and a
+    /// tab between columns. The app's action writes it to the person's clipboard.
+    #[component(event(value = String))]
+    pub copy: Event,
+    /// The chosen cells were asked to be cut: carries them as `copy` does, and the app copies
+    /// them and clears the cells.
+    #[component(event(value = String))]
+    pub cut: Event,
+    /// The person asked to paste: the app reads the person's clipboard and writes the cells from
+    /// the selection's top left.
+    #[component(event)]
+    pub paste: Event,
 }
 
 impl Described for Sheet {
@@ -291,6 +303,9 @@ impl Described for Sheet {
             resized_column,
             resized_row,
             fill,
+            copy,
+            cut,
+            paste,
         } = props;
         let changed = self.take(
             name,
@@ -312,6 +327,9 @@ impl Described for Sheet {
         self.events.resized_column = resized_column;
         self.events.resized_row = resized_row;
         self.events.fill = fill;
+        self.events.copy = copy;
+        self.events.cut = cut;
+        self.events.paste = paste;
         changed
     }
 }
