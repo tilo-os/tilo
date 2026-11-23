@@ -38,6 +38,17 @@ pub(super) fn reference_request(request: &tilo_actions::remote::InvokeRequest) -
             && application_provider(&request.target.provider).is_some())
 }
 
+/// Whether `request` asks the session to run one tilolang line as the person who typed it
+/// (`session:programs#run-line`): a composer runs the line its person wrote, as them, and its
+/// calls are decided as their own. The app gains nothing by it — the line is the person's own
+/// words — and what it asks for beyond that is decided for the app as any other call is.
+pub(super) fn programs_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
+    use tilo_actions::remote::session_actions;
+    request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
+        && request.target.address.resource == session_actions::PROGRAMS_RESOURCE
+        && request.target.address.action == session_actions::RUN_LINE
+}
+
 /// Whether `request` asks the session's shell for its invitation into the workspace — the sheet
 /// where a link is made (`show-invite`) and the link itself (`issue-invitation`) — so an app
 /// sharing what it shows offers the same sheet and the same invitation, decided by the person's

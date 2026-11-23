@@ -2135,7 +2135,11 @@ impl Host {
         if !person && let Some(session) = &self.agent_session {
             session.acting(&request);
         }
-        if person && (own || self.state.is_none()) {
+        // The session's own steps run on the loop, where the layout and the windows are. A step
+        // its own API publishes nothing of is a host step's — the person's own tilolang line,
+        // which runs in the session's program host — and goes to the broker, which starts it,
+        // stops it when the person cancels, and answers when it ends.
+        if person && ((own && self.placed(&request).is_some()) || self.state.is_none()) {
             return self.invoke_person_step(caller, request);
         }
         // An agent's read of the session's own actions needs no turn and no durably signed

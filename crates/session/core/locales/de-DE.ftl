@@ -1391,3 +1391,6 @@ session-window-share-watch-tab = Der Tab, in dem das Fenster auf diesem Gerät g
 session-window-share-watch-workspace = Der Arbeitsbereich, aus dem es gezeigt wird
 session-window-share-unwatch-tab = Der Tab, in dem das Fenster auf diesem Gerät gezeigt wird
 session-window-share-unwatch-workspace = Der Arbeitsbereich, aus dem es gezeigt wird
+programs-resource = Deine Programme
+programs-run-line = Diese Zeile ausführen
+programs-run-line-detail = Führt eine tilolang-Zeile als dich aus und antwortet, was sie gelesen oder geändert hat.

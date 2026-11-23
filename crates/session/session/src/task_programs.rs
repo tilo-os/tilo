@@ -1,12 +1,15 @@
-//! An agent session's programs: the tilolang an agent writes as one step of its session, run here,
-//! in the same API an MCP client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`).
+//! A session's programs: the tilolang an agent writes as one step of its session, run here, in
+//! the same API an MCP client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`).
 //! An agent reaches it through the broker as a host step under
 //! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER), admitted by the
 //! session the step is a step of, and gets back what the program answered.
-//! One agent session has one session of the host: its own tilolang host, the `let` s and references
+//! One agent session has one session of the host: its own tilolang host, the `let`s and references
 //! its programs made, and the steps `undo` takes back. Every call the program makes is done as the
 //! agent, for the person it acts for, attributed to the session, and decided by the workspace's
 //! policy like the agent's own calls.
+//!
+//! The person's own line runs through the same [`Programs`] host, from the session's own actions
+//! ([`crate::session_actions`]): theirs, through the session's `for_person` api.
 //!
 //! Where a program runs is the host's: [`Programs`], a process of its own on a Linux desktop and
 //! the page's in-process host on the web.
@@ -21,11 +24,11 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::Pending;
-use tilo_actions::remote::task_programs as wire;
+use tilo_actions::remote::task_programs as task_wire;
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
 
-use crate::platform::programs::{ProgramRequest, Programs};
+use crate::platform::programs::{ProgramCaller, ProgramRequest, Programs};
 
 /// An agent session's programs, as this host runs them.
 pub(crate) struct TaskPrograms {
@@ -63,8 +66,8 @@ fn descriptor() -> tilo_actions::ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
-        address: tilo_actions::ActionAddress::new(wire::RESOURCE, wire::RUN),
-        resource_kind: wire::RESOURCE.into(),
+        address: tilo_actions::ActionAddress::new(task_wire::RESOURCE, task_wire::RUN),
+        resource_kind: task_wire::RESOURCE.into(),
         resource_label: t("task-programs-resource"),
         action_label: t("task-programs-run"),
         keywords: Vec::new(),
@@ -86,8 +89,8 @@ fn descriptor() -> tilo_actions::ActionDescriptor {
     }
 }
 
-/// `argument` , in its slot form, bound to `PARAMS` .
-fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
+/// `argument` , in its slot form, bound to `params` .
+fn bind(params: &'static [ActionParam], argument: Option<&str>) -> Result<ActionArgs, String> {
     let supplied = match argument {
         None | Some("") => serde_json::Map::new(),
         Some(slot) => {
@@ -97,16 +100,16 @@ fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
             serde_json::from_str(json).map_err(|error| error.to_string())?
         }
     };
-    ActionArgs::bind_json(PARAMS, &supplied).map_err(|error| error.to_string())
+    ActionArgs::bind_json(params, &supplied).map_err(|error| error.to_string())
 }
 
 impl HostStepServices for TaskPrograms {
     fn provider(&self) -> &'static str {
-        wire::PROVIDER
+        task_wire::PROVIDER
     }
 
     fn app_id(&self) -> &str {
-        wire::APP
+        task_wire::APP
     }
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
@@ -118,8 +121,10 @@ impl HostStepServices for TaskPrograms {
     }
 
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
-        if request.address.resource != wire::RESOURCE || request.address.action != wire::RUN {
-            return Err("unknown step of a task's programs".into());
+        if request.address.resource != task_wire::RESOURCE
+            || request.address.action != task_wire::RUN
+        {
+            return Err("unknown step of a session's programs".into());
         }
         let actor = request.actor;
         if !actor.is_agent() {
@@ -132,7 +137,7 @@ impl HostStepServices for TaskPrograms {
             .provider
             .clone()
             .ok_or("an agent runs programs only through its session's API")?;
-        let args = bind(request.argument)?;
+        let args = bind(PARAMS, request.argument)?;
         let program = args.text("program").unwrap_or_default().to_owned();
         let confirm = args.boolean("confirm").unwrap_or(false);
         let this = args
@@ -152,14 +157,17 @@ impl HostStepServices for TaskPrograms {
             });
         self.programs.run(ProgramRequest {
             workspace: request.workspace,
-            provider,
-            agent,
-            person: actor.acting_for(),
-            session,
+            provider: Some(provider),
+            caller: ProgramCaller::Agent {
+                agent,
+                person: actor.acting_for(),
+                session,
+            },
             group,
             program,
             confirm,
             this,
+            stop: Some(Arc::clone(&request.stop)),
         })
     }
 }
@@ -207,8 +215,8 @@ mod tests {
         // The step is the agent's, offered to an agent in a session and nowhere else.
         {
             let programs = programs();
-            assert_eq!(programs.provider(), wire::PROVIDER);
-            assert_eq!(programs.app_id(), wire::APP);
+            assert_eq!(programs.provider(), task_wire::PROVIDER);
+            assert_eq!(programs.app_id(), task_wire::APP);
             assert!(
                 programs.for_agent_sessions(),
                 "an agent session's catalogue offers it"
@@ -216,7 +224,7 @@ mod tests {
             let described = programs.descriptors();
             assert_eq!(described.len(), 1);
             let step = &described[0];
-            assert_eq!(step.address, ActionAddress::new(wire::RESOURCE, wire::RUN));
+            assert_eq!(step.address, ActionAddress::new(task_wire::RESOURCE, task_wire::RUN));
             assert_eq!(step.kind, tilo_actions::OperationKind::View);
             assert!(
                 matches!(
@@ -234,7 +242,7 @@ mod tests {
         // an agent outside a session, is refused before anything starts.
         {
             let programs = programs();
-            let address = ActionAddress::new(wire::RESOURCE, wire::RUN);
+            let address = ActionAddress::new(task_wire::RESOURCE, task_wire::RUN);
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,

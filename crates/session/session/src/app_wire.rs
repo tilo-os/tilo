@@ -1665,6 +1665,7 @@ fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActio
         crate::mcp_server::SessionServices::new(tilo_service::LoopWake::default().handle(), "Pat");
     std::sync::Arc::new(crate::session_actions::SessionActions::new(
         std::sync::Arc::new(services),
+        None,
     ))
 }
 

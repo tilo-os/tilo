@@ -1354,3 +1354,6 @@ session-window-share-watch-tab = The tab the window is shown in on this device
 session-window-share-watch-workspace = The workspace to show it from
 session-window-share-unwatch-tab = The tab the window is shown in on this device
 session-window-share-unwatch-workspace = The workspace it is shown from
+programs-resource = Your programs
+programs-run-line = Run this line
+programs-run-line-detail = Runs a tilolang line as you, and answers what it read or changed.

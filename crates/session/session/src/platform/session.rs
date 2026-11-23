@@ -981,12 +981,13 @@ impl Session {
         {
             session_services.keep_founding(std::collections::BTreeSet::from([seed.to_string()]));
         }
+        let task_program_host =
+            std::sync::Arc::new(crate::task_programs_host::TaskProgramHost::new(
+                std::sync::Arc::clone(&session_services),
+            ));
         let task_programs = Some(std::sync::Arc::new(
-            crate::task_programs::TaskPrograms::new(std::sync::Arc::new(
-                crate::task_programs_host::TaskProgramHost::new(std::sync::Arc::clone(
-                    &session_services,
-                )),
-            )),
+            crate::task_programs::TaskPrograms::new(std::sync::Arc::clone(&task_program_host)
+                as std::sync::Arc<dyn crate::platform::programs::Programs>),
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
         // layout, its undo, the windows and the notices, which the REPL already calls.
@@ -997,6 +998,8 @@ impl Session {
                 as std::sync::Arc<dyn crate::platform::steps::SessionSteps>;
         let session_actions = std::sync::Arc::new(crate::session_actions::SessionActions::new(
             std::sync::Arc::clone(&steps),
+            Some(std::sync::Arc::clone(&task_program_host)
+                as std::sync::Arc<dyn crate::platform::programs::Programs>),
         ));
         session_services.keep_actions(std::sync::Arc::clone(&session_actions));
         if engine.is_some() {
@@ -1304,6 +1307,11 @@ impl Session {
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
+        // The person's own line calls through the broker this session serves, as their own click
+        // does, so what it reads and changes is decided where it lands.
+        if let Some(broker) = app_wire.as_ref().and_then(AppWire::agent_broker) {
+            task_program_host.keep_state(broker);
+        }
         // An action an app publishes, named by a search row, a link or a
         // person's card, is delivered through the broker: the app starts for
         // it when it is closed, and the action reaches it wherever it runs.

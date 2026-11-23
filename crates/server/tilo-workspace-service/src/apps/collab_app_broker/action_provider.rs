@@ -47,7 +47,8 @@ mod readiness;
 mod shortcut_run;
 mod workspace_nodes;
 use app_admission::{
-    connect_request, invitation_request, own_history_request, own_view_lookup, reference_request,
+    connect_request, invitation_request, own_history_request, own_view_lookup, programs_request,
+    reference_request,
 };
 use directory::bridge_error;
 
@@ -650,6 +651,7 @@ impl AppBrokerState {
                     || reference_request(request)
                     || invitation_request(request)
                     || connect_request(request)
+                    || programs_request(request)
                 {
                     Some(person.clone())
                 } else {
