@@ -615,31 +615,10 @@ impl ResourceService {
             if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
                 return self.open_link_asked(&encoded.payload, &address, invoker, beside);
             }
-            if encoded.type_id == EDIT_TYPE {
-                let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
-                    .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-                let value = self
-                    .history_edit(&edit, resource, by)
-                    .map_err(ApiError::Failed)?;
-                self.publications.update(&self.host, &self.planner);
-                self.told();
-                return Ok(Started::Done(ActionOutput {
-                    value: Some(value),
-                    resources: Vec::new(),
-                }));
-            }
-            if encoded.type_id == VIEW_TYPE {
-                let view: HistoryView = tilo_actions::decode_json(&encoded.payload)
-                    .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-                return self
-                    .history_view(&view, resource)
-                    .map(|value| {
-                        Started::Done(ActionOutput {
-                            value: Some(value),
-                            resources: Vec::new(),
-                        })
-                    })
-                    .map_err(ApiError::Failed);
+            if let Some(answer) =
+                self.history_asked(&encoded.type_id, &encoded.payload, resource, by)
+            {
+                return answer;
             }
             if encoded.type_id != ACTION_TYPE {
                 return Err(ApiError::Unknown(address));
@@ -666,6 +645,41 @@ impl ResourceService {
         Ok(Started::Done(ActionOutput {
             value: wrote.and_then(|wrote| ActionOutput::noting_wrote(None, &wrote)),
             resources: made,
+        }))
+    }
+
+    /// A change to, or a view of, `resource`'s history, when that is what was asked (`type_id`
+    /// is the history's edit or view): its answer. `None` for any other action.
+    fn history_asked(
+        &mut self,
+        type_id: &str,
+        payload: &[u8],
+        resource: &str,
+        by: &crate::runtime::Actor,
+    ) -> Option<Result<Started, ApiError>> {
+        let value = if type_id == EDIT_TYPE {
+            serde_json::from_slice::<HistoryEdit>(payload)
+                .map_err(|error| ApiError::InvalidArguments(error.to_string()))
+                .and_then(|edit| {
+                    let value = self
+                        .history_edit(&edit, resource, by)
+                        .map_err(ApiError::Failed)?;
+                    self.publications.update(&self.host, &self.planner);
+                    self.told();
+                    Ok(value)
+                })
+        } else if type_id == VIEW_TYPE {
+            tilo_actions::decode_json::<HistoryView>(payload)
+                .map_err(|error| ApiError::InvalidArguments(error.to_string()))
+                .and_then(|view| self.history_view(&view, resource).map_err(ApiError::Failed))
+        } else {
+            return None;
+        };
+        Some(value.map(|value| {
+            Started::Done(ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            })
         }))
     }
 
