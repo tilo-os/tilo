@@ -180,8 +180,22 @@ view bar_part(part: BarPart) {
         clock()
     } else if part.kind == .menu {
         row(gap: .related, align: .center) {
-            ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-                on press: session.overview()
+            ui.MenuButton("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+                ui.MenuItem("Overview", icon: .layout_grid) {
+                    on choose: session.overview()
+                }
+                ui.MenuItem("Undo layout change", icon: .undo_2) {
+                    on choose: session.undo()
+                }
+                ui.MenuItem("Redo layout change", icon: .redo_2) {
+                    on choose: session.redo()
+                }
+                ui.MenuItem("Settings", icon: .settings) {
+                    on choose: session.open_settings(link: "settings://system")
+                }
+                ui.MenuItem("About this computer", icon: .info) {
+                    on choose: session.about(open: true)
+                }
             }
             // The switch between the styles, in the bar itself rather than in a row of
             // its own, so nothing stands between a window and the bar. A bar too narrow for it
@@ -385,9 +399,11 @@ view strip_part() {
                 ui.MenuItem("Rename {cur.name}", icon: .pencil) {
                     on choose: set(renaming, cur.key).then(set(renamed, ""))
                 }
-                if strips.len() > 1 and strip_is_empty(cur.key) {
-                    ui.MenuItem("Remove {cur.name}", icon: .trash, destructive: true) {
-                        on choose: session.drop_row(row: cur.key)
+                if strips.len() > 1 {
+                    // Its windows are carried into the strip after it, so deleting it takes
+                    // nothing from the person.
+                    ui.MenuItem("Delete {cur.name}", icon: .trash, destructive: true) {
+                        on choose: session.delete_strip(strip: cur.key)
                     }
                 }
                 if let before = strips.previous(cur) {

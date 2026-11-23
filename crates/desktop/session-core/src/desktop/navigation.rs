@@ -489,6 +489,26 @@ pub enum ChromeEffect {
         name: Option<String>,
     },
 
+    /// Move a window to a strip of its own
+    /// Into a new strip at the end of the workspace shown.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    MoveToNewStrip {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+
+    /// Delete a strip
+    /// Its windows carried into the strip after it, or the one before for the last strip.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    DeleteStrip {
+        /// The strip, by its id.
+        #[param(decimal, "The strip, by its id")]
+        strip: String,
+    },
+
     /// Move a strip
     #[effect(kind = "outside")]
     #[effect(own_device)]

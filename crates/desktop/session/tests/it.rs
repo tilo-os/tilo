@@ -295,6 +295,8 @@ mod wifi_continuity;
 mod window_accent;
 #[path = "window_bar_actions.rs"]
 mod window_bar_actions;
+#[path = "window_chrome.rs"]
+mod window_chrome;
 #[path = "window_layout.rs"]
 mod window_layout;
 #[path = "window_menu.rs"]

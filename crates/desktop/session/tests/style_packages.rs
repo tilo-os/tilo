@@ -147,7 +147,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     );
     assert!(!failed, "the shell shows the copy: {answer}");
     crate::common::until(&mut session, "the copy draws the shell", |session| {
-        crate::common::on_screen(session, "No window here yet").is_some()
+        crate::common::on_screen(session, "Start something").is_some()
     });
     assert!(
         style_state(&session, "so.tilo.shell:strips").is_some(),
@@ -186,7 +186,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     // bar's style switch, which only `shell.style_shell` draws, is gone from the screen, and the
     // copy's places still stand. The reinstall redraws it where it stands: no switch needed.
     crate::common::until(&mut session, "the edited copy draws", |session| {
-        crate::common::on_screen(session, "No window here yet").is_some()
+        crate::common::on_screen(session, "Start something").is_some()
             && crate::common::preset_menu(session).is_none()
     });
     // The switch lists the edited copy by its new name, and it loads: a reinstall clears a
@@ -379,6 +379,6 @@ fn the_repl_makes_a_style_with_the_same_call() {
     );
     assert!(!failed, "the REPL switches to the copy: {answer}");
     crate::common::until(&mut session, "the copy draws the shell", |session| {
-        crate::common::on_screen(session, "No window here yet").is_some()
+        crate::common::on_screen(session, "Start something").is_some()
     });
 }

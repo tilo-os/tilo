@@ -139,30 +139,6 @@ type LayoutPlace (origin: session.layout_place) {
     shell: Text merge register
 }
 
-/// How wide a strip stands within its row, in per-mille of the row's width.
-enum Width {
-    /// Three tenths of the row: a list, a set of options.
-    narrow
-    /// Two thirds of the row: a note, a conversation.
-    normal
-    /// The row's whole usable width.
-    wide
-}
-
-/// The width a strip's per-mille stands for, as the nearest of the three.
-fn width_of(permille: Int) -> Width {
-    if permille <= 500 { .narrow } else if permille < 900 { .normal } else { .wide }
-}
-
-/// The per-mille one of the widths stands for.
-fn permille_of(w: Width) -> Int {
-    match w {
-        .narrow => 333,
-        .normal => 667,
-        .wide => 1000,
-    }
-}
-
 /// What the person shows of their layout: the shell's own view of it, in their own workspace
 /// (`resources: .own`, `root viewing: Viewing`). The layout is the session's and the same
 /// whichever way it is shown; this is what changes when the person picks a style, and switching

@@ -150,7 +150,7 @@ view window_place(w: device.Window, weight: Float, peek: Bool) {
                 row(gap: .tight, align: .center) {
                     ui.Text(app_line(w), role: .caption, secondary: true, lines: 1, truncate)
                     spacer
-                    window_menu(w)
+                    window_menu(w, .none, false)
                 }
             }
         }
@@ -168,41 +168,6 @@ fn app_line(w: device.Window) -> Text {
         return "{w.origin_app} on {w.device_name}"
     }
     return w.origin_app
-}
-
-/// A window's commands, where its place shows them: going there, carrying it to another strip
-/// or workspace, asking about it, and closing it.
-view window_menu(w: device.Window) {
-    ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
-        ui.MenuItem("Go there", icon: .arrow_right) {
-            on choose: session.focus(window(w))
-        }
-        for s in strip_keys(w.workspace_key) {
-            if s != w.strip_key {
-                ui.MenuItem("Move to {strip_name(s)}", icon: .arrow_right) {
-                    on choose: session.move_tab(
-                        tab: w.key,
-                        strip: s,
-                        workspace: .none,
-                        display: .none,
-                    )
-                }
-            }
-        }
-        for o in layout.workspaces.filter(o -> o.key != w.workspace_key) {
-            ui.MenuItem("Move to {o.name}", icon: .layers) {
-                on choose: session.move_tab(
-                    tab: w.key,
-                    strip: .none,
-                    workspace: o.key,
-                    display: .none,
-                )
-            }
-        }
-        ui.MenuItem("Close", icon: .x, destructive: true) {
-            on choose: session.close_tab(window(w))
-        }
-    }
 }
 
 /// What a search finds among the person's windows, in every workspace: each one, going there
@@ -229,21 +194,7 @@ view window_line(w: device.Window) {
         icon: if w.preview == "withheld" { .eye_off } else { .app_window },
     ) {
         trailing: {
-            ui.MenuButton("This window", icon: .more_horizontal, icon_only: true, role: .plain) {
-                ui.MenuItem("Go there", icon: .arrow_right) {
-                    on choose: session.focus(window(w))
-                }
-                if w.workspace_key != front_workspace() {
-                    ui.MenuItem("Move here", icon: .arrow_down) {
-                        on choose: session.move_tab(
-                            tab: w.key,
-                            strip: .none,
-                            workspace: front_workspace(),
-                            display: .none,
-                        )
-                    }
-                }
-            }
+            window_menu(w, .none, false)
         }
         on activate: session.focus(window(w))
     }
@@ -252,17 +203,6 @@ view window_line(w: device.Window) {
 /// The strips a list of windows stands on, top to bottom.
 fn window_strips(windows: List<device.Window>) -> List<Text> {
     let in_order = windows.sort_by(w -> w.place).map(w -> w.strip_key).filter(s -> s != "")
-    return in_order.group(s -> s).map(p -> p.key)
-}
-
-/// The ids of the strips of the workspace `workspace`, top to bottom, as the layout's windows
-/// name them.
-fn strip_keys(workspace: Text) -> List<Text> {
-    let in_order = device.windows.all
-        .filter(w -> w.workspace_key == workspace)
-        .sort_by(w -> w.place)
-        .map(w -> w.strip_key)
-        .filter(s -> s != "")
     return in_order.group(s -> s).map(p -> p.key)
 }
 

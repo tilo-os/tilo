@@ -2926,6 +2926,16 @@
             }
           },
           "readonly": true
+        },
+        {
+          "path": "displays",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "WindowDisplay"
+            }
+          },
+          "readonly": true
         }
       ],
       "types": [
@@ -3012,6 +3022,44 @@
             {
               "name": "not_responding",
               "type": "bool"
+            },
+            {
+              "name": "fullscreen",
+              "type": "bool"
+            },
+            {
+              "name": "floating",
+              "type": "bool"
+            },
+            {
+              "name": "renameable",
+              "type": "bool"
+            },
+            {
+              "name": "opens_tabs",
+              "type": "bool"
+            },
+            {
+              "name": "controls_desktop",
+              "type": "bool"
+            },
+            {
+              "name": "display_id",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "WindowDisplay",
+          "doc": "One of the displays the desktop spreads over, as moving a window there names it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "number",
+              "type": "int"
             }
           ]
         }
@@ -3214,7 +3262,7 @@
       "types": [
         {
           "name": "Style",
-          "doc": "A style: a view of the layout an installed package declares (shell.md §6).",
+          "doc": "A style: a view of the layout an installed package declares (shell.md \u00a76).",
           "fields": [
             {
               "name": "style",
@@ -3299,41 +3347,53 @@
       ]
     },
     {
-      "kind": "search",
-      "label": "Search",
+      "kind": "said",
+      "label": "Notice",
       "version": 1,
-      "verbs": [],
+      "verbs": [
+        {
+          "id": "press-notice",
+          "label": "Press the notice's button",
+          "description": "Press the notice's button",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "action",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "hide",
+          "label": "Dismiss the notice",
+          "description": "Take the notice away without pressing anything",
+          "kind": "outside",
+          "params": []
+        }
+      ],
       "fields": [
         {
-          "path": "query",
+          "path": "text",
           "stored": "value",
           "type": "text",
           "readonly": true
         },
         {
-          "path": "open",
+          "path": "kind",
           "stored": "value",
-          "type": "bool",
+          "type": "text",
           "readonly": true
         },
         {
-          "path": "searching",
-          "stored": "value",
-          "type": "bool",
-          "readonly": true
-        },
-        {
-          "path": "expecting",
-          "stored": "value",
-          "type": "bool",
-          "readonly": true
-        },
-        {
-          "path": "groups",
+          "path": "actions",
           "stored": "value",
           "type": {
             "list": {
-              "named": "SearchGroup"
+              "named": "SaidAction"
             }
           },
           "readonly": true
@@ -3341,81 +3401,15 @@
       ],
       "types": [
         {
-          "name": "SearchGroup",
-          "doc": "A run of the open search's rows of one kind, under their kind's name: the groups the palette draws one after another.",
+          "name": "SaidAction",
+          "doc": "One button a passing notice offers.",
           "fields": [
             {
-              "name": "kind",
+              "name": "id",
               "type": "text"
             },
             {
-              "name": "icon",
-              "type": "text"
-            },
-            {
-              "name": "rows",
-              "type": {
-                "list": {
-                  "named": "SearchResult"
-                }
-              }
-            }
-          ]
-        },
-        {
-          "name": "SearchResult",
-          "doc": "One row the open search found: what it is called, what says what it is, and where choosing it names it.",
-          "fields": [
-            {
-              "name": "index",
-              "type": "int"
-            },
-            {
-              "name": "title",
-              "type": "text"
-            },
-            {
-              "name": "subtitle",
-              "type": "text"
-            },
-            {
-              "name": "facts",
-              "type": {
-                "list": "text"
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "kind": "launchpad",
-      "label": "Launchpad",
-      "version": 1,
-      "verbs": [],
-      "fields": [
-        {
-          "path": "cards",
-          "stored": "value",
-          "type": {
-            "list": {
-              "named": "LaunchpadCard"
-            }
-          },
-          "readonly": true
-        }
-      ],
-      "types": [
-        {
-          "name": "LaunchpadCard",
-          "doc": "One welcome card: the verb it runs, what it is called, and the glyph its row shows.",
-          "fields": [
-            {
-              "name": "slug",
-              "type": "text"
-            },
-            {
-              "name": "label",
+              "name": "name",
               "type": "text"
             },
             {
@@ -3666,12 +3660,6 @@
               "named": "AboutSheet"
             }
           },
-          "readonly": true
-        },
-        {
-          "path": "strips_open",
-          "stored": "value",
-          "type": "bool",
           "readonly": true
         }
       ],

@@ -14,6 +14,18 @@ use tilo_session_core::desktop::state::DesktopHandle;
 pub struct Windows {
     /// Every workspace's windows, in the order Alt+Tab walks them.
     pub all: Vec<Window>,
+    /// The displays the desktop spreads over, in reading order: each by the id a window moves to
+    /// it with and the number a person counts it by.
+    pub displays: Vec<WindowDisplay>,
+}
+
+/// One of the displays the desktop spreads over, as moving a window there names it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct WindowDisplay {
+    /// The display's id, as `desktop:chrome move-tab` names the display a window goes to.
+    pub id: String,
+    /// The number a person counts it by, from one, left to right.
+    pub number: i64,
 }
 
 /// A window of the layout: a tab of a strip of one of its workspaces.
@@ -54,11 +66,39 @@ pub struct Window {
     pub preview: String,
     /// Whether its app stopped answering the compositor's pings.
     pub not_responding: bool,
+    /// Whether its window covers its display.
+    pub fullscreen: bool,
+    /// Whether its window floats above its workspace's windows, rather than standing in its strip.
+    pub floating: bool,
+    /// Whether the person may name its window: a host window's own title, never an app's resource.
+    pub renameable: bool,
+    /// Whether its app opens another tab: a foreign or local app's window, never a placeholder
+    /// or a saved window a tab stands in for.
+    pub opens_tabs: bool,
+    /// Whether its app controls this desktop beyond its window now.
+    pub controls_desktop: bool,
+    /// The display it stands on, by the id [`WindowDisplay::id`] names, empty while no display
+    /// shows it.
+    pub display_id: String,
 }
 
 /// What a window with no title is called.
 fn untitled() -> String {
     tilo_session_core::desktop::i18n::t("window-switcher-untitled")
+}
+
+/// The displays the desktop spreads over, in reading order, each by the id a window moves to it
+/// with and the number a person counts it by.
+pub(crate) fn displays(tree: &Layout) -> Vec<WindowDisplay> {
+    tree.outputs
+        .reading_order()
+        .into_iter()
+        .enumerate()
+        .map(|(at, id)| WindowDisplay {
+            id: id.to_string(),
+            number: i64::try_from(at).unwrap_or(i64::MAX).saturating_add(1),
+        })
+        .collect()
 }
 
 /// Where a tab stands on the shell while its window is read.
@@ -84,7 +124,13 @@ struct TabPlace<'a> {
 /// `handle` says what may be pictured: a window whose app holds secrets shows its app's glyph
 /// instead of its picture (`withheld`), and one that is not this device's window shows neither
 /// (`none`).
-fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window {
+fn window_reading(
+    tab: &Tab,
+    at: TabPlace<'_>,
+    handle: &DesktopHandle,
+    fullscreen: bool,
+    display: String,
+) -> Window {
     let app = match &tab.tile {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
@@ -110,6 +156,9 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
         } => (true, host.clone(), host_label.clone()),
         _ => (false, String::new(), String::new()),
     };
+    let controls_desktop = at
+        .workspace
+        .holds_desktop_control_at(&app, tilo_clock::unix_now());
     Window {
         key: tab.id.to_string(),
         title: if title.is_empty() {
@@ -141,6 +190,18 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
             TileContent::Foreign { surface_id, .. } => handle.is_unresponsive(*surface_id),
             _ => false,
         },
+        fullscreen,
+        floating: at.workspace.layout.float_of(at.group.id).is_some(),
+        renameable: matches!(
+            tab.tile,
+            TileContent::Foreign { .. } | TileContent::HostedWindow { .. }
+        ),
+        opens_tabs: matches!(
+            tab.tile,
+            TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+        ),
+        controls_desktop,
+        display_id: display,
     }
 }
 
@@ -239,6 +300,10 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                             focused,
                         },
                         handle,
+                        tree.fullscreen_group() == Some(group.id),
+                        tree.outputs
+                            .display_of(group.id)
+                            .map_or_else(String::new, |display| display.to_string()),
                     ));
                 }
             }

@@ -978,6 +978,51 @@ scenario "the switcher, this app's windows" {
 
 /// The launcher an empty query shows: the applications installed here, recent windows and the
 /// shell's surfaces.
+/// An empty shell: a workspace with no window in it, and the start cards a person meets there.
+scenario "an empty shell's start cards" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.apps, device.Apps(installed: installed_apps()))
+    stage(device.windows, device.Windows(all: []))
+}
+
+/// The shell's passing notice over the windows: a close said with the Undo that reopens it.
+scenario "a passing notice with Undo" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        device.said,
+        device.Said(
+            text: "Closed Release planning",
+            kind: "info",
+            actions: [device.SaidAction(id: "reopen", name: "Undo", icon: "undo-2")],
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "w1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+}
+
 scenario "the launcher, before typing" {
     let d = root Layout
     d.person = "Ada Lovelace"

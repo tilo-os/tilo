@@ -905,12 +905,11 @@ impl WindowFrame {
             }
         }
         scene.pop_layer();
-        if self.focused
-            && crate::surface::border(theme).is_none()
-            && theme.finish(crate::tokens::SurfaceRole::Window).hairline()
-        {
+        // The window in front wears the focused edge whatever the finish is: a shell tells the
+        // person which window the keyboard is in, and a quiet border would say nothing.
+        if self.focused {
             scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
+                &vello::kurbo::Stroke::new(1.5),
                 transform,
                 theme.tokens.colors.window_edge_focused(),
                 None,
@@ -996,6 +995,26 @@ mod tests {
         (crate::a11y::relative_luminance(seen)
             - crate::a11y::relative_luminance(theme.tokens.colors.surfaces.base))
         .abs()
+    }
+
+    /// The window in front wears the accent on its edge, whatever the finish: a shell says which
+    /// window the keyboard is in with a colour, never a border so quiet it could be any window.
+    #[test]
+    fn the_focused_windows_edge_is_the_accent_colour() {
+        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
+        for theme in [Theme::dark(), Theme::light()] {
+            let front = rendered(&theme, true, rect);
+            let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
+            let accent = theme.tokens.colors.window_edge_focused().to_rgba8();
+            let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
+            assert!(
+                near(r, accent.r) && near(g, accent.g) && near(b, accent.b),
+                "the focused edge is the accent: saw {r},{g},{b}, the accent is {}, {}, {}",
+                accent.r,
+                accent.g,
+                accent.b
+            );
+        }
     }
 
     #[test]

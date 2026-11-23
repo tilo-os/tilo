@@ -43,6 +43,9 @@ pub(crate) const FOLDERS_RESOURCE: &str = "session:folders";
 pub(crate) const SEARCH_RESOURCE: &str = "session:search";
 /// The empty shell's welcome cards, as the launcher offers them.
 pub(crate) const LAUNCHPAD_RESOURCE: &str = "session:launchpad";
+/// The notice the shell says in passing over the windows: what just happened, and what the person
+/// can still do about it.
+pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
 
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
@@ -102,6 +105,14 @@ pub fn launchpad_surface() -> tilo_resource::surface::Surface {
 }
 
 /// The empty shell's welcome cards this device offers, as the launcher lists them.
+/// The passing notice as a view of another language reads it (`device.said`).
+#[must_use]
+pub fn notice_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<Said, SaidEffect>("said", "Notice")
+}
+
+/// What the shell says in passing over the windows: a short-lived notice, never a notification.
+/// Empty while nothing just happened.
 #[derive(
     Clone,
     Debug,
@@ -196,6 +207,16 @@ pub(crate) struct SearchGroup {
 
 /// One row the open search found: what it is called, what says what it is, and where choosing it
 /// names it.
+pub(crate) struct Said {
+    /// What happened, in a sentence.
+    pub text: String,
+    /// The kind it is, as its colour reads it: `info`, `success`, `warning` or `error`.
+    pub kind: String,
+    /// What the person can still do about it, such as Undo after a close.
+    pub actions: Vec<SaidAction>,
+}
+
+/// One button a passing notice offers.
 #[derive(
     Clone,
     Debug,
@@ -237,6 +258,31 @@ fn kind_icon(kind: &str) -> String {
         other => ResourceKind::Custom(other.to_owned()),
     };
     icon_for_kind(&kind).name().to_owned()
+pub(crate) struct SaidAction {
+    /// The action's id, as pressing it names it.
+    pub id: String,
+    /// Its name on the button.
+    pub name: String,
+    /// The glyph beside it, by the platform icon's kebab-case name.
+    pub icon: String,
+}
+
+/// What a passing notice offers: pressing one of its buttons, or taking it away.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.notice")]
+pub(crate) enum SaidEffect {
+    /// Press the notice's button
+    #[effect(kind = "outside")]
+    #[effect(own_device, label = "session-notice-press")]
+    PressNotice {
+        /// The action, as the notice lists it
+        #[param("The action, as the notice lists it")]
+        action: String,
+    },
+    /// Take the notice away without pressing anything
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, label = "session-notice-hide")]
+    Hide,
 }
 
 /// The workspaces' folders on this computer, by workspace.
@@ -779,6 +825,9 @@ pub(crate) struct DeviceLists {
     pub(crate) lists_source: crate::lists::Lists,
     /// What the lists were last published from.
     pub(crate) lists: Option<ListsKey>,
+    /// The passing notice last published, so one appearing, changing or going is a reading that
+    /// moved.
+    pub(crate) notice_seen: Option<ui::window_toolbar::ToolbarNotice>,
 }
 
 /// The pieces a session's shell is made of, once: the same agent sessions, surfaces and records
@@ -815,6 +864,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         folders: shared.folders.clone(),
         lists_source: shared.lists.clone(),
         lists: None,
+        notice_seen: None,
     }
 }
 
@@ -850,6 +900,7 @@ impl DeviceLists {
                 all: self
                     .handle
                     .read(|tree| self.windows_reaching(tree, tilo_clock::now())),
+                displays: self.handle.read(crate::windows::displays),
             })),
             TRAY_RESOURCE => Some(reading(&Tray {
                 items: self.tray_items(),
@@ -874,6 +925,7 @@ impl DeviceLists {
                     })
                     .collect(),
             })),
+            NOTICE_RESOURCE => Some(reading(&self.said())),
             _ => None,
         }
     }
@@ -910,6 +962,30 @@ impl DeviceLists {
             expecting: open && self.handle.search_expecting(),
             groups,
         }
+    /// The passing notice the shell says over the windows now, as the reading spells it: empty
+    /// while nothing just happened.
+    fn said(&self) -> Said {
+        self.handle
+            .notice()
+            .borrow()
+            .get()
+            .map(|notice| Said {
+                text: notice.text.clone(),
+                kind: serde_json::to_value(notice.kind)
+                    .ok()
+                    .and_then(|kind| kind.as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+                actions: notice
+                    .actions
+                    .iter()
+                    .map(|action| SaidAction {
+                        id: action.id.clone(),
+                        name: action.name.clone(),
+                        icon: action.icon.clone(),
+                    })
+                    .collect(),
+            })
+            .unwrap_or_default()
     }
 
     /// When the shell has something to draw that it has not drawn yet, without a frame in between:
@@ -1431,6 +1507,8 @@ pub(crate) struct SearchRoot;
 #[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "Launchpad")]
 pub(crate) struct LaunchpadRoot;
+#[row(kind = "session", label = "Notice", effects = SaidEffect)]
+pub(crate) struct SaidRoot;
 
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
@@ -1481,6 +1559,13 @@ impl Service for DeviceLists {
                 crate::i18n::t("session-launchpad"),
             )
             .into_resource(),
+            offer::<SaidEffect>(
+                tilo_resource::LiveRow::typed::<SaidRoot>(
+                    NOTICE_RESOURCE,
+                    crate::i18n::t("session-notice"),
+                )
+                .into_resource(),
+            ),
         ]
     }
 
@@ -1490,18 +1575,26 @@ impl Service for DeviceLists {
 
     fn poll(&mut self) -> bool {
         let now = self.lists_key();
-        if self.lists.as_ref() == Some(&now) {
+        let notice = self.handle.notice().borrow().get().cloned();
+        if self.lists.as_ref() == Some(&now) && self.notice_seen == notice {
             return false;
         }
         self.lists = Some(now);
+        self.notice_seen = notice;
         true
     }
 
-    /// The instant the switcher's panel comes up while Alt is held: the windows' reading marks
-    /// the one the walk reached then.
+    /// The instant the switcher's panel comes up while Alt is held, or a passing notice runs out:
+    /// what the shell redraws for without a frame in between.
     fn wakes_in(&self) -> Option<std::time::Duration> {
-        self.next_deadline()
-            .map(|at| at.saturating_duration_since(tilo_clock::now()))
+        let soonest = [
+            self.next_deadline(),
+            self.handle.notice().borrow().deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        soonest.map(|at| at.saturating_duration_since(tilo_clock::now()))
     }
 
     fn invoke(
@@ -1547,6 +1640,22 @@ impl Service for DeviceLists {
                 let effect =
                     decode::<InviteEffect>(&self.resources(), resource, action, arguments)?;
                 self.invite(&effect)
+            }
+            NOTICE_RESOURCE => {
+                let effect = decode::<SaidEffect>(&self.resources(), resource, action, arguments)?;
+                match effect {
+                    SaidEffect::PressNotice { action } => {
+                        if !self.handle.press_notice(&action) {
+                            return Err(ApiError::InvalidArguments(format!(
+                                "the notice offers no {action}"
+                            )));
+                        }
+                    }
+                    SaidEffect::Hide => {
+                        self.handle.notice().borrow_mut().dismiss();
+                    }
+                }
+                Ok(Started::Done(tilo_actions::ActionOutput::default()))
             }
             _ => Err(ApiError::Unknown(ActionAddress::new(resource, action))),
         }

@@ -86,7 +86,7 @@ impl DesktopHandle {
 
     /// Carry the window `tab` into a new strip below the last one: the move its menu's New strip
     /// row and the chord past the last strip ask for.
-    fn move_to_new_strip(&self, tab: TabId) {
+    pub(crate) fn move_to_new_strip(&self, tab: TabId) {
         let moved = self.add_strip(String::new()).is_some_and(|strip| {
             self.choose_window_menu(tab, &move_to_strip_id(strip), None)
                 .is_ok()
@@ -94,6 +94,56 @@ impl DesktopHandle {
         if !moved {
             self.acknowledge(t("shell-window-edge"));
         }
+    }
+
+    /// Take the strip `strip` away, carrying its windows into the strip after it (the one before,
+    /// for the last strip): what a strip menu's delete row asks for.
+    ///
+    /// # Errors
+    /// Why it could not: the strip is not in the workspace shown, or is its last, or a window did
+    /// not move.
+    pub(crate) fn delete_strip(&self, strip: StripId) -> Result<(), String> {
+        let (target, tabs) = self
+            .read(|tree| {
+                let workspace = tree
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id() == tree.active)?;
+                if workspace.strips.len() <= 1 {
+                    return None;
+                }
+                let at = workspace
+                    .strips
+                    .iter()
+                    .position(|held| held.id == strip)?;
+                let target = workspace
+                    .strips
+                    .get(at.saturating_add(1))
+                    .or_else(|| {
+                        at.checked_sub(1)
+                            .and_then(|before| workspace.strips.get(before))
+                    })?
+                    .id;
+                let tabs: Vec<TabId> = workspace
+                    .strips
+                    .get(at)?
+                    .window_groups
+                    .iter()
+                    .filter_map(|group| group.tabs.first().map(|tab| tab.id))
+                    .collect();
+                Some((target, tabs))
+            })
+            .ok_or_else(|| {
+                format!(
+                    "strip {} is not in the workspace shown, or is its last",
+                    strip.0
+                )
+            })?;
+        for tab in tabs {
+            self.choose_window_menu(tab, &move_to_strip_id(target), None)?;
+        }
+        self.apply_command(&DesktopCommand::RemoveStrip { strip: strip.0 })?;
+        Ok(())
     }
 
     /// Ask for the menu of the window covering the display the person works on, at a

@@ -134,8 +134,12 @@ view strips_view(a: Layout, lists: Bool) {
             }
         }
     } else if let workspace = shown_workspace(a) {
-        scroll(axis: .both) {
-            workspace_rows(a, workspace.key, lists, fill(1))
+        if workspace_holds_nothing(a, workspace.key) {
+            start_cards()
+        } else {
+            scroll(axis: .both) {
+                workspace_rows(a, workspace.key, lists, fill(1))
+            }
         }
     } else {
         // A shell the session has published no workspace of yet: it holds nothing to draw.
@@ -154,6 +158,88 @@ fn shown_workspace(a: Layout) -> Option<LayoutWorkspace> {
         return current
     }
     a.workspaces.first()
+}
+
+/// Whether the workspace `workspace` shows no window at all: every strip it holds is empty, so
+/// the shell has nothing to draw and offers the start cards instead.
+fn workspace_holds_nothing(a: Layout, workspace: Text) -> Bool {
+    for s in a.strips.filter(s -> s.workspace == workspace) {
+        if not places_of(a, s.key).is_empty() {
+            return false
+        }
+    }
+    return true
+}
+
+/// The start cards on a shell with no window, one set on each display that shows none: what the
+/// person can open, as one card each, and the shell's own places beside them. A press opens an
+/// app in the workspace in front through the same action the launcher, a script and an agent use;
+/// with nothing to show, the shell is a way in rather than a blank band.
+view start_cards() {
+    page(full) {
+        stack(gap: .section) {
+            stack(gap: .tight) {
+                ui.Text("Start something", role: .title)
+                ui.Text(
+                    "Only you see what you make here until you invite someone.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            grid(min: 18rem, gap: .related) {
+                ui.Card(title: "Notes") {
+                    row(gap: .related, align: .center) {
+                        ui.Icon(.file_text, size: .large)
+                        stack(gap: .tight) {
+                            ui.Text("Notes", role: .label)
+                            ui.Text("Write ideas down", role: .caption, secondary: true)
+                        }
+                    }
+                    on activate: session.launchpad(card: "notes")
+                }
+                ui.Card(title: "Tasks") {
+                    row(gap: .related, align: .center) {
+                        ui.Icon(.list_checks, size: .large)
+                        stack(gap: .tight) {
+                            ui.Text("Tasks", role: .label)
+                            ui.Text("Write down what needs doing", role: .caption, secondary: true)
+                        }
+                    }
+                    on activate: session.launchpad(card: "tasks")
+                }
+                ui.Card(title: "Invite people") {
+                    row(gap: .related, align: .center) {
+                        ui.Icon(.user_plus, size: .large)
+                        stack(gap: .tight) {
+                            ui.Text("Invite people", role: .label)
+                            ui.Text("Work on this with someone", role: .caption, secondary: true)
+                        }
+                    }
+                    on activate: session.launchpad(card: "invite")
+                }
+                ui.Card(title: "Catch up") {
+                    row(gap: .related, align: .center) {
+                        ui.Icon(.history, size: .large)
+                        stack(gap: .tight) {
+                            ui.Text("Catch up", role: .label)
+                            ui.Text("See what changed and why", role: .caption, secondary: true)
+                        }
+                    }
+                    on activate: session.launchpad(card: "activity")
+                }
+            }
+            row(gap: .section, align: .center, wrap: true) {
+                ui.KeyHints {
+                    ui.KeyHint(["Arrows"], "Move")
+                    ui.KeyHint(["Enter"], "Open")
+                    ui.KeyHint(["Super", "N"], "Every app")
+                }
+                ui.Button("Open an app", icon: .layout_grid) {
+                    on press: device.show_surface(device.overlays, surface: "launcher")
+                }
+            }
+        }
+    }
 }
 
 /// The rows of one workspace, filling the room the shell gives them: a workspace's rows stand
@@ -244,7 +330,7 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
             // The window fills the room the drop target around it is given: the target only
             // takes what is dropped on it, and the window keeps the strip's whole height.
             controls: {
-                window_controls(a, s, shown, in_front, lists)
+                window_controls(s, shown, lists)
             }
             tabs: {
                 if placed.len() > 1 and shell.strips_tabs {
@@ -254,14 +340,33 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
                         on reorder(p: session.Place, at: Int): reorder_place(a, s, p, at)
                         on detach(p: session.Place): detach_place(p)
                         for p in placed {
-                            ui.TabItem(the_place(p.key), title: place_title(p))
+                            if let w = shown_window(p) {
+                                ui.TabItem(the_place(p.key), title: place_title(p), icon: w.icon)
+                            } else {
+                                ui.TabItem(the_place(p.key), title: place_title(p))
+                            }
                         }
                     }
                 }
             }
             body: {
                 if let p = shown {
-                    place_content(p)
+                    // A window whose app stopped answering says so on the window itself, with the
+                    // two ways out: keep waiting, or quit it. The card stands above the content,
+                    // and a window that answers keeps its body the whole room.
+                    let w = shown_window(p)
+                    if let window = w {
+                        if window.not_responding {
+                            stack(gap: .tight, fill) {
+                                hung_window(window)
+                                place_content(p)
+                            }
+                        } else {
+                            place_content(p)
+                        }
+                    } else {
+                        place_content(p)
+                    }
                 } else {
                     ui.EmptyState("Nothing here", inline: true)
                 }
@@ -376,90 +481,16 @@ action bring_forward(a: Layout, s: LayoutStrip) (icon: .app_window, label: "Brin
     }
 }
 
-/// A window's own controls, in the pill at the trailing end of its one bar: the window's menu,
-/// which lists the actions its resource publishes and then its width, its coming to the front,
-/// and the place's pin and row, then maximize or restore and close. A bar shows one "…": each
-/// control is one action of the session's or the app's, so a press and an agent change the shell
-/// the same way, and none of them ever asks for a bar of its own. Where the shell's bar already
-/// names the window in front's resource (`listed`), this menu keeps the shell's controls alone,
-/// so every action stands once.
-view window_controls(
-    a: Layout,
-    s: LayoutStrip,
-    shown: Option<LayoutPlace>,
-    in_front: Bool,
-    listed: Bool,
-) {
+/// A window's own controls, in the pill at the trailing end of its one bar: the window's menu and
+/// then maximize or restore and close. A bar shows one "…": every row of the menu is one action of
+/// the session's, so a press and an agent change the shell the same way, and none of them ever
+/// asks for a bar of its own.
+view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
     row(gap: .tight, align: .center) {
-        ui.MenuButton(
-            "This window",
-            icon: .more_horizontal,
-            icon_only: true,
-            role: .plain,
-            target: if let p = shown { menu_resource(p, listed) },
-        ) {
-            ui.MenuItem("Narrow", checked: width_of(s.width) == .narrow) {
-                on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.narrow))
-            }
-            ui.MenuItem("Normal", checked: width_of(s.width) == .normal) {
-                on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.normal))
-            }
-            ui.MenuItem("Wide", checked: width_of(s.width) == .wide) {
-                on choose: session.resize(strip: the_strip(s.key), permille: permille_of(.wide))
-            }
-            if not in_front {
-                ui.MenuItem("Bring to front", icon: .app_window) {
-                    on choose: bring_forward(a, s)
-                }
-            }
-            if let p = shown {
-                if p.pinned {
-                    ui.MenuItem("Unpin window", icon: .pin, checked: true) {
-                        on choose: session.pin(place: the_place(p.key), pinned: false)
-                    }
-                } else {
-                    ui.MenuItem("Pin window", icon: .pin) {
-                        on choose: session.pin(place: the_place(p.key), pinned: true)
-                    }
-                }
-                // The strip's places are its tabs: a strip of several shows them as its
-                // tab strip. Moving a place into another strip's tab strip, or its own
-                // beside another place, is the menu's way to make tabs without a drag
-                // (shell.md §2). A strip of one place offers its own place as where to join.
-                // Only this workspace's strips are offered: a row is one workspace's, and a
-                // place moves within its workspace (shell.md §2, `move`).
-                let here = strip_workspace(a, s.key)
-                if a.strips.len() > 1 {
-                    for other in a.strips {
-                        if other.key != s.key and other.workspace == here {
-                            ui.MenuItem(
-                                "Move into {window_name(strip_place(a, other))} as a tab",
-                                icon: .columns_2,
-                            ) {
-                                on choose: session.move(
-                                    place: the_place(p.key),
-                                    row: the_row(other.row),
-                                    strip: the_strip(other.key),
-                                    before: .none,
-                                )
-                            }
-                        }
-                    }
-                }
-                if a.rows.len() > 1 {
-                    for r in a.rows {
-                        if r.workspace == here and r.key != strip_row(a, p.strip) {
-                            ui.MenuItem("Move to {r.name}", icon: .navigation) {
-                                on choose: session.move(
-                                    place: the_place(p.key),
-                                    row: the_row(r.key),
-                                    strip: .none,
-                                    before: .none,
-                                )
-                            }
-                        }
-                    }
-                }
+        if let p = shown {
+            if let w = shown_window(p) {
+                window_menu(w, shown, listed)
+                window_bar_actions(w)
             }
         }
         if s.maximized {
@@ -476,6 +507,29 @@ view window_controls(
                 on press: session.close(place: the_place(p.key))
             }
         }
+    }
+}
+
+/// The window the place `p` shows, as the session publishes its windows: a place and its window
+/// share the tab's key, so a place's own controls offer the rows of the window it shows.
+fn shown_window(p: LayoutPlace) -> Option<device.Window> {
+    return device.windows.all.find(w -> w.key == p.key)
+}
+
+/// What a window's bar carries beside its tab, as the desktop's window bar does: another tab of
+/// the same app, the window's own search, and the way back and forward through what it showed.
+/// Each is one session action, so a press, a key and an agent move the window the same way.
+view window_bar_actions(w: device.Window) {
+    if w.opens_tabs and w.local {
+        ui.Button("New tab of this window", icon: .plus, icon_only: true, role: .plain) {
+            on press: session.open_app(app: w.app_key, beside: w.key)
+        }
+    }
+    ui.Button("Search this window", icon: .search, icon_only: true, role: .plain) {
+        on press: session.search()
+    }
+    ui.Button("History of this window", icon: .history, icon_only: true, role: .plain) {
+        on press: session.activity(workspace: w.workspace_key, view: "catch-up", author: .none)
     }
 }
 
@@ -657,10 +711,390 @@ fn strip_row(a: Layout, strip: Text) -> Text {
     a.strips.find(s -> s.key == strip)?.row ?? ""
 }
 
-/// The workspace the strip `strip` stands in: a row is one workspace's, so what a place moves
-/// within is that workspace's strips and rows.
-fn strip_workspace(a: Layout, strip: Text) -> Text {
-    a.strips.find(s -> s.key == strip)?.workspace ?? ""
+/// The window menu: everything the person can do to one window, in the one menu its bar carries
+/// and the overview's cards carry too. Every row is a session action (`so.tilo.session`), so a
+/// press, a script and an agent do the same thing and each change is attributed and undoable.
+///
+/// The rows follow the window: a window covering its display offers it back, one filling its
+/// strip offers the strip back instead, the widest window cannot be widened and says so, a window
+/// someone else holds can be neither named nor closed, and a window of one tab offers no split.
+/// A place the window cannot go is not offered at all: no row for a choice that cannot be made.
+///
+/// The rows stand in runs of what they do to the window, a rule between one run and the next:
+/// what it covers and fills, the share of its strip it takes, where it goes, what it shows
+/// (another tab, its name, a split, its pin), stopping its app's control of the desktop, and
+/// closing it.
+view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
+    state renaming: Bool = false
+    state typed: Text = w.title
+    ui.MenuButton(
+        "This window",
+        icon: .more_horizontal,
+        icon_only: true,
+        role: .plain,
+        target: if let p = place { menu_resource(p, listed) },
+    ) {
+        ui.MenuItem(
+            "Reveal",
+            icon: .corner_up_right,
+            disabled: w.focused,
+            reason: "It is in front already",
+        ) {
+            on choose: session.focus(window(w))
+        }
+        if w.fullscreen {
+            ui.MenuItem("Exit full screen", icon: .minimize_2) {
+                on choose: session.fullscreen(group: w.group_key, on: false)
+            }
+        } else {
+            ui.MenuItem("Full screen", icon: .monitor) {
+                on choose: session.fullscreen(group: w.group_key, on: true)
+            }
+        }
+        if strip_maximized(w) {
+            ui.MenuItem("Restore", icon: .minimize_2) {
+                on choose: session.maximize_strip(strip: the_strip(layout_strip(w)), on: false)
+            }
+        } else {
+            ui.MenuItem("Fill the strip", icon: .maximize_2) {
+                on choose: session.maximize_strip(strip: the_strip(layout_strip(w)), on: true)
+            }
+        }
+        if w.floating {
+            ui.MenuItem("Snap back", icon: .layout_grid) {
+                on choose: session.float(group: w.group_key, on: false)
+            }
+        } else {
+            ui.MenuItem("Float this window", icon: .layers) {
+                on choose: session.float(group: w.group_key, on: true)
+            }
+        }
+        // The share of its strip the window takes, and the steps between the shares. A window at
+        // the widest or the narrowest says so rather than stepping past.
+        ui.MenuItem("Half the strip", checked: strip_width(w) == 500) {
+            on choose: session.resize(strip: the_strip(layout_strip(w)), permille: 500)
+        }
+        ui.MenuItem("Narrow", checked: strip_width(w) == 333) {
+            on choose: session.resize(strip: the_strip(layout_strip(w)), permille: 333)
+        }
+        ui.MenuItem("Normal", checked: strip_width(w) == 667) {
+            on choose: session.resize(strip: the_strip(layout_strip(w)), permille: 667)
+        }
+        ui.MenuItem("Wide", checked: strip_width(w) == 1000) {
+            on choose: session.resize(strip: the_strip(layout_strip(w)), permille: 1000)
+        }
+        ui.MenuItem("Every window the same") {
+            on choose: equal_widths(w)
+        }
+        ui.MenuItem("Wider", disabled: strip_width(w) >= 1000, reason: "As wide as it gets") {
+            on choose: session.resize(
+                strip: the_strip(layout_strip(w)),
+                permille: wider_than(strip_width(w)),
+            )
+        }
+        ui.MenuItem("Narrower", disabled: strip_width(w) <= 333, reason: "As narrow as it gets") {
+            on choose: session.resize(
+                strip: the_strip(layout_strip(w)),
+                permille: narrower_than(strip_width(w)),
+            )
+        }
+        // One place along its strip, where there is a place to go.
+        if let b = group_before(w) {
+            ui.MenuItem("Move left", icon: .arrow_left) {
+                on choose: move_before(w, b.group_key)
+            }
+        }
+        if group_after(w) != .none {
+            ui.MenuItem("Move right", icon: .arrow_right) {
+                on choose: move_right(w)
+            }
+        }
+        // Into another window of its workspace, as a tab of it: the window is a group of the
+        // band they share.
+        for s in layout.strips.filter(s -> s.workspace == w.workspace_key and s.key != w.group_key) {
+            ui.MenuItem("Move into {menu_strip_name(s.key)} as a tab") {
+                on choose: session.move_tab(
+                    tab: w.key,
+                    group: s.key,
+                    strip: .none,
+                    workspace: .none,
+                    display: .none,
+                )
+            }
+        }
+        for o in layout.workspaces.filter(o -> o.key != w.workspace_key) {
+            ui.MenuItem("Move to {o.name}") {
+                on choose: session.move_tab(
+                    tab: w.key,
+                    workspace: o.key,
+                    strip: .none,
+                    display: .none,
+                )
+            }
+        }
+        for d in device.windows.displays {
+            if d.id != w.display_id {
+                ui.MenuItem("Display {d.number}") {
+                    on choose: session.move_tab(
+                        tab: w.key,
+                        display: "{d.id}",
+                        strip: .none,
+                        workspace: .none,
+                    )
+                }
+            }
+        }
+        for r in layout.rows.filter(r -> r.workspace == w.workspace_key and r.key != row_of(w)) {
+            ui.MenuItem("Move to {r.name}") {
+                on choose: session.move(place: the_place(w.key), row: the_row(r.key))
+            }
+        }
+        // What the window shows and what it is called.
+        if w.opens_tabs and w.local {
+            ui.MenuItem("New tab of this app", icon: .plus) {
+                on choose: session.open_app(app: w.app_key, beside: w.key)
+            }
+        }
+        if w.renameable and w.local {
+            ui.MenuItem("Rename", icon: .pencil) {
+                on choose: set(renaming, true)
+            }
+        }
+        if tabs_in_group(w) > 1 {
+            ui.MenuItem("Split right", icon: .columns_2) {
+                on choose: session.split_right(tab: w.key)
+            }
+            ui.MenuItem("New group", icon: .app_window) {
+                on choose: session.new_group(tab: w.key)
+            }
+        }
+        if pinned(w) {
+            ui.MenuItem("Unpin window", icon: .pin, checked: true) {
+                on choose: session.pin(place: the_place(w.key), pinned: false)
+            }
+        } else {
+            ui.MenuItem("Pin window", icon: .pin) {
+                on choose: session.pin(place: the_place(w.key), pinned: true)
+            }
+        }
+        if w.controls_desktop {
+            ui.MenuItem("Stop controlling the desktop", icon: .ban) {
+                on choose: session.stop_desktop_control(group: w.group_key)
+            }
+        }
+        if tabs_in_group(w) > 1 {
+            ui.MenuItem("Close tab", icon: .x, destructive: true) {
+                on choose: session.close_tab(window(w))
+            }
+        }
+        ui.MenuItem("Close this window", icon: .x, destructive: true) {
+            on choose: session.close_window(group: w.group_key)
+        }
+    }
+    if renaming {
+        ui.Popover(label: "Rename this window", open: renaming) {
+            ui.TextInput(bind: typed, autofocus: true, placeholder: "A new name") {
+                on submit: session.rename(tab: w.key, name: typed).then(set(renaming, false))
+            }
+            on dismiss: set(renaming, false)
+        }
+    }
+}
+
+/// The windows of the strip `strip` that stand in front of their group, leading to trailing: one
+/// per window of the strip, whatever tabs stand behind it.
+fn strip_groups(strip: Text) -> List<device.Window> {
+    return device.windows.all
+        .filter(v -> v.strip_key == strip and v.tab_index == 0)
+        .sort_by(v -> v.place)
+}
+
+/// The window its group shows in front: the tab the menu is on, or its group's front tab while a
+/// tab behind it carries the menu.
+fn group_front(w: device.Window) -> Option<device.Window> {
+    return device.windows.all
+        .filter(v -> v.group_key == w.group_key)
+        .sort_by(v -> v.tab_index)
+        .first()
+}
+
+/// The window leading `w`'s along its strip, while one stands before it.
+fn group_before(w: device.Window) -> Option<device.Window> {
+    let front = group_front(w)
+    if let f = front {
+        return strip_groups(w.strip_key).filter(v -> v.place < f.place).last()
+    }
+    return .none
+}
+
+/// The window trailing `w`'s along its strip, while one stands after it.
+fn group_after(w: device.Window) -> Option<device.Window> {
+    let front = group_front(w)
+    if let f = front {
+        return strip_groups(w.strip_key).filter(v -> v.place > f.place).first()
+    }
+    return .none
+}
+
+/// Move the window `w` before the window `before` of its strip: one place along it.
+action move_before(
+    w: device.Window (label: "The window"),
+    before: Text (label: "The window it goes before"),
+) (icon: .arrow_left, label: "Move the window left") {
+    session.move_tab(
+        tab: w.key,
+        strip: w.strip_key,
+        before: before,
+        workspace: .none,
+        display: .none,
+    )
+}
+
+/// Move the window `w` one place to the trailing side: before the window after the next, or
+/// last in its strip while none stands there.
+action move_right(w: device.Window (label: "The window")) (
+    icon: .arrow_right,
+    label: "Move the window right",
+) {
+    let next = group_after(w)
+    if let n = next {
+        let beyond = strip_groups(w.strip_key).filter(v -> v.place > n.place).first()
+        if let b = beyond {
+            session.move_tab(
+                tab: w.key,
+                strip: w.strip_key,
+                before: b.group_key,
+                workspace: .none,
+                display: .none,
+            )
+        } else {
+            session.move_tab(
+                tab: w.key,
+                strip: w.strip_key,
+                before: .none,
+                workspace: .none,
+                display: .none,
+            )
+        }
+    }
+}
+
+/// The share of its strip a wider window takes: the next preset up, and the widest there is.
+fn wider_than(permille: Int) -> Int {
+    if permille < 333 {
+        return 333
+    }
+    if permille < 667 {
+        return 667
+    }
+    return 1000
+}
+
+/// The share of its strip a narrower window takes: the next preset down, and the narrowest there
+/// is.
+fn narrower_than(permille: Int) -> Int {
+    if permille > 667 {
+        return 667
+    }
+    return 333
+}
+
+/// The layout strip `w`'s window stands in: the resource the strip's own actions (resize,
+/// maximize) are addressed on, as the layout's place records it.
+fn layout_strip(w: device.Window) -> Text {
+    if let p = layout.places.find(p -> p.key == w.key) {
+        return p.strip
+    }
+    return w.strip_key
+}
+
+/// The strip `w` stands on, as the layout publishes it.
+fn strip_of(w: device.Window) -> Option<LayoutStrip> {
+    let key = layout_strip(w)
+    return layout.strips.find(s -> s.key == key)
+}
+
+/// The share of its row the window `w`'s strip keeps, in per-mille; the usual share while the
+/// layout names none.
+fn strip_width(w: device.Window) -> Int {
+    if let s = strip_of(w) {
+        if s.width > 0 {
+            return s.width
+        }
+    }
+    return 667
+}
+
+/// Whether the window `w`'s strip fills the shell alone.
+fn strip_maximized(w: device.Window) -> Bool {
+    if let s = strip_of(w) {
+        return s.maximized
+    }
+    return false
+}
+
+/// The row (the band across the shell) the window `w`'s strip stands in.
+fn row_of(w: device.Window) -> Text {
+    if let s = strip_of(w) {
+        return s.row
+    }
+    return ""
+}
+
+/// Give every window of the row the same share of it: what "every window the same" does where a
+/// person sees their windows side by side in a band.
+action equal_widths(w: device.Window (label: "The window")) (
+    icon: .columns_2,
+    label: "Equal widths",
+) {
+    let strips = layout.strips.filter(s -> s.row == row_of(w))
+    if strips.len() > 0 {
+        let share = 1000 / strips.len()
+        for s in strips {
+            session.resize(strip: the_strip(s.key), permille: share)
+        }
+    }
+}
+
+/// How many tabs the window `w`'s group holds: a window of several offers its tab's close and a
+/// split, one of a single tab does not.
+fn tabs_in_group(w: device.Window) -> Int {
+    return device.windows.all.filter(v -> v.group_key == w.group_key).len()
+}
+
+/// Whether the window `w`'s place is pinned.
+fn pinned(w: device.Window) -> Bool {
+    if let p = layout.places.find(p -> p.key == w.key) {
+        return p.pinned
+    }
+    return false
+}
+
+/// The name of the window in front of the strip `key`, as a menu offering to carry a window there
+/// names it: the place's own name, or its app's where it has none, never a place number.
+fn menu_strip_name(key: Text) -> Text {
+    if let w = show_window_of_strip(key) {
+        if let p = layout.places.find(p -> p.key == w.key) {
+            if p.name != "" {
+                return p.name
+            }
+        }
+        if w.title != "" {
+            return w.title
+        }
+        return w.origin_app
+    }
+    return "A window"
+}
+
+/// The window in front of the layout strip `key`: the first place of it, as its window reads.
+fn show_window_of_strip(key: Text) -> Option<device.Window> {
+    for p in layout.places.filter(p -> p.strip == key) {
+        if let w = device.windows.all.find(w -> w.key == p.key) {
+            return w
+        }
+    }
+    return .none
 }
 
 /// Where the person is among the strips, and the way to the one beside: the shell's reading of

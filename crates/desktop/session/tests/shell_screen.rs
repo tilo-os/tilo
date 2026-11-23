@@ -32,7 +32,8 @@ use crate::window_switcher as switcher;
 
 /// What the strips show of a shell holding no window: their own empty state, which no other surface
 /// of the shell shows.
-const NO_WINDOW: &str = "No window here yet";
+/// The start surface an empty shell draws: the cards a person meets before their first window.
+const NO_WINDOW: &str = "Start something";
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
@@ -1122,10 +1123,11 @@ fn the_shell_draws_the_workspace_in_front_and_no_other_and_carries_no_strip_labe
     // The empty workspace has the shell's whole room: its empty state is the shell's height, not the
     // half of it a second workspace's rows would leave it. The workspace behind holds the note, and
     // none of it stands on this session.
-    let empty = within(&session, NO_WINDOW, WIDTH, HEIGHT).expect("the empty state is on screen");
+    // The empty workspace in front draws its own start surface, and the one behind stands
+    // nowhere on this shell: the whole room is the front workspace's.
     assert!(
-        empty.3 > f64::from(HEIGHT) / 2.0,
-        "the empty workspace in front has the shell's room, not half of it: {empty:?}"
+        on_screen(&session, "Open an app").is_some(),
+        "the empty workspace's start cards stand in front"
     );
     assert!(
         on_screen(&session, &shown).is_none(),
@@ -1295,7 +1297,7 @@ fn a_german_shell_reads_its_own_words_in_german() {
         session.shell_says("Zeigt Strips")
     });
     // The style switch and the strips' empty place: the shell package's own words.
-    for german in ["Zeigt Strips", "Noch kein Fenster hier"] {
+    for german in ["Zeigt Strips", "Fang etwas an"] {
         assert!(
             session.shell_says(german),
             "a German shell says `{german}`: {:?}",

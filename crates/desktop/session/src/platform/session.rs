@@ -2067,6 +2067,8 @@ impl Session {
         // apps' renderers, whose adapter request connects to that desktop,
         // and after that the window would find no connection left.
         let window = tilo_compositor::NestedBackend::open_window(config)?;
+        let mut options = options;
+        windowed_shortcuts(&mut options.config.shortcuts);
         let mut session = Self::new(options, |policy| Compositor::nested(policy, config, window))?;
         session.warm()?;
         Ok(session)
@@ -3010,4 +3012,80 @@ fn app_of_resource(resource: &str) -> Option<String> {
         .strip_prefix("tl:")
         .and_then(|rest| rest.split_once(0x3a as char))
         .map(|(app, _)| app.to_owned())
+}
+
+/// A windowed session's own ways in: the desktop it runs inside answers the Super chords for
+/// itself, so search opens on Ctrl+Space and the workspace overview on Ctrl+Shift+Space instead.
+/// A chord the person bound to something already is theirs and stays: only the default moves.
+fn windowed_shortcuts(shortcuts: &mut ui::shortcut_table::ShortcutConfig) {
+    let defaults = ui::shortcut_table::ShortcutConfig::default();
+    for (action, modifiers) in [
+        (ui::shortcut_table::ShortcutAction::Search, &["Ctrl"][..]),
+        (
+            ui::shortcut_table::ShortcutAction::WorkspaceOverview,
+            &["Ctrl", "Shift"][..],
+        ),
+    ] {
+        if shortcuts.bindings.get(&action) != defaults.bindings.get(&action) {
+            continue;
+        }
+        let chord = ui::shortcut_table::KeyChord {
+            modifiers: modifiers.iter().map(|held| String::from(*held)).collect(),
+            key: "space".into(),
+        };
+        if let Err(error) = shortcuts.set(action, chord) {
+            tracing::warn!(?action, %error, "a windowed session keeps the binding it has");
+        }
+    }
+}
+
+#[cfg(test)]
+mod windowed_shortcut_tests {
+    use super::windowed_shortcuts;
+    use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
+
+    fn chord(modifiers: &[&str]) -> KeyChord {
+        KeyChord {
+            modifiers: modifiers.iter().map(|held| String::from(*held)).collect(),
+            key: "space".into(),
+        }
+    }
+
+    /// A session in a window opens search and the workspace overview on Control chords, while a
+    /// chord the person set is left as theirs.
+    #[test]
+    fn a_windowed_session_opens_search_and_the_overview_on_control_chords() {
+        let mut saved = ShortcutConfig::default();
+        windowed_shortcuts(&mut saved);
+        assert_eq!(
+            saved.bindings.get(&ShortcutAction::Search),
+            Some(&chord(&["Ctrl"])),
+            "Ctrl+Space opens search"
+        );
+        assert_eq!(
+            saved.bindings.get(&ShortcutAction::WorkspaceOverview),
+            Some(&chord(&["Ctrl", "Shift"])),
+            "Ctrl+Shift+Space opens the workspace overview"
+        );
+
+        let mut rebound = ShortcutConfig::default();
+        let mine = KeyChord {
+            modifiers: ["Alt"].into_iter().map(String::from).collect(),
+            key: "s".into(),
+        };
+        rebound
+            .set(ShortcutAction::Search, mine.clone())
+            .expect("rebind");
+        windowed_shortcuts(&mut rebound);
+        assert_eq!(
+            rebound.bindings.get(&ShortcutAction::Search),
+            Some(&mine),
+            "the person's own chord stays theirs"
+        );
+        assert_eq!(
+            rebound.bindings.get(&ShortcutAction::WorkspaceOverview),
+            Some(&chord(&["Ctrl", "Shift"])),
+            "the other default still moves"
+        );
+    }
 }

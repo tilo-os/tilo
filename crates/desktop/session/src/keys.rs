@@ -521,6 +521,20 @@ impl SessionKeys {
         tilo_session_core::desktop::shortcuts::fixed_shortcut_action(&logical, modifiers)
     }
 
+    /// The layout history `press` asks for: Ctrl+Alt+Z takes back the last change to the person's
+    /// arrangement, Ctrl+Shift+Alt+Z puts it back. `None` for any other press.
+    fn layout_history(press: &Press) -> Option<Invocation> {
+        let Key::Character(letter) = &press.key else {
+            return None;
+        };
+        let held = press.modifiers;
+        if !(held.ctrl && held.alt) || held.logo || !letter.eq_ignore_ascii_case("z") {
+            return None;
+        }
+        let action = if held.shift { "redo" } else { "undo" };
+        Some(Invocation::new(tilo_session_core::layout::RESOURCE, action))
+    }
+
     /// The chord of this press that runs a saved shortcut's keyboard trigger, which the session
     /// claims and the automation host fires. The chord is the table's because the automation put it
     /// there when it armed the shortcut, and it stays the session's until the next arming drops it.
@@ -586,6 +600,12 @@ impl SessionKeys {
                 Invocation::new(tilo_session_core::shell::DISPLAYS_RESOURCE, "open-sheet"),
                 KeyClaim::Take,
             ));
+        }
+        // Ctrl+Alt+Z takes back the last change to the person's layout, and Ctrl+Shift+Alt+Z puts
+        // it back: the shell's own arrangement, apart from the Ctrl+Z an app in front keeps for
+        // its own text. The Tilo menu names both.
+        if let Some(layout) = Self::layout_history(press) {
+            return Some((layout, KeyClaim::Take));
         }
         // The fixed chords Settings cannot rebind are the desktop's before any app's, and run the
         // same verb their menu rows and an agent's invocation name.
@@ -928,6 +948,28 @@ mod tests {
             pressed: false,
             ..key(keysym, None, modifiers)
         }
+    }
+
+    /// The shell's own history of the arrangement: Ctrl+Alt+Z takes the last change to the
+    /// person's layout back, Ctrl+Shift+Alt+Z puts it back, whatever an app in front does with its
+    /// own Ctrl+Z.
+    #[test]
+    fn ctrl_alt_z_takes_back_the_layout_and_shift_puts_it_back() {
+        let mut keys = keys();
+        let undo = key(keysyms::z, Some('z'), held("ac"));
+        keys.key(&undo);
+        assert_eq!(
+            asked(&keys),
+            vec![Invocation::new(tilo_session_core::layout::RESOURCE, "undo")],
+            "Ctrl+Alt+Z takes back the last layout change"
+        );
+        let redo = key(keysyms::z, Some('z'), held("acs"));
+        keys.key(&redo);
+        assert_eq!(
+            asked(&keys),
+            vec![Invocation::new(tilo_session_core::layout::RESOURCE, "redo")],
+            "Ctrl+Shift+Alt+Z puts it back"
+        );
     }
 
     tilo_test_env::scenario! {

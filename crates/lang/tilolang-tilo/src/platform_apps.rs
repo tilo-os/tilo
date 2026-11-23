@@ -95,6 +95,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("folders", "Folders", "session:folders"),
     ("search", "Search", "session:search"),
     ("launchpad", "Launchpad", "session:launchpad"),
+    ("said", "Said", "session:notice"),
     ("overlays", "Overlays", "desktop:overlays"),
     ("nearby_send", "NearbySend", "session:nearby-send"),
     ("devices", "Devices", "session:devices"),

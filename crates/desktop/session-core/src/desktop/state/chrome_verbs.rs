@@ -104,6 +104,22 @@ impl DesktopHandle {
                 }
                 Carried::Done
             }
+            ChromeEffect::MoveToNewStrip { tab } => {
+                let tab: u64 = tab
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("{tab} is no window"))?;
+                self.move_to_new_strip(tab);
+                Carried::Done
+            }
+            ChromeEffect::DeleteStrip { strip } => {
+                let strip: u64 = strip
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("{strip} is no strip"))?;
+                self.delete_strip(StripId(strip))?;
+                Carried::Done
+            }
             ChromeEffect::NewWorkspace {
                 workspace,
                 name,

@@ -30,10 +30,14 @@
 /// front's actions, and its own bar is drawn (`top_bar`). The desktop style passes it.
 template view shell_around(front: Option<Layout>, traditional: Bool, content: View) {
     let s = shell
+    // A dock that stays in sight takes its own room at the foot, so the windows stop at its top
+    // edge rather than running under it. One that hides itself (auto-hide, or reached for at the
+    // edge) floats over them until the person brings it out.
+    let dock_hides_itself = s.dock_showing != .always
     let dock_takes_room = front != .none
         and dock_shows(s)
         and s.dock_edge == .bottom
-        and space.compact
+        and (space.compact or not dock_hides_itself)
     let resting = device.overlays.here == ""
         or device.overlays.here == "none"
         or device.overlays.here == "switcher" and not device.overlays.switcher_revealed
@@ -122,6 +126,53 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         if device.overlays.strips_open {
             stack(at: .leading, align: .center, padding: .related) {
                 strips_list()
+            }
+        }
+        // What just happened, said over everything and gone in a moment: a close said with the
+        // Undo that reopens it, or why a press did nothing. It stands over the shell rather than
+        // in it, so what the person was looking at does not move under a passing word.
+        if device.said.text != "" {
+            row(at: .bottom, fill, align: .center, distribute: .center) {
+                pass_notice()
+            }
+        }
+    }
+}
+
+/// The passing notice: what happened, and the buttons that still act on it (Undo after a close),
+/// in the floating material over the shell's foot. A press on a button is the session's own
+/// notice action, so the shell, a script and an agent press the same one. Its glyph and colour say
+/// what kind it is: an ordinary word, a success, a warning or a failure.
+view pass_notice() {
+    ui.Card {
+        row(gap: .related, align: .center) {
+            ui.Icon(
+                if device.said.kind == "success" {
+                    .circle_check
+                } else if device.said.kind == "warning" {
+                    .triangle_alert
+                } else if device.said.kind == "error" { .circle_alert } else { .info },
+                tone: if device.said.kind == "success" {
+                    .success
+                } else if device.said.kind == "warning" {
+                    .warning
+                } else if device.said.kind == "error" { .danger } else { .info },
+            )
+            ui.Text(device.said.text, role: .label)
+            // A notice carries at most two buttons (Undo after a close, and one more): the same
+            // cap the session keeps, written out so a style copy of the shell compiles the same.
+            if let first = device.said.actions.first() {
+                ui.Button(first.name, icon: first.icon, role: .plain) {
+                    on press: device.press_notice(device.said, action: first.id)
+                }
+            }
+            if let second = device.said.actions.at(1) {
+                ui.Button(second.name, icon: second.icon, role: .plain) {
+                    on press: device.press_notice(device.said, action: second.id)
+                }
+            }
+            ui.Button("Dismiss", icon: .x, icon_only: true, role: .plain) {
+                on press: device.hide(device.said)
             }
         }
     }
