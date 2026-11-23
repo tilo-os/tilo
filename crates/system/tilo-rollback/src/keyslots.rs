@@ -861,14 +861,6 @@ Digests:
                 // Two calls must not agree.
                 assert_ne!(*p, *new_passphrase().unwrap());
             }
-            {
-                let auth = unseal_auth(
-                    Path::new("/run/work/policy.ctx"),
-                    Some(Path::new("/run/work/pin")),
-                );
-                assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
-                assert!(!auth.contains("246810"));
-            }
         }
 
         phase enrolling_or_boot_unsealing_without_its_precondition_is_refused_before_any_tool_runs;

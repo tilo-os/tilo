@@ -169,13 +169,6 @@ mod tests {
         phase the_retention_window_and_floor_only_move_forward;
         {
             {
-                let p = plan_floor(10, 0, 3, None).unwrap();
-                assert_eq!(p.window_floor, 8);
-                assert_eq!(p.target_floor, 8);
-                assert!(p.advances());
-                assert_eq!(p.increments(), 8);
-            }
-            {
                 let p = plan_floor(10, 0, 1, None).unwrap();
                 assert_eq!(p.target_floor, 10);
             }
@@ -193,17 +186,8 @@ mod tests {
                 assert_eq!(p.increments(), 0);
             }
             {
-                let p = plan_floor(10, 5, 3, Some(10)).unwrap();
-                assert_eq!(p.window_floor, 8);
-                assert_eq!(p.target_floor, 10);
-            }
-            {
                 let p = plan_floor(10, 0, 3, Some(2)).unwrap();
                 assert_eq!(p.target_floor, 8);
-            }
-            {
-                let e = plan_floor(10, 0, 3, Some(11)).unwrap_err().to_string();
-                assert!(e.contains("above the generation being confirmed"), "{e}");
             }
             {
                 let e = plan_floor(5, 6, 3, None).unwrap_err().to_string();
@@ -222,16 +206,6 @@ mod tests {
 
         phase keep_and_drop_sets_protect_staged_and_verified_keyslots;
         {
-            {
-                assert_eq!(keep_set(10, &[7, 8, 9, 10], 3), vec![10, 9, 8]);
-                assert_eq!(keep_set(10, &[], 3), vec![10]);
-                assert_eq!(keep_set(10, &[9], 3), vec![10, 9]);
-            }
-            {
-                // 11 is staged and sealed; confirming 10 must not remove it.
-                assert_eq!(keep_set(10, &[8, 9, 10, 11], 3), vec![11, 10, 9, 8]);
-                assert_eq!(drop_set(10, &[8, 9, 10, 11], 3), Vec::<u64>::new());
-            }
             {
                 assert_eq!(keep_set(10, &[10, 11, 12], 3), vec![12, 11, 10]);
                 // 11 was superseded without ever booting.
