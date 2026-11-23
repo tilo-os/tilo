@@ -1217,4 +1217,32 @@ fn the_task_list_holds_many_tasks_through_a_scroll_an_edit_an_undo_and_a_restart
         super::task_in_workspace(&second, &edited, false),
         "the title typed into the task is kept too"
     );
+    // The window opened again is alive: it publishes what it can do, an action it publishes
+    // runs, and what it made is in the workspace its list shows.
+    assert!(
+        second
+            .instance()
+            .published()
+            .iter()
+            .any(|descriptor| descriptor.address.action == "new_task"),
+        "the window opened again publishes its actions: {:?}",
+        second.instance().published()
+    );
+    let new_task = second.identity_doing("Tasks", "new_task");
+    let answered = second.invoke_doing(
+        &new_task,
+        &serde_json::json!({ "title": "Made after the window opened again" }),
+    );
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "an action of the window opened again runs: {answered:?}"
+    );
+    second.settle();
+    assert!(
+        super::task_in_workspace(&second, "Made after the window opened again", false),
+        "and what it made is in the workspace it shows"
+    );
 }
