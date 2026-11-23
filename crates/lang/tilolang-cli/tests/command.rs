@@ -132,6 +132,14 @@ fn the_compiler_commands_run_from_the_one_tool() {
     std::fs::write(&file, source).expect("source");
     let path = dir.to_string_lossy().into_owned();
 
+    let help = tilolang(&["check", "--help"]);
+    assert_eq!(help.status.code(), Some(0), "check --help succeeds");
+    let usage = String::from_utf8_lossy(&help.stderr);
+    assert!(
+        usage.contains("tilolang check") && usage.contains("tilolang ids"),
+        "the compiler commands' usage printed: {usage}"
+    );
+
     let check = tilolang(&["check", &path, "--write-ids"]);
     assert!(
         check.status.success(),
