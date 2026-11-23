@@ -475,7 +475,10 @@ There are seven ways to add a device:
   `BootKeyCert` and no second verifier.
 - **One device list**: the person's devices, a resource of the person's own
   workspace, signed by their root. Nothing keeps a second copy. Revocation is
-  an entry in it and reaches every device of the identity.
+  an entry in it and reaches every device of the identity. Every key the
+  root certifies is an entry there: a device, an agent's grant key or a
+  script's key, each revoked the same way. The list says who a key is; each
+  workspace's grants say what it may do.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
