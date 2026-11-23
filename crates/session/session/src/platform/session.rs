@@ -652,6 +652,7 @@ impl Session {
             overlays: overlays.clone(),
             notices: notices.clone(),
             overview: overview.open_flag(),
+            handle: handle.clone(),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();

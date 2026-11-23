@@ -4,7 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop::overlays::{Overlay, Overlays, SwitcherScope};
-use tilo_desktop_model::{Layout, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceId};
+use tilo_desktop_model::{
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+};
 use tilo_desktop_surface::DesktopHandle;
 
 /// The layout's windows as `session:windows` publishes them.
@@ -142,6 +144,38 @@ fn window_reading(tab: &Tab, at: TabPlace<'_>, handle: &DesktopHandle) -> Window
     }
 }
 
+/// Whether `tab` counts as a window for the switcher's walk and the overview's pictures: a card
+/// where an app stopped working, or a place a saved window stood in, is the tab's and not a window
+/// to walk to.
+fn tab_is_window(tab: &Tab) -> bool {
+    !matches!(
+        tab.tile,
+        TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
+    )
+}
+
+/// The window currently in front in `tree`'s active workspace — `(strip, group, tab)` — when the
+/// active strip's active group (or its first group) holds an active tab that counts as a window.
+/// Both [`windows`] and [`switcher_walk_empty_in`] derive focus from this one rule.
+fn front_window(tree: &Layout) -> Option<(StripId, u64, u64)> {
+    let front = tree.active_workspace()?;
+    let active_strip = tree.active_strip_for(front)?;
+    let strip = front.strips.iter().find(|strip| strip.id == active_strip)?;
+    let active_group = tree
+        .active_group_for(strip.id)
+        .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
+        .or_else(|| strip.window_groups.first().map(|group| group.id))?;
+    let group = strip
+        .window_groups
+        .iter()
+        .find(|group| group.id == active_group)?;
+    let tab = group
+        .tabs
+        .iter()
+        .find(|tab| tab.id == group.active_tab && tab_is_window(tab))?;
+    Some((strip.id, group.id, tab.id))
+}
+
 /// The windows the layout shows: every workspace's, the one in front first, each strip top to bottom
 /// and each group leading to trailing, the tab in front of a group first and the tabs behind it in
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
@@ -151,7 +185,8 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
-    let active_strip = tree.active_strip_for(front);
+    let focused_place = front_window(tree);
+    let focused_tab = focused_place.map(|(_, _, tab)| tab);
     // The tabs the focus history remembers, most recent first.
     let history: Vec<u64> = front
         .strips
@@ -162,20 +197,12 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let mut workspaces: Vec<&_> = tree.workspaces.iter().collect();
     workspaces.sort_by_key(|workspace| workspace.id() != front.id());
     let mut readings = Vec::new();
-    let mut focused_tab = None;
     for workspace in workspaces {
         let in_front = workspace.id() == front.id();
         let workspace_name = tilo_session_core::desktop::names::workspace(&workspace.name);
         let mut place = 0_i64;
         for (at_strip, strip) in workspace.strips.iter().enumerate() {
             let strip_name = tilo_session_core::desktop::names::strip_named(&strip.name, at_strip);
-            let active_group = if in_front {
-                tree.active_group_for(strip.id)
-                    .filter(|id| strip.window_groups.iter().any(|group| group.id == *id))
-                    .or_else(|| strip.window_groups.first().map(|group| group.id))
-            } else {
-                None
-            };
             for group in &strip.window_groups {
                 // The width the window keeps on the shell: a strip's groups split its width between
                 // them, so the pictures of a strip keep the layout's proportions.
@@ -187,13 +214,7 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                     .unwrap_or(0);
                 let mut behind = 0_i64;
                 for (index, tab) in group.tabs.iter().enumerate() {
-                    // A tab that shows no window is not one the person can walk to: a card where
-                    // an app stopped working, or a place a saved window stood in, is the tab's,
-                    // and the switcher's walk and the overview's pictures are the windows'.
-                    if matches!(
-                        tab.tile,
-                        TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
-                    ) {
+                    if !tab_is_window(tab) {
                         continue;
                     }
                     let tab_index = if index == leading {
@@ -202,13 +223,7 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
                         behind = behind.saturating_add(1);
                         behind
                     };
-                    let focused = in_front
-                        && Some(strip.id) == active_strip
-                        && Some(group.id) == active_group
-                        && tab.id == group.active_tab;
-                    if focused {
-                        focused_tab = Some(tab.id);
-                    }
+                    let focused = in_front && Some((strip.id, group.id, tab.id)) == focused_place;
                     place = place.saturating_add(1);
                     readings.push(window_reading(
                         tab,
@@ -388,9 +403,40 @@ pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &Overlays) {
     walk.show(Overlay::Rest);
 }
 
-/// Open the switcher on the window before the one in front, or walk it `steps` windows on. A
-/// walk over fewer than two windows has nowhere to go, and opens nothing: Alt+Tab with one
-/// window open does what it always has, which is nothing.
+/// Whether a walk over `(walked, front)` has a target to move to: empty never does; with a window
+/// already in front there must be another beside it, while with none in front even a lone window is
+/// a target to reach.
+fn has_walk_target(walked: &[usize], front: Option<usize>) -> bool {
+    !walked.is_empty() && (front.is_none() || walked.len() >= 2)
+}
+
+/// Whether a walk in `scope` on `handle`'s active workspace has no walkable windows: shares
+/// [`tab_is_window`] and [`front_window`] with [`windows`] and reads the tree with no allocations,
+/// so both `show-surface`/`open-surface` and `switcher::show` check the same empty-walk rule.
+pub(crate) fn switcher_walk_empty_in(handle: &DesktopHandle, scope: SwitcherScope) -> bool {
+    handle.read(|tree| match scope {
+        SwitcherScope::Workspace => tree.active_workspace().is_none_or(|front| {
+            !front
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(tab_is_window)
+        }),
+        SwitcherScope::App => front_window(tree).is_none(),
+    })
+}
+
+/// Whether an open walk on `handle` has no walkable windows left in its scope, so `switcher::show`
+/// dismisses an emptied walk on the same pass even before the reveal delay elapses.
+pub(crate) fn switcher_walk_empty(handle: &DesktopHandle, walk: &Overlays) -> bool {
+    switcher_walk_empty_in(handle, walk.scope())
+}
+
+/// Open the switcher on the window before the one in front, or walk it `steps` windows on. With a
+/// window already in front, a walk over fewer than two windows has nowhere to go and opens nothing;
+/// with none in front, even a lone window is reached. An empty walk never opens the switcher, and a
+/// walk that becomes empty closes it.
 pub(crate) fn walk_switcher(
     handle: &DesktopHandle,
     walk: &Overlays,
@@ -400,13 +446,27 @@ pub(crate) fn walk_switcher(
     // Opening the walk is one window on, as Alt+Tab goes to the window before the one in front
     // whichever way its press names.
     let steps = if steps == 0 { 1 } else { steps };
-    if !walk.switcher_up() {
-        let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
-        let (walked, _) = walked(&windows, workspace, scope);
-        if walked.len() < 2 {
-            return;
+    let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
+    let (walked, front) = walked(&windows, workspace, scope);
+    if walked.is_empty() {
+        if walk.switcher_up() {
+            walk.forget_walk();
+            walk.show(Overlay::Rest);
         }
+        return;
     }
+    let opening = !walk.switcher_up() || walk.scope() != scope;
+    if !walk.switcher_up() && !has_walk_target(&walked, front) {
+        return;
+    }
+    // With no window in front the walk's origin is before index 0 (`-1`), so a forward opening step
+    // (`+1`) reaches index 0 and a backward opening step (`-1`) shifts by +1 to reach the last
+    // window (`count - 1`).
+    let steps = if opening && front.is_none() && steps < 0 {
+        steps.saturating_add(1)
+    } else {
+        steps
+    };
     walk.walk(scope, steps);
 }
 
@@ -419,6 +479,8 @@ pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &Overlays, at: i64) 
     let (windows, workspace) = handle.read(|tree| (windows(tree, handle), tree.active));
     let (walked, front) = walked(&windows, workspace, walk.scope());
     if walked.is_empty() {
+        walk.forget_walk();
+        walk.show(Overlay::Rest);
         return;
     }
     let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
@@ -427,8 +489,8 @@ pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &Overlays, at: i64) 
     } else {
         at.min(count.saturating_sub(1))
     };
-    let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
-    walk.select(at.saturating_sub(front));
+    let origin = front.map_or(-1, |front| i64::try_from(front).unwrap_or(0));
+    walk.select(at.saturating_sub(origin));
 }
 
 #[cfg(test)]
@@ -466,12 +528,13 @@ mod tests {
         let work = WorkspaceId::from_u128(1);
         let elsewhere = WorkspaceId::from_u128(2);
 
-        // No focused window in the active workspace: workspace scope still stays in `work`,
+        // No focused window in the active workspace (for example when the active strip is empty
+        // while another strip in `work` holds windows): workspace scope still stays in `work`,
         // while app scope has no front app to match.
         let unfocused = vec![
             test_window("20", "so.tilo.notes", work, false),
             test_window("21", "so.tilo.mail", work, false),
-            test_window("23", "so.tilo.notes", elsewhere, true),
+            test_window("23", "so.tilo.notes", elsewhere, false),
             test_window("24", "so.tilo.mail", elsewhere, false),
         ];
         assert_eq!(

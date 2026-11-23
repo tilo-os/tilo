@@ -32,9 +32,9 @@ pub(crate) fn show(
     locked: bool,
     sizes: &std::collections::HashMap<u64, (u32, u32)>,
 ) -> bool {
-    if locked {
-        walk.hide(Overlay::Switcher);
+    if locked || (walk.switcher_up() && crate::windows::switcher_walk_empty(handle, walk)) {
         walk.forget_walk();
+        walk.hide(Overlay::Switcher);
     }
     // A flick shorter than the panel's reveal delay shows nothing, and costs no reading of the
     // shell's windows.

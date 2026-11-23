@@ -11,7 +11,7 @@ use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop::overlays::{Overlay, Overlays, Part};
+use tilo_desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_peer_state::join::Role;
@@ -343,6 +343,9 @@ pub(crate) struct Surfaces {
     /// whoever asks for the shell's state reads it. It turns with the surface itself, so a person's
     /// press answers at once rather than a frame later.
     pub(crate) overview: Rc<std::cell::Cell<bool>>,
+    /// The shell's desktop handle, read before opening the switcher so an empty walk never leaves
+    /// the switcher up holding the keyboard.
+    pub(crate) handle: DesktopHandle,
 }
 
 impl Surfaces {
@@ -381,13 +384,27 @@ impl Surfaces {
             }
             return;
         }
-        self.panel_closes();
         if let Some(surface) = Overlay::named(surface) {
             if self.overlays.here() == surface {
+                self.panel_closes();
+                if surface == Overlay::Switcher {
+                    self.overlays.forget_walk();
+                }
                 self.overlays.show(Overlay::Rest);
             } else {
+                if surface == Overlay::Switcher
+                    && crate::windows::switcher_walk_empty_in(
+                        &self.handle,
+                        SwitcherScope::Workspace,
+                    )
+                {
+                    return;
+                }
+                self.panel_closes();
                 self.overlays.show(surface);
             }
+        } else {
+            self.panel_closes();
         }
         self.clear_beside();
         self.settled();
@@ -407,9 +424,21 @@ impl Surfaces {
             self.overlays.open(Part::QuickSettings, None);
             return;
         }
-        self.panel_closes();
         if let Some(surface) = Overlay::named(name) {
+            if surface == Overlay::Switcher
+                && crate::windows::switcher_walk_empty_in(&self.handle, SwitcherScope::Workspace)
+            {
+                if self.overlays.here() == Overlay::Switcher {
+                    self.overlays.forget_walk();
+                    self.overlays.show(Overlay::Rest);
+                    self.settled();
+                }
+                return;
+            }
+            self.panel_closes();
             self.overlays.show(surface);
+        } else {
+            self.panel_closes();
         }
         self.clear_beside();
         self.settled();
@@ -1200,12 +1229,30 @@ mod tests {
     }
 
     fn surfaces(status_panel: bool, shell: bool) -> Surfaces {
+        struct Blank;
+
+        impl tilo_desktop_surface::TileSource for Blank {
+            fn tile(
+                &mut self,
+                _: &tilo_desktop_model::Workspace,
+                tab: &tilo_desktop_model::Tab,
+            ) -> ui::widget::TileHost {
+                ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail: String::new(),
+                })
+            }
+        }
+
+        let (_surface, handle) =
+            tilo_desktop_surface::DesktopSurface::new(Layout::default(), 1, Box::new(Blank));
         Surfaces {
             status_panel,
             shell,
             overlays: Overlays::new(),
             notices: tilo_desktop_surface::DesktopNotifications::default(),
             overview: Rc::new(std::cell::Cell::new(false)),
+            handle,
         }
     }
 

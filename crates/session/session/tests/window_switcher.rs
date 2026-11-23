@@ -766,6 +766,445 @@ fn a_stale_recorded_strip_keeps_the_walk_inside_its_workspace() {
     );
 }
 
+/// With two windows in the active workspace and none in front (for example when the active strip
+/// is empty and the windows live on another strip), the first Alt+Tab reaches the first window
+/// rather than skipping it, and subsequent steps walk on from there.
+#[test]
+fn alt_tab_with_two_windows_and_none_in_front_reaches_the_first() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let work_id = WorkspaceId::from_u128(1);
+    let elsewhere_id = WorkspaceId::from_u128(2);
+    let mut work = Workspace::new(work_id, "Work");
+    work.strips = vec![
+        Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        },
+        Strip {
+            id: StripId(3),
+            name: "Side".into(),
+            window_groups: vec![
+                group(10, window(20, "Notes", "so.tilo.notes")),
+                group(11, window(21, "Mail", "so.tilo.mail")),
+            ],
+        },
+    ];
+    let mut elsewhere = Workspace::new(elsewhere_id, "Elsewhere");
+    elsewhere.strips = vec![Strip {
+        id: StripId(4),
+        name: "Main".into(),
+        window_groups: vec![group(13, window(23, "Away", "so.tilo.mail"))],
+    }];
+    let mut tree = Layout {
+        active: work_id,
+        workspaces: vec![work, elsewhere],
+        ..Default::default()
+    };
+    tree.active_strip.insert(work_id, StripId(2));
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        crate::common::windows(&session)
+            .iter()
+            .all(|window| !window.focused),
+        "no window is in front on the empty active strip"
+    );
+
+    hold_alt_tab(&mut session);
+    let view = panel(&session).expect("the panel is up while Alt is held");
+    assert_eq!(cards(&view), ["Notes", "Mail"]);
+    assert_eq!(
+        view.selected, 0,
+        "with no window in front the first Alt+Tab lands on the first window"
+    );
+    assert_eq!(front(&session), "Notes");
+
+    // Stepping on reaches the second window; Home and End choose by place.
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_TAB, true);
+    assert_eq!(panel(&session).expect("the panel is up").selected, 1);
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_HOME, true);
+    key(&mut session, KEY_HOME, false);
+    assert_eq!(panel(&session).expect("the panel is up").selected, 0);
+    key(&mut session, KEY_END, true);
+    key(&mut session, KEY_END, false);
+    assert_eq!(panel(&session).expect("the panel is up").selected, 1);
+    key(&mut session, KEY_LEFTSHIFT, true);
+    key(&mut session, KEY_TAB, true);
+    assert_eq!(panel(&session).expect("the panel is up").selected, 0);
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_LEFTSHIFT, false);
+    key(&mut session, KEY_LEFTALT, false);
+    until(
+        &mut session,
+        "letting Alt go brings the first window to the front",
+        |session| front(session) == "Notes",
+    );
+    assert_eq!(handle.read(|tree| tree.active), work_id);
+}
+
+/// With windows in the active workspace and none in front, the first Alt+Shift+Tab lands on the
+/// last window of the walk rather than skipping it, and stepping backward walks from there.
+#[test]
+fn alt_shift_tab_with_none_in_front_reaches_the_last_window() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let work_id = WorkspaceId::from_u128(1);
+    let elsewhere_id = WorkspaceId::from_u128(2);
+    let mut work = Workspace::new(work_id, "Work");
+    work.strips = vec![
+        Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        },
+        Strip {
+            id: StripId(3),
+            name: "Side".into(),
+            window_groups: vec![
+                group(10, window(20, "Notes", "so.tilo.notes")),
+                group(11, window(21, "Mail", "so.tilo.mail")),
+                group(12, window(22, "Budget", "so.tilo.notes")),
+            ],
+        },
+    ];
+    let mut elsewhere = Workspace::new(elsewhere_id, "Elsewhere");
+    elsewhere.strips = vec![Strip {
+        id: StripId(4),
+        name: "Main".into(),
+        window_groups: vec![group(13, window(23, "Away", "so.tilo.mail"))],
+    }];
+    let mut tree = Layout {
+        active: work_id,
+        workspaces: vec![work, elsewhere],
+        ..Default::default()
+    };
+    tree.active_strip.insert(work_id, StripId(2));
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        crate::common::windows(&session)
+            .iter()
+            .all(|window| !window.focused),
+        "no window is in front on the empty active strip"
+    );
+
+    key(&mut session, KEY_LEFTALT, true);
+    key(&mut session, KEY_LEFTSHIFT, true);
+    key(&mut session, KEY_TAB, true);
+    until(
+        &mut session,
+        "the panel shows while Alt+Shift+Tab is held",
+        |session| panel(session).is_some(),
+    );
+    let view = panel(&session).expect("the panel is up while Alt is held");
+    assert_eq!(cards(&view), ["Notes", "Mail", "Budget"]);
+    assert_eq!(
+        view.selected, 2,
+        "with no window in front the first Alt+Shift+Tab lands on the last window"
+    );
+    assert_eq!(front(&session), "Budget");
+
+    // A second backward step walks to the second-to-last window.
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_TAB, true);
+    assert_eq!(panel(&session).expect("the panel is up").selected, 1);
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_LEFTSHIFT, false);
+    key(&mut session, KEY_LEFTALT, false);
+    until(
+        &mut session,
+        "letting Alt go brings the reached window to the front",
+        |session| front(session) == "Mail",
+    );
+    assert_eq!(handle.read(|tree| tree.active), work_id);
+}
+
+/// With a lone window in the active workspace that is not in front (for example on another strip
+/// while the active strip is empty), Alt+Tab opens and reaches that window.
+#[test]
+fn alt_tab_with_one_window_and_none_in_front_reaches_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let work_id = WorkspaceId::from_u128(1);
+    let elsewhere_id = WorkspaceId::from_u128(2);
+    let mut work = Workspace::new(work_id, "Work");
+    work.strips = vec![
+        Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        },
+        Strip {
+            id: StripId(3),
+            name: "Side".into(),
+            window_groups: vec![group(12, window(22, "Budget", "so.tilo.notes"))],
+        },
+    ];
+    let mut elsewhere = Workspace::new(elsewhere_id, "Elsewhere");
+    elsewhere.strips = vec![Strip {
+        id: StripId(4),
+        name: "Main".into(),
+        window_groups: vec![group(13, window(23, "Away", "so.tilo.mail"))],
+    }];
+    let mut tree = Layout {
+        active: work_id,
+        workspaces: vec![work, elsewhere],
+        ..Default::default()
+    };
+    tree.active_strip.insert(work_id, StripId(2));
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        crate::common::windows(&session)
+            .iter()
+            .all(|window| !window.focused),
+        "the lone window on the other strip is not in front"
+    );
+
+    hold_alt_tab(&mut session);
+    let view = panel(&session).expect("the panel is up while Alt is held");
+    assert_eq!(cards(&view), ["Budget"]);
+    assert_eq!(view.selected, 0);
+
+    key(&mut session, KEY_TAB, false);
+    key(&mut session, KEY_LEFTALT, false);
+    until(
+        &mut session,
+        "letting Alt go focuses the lone window",
+        |session| front(session) == "Budget",
+    );
+    assert_eq!(handle.read(|tree| tree.active), work_id);
+}
+
+/// Invoking `show-surface` or `open-surface` for `switcher` in an empty active workspace leaves the
+/// switcher down, shows no panel and holds no keys.
+#[test]
+fn show_surface_switcher_does_not_open_on_an_empty_workspace() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let empty_id = WorkspaceId::from_u128(1);
+    let elsewhere_id = WorkspaceId::from_u128(2);
+    let empty = Workspace::new(empty_id, "Empty");
+    let mut elsewhere = Workspace::new(elsewhere_id, "Elsewhere");
+    elsewhere.strips = vec![Strip {
+        id: StripId(4),
+        name: "Main".into(),
+        window_groups: vec![
+            group(13, window(23, "Away", "so.tilo.mail")),
+            group(14, window(24, "Far", "so.tilo.notes")),
+        ],
+    }];
+    handle.replace_tree(Layout {
+        active: empty_id,
+        workspaces: vec![empty, elsewhere],
+        ..Default::default()
+    });
+    session.step(REFRESH).expect("a turn of the session");
+
+    let show_args = serde_json::Map::from_iter([(
+        "surface".to_owned(),
+        serde_json::Value::String("switcher".to_owned()),
+    )]);
+    session
+        .invoke("desktop:overlays", "show-surface", &show_args)
+        .expect("show-surface succeeds");
+    session
+        .step(Duration::from_millis(200))
+        .expect("a turn of the session");
+    assert_eq!(
+        crate::common::shell_here(&session),
+        "none",
+        "show-surface must not leave the switcher up on an empty workspace"
+    );
+    assert!(panel(&session).is_none());
+
+    let open_args = serde_json::Map::from_iter([(
+        "part".to_owned(),
+        serde_json::Value::String("switcher".to_owned()),
+    )]);
+    session
+        .invoke("desktop:overlays", "open-surface", &open_args)
+        .expect("open-surface succeeds");
+    session
+        .step(Duration::from_millis(200))
+        .expect("a turn of the session");
+    assert_eq!(
+        crate::common::shell_here(&session),
+        "none",
+        "open-surface must not leave the switcher up on an empty workspace"
+    );
+    assert!(panel(&session).is_none());
+    assert_eq!(handle.read(|tree| tree.active), empty_id);
+}
+
+/// Invoking `show-surface` or `open-surface` for `switcher` when the active workspace holds one
+/// focused window opens the switcher with that one card, as on main: only an empty walk is refused.
+#[test]
+fn show_surface_switcher_opens_with_one_focused_window() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let work_id = WorkspaceId::from_u128(1);
+    let mut work = Workspace::new(work_id, "Work");
+    work.strips = vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: vec![group(10, window(20, "Notes", "so.tilo.notes"))],
+    }];
+    let mut tree = Layout {
+        active: work_id,
+        workspaces: vec![work],
+        ..Default::default()
+    };
+    tree.active_strip.insert(work_id, StripId(2));
+    tree.active_group.insert(StripId(2), 10);
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(front(&session), "Notes");
+
+    let show_args = serde_json::Map::from_iter([(
+        "surface".to_owned(),
+        serde_json::Value::String("switcher".to_owned()),
+    )]);
+    session
+        .invoke("desktop:overlays", "show-surface", &show_args)
+        .expect("show-surface succeeds");
+    until(
+        &mut session,
+        "show-surface opens the switcher on a lone focused window",
+        |session| panel(session).is_some(),
+    );
+    assert_eq!(crate::common::shell_here(&session), "switcher");
+    let view = panel(&session).expect("the panel is up");
+    assert_eq!(cards(&view), ["Notes"]);
+    assert_eq!(view.selected, 0);
+
+    // Toggling show-surface again takes the switcher back down.
+    session
+        .invoke("desktop:overlays", "show-surface", &show_args)
+        .expect("show-surface toggles off");
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(crate::common::shell_here(&session), "none");
+    assert!(panel(&session).is_none());
+
+    // open-surface behaves the same way on a lone focused window.
+    let open_args = serde_json::Map::from_iter([(
+        "part".to_owned(),
+        serde_json::Value::String("switcher".to_owned()),
+    )]);
+    session
+        .invoke("desktop:overlays", "open-surface", &open_args)
+        .expect("open-surface succeeds");
+    until(
+        &mut session,
+        "open-surface opens the switcher on a lone focused window",
+        |session| panel(session).is_some(),
+    );
+    assert_eq!(crate::common::shell_here(&session), "switcher");
+    let view = panel(&session).expect("the panel is up");
+    assert_eq!(cards(&view), ["Notes"]);
+    assert_eq!(view.selected, 0);
+}
+
+/// Switching an open workspace walk to `app` scope via `walk-switcher` when no window is in front
+/// produces an empty walk and takes the switcher down immediately instead of holding the keyboard.
+#[test]
+fn walk_switcher_in_app_scope_closes_when_no_window_is_in_front() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let handle = session.handle().clone();
+    let work_id = WorkspaceId::from_u128(1);
+    let mut work = Workspace::new(work_id, "Work");
+    work.strips = vec![
+        Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: Vec::new(),
+        },
+        Strip {
+            id: StripId(3),
+            name: "Side".into(),
+            window_groups: vec![
+                group(10, window(20, "Notes", "so.tilo.notes")),
+                group(11, window(21, "Mail", "so.tilo.mail")),
+            ],
+        },
+    ];
+    let mut tree = Layout {
+        active: work_id,
+        workspaces: vec![work],
+        ..Default::default()
+    };
+    tree.active_strip.insert(work_id, StripId(2));
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+
+    let walk_args = |scope: &str| {
+        serde_json::Map::from_iter([
+            ("steps".to_owned(), serde_json::Value::from(1)),
+            (
+                "scope".to_owned(),
+                serde_json::Value::String(scope.to_owned()),
+            ),
+        ])
+    };
+    session
+        .invoke("desktop:overlays", "walk-switcher", &walk_args("workspace"))
+        .expect("workspace walk opens");
+    until(&mut session, "workspace walk panel reveals", |session| {
+        panel(session).is_some()
+    });
+    assert_eq!(crate::common::shell_here(&session), "switcher");
+
+    session
+        .invoke("desktop:overlays", "walk-switcher", &walk_args("app"))
+        .expect("app-scope walk runs");
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(
+        crate::common::shell_here(&session),
+        "none",
+        "an empty app-scope walk closes the switcher"
+    );
+    assert!(panel(&session).is_none());
+    // Keys are no longer held by the switcher: pressing Enter commits no window.
+    key(&mut session, KEY_ENTER, true);
+    key(&mut session, KEY_ENTER, false);
+    assert!(
+        crate::common::windows(&session)
+            .iter()
+            .all(|window| !window.focused),
+        "Enter after the switcher closed does not commit a window"
+    );
+
+    // An open walk whose workspace empties even before the reveal delay elapses closes on the
+    // next pass and does not stay up holding keys.
+    session
+        .invoke("desktop:overlays", "walk-switcher", &walk_args("workspace"))
+        .expect("workspace walk opens before reveal");
+    assert_eq!(crate::common::shell_here(&session), "switcher");
+    assert!(panel(&session).is_none(), "panel has not revealed yet");
+    let mut emptied = handle.read(Clone::clone);
+    for strip in &mut emptied.workspaces[0].strips {
+        strip.window_groups.clear();
+    }
+    handle.replace_tree(emptied);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(
+        crate::common::shell_here(&session),
+        "none",
+        "an emptied walk closes immediately even before the reveal delay"
+    );
+    assert!(panel(&session).is_none());
+}
+
 /// How far the frame's pixels along a card's top edge stand from `to` : the least of the rows the
 /// edge's ring covers, at three places across it, as summed channel distance.
 fn nearest_edge_pixel(frame: &tilo_compositor::Screenshot, card: Rect, to: [u8; 3]) -> u32 {
