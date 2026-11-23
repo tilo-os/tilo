@@ -177,10 +177,6 @@ ENGINES = {
     "lzma-rust2": "the xz and LZMA decoder, in libtilo_archive_engine.so",
     "bzip2": "the bzip2 codec, in libtilo_archive_engine.so",
     "libbz2-rs-sys": "the bzip2 codec's pure-Rust core, in libtilo_archive_engine.so",
-    "tilo-spreadsheet-engine": "the spreadsheet formula engine's library "
-                               "(libtilo_spreadsheet_engine.so)",
-    "ironcalc_base": "the spreadsheet formula engine, which Sheets loads from "
-                     "libtilo_spreadsheet_engine.so",
 }
 
 # C-library crates (a `-sys` name or Cargo's `links` key) the runtime may

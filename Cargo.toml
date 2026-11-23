@@ -439,7 +439,6 @@ members = [
     "crates/engines/loadable/pdf",
     "crates/engines/loadable/settings",
     "crates/engines/loadable/theme-painter",
-    "crates/engines/loadable/spreadsheet",
     "crates/engines/loadable/spotify",
     "crates/engines/loadable/timezone",
     "crates/engines/loadable/typst",

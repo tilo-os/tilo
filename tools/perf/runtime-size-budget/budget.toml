@@ -136,7 +136,6 @@ bytes = 2490368
 
 [engines.x86_64]
 "libtilo_accounts_engine.so" = 2752512
-"libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
 "libtilo_app_process_engine.so" = 720896
 "libtilo_archive_engine.so" = 1048576
@@ -156,7 +155,6 @@ bytes = 2490368
 
 [engines.aarch64]
 "libtilo_accounts_engine.so" = 2490368
-"libtilo_spreadsheet_engine.so" = 5505024
 "libtilo_adblock_engine.so" = 262144
 "libtilo_app_process_engine.so" = 1179648
 "libtilo_archive_engine.so" = 983040

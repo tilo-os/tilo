@@ -86,8 +86,7 @@ every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
 catalogue, the accessibility settings, the PC keyboard outlines and the
 time-zone globe: `libtilo_settings_engine.so` for Settings and Model
-Providers, whose binaries are each one call into it; the spreadsheet formula engine, IronCalc:
-`libtilo_spreadsheet_engine.so` for Sheets). It is
+Providers, whose binaries are each one call into it). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
