@@ -40,8 +40,8 @@ mod governance;
 pub use governance::GovernanceHeads;
 mod governance_writes;
 pub use facades::{
-    PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
-    PeerOutboxMut, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
+    PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
+    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
 pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
@@ -84,7 +84,6 @@ pub use local_outbox::Reseal;
 mod governed_coverage;
 mod held;
 mod joined;
-mod media_governance;
 mod native_publication;
 mod publication;
 mod workspace_grants;
@@ -536,10 +535,6 @@ pub(crate) fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::Obj
 #[cfg(test)]
 #[path = "state/delivery_admission_resource_tests.rs"]
 mod delivery_admission_resource_tests;
-
-#[cfg(test)]
-#[path = "state/media_tests.rs"]
-mod workspace_media_native_tests;
 
 #[cfg(test)]
 #[path = "state/bot_members_tests.rs"]

@@ -34,8 +34,7 @@ pub(super) fn prepare_governance(
     peer.governance_mut()
         .reconcile_administrator_grants(key, now)?;
     peer.governance_mut().drop_names_of_nobody(key, now)?;
-    peer.media_mut().reconcile_media_governance(key, now)?;
-    peer.media().validate_media_governance_for_publication()
+    Ok(())
 }
 
 /// What `candidate` publishes for the workspace's records, as its changes

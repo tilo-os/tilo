@@ -11,7 +11,6 @@ pub(crate) enum WorkspaceValue<'a> {
     Object { kind: ObjType, object: ObjId },
     Bytes(&'a [u8]),
     Str(&'a str),
-    Boolean(bool),
     Other,
 }
 
@@ -220,9 +219,6 @@ fn entry_value<'a>(
         },
         automerge::ValueRef::Scalar(ScalarValueRef::Bytes(bytes)) => WorkspaceValue::Bytes(bytes),
         automerge::ValueRef::Scalar(ScalarValueRef::Str(value)) => WorkspaceValue::Str(value),
-        automerge::ValueRef::Scalar(ScalarValueRef::Boolean(value)) => {
-            WorkspaceValue::Boolean(*value)
-        }
         automerge::ValueRef::Scalar(_) => WorkspaceValue::Other,
     }
 }
@@ -237,7 +233,6 @@ fn keyed_value<'a>(value: &'a Value<'_>, object: ObjId) -> WorkspaceValue<'a> {
         Value::Scalar(value) => match value.as_ref() {
             ScalarValue::Bytes(bytes) => WorkspaceValue::Bytes(bytes),
             ScalarValue::Str(value) => WorkspaceValue::Str(value),
-            ScalarValue::Boolean(value) => WorkspaceValue::Boolean(*value),
             _ => WorkspaceValue::Other,
         },
     }
@@ -257,7 +252,6 @@ pub(super) fn visit_value<E>(
     let view = match value.as_ref() {
         ScalarValue::Bytes(bytes) => WorkspaceValue::Bytes(bytes),
         ScalarValue::Str(value) => WorkspaceValue::Str(value),
-        ScalarValue::Boolean(value) => WorkspaceValue::Boolean(*value),
         _ => WorkspaceValue::Other,
     };
     visitor(view).map_err(ReadError::Visitor)
@@ -267,8 +261,8 @@ pub(crate) fn strict_map<R: WorkspaceRead>(
     read: &R,
     parent: &ObjId,
     key: &str,
-) -> Result<ObjId, ReadError<super::media::MediaPolicyError>> {
-    use super::media::MediaPolicyError;
+) -> Result<ObjId, ReadError<super::basis::BasisError>> {
+    use super::basis::BasisError;
     let mut result = None;
     read.visit_property(parent, key, Selection::All, |value| match value {
         WorkspaceValue::Object {
@@ -278,24 +272,24 @@ pub(crate) fn strict_map<R: WorkspaceRead>(
             result = Some(object);
             Ok(())
         }
-        _ => Err(MediaPolicyError::Conflict),
+        _ => Err(BasisError::Conflict),
     })?;
-    result.ok_or(ReadError::Visitor(MediaPolicyError::Conflict))
+    result.ok_or(ReadError::Visitor(BasisError::Conflict))
 }
 
 /// [`strict_string`] of an entry [`WorkspaceRead::visit_entries`] read.
 pub(crate) fn strict_string_of(
     values: &[WorkspaceValue<'_>],
-) -> Result<String, ReadError<super::media::MediaPolicyError>> {
-    use super::media::MediaPolicyError;
+) -> Result<String, ReadError<super::basis::BasisError>> {
+    use super::basis::BasisError;
     let mut result: Option<&str> = None;
     for value in values {
         let WorkspaceValue::Str(value) = value else {
-            return Err(ReadError::Visitor(MediaPolicyError::Malformed));
+            return Err(ReadError::Visitor(BasisError::Malformed));
         };
         match result {
             Some(prior) if prior != *value => {
-                return Err(ReadError::Visitor(MediaPolicyError::Conflict));
+                return Err(ReadError::Visitor(BasisError::Conflict));
             }
             Some(_) => {}
             None => result = Some(value),
@@ -303,22 +297,22 @@ pub(crate) fn strict_string_of(
     }
     result
         .map(str::to_owned)
-        .ok_or(ReadError::Visitor(MediaPolicyError::Missing))
+        .ok_or(ReadError::Visitor(BasisError::Missing))
 }
 
 /// [`strict_bytes`] of an entry [`WorkspaceRead::visit_entries`] read.
 pub(crate) fn strict_bytes_of(
     values: &[WorkspaceValue<'_>],
-) -> Result<Vec<u8>, ReadError<super::media::MediaPolicyError>> {
-    use super::media::MediaPolicyError;
+) -> Result<Vec<u8>, ReadError<super::basis::BasisError>> {
+    use super::basis::BasisError;
     let mut result: Option<&[u8]> = None;
     for value in values {
         let WorkspaceValue::Bytes(value) = value else {
-            return Err(ReadError::Visitor(MediaPolicyError::Malformed));
+            return Err(ReadError::Visitor(BasisError::Malformed));
         };
         match result {
             Some(prior) if prior != *value => {
-                return Err(ReadError::Visitor(MediaPolicyError::Conflict));
+                return Err(ReadError::Visitor(BasisError::Conflict));
             }
             Some(_) => {}
             None => result = Some(value),
@@ -326,23 +320,23 @@ pub(crate) fn strict_bytes_of(
     }
     result
         .map(<[u8]>::to_vec)
-        .ok_or(ReadError::Visitor(MediaPolicyError::Missing))
+        .ok_or(ReadError::Visitor(BasisError::Missing))
 }
 
 pub(crate) fn strict_string<R: WorkspaceRead>(
     read: &R,
     parent: &ObjId,
     key: &str,
-) -> Result<String, ReadError<super::media::MediaPolicyError>> {
-    use super::media::MediaPolicyError;
+) -> Result<String, ReadError<super::basis::BasisError>> {
+    use super::basis::BasisError;
     let mut result: Option<String> = None;
     read.visit_property(parent, key, Selection::All, |value| {
         let WorkspaceValue::Str(value) = value else {
-            return Err(ReadError::Visitor(MediaPolicyError::Malformed));
+            return Err(ReadError::Visitor(BasisError::Malformed));
         };
         match &result {
             Some(prior) if prior != value => {
-                return Err(ReadError::Visitor(MediaPolicyError::Conflict));
+                return Err(ReadError::Visitor(BasisError::Conflict));
             }
             Some(_) => {}
             None => result = Some(value.to_owned()),
@@ -350,7 +344,7 @@ pub(crate) fn strict_string<R: WorkspaceRead>(
         Ok(())
     })
     .map_err(ReadError::flatten)?;
-    result.ok_or(ReadError::Visitor(MediaPolicyError::Missing))
+    result.ok_or(ReadError::Visitor(BasisError::Missing))
 }
 
 #[cfg(test)]
@@ -358,16 +352,16 @@ pub(crate) fn strict_bytes<R: WorkspaceRead>(
     read: &R,
     parent: &ObjId,
     key: &str,
-) -> Result<Vec<u8>, ReadError<super::media::MediaPolicyError>> {
-    use super::media::MediaPolicyError;
+) -> Result<Vec<u8>, ReadError<super::basis::BasisError>> {
+    use super::basis::BasisError;
     let mut result: Option<Vec<u8>> = None;
     read.visit_property(parent, key, Selection::All, |value| {
         let WorkspaceValue::Bytes(value) = value else {
-            return Err(ReadError::Visitor(MediaPolicyError::Malformed));
+            return Err(ReadError::Visitor(BasisError::Malformed));
         };
         match &result {
             Some(prior) if prior.as_slice() != value => {
-                return Err(ReadError::Visitor(MediaPolicyError::Conflict));
+                return Err(ReadError::Visitor(BasisError::Conflict));
             }
             Some(_) => {}
             None => result = Some(value.to_vec()),
@@ -375,16 +369,14 @@ pub(crate) fn strict_bytes<R: WorkspaceRead>(
         Ok(())
     })
     .map_err(ReadError::flatten)?;
-    result.ok_or(ReadError::Visitor(MediaPolicyError::Missing))
+    result.ok_or(ReadError::Visitor(BasisError::Missing))
 }
 
 /// The policy error a read failure is reported as.
-pub(crate) fn policy_error(
-    error: ReadError<super::media::MediaPolicyError>,
-) -> super::media::MediaPolicyError {
-    use super::media::MediaPolicyError;
+pub(crate) fn policy_error(error: ReadError<super::basis::BasisError>) -> super::basis::BasisError {
+    use super::basis::BasisError;
     match error {
-        ReadError::Malformed => MediaPolicyError::Malformed,
+        ReadError::Malformed => BasisError::Malformed,
         ReadError::Visitor(error) => error,
     }
 }
@@ -392,7 +384,7 @@ pub(crate) fn policy_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::media::MediaPolicyError;
+    use crate::workspace::basis::BasisError;
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
 
@@ -425,22 +417,22 @@ mod tests {
             (
                 "an absent key",
                 &absent,
-                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+                Err(ReadError::Visitor(BasisError::Conflict)),
             ),
             (
                 "a value that is not a map",
                 &scalar,
-                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+                Err(ReadError::Visitor(BasisError::Conflict)),
             ),
             (
                 "a list where the map belongs",
                 &list,
-                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+                Err(ReadError::Visitor(BasisError::Conflict)),
             ),
             (
                 "two concurrent map objects",
                 &concurrent,
-                Err(ReadError::Visitor(MediaPolicyError::Conflict)),
+                Err(ReadError::Visitor(BasisError::Conflict)),
             ),
         ] {
             assert_eq!(strict_map(document, &ROOT, "channels"), expected, "{case}");
@@ -455,7 +447,6 @@ mod tests {
             WorkspaceValue::Object { kind, object } => format!("{kind:?} {object}"),
             WorkspaceValue::Bytes(bytes) => format!("bytes {bytes:?}"),
             WorkspaceValue::Str(value) => format!("str {value}"),
-            WorkspaceValue::Boolean(value) => format!("bool {value}"),
             WorkspaceValue::Other => "other".into(),
         }
     }

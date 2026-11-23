@@ -274,11 +274,6 @@ impl<K: Ord + Clone, V: Clone> Ordered<K, V> {
         self.len = self.len.saturating_sub(1);
         Some(value)
     }
-
-    #[cfg(test)]
-    pub(crate) fn clear(&mut self) {
-        *self = Self::default();
-    }
 }
 
 impl<K: Ord + Clone, V: Clone> FromIterator<(K, V)> for Ordered<K, V> {

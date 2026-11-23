@@ -1554,6 +1554,8 @@ impl AppWire {
             },
             camera: call.camera,
             screen: call.screen,
+            muted: call.muted,
+            deafened: call.deafened,
         });
         sync.in_call(presence.clone());
         self.calls.follow(sync, presence.as_ref());

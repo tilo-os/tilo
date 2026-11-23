@@ -5,9 +5,7 @@
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_peer_state::join::Role;
-use tilo_server_protocol::AuthenticatedPeer;
 use tilo_server_protocol::operator::WaitListStatus;
-use tilo_server_protocol::voice::{CallOperation, CallState};
 use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -1213,7 +1211,6 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
         .unwrap();
     an_administrator_rules_every_member_but_administrators(workspaces, &workspace, &ada, &bo, &cy)
         .await;
-    an_administrator_runs_the_workspaces_calls(workspaces, &workspace, &ada).await;
     unmaking_the_administrator_takes_it_all_back(workspaces, &workspace, &owner, &ada, &bo).await;
     server.shutdown().await;
 }
@@ -1241,26 +1238,6 @@ async fn an_administrator_rules_every_member_but_administrators(
         )
         .await
         .unwrap();
-}
-
-/// They run the workspace's calls.
-async fn an_administrator_runs_the_workspaces_calls(
-    workspaces: &Workspaces,
-    workspace: &str,
-    ada: &DeviceCert,
-) {
-    let end = CallOperation::End {
-        call: [9; 32],
-        epoch: 1,
-    };
-    let answer = workspaces.voice_call(workspace, &peer(ada), &end).await;
-    assert!(
-        answer
-            .as_ref()
-            .err()
-            .is_some_and(|reason| reason.contains("unknown call")),
-        "{answer:?}"
-    );
 }
 
 /// An Editor by role alone still governs nothing, and the owner unmaking the
@@ -1385,40 +1362,6 @@ async fn what_no_workspace_decides_stays_the_server_persons() {
 }
 
 #[tokio::test]
-async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
-    set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
-    // Ending a call the workspace never had: past the check, the call itself
-    // answers that it is unknown.
-    let end = CallOperation::End {
-        call: [9; 32],
-        epoch: 1,
-    };
-    let past_the_check = |answer: &Result<CallState, String>| {
-        answer
-            .as_ref()
-            .err()
-            .is_some_and(|reason| reason.contains("unknown call"))
-    };
-    let owners = workspaces.voice_call(&workspace, &peer(&owner), &end).await;
-    assert!(past_the_check(&owners), "{owners:?}");
-    for member in [&ada, &bo] {
-        let answer = workspaces.voice_call(&workspace, &peer(member), &end).await;
-        assert!(answer.is_err() && !past_the_check(&answer), "{answer:?}");
-    }
-    grant(workspaces, &workspace, &owner, &ada, governance::CALL).await;
-    let granted = workspaces.voice_call(&workspace, &peer(&ada), &end).await;
-    assert!(past_the_check(&granted), "{granted:?}");
-    server.shutdown().await;
-}
-
-#[tokio::test]
 async fn an_expired_certificate_administers_nothing_even_the_owners() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -1442,14 +1385,6 @@ async fn an_expired_certificate_administers_nothing_even_the_owners() {
     assert!(workspaces.enter(&workspace, &expired).await.is_err());
     workspaces.pending(&workspace, &owner).await.unwrap();
     server.shutdown().await;
-}
-
-fn peer(cert: &DeviceCert) -> AuthenticatedPeer {
-    AuthenticatedPeer {
-        cert: cert.clone(),
-        user_public_key: cert.user_public_key,
-        device_public_key: cert.device_public_key,
-    }
 }
 
 /// A workspace its host hands to a person is administered by them: they make

@@ -1,117 +1,76 @@
 use super::{
-    Deserialize, DeviceCert, Event, JsError, RefCell, RevocationEntry, RevocationList, Serialize,
-    WorkspaceId, hex32, js_error,
+    DeviceCert, Event, JsError, RefCell, RevocationEntry, RevocationList, Serialize, WorkspaceId,
+    js_error,
 };
 
-/// `{publish, subscribe}`.
-#[derive(Serialize, Deserialize)]
-pub(super) struct JsDirections {
-    publish: bool,
-    subscribe: bool,
-}
-
-impl From<tilo_server_protocol::voice::Directions> for JsDirections {
-    fn from(value: tilo_server_protocol::voice::Directions) -> Self {
-        Self {
-            publish: value.publish,
-            subscribe: value.subscribe,
-        }
-    }
-}
-
-/// One call member: device and person as hex.
+/// One device in a call, as `web/voice.mjs` reads it: device and person as hex.
 #[derive(Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is its own field the page reads: publishes, camera, screen, muted, deafened"
 )]
-pub(super) struct JsVoiceMember {
+pub(super) struct JsCaller {
     device: String,
+    /// The person, empty while nobody named them.
     user: String,
+    /// Every device in a call may speak in it: its voice is the workspace's live session.
     publishes: bool,
     camera: bool,
     /// It shares a screen.
     screen: bool,
-    /// Its microphone is off, or it may not publish.
+    /// Its microphone is off.
     muted: bool,
     /// It hears nothing of the call.
     deafened: bool,
 }
 
-pub(super) fn voice_members(
-    members: Vec<tilo_server_protocol::voice::VoiceMember>,
-) -> Vec<JsVoiceMember> {
-    members
+/// A voice channel's call, as `web/voice-peer.mjs` lists it: its devices, and the roster the
+/// channel shows of its people.
+#[derive(Serialize)]
+pub(super) struct JsChannel {
+    channel: String,
+    name: String,
+    members: Vec<JsCaller>,
+    people: Vec<String>,
+    cameras: Vec<String>,
+    screens: Vec<String>,
+    muted: Vec<String>,
+    deafened: Vec<String>,
+}
+
+/// `channels` as the page reads them.
+pub(super) fn js_channels(channels: Vec<tilo_live::calls::Channel>) -> Vec<JsChannel> {
+    channels
         .into_iter()
-        .map(|member| JsVoiceMember {
-            device: hex::encode(member.device_public_key),
-            user: hex::encode(member.user_public_key),
-            publishes: member.publishes,
-            camera: member.showing.camera,
-            screen: member.showing.screen,
-            muted: member.showing.muted,
-            deafened: member.showing.deafened,
+        .map(|channel| JsChannel {
+            people: channel.people(),
+            cameras: channel.cameras(),
+            screens: channel.screens(),
+            muted: channel.muted(),
+            deafened: channel.deafened(),
+            members: channel
+                .callers
+                .into_iter()
+                .map(|caller| JsCaller {
+                    device: hex::encode(caller.device),
+                    user: caller.person.unwrap_or_default(),
+                    publishes: true,
+                    camera: caller.camera,
+                    screen: caller.screen,
+                    muted: caller.muted,
+                    deafened: caller.deafened,
+                })
+                .collect(),
+            channel: channel.channel,
+            name: channel.name,
         })
         .collect()
-}
-
-/// A call grant for `web/voice.mjs`: ids and the token as hex.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct JsVoiceGrant {
-    call: String,
-    epoch: u64,
-    directions: JsDirections,
-    members: Vec<JsVoiceMember>,
-}
-
-/// A call of the workspace as `web/voice.mjs` lists it.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct JsCall {
-    call: String,
-    epoch: u64,
-    active: bool,
-    allowed: JsDirections,
-    app: String,
-    record: String,
-    channel: String,
-    members: Vec<JsVoiceMember>,
-}
-
-pub(super) fn call_state(state: &tilo_server_protocol::voice::CallState) -> serde_json::Value {
-    serde_json::json!({
-        "call": hex::encode(state.call),
-        "epoch": state.epoch,
-        "active": state.active,
-        "allowed": JsDirections::from(state.allowed),
-    })
 }
 
 /// A call event for `web/voice.mjs`.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(super) enum JsVoiceEvent {
-    Calls {
-        workspace: String,
-        calls: Option<Vec<JsCall>>,
-        error: Option<String>,
-    },
-    CallResult {
-        workspace: String,
-        request: String,
-        call: Option<serde_json::Value>,
-        error: Option<String>,
-    },
-    Granted {
-        workspace: String,
-        grant: JsVoiceGrant,
-    },
-    Ended {
-        workspace: String,
-        call: String,
-        reason: String,
-    },
     /// One frame of a call's voice, as the device `from` published it on the
     /// workspace's live session: the page's app plays it.
     Heard {
@@ -194,152 +153,6 @@ pub(super) fn workspace_of(
         .unwrap_or_else(|| workspace_id.to_string())
 }
 
-pub(super) fn voice_event(
-    event: tilo_session::sync::VoiceEvent,
-    workspaces: &RefCell<std::collections::HashMap<WorkspaceId, String>>,
-) -> JsVoiceEvent {
-    use tilo_session::sync::VoiceEvent;
-    match event {
-        VoiceEvent::Calls {
-            ws: workspace_id,
-            result,
-        } => {
-            let (calls, error) = match result {
-                Ok(calls) => (
-                    Some(
-                        calls
-                            .into_iter()
-                            .map(|summary| JsCall {
-                                call: hex::encode(summary.state.call),
-                                epoch: summary.state.epoch,
-                                active: summary.state.active,
-                                allowed: summary.state.allowed.into(),
-                                app: summary.app_id,
-                                record: summary.document_id,
-                                channel: summary.channel_id,
-                                members: voice_members(summary.members),
-                            })
-                            .collect(),
-                    ),
-                    None,
-                ),
-                Err(error) => (None, Some(error)),
-            };
-            JsVoiceEvent::Calls {
-                workspace: workspace_of(workspace_id, workspaces),
-                calls,
-                error,
-            }
-        }
-        VoiceEvent::CallResult {
-            ws: workspace_id,
-            request,
-            result,
-        } => {
-            let (call, error) = match result {
-                Ok(state) => (Some(call_state(&state)), None),
-                Err(error) => (None, Some(error)),
-            };
-            JsVoiceEvent::CallResult {
-                workspace: workspace_of(workspace_id, workspaces),
-                request: hex::encode(request),
-                call,
-                error,
-            }
-        }
-        VoiceEvent::Granted {
-            ws: workspace_id,
-            grant,
-        } => {
-            let grant = *grant;
-            JsVoiceEvent::Granted {
-                workspace: workspace_of(workspace_id, workspaces),
-                grant: JsVoiceGrant {
-                    call: hex::encode(grant.call),
-                    epoch: grant.epoch,
-                    directions: grant.directions.into(),
-                    members: voice_members(grant.members),
-                },
-            }
-        }
-        VoiceEvent::Ended {
-            ws: workspace_id,
-            call,
-            reason,
-        } => JsVoiceEvent::Ended {
-            workspace: workspace_of(workspace_id, workspaces),
-            call: hex::encode(call),
-            reason,
-        },
-    }
-}
-
-/// A change to a call, as `web/voice.mjs` asks for it.
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub(super) enum JsCallOperation {
-    Open {
-        app: String,
-        record: String,
-        channel: String,
-    },
-    Start {
-        app: String,
-        record: String,
-        channel: String,
-        allowed: JsDirections,
-    },
-    End {
-        call: String,
-        epoch: u64,
-    },
-    Restart {
-        call: String,
-        epoch: u64,
-    },
-}
-
-impl JsCallOperation {
-    pub(super) fn into_operation(
-        self,
-    ) -> Result<tilo_server_protocol::voice::CallOperation, JsError> {
-        use tilo_server_protocol::voice::{CallOperation, Directions};
-        Ok(match self {
-            Self::Open {
-                app,
-                record,
-                channel,
-            } => CallOperation::Open {
-                app_id: app,
-                document_id: record,
-                channel_id: channel,
-            },
-            Self::Start {
-                app,
-                record,
-                channel,
-                allowed,
-            } => CallOperation::Start {
-                app_id: app,
-                document_id: record,
-                channel_id: channel,
-                allowed: Directions {
-                    publish: allowed.publish,
-                    subscribe: allowed.subscribe,
-                },
-            },
-            Self::End { call, epoch } => CallOperation::End {
-                call: hex32(&call, "call")?,
-                epoch,
-            },
-            Self::Restart { call, epoch } => CallOperation::Restart {
-                call: hex32(&call, "call")?,
-                epoch,
-            },
-        })
-    }
-}
-
 /// The revocations of `entries` the person `cert` certifies signed: a
 /// session announces only its own person's, since a host reads a hello's
 /// entries as its sender's root's and refuses one signed by another.
@@ -371,9 +184,6 @@ pub(super) fn is_live(event: &Event) -> bool {
 pub(super) fn is_voice(event: &Event) -> bool {
     matches!(
         event,
-        Event::Voice(_)
-            | Event::CallAudio { .. }
-            | Event::CallPicture { .. }
-            | Event::CallDemand { .. }
+        Event::CallAudio { .. } | Event::CallPicture { .. } | Event::CallDemand { .. }
     )
 }

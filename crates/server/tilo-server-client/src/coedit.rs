@@ -205,8 +205,6 @@ pub enum Inbound {
         /// This workspace sends records only when opened.
         documents_when_opened: bool,
     },
-    /// The workspace's governor answered about one of its calls.
-    Voice(VoiceEvent),
     /// The server answered an on-demand record this device opened: it sent
     /// everything it retains of it, as [`Inbound::Delta`]s before this event,
     /// and its changes keep arriving from now on; or the record is not this
@@ -244,30 +242,6 @@ pub enum Inbound {
         /// Why.
         refusal: tilo_server_protocol::refusal::Refusal,
     },
-}
-
-/// What the governor of a workspace says about its calls; see
-/// [`tilo_server_protocol::voice`].
-#[derive(Debug, Clone)]
-pub enum VoiceEvent {
-    /// The outcome of a call change this device requested.
-    Result {
-        /// The request's id.
-        request: [u8; 16],
-        /// The call as governance now records it, or why it was refused.
-        result: Result<tilo_server_protocol::voice::CallState, String>,
-    },
-    /// A participation's current grant.
-    Granted(Box<tilo_server_protocol::voice::VoiceGrant>),
-    /// The device may not be in `call` (any more).
-    Refused {
-        /// The call.
-        call: [u8; 32],
-        /// Why.
-        reason: String,
-    },
-    /// The workspace's calls with who is in each, or why the workspace listed none.
-    Calls(Result<Vec<tilo_server_protocol::voice::CallSummary>, String>),
 }
 
 /// Failure modes for `ServerCoeditSession` operations.

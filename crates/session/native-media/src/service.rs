@@ -180,6 +180,10 @@ pub struct OwnCall {
     pub camera: bool,
     /// This device shares its screen in the call.
     pub screen: bool,
+    /// This device's microphone is off in the call.
+    pub muted: bool,
+    /// This device hears nothing of the call.
+    pub deafened: bool,
 }
 
 /// The session's calls, as the apps it runs reach them.
@@ -230,6 +234,8 @@ impl NativeMediaService {
                 channel: entry.channel.clone(),
                 camera: entry.snapshot.camera,
                 screen: entry.snapshot.screen,
+                muted: entry.snapshot.muted,
+                deafened: entry.snapshot.deafened,
             })
     }
 

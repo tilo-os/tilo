@@ -46,7 +46,6 @@ pub mod saying;
 pub mod session;
 pub mod states;
 pub mod surfaces;
-pub mod voice;
 pub mod way_in;
 pub mod workspace_keys;
 
@@ -60,8 +59,8 @@ pub use link::{
 pub use membership_check::{MemoryPeerStore, PeerEntry, PeerStore};
 pub use network::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Kept, Outbox, PageShown,
-    Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError,
-    VoiceEvent, Waits, answer, topic_of,
+    Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError, Waits,
+    answer, topic_of,
 };
 pub use personal::PersonalWorkspaces;
 pub use presence::OwnPresence;

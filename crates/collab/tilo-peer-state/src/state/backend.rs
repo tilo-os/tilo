@@ -1,14 +1,13 @@
 //! The peer's one in-memory representation.
 use super::{
     AcceptedCheckpoint, BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity,
-    InboundState, NeighbourMsg, RedemptionReceipt, RevocationList, Role, Route, StatePeer,
-    SystemTime, VecDeque, VerifiedCertificate, err, now_ns, workspace,
+    InboundState, NeighbourMsg, RedemptionReceipt, RevocationList, Role, Route, SystemTime,
+    VecDeque, VerifiedCertificate, err, now_ns,
 };
 use crate::shared::Shared;
 use std::sync::{Arc, OnceLock};
 pub(super) mod access;
 pub(super) mod governed;
-pub(super) mod media;
 pub(super) mod member;
 mod pending;
 pub(super) use pending::validate as validate_pending;

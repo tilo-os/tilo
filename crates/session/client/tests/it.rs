@@ -20,9 +20,6 @@ tilo_automerge_isolate::test_worker!();
 #[path = "support/native.rs"]
 mod native;
 
-#[path = "support/call.rs"]
-mod call;
-
 #[path = "support/mod.rs"]
 mod support;
 
@@ -114,18 +111,6 @@ mod server_restart;
 mod session_store;
 #[path = "surface_by_hash.rs"]
 mod surface_by_hash;
-#[path = "voice_browsers.rs"]
-mod voice_browsers;
-#[path = "voice_call.rs"]
-mod voice_call;
-#[path = "voice_call_list.rs"]
-mod voice_call_list;
-#[path = "voice_every_workspace.rs"]
-mod voice_every_workspace;
-#[path = "voice_open.rs"]
-mod voice_open;
-#[path = "voice_participation.rs"]
-mod voice_participation;
 #[path = "window_input.rs"]
 mod window_input;
 #[path = "write_before_record.rs"]

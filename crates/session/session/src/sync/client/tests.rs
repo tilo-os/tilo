@@ -412,6 +412,8 @@ tilo_test_env::scenario! {
             call: voice.clone(),
             camera: true,
             screen: false,
+            muted: false,
+            deafened: false,
         })));
 
         // A peer's session in the same workspace, handed everything this device said there.

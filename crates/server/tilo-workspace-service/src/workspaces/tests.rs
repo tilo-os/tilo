@@ -1127,11 +1127,9 @@ async fn the_host_authors_a_workspace_record_no_factory_makes() {
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
+    reason = "one authoring pass: granted, written and read back through the native view"
 )]
-async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
-    use chat::projection::ChatProjection as _;
-
+async fn an_authored_chat_keeps_its_native_view() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -1210,7 +1208,7 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
         original.bytes,
         "a refused or failed authoring callback cannot publish a partial graph"
     );
-    let voice = workspaces
+    workspaces
         .author_application(
             &created.workspace,
             &cert,
@@ -1220,13 +1218,7 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
             |doc| {
                 chat::demo::start(doc, "author").map_err(|error| error.to_string())?;
                 doc.put(ROOT, "preserved_native_marker", true)
-                    .map_err(|error| error.to_string())?;
-                Ok(chat::projection::read(doc)
-                    .channel_rows()
-                    .into_iter()
-                    .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-                    .unwrap()
-                    .id)
+                    .map_err(|error| error.to_string())
             },
         )
         .await
@@ -1237,14 +1229,6 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
         .expect("native replay accepts the actual publication the host authored");
     let mut doc = automerge::AutoCommit::load(&retained.bytes).unwrap();
     assert!(doc.get(ROOT, "preserved_native_marker").unwrap().is_some());
-    let current = workspaces.workspace(&created.workspace).await.unwrap();
-    let guard = current.lock().await;
-    let binding = guard
-        .call_binding("so.tilo.chat", "", &voice)
-        .await
-        .expect("the same native source resolves through production voice admission");
-    assert_eq!(binding.channel_id, voice);
-    drop(guard);
     let committed = workspaces
         .resource_document(&created.workspace, "so.tilo.chat", "")
         .await
@@ -1253,7 +1237,7 @@ async fn an_authored_chat_keeps_its_native_view_and_voice_binding() {
     assert_eq!(
         doc.get_heads(),
         automerge::AutoCommit::load(&committed).unwrap().get_heads(),
-        "native view bytes and the voice binding share the committed graph"
+        "native view bytes are the committed graph"
     );
     server.shutdown().await;
 }

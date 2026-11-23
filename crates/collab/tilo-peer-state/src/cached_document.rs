@@ -57,7 +57,7 @@ pub(crate) struct Named {
 /// A document state's security basis under the revocations named beside it.
 type SecurityBasis = (
     Vec<tilo_user_identity::RevocationEntry>,
-    Result<[u8; 32], crate::workspace::media::MediaPolicyError>,
+    Result<[u8; 32], crate::workspace::basis::BasisError>,
 );
 /// The redemption receipts device rows keep, by invitation.
 pub(crate) type Redemptions =
@@ -319,7 +319,7 @@ impl CachedDocument {
             .flatten()
     }
     /// The workspace's security basis under `revocations`
-    /// ([`crate::workspace::media::security_basis_of`]), worked out once per
+    /// ([`crate::workspace::basis::security_basis_of`]), worked out once per
     /// document state: it reads every member's row, and a replica publishes
     /// itself after each write it keeps, most of which leave the governance as
     /// it was. Under revocations other than the ones it was first worked out
@@ -327,14 +327,14 @@ impl CachedDocument {
     pub(crate) fn security_basis(
         &self,
         revocations: &[tilo_user_identity::RevocationEntry],
-    ) -> Result<[u8; 32], crate::workspace::media::MediaPolicyError> {
+    ) -> Result<[u8; 32], crate::workspace::basis::BasisError> {
         if let Some((under, basis)) = self.security_basis.get()
             && under.as_slice() == revocations
         {
             return *basis;
         }
         crate::work::security_basis_worked_out();
-        let basis = crate::workspace::media::security_basis_of(self, revocations);
+        let basis = crate::workspace::basis::security_basis_of(self, revocations);
         let _ = self.security_basis.set((revocations.to_vec(), basis));
         basis
     }

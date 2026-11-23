@@ -1,5 +1,6 @@
-//! The security-basis algorithm.
-use super::MediaPolicyError;
+//! A workspace's security basis: one digest over the governance a device's
+//! standing rests on (the owner, the membership, the devices and their
+//! revocations), so two replicas compare what they admit by one value.
 use crate::cached_document::CachedDocument;
 use crate::state::GovernedIdentity;
 use crate::workspace::read::{self, WorkspaceRead, policy_error};
@@ -7,11 +8,100 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_user_identity::{RevocationEntry, RevocationList};
 
+/// Why a workspace's governance has no security basis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BasisError {
+    Malformed,
+    Conflict,
+    /// A field the workspace's governance needs is not there.
+    Missing,
+    /// A key is not a canonical nonzero key.
+    Key,
+    /// A device row of the workspace does not hold together.
+    Identity,
+    /// The workspace's owner has no admitted device.
+    OwnerUnadmitted,
+    /// The workspace keeps a name for this key, which is no member's, no
+    /// device's and not the owner's.
+    NamesNobody([u8; 32]),
+    /// A revocation names a person the workspace does not hold, or another
+    /// person's device.
+    Revocation,
+}
+
+impl std::fmt::Display for BasisError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Malformed => "malformed workspace governance",
+            Self::Conflict => "conflicting workspace governance",
+            Self::Missing => "a field the workspace's governance needs is missing",
+            Self::Key => "a key is not a canonical nonzero key",
+            Self::Identity => {
+                "a device row of the workspace does not hold together: its key, certificate or admission"
+            }
+            Self::OwnerUnadmitted => "the workspace's owner has no admitted device",
+            Self::NamesNobody(key) => {
+                return write!(
+                    formatter,
+                    "the workspace keeps a name for {}, who is no longer a member nor one of its devices",
+                    hex::encode(key)
+                );
+            }
+            Self::Revocation => {
+                "a revocation names a person the workspace does not hold, or another person's device"
+            }
+        })
+    }
+}
+
+impl std::error::Error for BasisError {}
+
+/// Canonical security consistency digest, never an authority credential. Only
+/// governed security fields participate; presentation labels do not. Extra
+/// revocations are verified and intersect local knowledge before publication.
+///
+/// # Errors
+///
+/// Returns a [`BasisError`] if governed security fields are malformed or an extra
+/// revocation fails verification.
+pub fn security_basis(
+    doc: &automerge::AutoCommit,
+    extra_revocations: &[RevocationEntry],
+) -> Result<[u8; 32], BasisError> {
+    of_document(doc, extra_revocations)
+}
+
+/// [`security_basis`] of a governance state, reading the identity rows it
+/// decoded once rather than decoding each again.
+pub(crate) fn security_basis_of(
+    doc: &CachedDocument,
+    extra_revocations: &[RevocationEntry],
+) -> Result<[u8; 32], BasisError> {
+    decoded(doc, extra_revocations)
+}
+
+/// A canonical lowercase-hex, nonzero 32-byte key.
+fn canonical_key(value: &str) -> Result<[u8; 32], BasisError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(BasisError::Key);
+    }
+    let mut key = [0; 32];
+    hex::decode_to_slice(value, &mut key).map_err(|_| BasisError::Key)?;
+    if key == [0; 32] {
+        return Err(BasisError::Key);
+    }
+    Ok(key)
+}
+
 /// The security basis of `workspace` under the revocations `extra` adds.
-pub(super) fn of_document(
+fn of_document(
     workspace: &automerge::AutoCommit,
     extra: &[RevocationEntry],
-) -> Result<[u8; 32], MediaPolicyError> {
+) -> Result<[u8; 32], BasisError> {
     project(
         workspace,
         None,
@@ -22,10 +112,7 @@ pub(super) fn of_document(
 
 /// [`of_document`] of a governance state whose identity rows are decoded
 /// once for it.
-pub(super) fn decoded(
-    workspace: &CachedDocument,
-    extra: &[RevocationEntry],
-) -> Result<[u8; 32], MediaPolicyError> {
+fn decoded(workspace: &CachedDocument, extra: &[RevocationEntry]) -> Result<[u8; 32], BasisError> {
     project(
         &**workspace,
         Some(workspace),
@@ -34,8 +121,8 @@ pub(super) fn decoded(
     )
 }
 
-fn encoded<T: Serialize>(value: &T) -> Result<Vec<u8>, MediaPolicyError> {
-    postcard::to_allocvec(value).map_err(|_| MediaPolicyError::Malformed)
+fn encoded<T: Serialize>(value: &T) -> Result<Vec<u8>, BasisError> {
+    postcard::to_allocvec(value).map_err(|_| BasisError::Malformed)
 }
 
 #[expect(
@@ -47,10 +134,10 @@ fn project<'a>(
     decoded: Option<&CachedDocument>,
     membership: &tilo_action_policy::WorkspacePolicy,
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
-) -> Result<[u8; 32], MediaPolicyError> {
+) -> Result<[u8; 32], BasisError> {
     let root = automerge::ROOT;
     let owner = read::strict_string(workspace, &root, "owner").map_err(policy_error)?;
-    let owner_key = super::canonical_key(&owner)?;
+    let owner_key = canonical_key(&owner)?;
     // The membership as the log makes it: who is in, and each grant by id.
     let mut grants = BTreeMap::new();
     for grant in &membership.grants {
@@ -69,7 +156,7 @@ fn project<'a>(
     workspace
         .visit_entries(&peers, read::Selection::All, &mut |key, values| {
             read::strict_string_of(values).map_err(policy_error)?;
-            named.insert(super::canonical_key(key)?);
+            named.insert(canonical_key(key)?);
             Ok(())
         })
         .map_err(policy_error)?;
@@ -83,22 +170,20 @@ fn project<'a>(
             let bytes = read::strict_bytes_of(values).map_err(policy_error)?;
             let row = &match decoded.and_then(|doc| doc.decoded_identity(key, &bytes)) {
                 Some(identity) => identity.clone(),
-                None => {
-                    GovernedIdentity::decode(&bytes).map_err(|_| MediaPolicyError::Malformed)?
-                }
+                None => GovernedIdentity::decode(&bytes).map_err(|_| BasisError::Malformed)?,
             };
-            let device = super::canonical_key(key)?;
+            let device = canonical_key(key)?;
             if device != row.device_cert.device_public_key {
-                return Err(MediaPolicyError::Identity);
+                return Err(BasisError::Identity);
             }
             tilo_user_identity::verify_device_cert(&row.device_cert)
-                .map_err(|_| MediaPolicyError::Identity)?;
+                .map_err(|_| BasisError::Identity)?;
             let mut admissions = BTreeSet::new();
             for proof in row.admission.iter().chain(&row.admissions) {
                 if proof.device_public_key != device
                     || proof.user_public_key != row.device_cert.user_public_key
                 {
-                    return Err(MediaPolicyError::Identity);
+                    return Err(BasisError::Identity);
                 }
                 admissions.insert(encoded(proof)?);
             }
@@ -109,7 +194,7 @@ fn project<'a>(
             let delegations: BTreeSet<Vec<u8>> = BTreeSet::new();
             for entry in &row.revocations {
                 if entry.user_public_key != row.device_cert.user_public_key {
-                    return Err(MediaPolicyError::Revocation);
+                    return Err(BasisError::Revocation);
                 }
                 revocations.push(entry.clone());
             }
@@ -119,7 +204,7 @@ fn project<'a>(
         })
         .map_err(policy_error)?;
     if !certificates.values().any(|root| *root == owner_key) {
-        return Err(MediaPolicyError::OwnerUnadmitted);
+        return Err(BasisError::OwnerUnadmitted);
     }
     // The roster is the devices the policy's authorization rests on: every
     // device name is one of them. A name kept under a root names nobody's
@@ -137,7 +222,7 @@ fn project<'a>(
             && !membership.is_owner(&person)
             && !members.contains_key(&person)
         {
-            return Err(MediaPolicyError::NamesNobody(key));
+            return Err(BasisError::NamesNobody(key));
         }
     }
     revocations.extend(extra.into_iter().cloned());
@@ -150,7 +235,7 @@ fn project<'a>(
                 .get(&entry.revoked_device_public_key)
                 .is_some_and(|root| *root != entry.user_public_key)
         {
-            return Err(MediaPolicyError::Revocation);
+            return Err(BasisError::Revocation);
         }
         by_bytes.insert(encoded(&entry)?, entry);
     }
@@ -158,9 +243,7 @@ fn project<'a>(
     // Its input order is canonical entry bytes.
     let mut verified = RevocationList::new();
     for entry in by_bytes.into_values() {
-        verified
-            .insert(entry)
-            .map_err(|_| MediaPolicyError::Revocation)?;
+        verified.insert(entry).map_err(|_| BasisError::Revocation)?;
     }
     let mut revocations = BTreeMap::new();
     for entry in verified.iter() {
@@ -176,8 +259,33 @@ fn project<'a>(
         &mut hasher,
         usize::MAX,
     )
-    .map_err(|_| MediaPolicyError::Malformed)?;
+    .map_err(|_| BasisError::Malformed)?;
     Ok(*hasher.finalize().as_bytes())
+}
+
+#[cfg(test)]
+fn strict_map(
+    doc: &impl automerge::ReadDoc,
+    parent: &automerge::ObjId,
+    key: &str,
+) -> Result<automerge::ObjId, BasisError> {
+    read::strict_map(doc, parent, key).map_err(policy_error)
+}
+#[cfg(test)]
+fn strict_string(
+    doc: &impl automerge::ReadDoc,
+    parent: &automerge::ObjId,
+    key: &str,
+) -> Result<String, BasisError> {
+    read::strict_string(doc, parent, key).map_err(policy_error)
+}
+#[cfg(test)]
+fn strict_bytes(
+    doc: &impl automerge::ReadDoc,
+    parent: &automerge::ObjId,
+    key: &str,
+) -> Result<Vec<u8>, BasisError> {
+    read::strict_bytes(doc, parent, key).map_err(policy_error)
 }
 
 #[cfg(test)]

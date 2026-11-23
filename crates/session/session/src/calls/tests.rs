@@ -1243,12 +1243,30 @@ fn a_channels_roster_says_who_has_a_camera_or_screen_on() {
         },
         camera: true,
         screen: false,
+        muted: false,
+        deafened: false,
     };
     calls.follow(&mine, Some(&in_call));
     let heard = roster(&calls);
     assert_eq!(heard.people, [person(0xf0), person(0xbb), person(0xaa)]);
     assert_eq!(heard.cameras, [person(0xf0), person(0xaa)]);
     assert_eq!(heard.screens, [person(0xaa)]);
+    assert!(heard.muted.is_empty(), "{heard:?}");
+
+    // Someone mutes, and this device deafens: everyone's roster says it.
+    let muted = sync::InCall {
+        muted: true,
+        ..in_call.clone()
+    };
+    availability_showing(&mine, 0xbb, muted.encode(), false, false);
+    let deafened = sync::InCall {
+        deafened: true,
+        ..in_call
+    };
+    calls.follow(&mine, Some(&deafened));
+    let heard = roster(&calls);
+    assert_eq!(heard.muted, [person(0xf0), person(0xbb)]);
+    assert_eq!(heard.deafened, [person(0xf0)]);
 }
 
 // ---------------------------------------------------------------------------

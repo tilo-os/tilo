@@ -546,7 +546,6 @@ impl StatePeer {
         // The one workspace admission the shell's workspace tree runs too.
         let workspace::AdmittedWorkspace {
             mut candidate,
-            media,
             rebased,
         } = workspace::admit_workspace_changes(
             workspace::WorkspaceAdmission {
@@ -584,10 +583,6 @@ impl StatePeer {
                 .as_deref()
                 .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
         let lacks_history = self.newly_waiting(&candidate);
-        if let Some(policy) = &media {
-            self.validate_media_bindings(policy, false)
-                .map_err(crate::AdmissionError::malformed)?;
-        }
         // The rows the change left as they were keep what reading them took.
         let candidate = match self.core.workspace_doc.as_ref() {
             Some(held) => held.followed_by(candidate),

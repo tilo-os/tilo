@@ -21,7 +21,6 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        self.validate_present_media_policy()?;
         let mut messages = Vec::with_capacity(dirty.len());
         let mut coverages = Vec::with_capacity(dirty.len());
         let mut sealed = Vec::new();

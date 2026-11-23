@@ -260,7 +260,6 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         .chain(&[NAME])
         .chain(&[
             governance::UNBAN,
-            governance::CALL,
             governance::REMOVE_MEMBER,
             governance::BAN,
         ])
@@ -803,16 +802,6 @@ async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
     assert!(
         !is_banned(workspaces, &workspace, &owner, ada.user_public_key).await,
         "the ban is lifted"
-    );
-
-    let end = request(
-        &workspace,
-        governance::CALL,
-        json!({ "operation": "end", "call": hex::encode([9; 32]), "epoch": 1 }),
-    );
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&owner), end).await,
-        Err(ActionCallError::confirmation_required())
     );
 
     server.shutdown().await;

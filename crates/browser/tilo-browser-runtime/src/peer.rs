@@ -34,7 +34,7 @@ use tilo_server_client::{DeviceSigner, ServerAddress, SignError, SignFuture};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
-use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session::sync::{Cmd, Event, InCall, Outbox};
 use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Events, FailureKind, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerEntry, PeerStore};
@@ -1218,18 +1218,11 @@ fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
         .map_err(js_error)
 }
 
-fn hex32(text: &str, what: &str) -> Result<[u8; 32], JsError> {
-    hex::decode(text)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| js_error(format!("{what} must be 32 bytes of hex")))
-}
-
 #[path = "peer_js_state.rs"]
 mod js_state;
 use js_state::{
-    JsCallOperation, JsVoiceEvent, JsWanted, is_durable, is_live, is_voice, js_layer, js_source,
-    layer_of_name, own_revocations, source_of_name, voice_event, workspace_of,
+    JsVoiceEvent, JsWanted, is_durable, is_live, is_voice, js_channels, js_layer, js_source,
+    layer_of_name, own_revocations, source_of_name, workspace_of,
 };
 
 /// A running certified peer.
@@ -1717,91 +1710,59 @@ impl WasmPeer {
         receipt.await.map_err(|_| js_error("peer session closed"))
     }
 
-    /// Ask the host for `workspace`'s calls; the answer is a `calls` event of
-    /// [`Self::take_voice_events`].
+    /// Join the call in voice channel `channel` of `workspace` (`name` what the channel is
+    /// called, when the page knows): this page's presence there says it is in it, so every device
+    /// of the workspace lists it in the channel, and the call's voice and pictures are the
+    /// workspace's live session, which only its members open. Being in another call leaves it.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = voiceCalls)]
-    pub fn voice_calls(&self, workspace: &str) -> Result<(), JsError> {
-        self.handle
-            .send(Cmd::VoiceCalls(workspace_id(workspace)?))
-            .map_err(js_error)
-    }
-
-    /// Start, end or restart a call of `workspace` (`{kind: 'start', app, record,
-    /// channel, allowed}`, `{kind: 'end' | 'restart', call, epoch}` JSON);
-    /// its `callResult` event names `request` (16 bytes of hex).
-    ///
-    /// # Errors
-    ///
-    /// Throws for a malformed workspace, operation or request, or a closed
-    /// session.
-    #[wasm_bindgen(js_name = voiceCall)]
-    pub fn voice_call(
+    /// Throws for a malformed workspace or a page that is not started.
+    #[wasm_bindgen(js_name = callJoin)]
+    pub fn call_join(
         &self,
         workspace: &str,
-        operation_json: &str,
-        request: &str,
+        channel: &str,
+        name: Option<String>,
     ) -> Result<(), JsError> {
-        let operation: JsCallOperation = serde_json::from_str(operation_json).map_err(js_error)?;
-        let request: [u8; 16] = hex::decode(request)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| js_error("request must be 16 bytes of hex"))?;
-        self.handle
-            .send(Cmd::VoiceCall(
-                workspace_id(workspace)?,
-                request,
-                operation.into_operation()?,
-            ))
-            .map_err(js_error)
+        let call = InCall {
+            call: collab_types::presence::CallPresence {
+                channel: channel.to_owned(),
+                name: name.unwrap_or_default(),
+                bridge: None,
+            },
+            camera: false,
+            screen: false,
+            muted: false,
+            deafened: false,
+        };
+        crate::peer_sync::call(self.id, workspace, Some(call))
     }
 
-    /// Take part in call `call` (hex) of `workspace` until [`Self::voice_leave`]:
-    /// the session keeps the participation alive and its grants arrive as
-    /// `granted` events of [`Self::take_voice_events`].
+    /// Leave the call of `workspace`: this page's presence there says it is in none.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed workspace or call, or a closed session.
-    #[wasm_bindgen(js_name = voiceJoin)]
-    pub fn voice_join(&self, workspace: &str, call: &str) -> Result<(), JsError> {
-        self.handle
-            .send(Cmd::VoiceJoin(
-                workspace_id(workspace)?,
-                hex32(call, "call")?,
-            ))
-            .map_err(js_error)
+    /// Throws for a malformed workspace or a page that is not started.
+    #[wasm_bindgen(js_name = callLeave)]
+    pub fn call_leave(&self, workspace: &str) -> Result<(), JsError> {
+        crate::peer_sync::call(self.id, workspace, None)
     }
 
-    /// Leave the call of `workspace`.
+    /// Say what this page shows in its call of `workspace`: its camera (`camera`), a shared
+    /// screen (`screen`), whether its microphone is off (`muted`) and whether it hears the call
+    /// (`deafened`). Everyone in the workspace reads it from this page's presence. Nothing while
+    /// the page is in no call there.
     ///
     /// # Errors
     ///
-    /// Throws for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = voiceLeave)]
-    pub fn voice_leave(&self, workspace: &str) -> Result<(), JsError> {
-        self.handle
-            .send(Cmd::VoiceLeave(workspace_id(workspace)?))
-            .map_err(js_error)
-    }
-
-    /// Show this session's camera (`camera`) or a shared screen (`screen`)
-    /// besides its voice in the call of `workspace`, or stop, whether its
-    /// microphone is off (`muted`) and whether it hears the call
-    /// (`deafened`): everyone in the call learns it from the workspace.
-    ///
-    /// # Errors
-    ///
-    /// Throws for a malformed workspace or a closed session.
-    #[wasm_bindgen(js_name = voiceShow)]
+    /// Throws for a malformed workspace or a page that is not started.
+    #[wasm_bindgen(js_name = callShow)]
     #[allow(
         clippy::fn_params_excessive_bools,
-        reason = "the page's call says each of what it shows as its own flag, as `Showing` holds them"
+        reason = "the page's call says each of what it shows as its own flag, as its presence holds them"
     )]
-    pub fn voice_show(
+    pub fn call_show(
         &self,
         workspace: &str,
         camera: bool,
@@ -1809,24 +1770,40 @@ impl WasmPeer {
         muted: bool,
         deafened: bool,
     ) -> Result<(), JsError> {
-        self.handle
-            .send(Cmd::VoiceShow(
-                workspace_id(workspace)?,
-                tilo_server_protocol::voice::Showing {
-                    camera,
-                    screen,
-                    muted,
-                    deafened,
-                },
-            ))
-            .map_err(js_error)
+        let Some(call) = crate::peer_sync::own_call(self.id, workspace) else {
+            return Ok(());
+        };
+        crate::peer_sync::call(
+            self.id,
+            workspace,
+            Some(InCall {
+                camera,
+                screen,
+                muted,
+                deafened,
+                ..call
+            }),
+        )
     }
 
-    /// Call events since the last call, as a JSON array of `{kind: 'calls',
-    /// workspace, calls | error}`, `{kind: 'callResult', workspace, request, call |
-    /// error}`, `{kind: 'granted', workspace, grant}`, `{kind: 'ended', workspace,
-    /// call, reason}` and `{kind: 'heard', workspace, from, sequence,
-    /// timestamp48k, opus}` (`opus` in hex), which the app plays.
+    /// The voice channels of `workspace` anyone is in, as JSON `[{channel, name, members:
+    /// [{device, user, publishes, camera, screen, muted, deafened}]}]` (`user` the person's root
+    /// as hex, empty while nobody named them), this page among them while it is in a call there;
+    /// `null` while the page takes no part in `workspace`.
+    #[wasm_bindgen(js_name = callChannels)]
+    pub fn call_channels(&self, workspace: &str) -> String {
+        crate::peer_sync::channels(self.id, workspace).map_or_else(
+            || "null".into(),
+            |channels| {
+                serde_json::to_string(&js_channels(channels)).unwrap_or_else(|_| "null".into())
+            },
+        )
+    }
+
+    /// What the calls this page is in carry, since the last call, as a JSON array of `{kind:
+    /// 'heard', workspace, from, sequence, timestamp48k, opus}` (`opus` in hex), which the app
+    /// plays, `{kind: 'picture', workspace, from, source, keyframe, object}` and `{kind:
+    /// 'demand', workspace, wanted, keyframes}`.
     #[wasm_bindgen(js_name = takeVoiceEvents)]
     pub fn take_voice_events(&self) -> String {
         let out: Vec<JsVoiceEvent> = self
@@ -1834,7 +1811,6 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                Event::Voice(event) => Some(voice_event(event, &self.voice_workspaces)),
                 Event::CallAudio {
                     ws: workspace_id,
                     from,

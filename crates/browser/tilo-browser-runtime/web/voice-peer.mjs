@@ -1,37 +1,70 @@
 /**
  * `peer.voice`: the workspace's calls through the page's certified peer.
  *
- * The wasm peer carries the call's presence and its media:
- * `WasmPeer.voiceCalls`, `voiceCall`, `voiceJoin`, `voiceLeave` and
- * `takeVoiceEvents` keep this page's participation alive in the call and say
- * who is in it, and the workspace's live session carries the call's media:
+ * Being in a call is presence: `WasmPeer.callJoin` says in this page's
+ * presence which voice channel it is in, `callShow` what it shows there and
+ * `callLeave` that it left, and `callChannels` lists who every device of the
+ * workspace says is in which channel. No host keeps a call. The workspace's
+ * live session carries the call's media, which only its members open:
  * `callAudio` publishes the microphone's frames as they are made,
  * `callPictures` the pictures its encoders make, `callShowing` what the page
  * draws of the call's devices and `callPictureRestart` a keyframe it needs;
- * `takeVoiceEvents` carries what the live session delivers. This adapts all of it to
- * the signalling web/voice.mjs follows, and lists and governs the workspace's
+ * `takeVoiceEvents` carries what the live session delivers. This adapts all
+ * of it to the signalling web/voice.mjs follows, and lists the workspace's
  * calls for the desktop.
  */
-import {hex} from './hex.mjs';
 import {createVoiceCall} from './voice.mjs';
-
-const CALLS_TIMEOUT_MS = 10_000;
 
 /**
  * `peer()` is the current `WasmPeer` (it changes when the page certifies
  * again); `workspace` the joined workspace; `device` this page's own device,
  * which its frames carry as their sender. `options` go to `createVoiceCall`.
  */
-export function createPeerVoice({peer, workspace, device = null, createCall = createVoiceCall, random = bytes => crypto.getRandomValues(bytes), ...options}) {
+export function createPeerVoice({peer, workspace, device = null, createCall = createVoiceCall, ...options}) {
   const listeners = new Set();
-  const listings = [];
-  const requests = new Map();
-  let calls = [];
   const callListeners = new Set();
+  let calls = [];
+  let listed = '[]';
+  /** The channel this page is in, and the members it last told the call of. */
+  let joined = null;
+  let told = '';
+  const emit = event => { for (const listener of [...listeners]) { try { listener(event); } catch {} } };
+
+  /** The workspace's calls as its presence says them now: one per channel anyone is in. */
+  function refresh() {
+    let channels;
+    try { channels = JSON.parse(peer().callChannels(workspace)); } catch { channels = null; }
+    const now = JSON.stringify(channels ?? []);
+    if (now !== listed) {
+      listed = now;
+      calls = (channels ?? []).map(channel => ({...channel, call: channel.channel, active: true}));
+      for (const listener of [...callListeners]) { try { listener(calls); } catch {} }
+    }
+    if (joined === null) return calls;
+    // Who is in this page's call: everyone saying the channel, this page among them. A
+    // member of the workspace opens the call's media, so being in it is the grant.
+    const members = calls.find(call => call.channel === joined)?.members ?? [];
+    const said = JSON.stringify(members);
+    if (said !== told) {
+      told = said;
+      emit({kind: 'granted', grant: {call: joined, directions: {publish: true, subscribe: true}, members}});
+    }
+    return calls;
+  }
+
   const signalling = {
-    join: call => peer().voiceJoin(workspace, call),
-    leave: () => { try { peer().voiceLeave(workspace); } catch {} },
-    show: (camera, screen, muted, deafened) => { try { peer().voiceShow(workspace, camera, screen, muted, deafened); } catch {} },
+    join: channel => {
+      peer().callJoin(workspace, channel);
+      joined = channel;
+      told = '';
+      queueMicrotask(refresh);
+    },
+    leave: () => {
+      joined = null;
+      told = '';
+      try { peer().callLeave(workspace); } catch {}
+    },
+    show: (camera, screen, muted, deafened) => { try { peer().callShow(workspace, camera, screen, muted, deafened); } catch {} },
     // The microphone's frames, as they are made: published on the
     // workspace's live session as this page's voice.
     audio: frames => { try { peer().callAudio(workspace, JSON.stringify(frames)); } catch {} },
@@ -48,32 +81,12 @@ export function createPeerVoice({peer, workspace, device = null, createCall = cr
   };
   const call = createCall({signalling, device, ...options});
 
-  function listed(result) {
-    if (result.calls) {
-      calls = result.calls;
-      for (const listener of [...callListeners]) { try { listener(calls); } catch {} }
-    }
-    for (const waiter of listings.splice(0)) {
-      if (result.calls) waiter.resolve(result.calls);
-      else waiter.reject(new Error(result.error ?? 'the host listed no calls'));
-    }
-  }
-
-  function clearPending(reason) {
+  function clear() {
+    joined = null;
+    told = '';
     calls = [];
-    for (const listener of [...callListeners]) {try {listener(calls);} catch {}}
-    for (const waiter of listings.splice(0)) waiter.reject(new Error(reason));
-    for (const waiter of requests.values()) waiter.reject(new Error(reason));
-    requests.clear();
-  }
-
-  function operate(operation) {
-    const request = hex(random(new Uint8Array(16)));
-    return new Promise((resolve, reject) => {
-      requests.set(request, {resolve, reject});
-      try { peer().voiceCall(workspace, JSON.stringify(operation), request); }
-      catch (error) { requests.delete(request); reject(error); }
-    });
+    listed = '[]';
+    for (const listener of [...callListeners]) { try { listener(calls); } catch {} }
   }
 
   return {
@@ -81,60 +94,32 @@ export function createPeerVoice({peer, workspace, device = null, createCall = cr
     call,
     /** The workspace's calls as last listed. */
     get calls() { return calls; },
-    /** Call `listener(calls)` whenever a listing arrives; returns its removal. */
+    /** Call `listener(calls)` whenever the calls are listed; returns its removal. */
     onCalls(listener) { callListeners.add(listener); return () => callListeners.delete(listener); },
-    /** Ask the host for the workspace's calls: `[{call, epoch, active, allowed,
-     * app, record, channel, members}]`. */
-    list() {
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          const index = listings.indexOf(waiter);
-          if (index >= 0) listings.splice(index, 1);
-          reject(new Error('the host did not list the calls'));
-        }, CALLS_TIMEOUT_MS);
-        const waiter = {
-          resolve: value => { clearTimeout(timer); resolve(value); },
-          reject: error => { clearTimeout(timer); reject(error); },
-        };
-        listings.push(waiter);
-        try { peer().voiceCalls(workspace); } catch (error) { waiter.reject(error); listings.splice(listings.indexOf(waiter), 1); }
-      });
-    },
-    /** Open a voice channel's call to join it, starting it when it has none
-     * (any member): resolves to `{call, epoch, active, allowed}`. */
-    open: ({app, record = '', channel}) => operate({kind: 'open', app, record, channel}),
-    /** Start a call on a chat's voice channel (the workspace's owner only). */
-    start: ({app, record = '', channel, allowed = {publish: true, subscribe: true}}) => operate({kind: 'start', app, record, channel, allowed}),
-    /** End a call for everyone (the workspace's owner only). */
-    end: ({call: id, epoch}) => operate({kind: 'end', call: id, epoch}),
-    /** Restart an ended call (the workspace's owner only). */
-    restart: ({call: id, epoch}) => operate({kind: 'restart', call: id, epoch}),
-    /** Take the wasm peer's call events (`takeVoiceEvents` JSON). */
+    /** The workspace's calls, as its presence says them: `[{call, channel, name, active,
+     * members, people, cameras, screens, muted, deafened}]`, `call` the channel. */
+    list: () => Promise.resolve(refresh()),
+    /** A voice channel's call to join: a channel's call is whoever says they are in it, so
+     * every channel has one. Resolves to `{call, active}`. */
+    open: ({channel}) => Promise.resolve({call: channel, active: true}),
+    /** Take the wasm peer's call events (`takeVoiceEvents` JSON), and what its presence now says
+     * of the call this page is in. */
     pump(json) {
       let events;
-      try { events = JSON.parse(json); } catch { return; }
-      for (const event of events) {
-        if (event.workspace !== workspace) continue;
-        if (event.kind === 'calls') listed(event);
-        else if (event.kind === 'callResult') {
-          const waiter = requests.get(event.request);
-          requests.delete(event.request);
-          if (event.call) waiter?.resolve(event.call); else waiter?.reject(new Error(event.error ?? 'the host refused'));
-        } else {
-          for (const listener of [...listeners]) { try { listener(event); } catch {} }
-        }
-      }
+      try { events = JSON.parse(json); } catch { events = []; }
+      for (const event of events) if (event.workspace === workspace) emit(event);
+      if (joined !== null) refresh();
     },
     /** Retire the old identity's media before replacing its certified peer. */
     reset() {
       call.leave();
-      clearPending('voice identity changed');
+      clear();
     },
     dispose() {
       call.dispose();
       listeners.clear();
       callListeners.clear();
-      clearPending('voice disposed');
+      clear();
     },
   };
 }

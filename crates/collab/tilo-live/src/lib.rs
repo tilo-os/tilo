@@ -70,6 +70,11 @@ pub mod live_session;
 #[cfg(feature = "live_session")]
 pub mod presence;
 
+/// Calls: who is in which voice channel and what each shows, as presence
+/// says it.
+#[cfg(feature = "live_session")]
+pub mod calls;
+
 /// Where a live session's readers and origin drivers run: the device's own executor
 /// on a desktop, the page's queue in a browser.
 /// Work a live session or a relay started, aborted when the state that owns it is

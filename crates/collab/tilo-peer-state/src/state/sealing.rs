@@ -60,7 +60,6 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
-        self.validate_present_media_policy()?;
         let (message, coverage) = self.prepare_signed_mutation(app, record, mutation, key, now)?;
         if self.core.exact_selected {
             let NeighbourMsg::AppDocument { envelope, .. } = &message else {
@@ -237,7 +236,6 @@ impl StatePeer {
         now: SystemTime,
         receipts_at: Option<u64>,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        self.validate_present_media_policy()?;
         let prepared = self
             .core
             .documents

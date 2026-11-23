@@ -8,7 +8,7 @@ use super::written_under::Under;
 use super::{
     ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MemberAccess, MembershipError, Role,
     Route, SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
-    err, held_units, now_ns, resource_type, workspace, workspace_host_actor,
+    held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
 
@@ -156,29 +156,6 @@ impl StatePeer {
                     .is_ok_and(|identity| identity.device_cert == *cert && identity.has_admission())
             })
         })
-    }
-
-    /// Whether `key`'s device may take `action` on the workspace's governance
-    /// now: its person's role there and the grants on it decide, as every
-    /// receiver of a governance operation judges it
-    /// ([`crate::workspace::membership`]). The owner's role holds every
-    /// governance action by default.
-    pub(super) fn require_governance_action(
-        &self,
-        key: &dyn DeviceSigner,
-        action: &str,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        let member = self.membership(key.device_public_key(), now)?;
-        member
-            .policy
-            .check_action(
-                &member.authority(),
-                action,
-                &tilo_action_policy::Context::at_time(now),
-                false,
-            )
-            .map_err(|refusal| refusal.to_string())
     }
 
     /// A current member's device. What it writes into the workspace is admitted
@@ -819,12 +796,12 @@ impl StatePeer {
     }
 
     /// The admitted workspace's security basis
-    /// ([`workspace::media::security_basis`]) under this replica's
+    /// ([`workspace::basis::security_basis`]) under this replica's
     /// revocations, reading the identity rows its governance state decoded
     /// once, and worked out once for that state: every copy of this replica
     /// that holds the same governance answers with it. `None` while no
     /// workspace is admitted.
-    pub fn security_basis(&self) -> Option<Result<[u8; 32], workspace::media::MediaPolicyError>> {
+    pub fn security_basis(&self) -> Option<Result<[u8; 32], workspace::basis::BasisError>> {
         let doc = self.core.workspace_doc.as_ref()?;
         Some(doc.security_basis(&self.revocations()))
     }
@@ -1019,68 +996,6 @@ impl StatePeer {
                 .into()
         })
     }
-    /// Validated data from this exact snapshot, not an authorization credential.
-    /// Missing exact Chat prerequisites and unpromoted local revocations fail
-    /// closed. Current device permissions/time still require separate checks.
-    pub fn validated_media_policy(
-        &self,
-    ) -> Result<Option<workspace::media::WorkspaceMediaV1>, String> {
-        let policy = self.validate_present_media_policy()?;
-        if let Some(policy) = &policy {
-            backend::media::ready(
-                policy,
-                |app, record| backend::media::bound(self, policy, app, record),
-                || self.holds_unpromoted_revocations(),
-            )
-            .map_err(backend::media::ReadinessError::message)?;
-        }
-        Ok(policy)
-    }
-    /// Whether this replica knows of a revocation its workspace's governance
-    /// does not hold yet. The call policy rests on the governance
-    /// ([`Self::validate_present_media_policy`]), so calls wait until such a
-    /// revocation is written into it.
-    pub(super) fn holds_unpromoted_revocations(&self) -> Result<bool, String> {
-        let doc = self
-            .core
-            .workspace_doc
-            .as_ref()
-            .ok_or("missing workspace")?;
-        let revocations = self.revocations();
-        if revocations.is_empty() {
-            return Ok(false);
-        }
-        Ok(doc.security_basis(&revocations).map_err(err)?
-            != workspace::media::security_basis(doc, &[]).map_err(err)?)
-    }
-    pub(super) fn validate_present_media_policy(
-        &self,
-    ) -> Result<Option<workspace::media::WorkspaceMediaV1>, String> {
-        self.core
-            .workspace_doc
-            .as_deref()
-            .map(|doc| {
-                workspace::media::validate_transition(
-                    None,
-                    doc,
-                    workspace::media::TransitionMode::Restore,
-                )
-                .map_err(err)
-            })
-            .transpose()
-            .map(Option::flatten)
-    }
-    pub(super) fn validate_media_bindings(
-        &self,
-        policy: &workspace::media::WorkspaceMediaV1,
-        require_complete: bool,
-    ) -> Result<(), String> {
-        backend::media::bindings(policy, require_complete, |app, record| {
-            backend::media::bound(self, policy, app, record)
-        })
-        .map_err(backend::media::ReadinessError::message)
-    }
-
     pub(super) fn certificate(
         &self,
         source: &[u8; 32],

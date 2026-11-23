@@ -264,7 +264,7 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Membership => "the workspace's membership",
         GovernanceRow::Identities => "the devices of the workspace",
         GovernanceRow::Settings => "the workspace's settings",
-        GovernanceRow::Media => "the media policy",
+        GovernanceRow::RetiredMedia => "the call policy older builds kept",
         GovernanceRow::Versions => "the app versions the workspace runs",
         GovernanceRow::Bots => "the workspace's bots",
         GovernanceRow::Checkpoints => "the workspace's checkpoints",

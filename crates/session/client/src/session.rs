@@ -48,7 +48,6 @@ mod inbound;
 mod live_session;
 mod opened_records;
 mod outbound;
-mod voice;
 
 use agent_session::AgentSessionCompletion;
 use connect::Dial;
@@ -403,7 +402,6 @@ fn session_task(
         admission_since: None,
         delivered: BTreeMap::new(),
         received: BTreeSet::new(),
-        voice: crate::voice::Participations::default(),
         workspaces_pending: BTreeMap::new(),
         workspaces_next: 0,
         agent_sessions_pending: BTreeMap::new(),
@@ -671,8 +669,6 @@ struct Task {
     received: BTreeSet<[u8; 32]>,
     /// Each joined workspace as its governance admits it.
     replicas: crate::replica::Replicas,
-    /// This device's participation in the workspaces' calls.
-    voice: crate::voice::Participations,
     /// The workspace administration this session asked its host and has not
     /// been answered yet, by the id it asked with.
     workspaces_pending: BTreeMap<u64, WorkspacesCompletion>,
@@ -1385,10 +1381,6 @@ impl Task {
             .extend(self.workspaces.iter().copied());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
-        let mut heartbeat = n0_future::time::interval(tilo_server_protocol::voice::HEARTBEAT);
-        // A page that stood still beats once when it runs again, not once
-        // for every beat it missed.
-        heartbeat.set_missed_tick_behavior(n0_future::time::MissedTickBehavior::Delay);
         loop {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
@@ -1470,13 +1462,6 @@ impl Task {
                     // A live session that ended or is due to be asked again.
                     self.live_sessions_due.extend(self.workspaces.iter().copied());
                 }
-                _ = heartbeat.tick() => {
-                    for beat in self.voice.heartbeats() {
-                        if client.send(beat).is_err() {
-                            return Exit::Lost("host session saturated".into());
-                        }
-                    }
-                }
             }
         }
     }
@@ -1506,8 +1491,8 @@ impl Task {
         }
     }
 
-    /// Take in `envelope`, one the host sent: a voice frame, content asked
-    /// for, or what [`Self::inbound`] decides.
+    /// Take in `envelope`, one the host sent: content asked for, or what
+    /// [`Self::inbound`] decides.
     fn received(&mut self, client: &ServerClient, envelope: Envelope) -> Result<(), Exit> {
         // Governance gathered from the frames before is the workspace's before
         // anything after it is decided.
@@ -1527,17 +1512,6 @@ impl Task {
         } = &envelope
         {
             return Err(Exit::Refused(NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned()));
-        }
-        if let Some((event, reply)) = self.voice.inbound(&envelope) {
-            if let Some(reply) = reply
-                && client.send(reply).is_err()
-            {
-                return Err(Exit::Lost("host session saturated".into()));
-            }
-            if let Some(event) = event {
-                self.reports.emit(&Event::Voice(event));
-            }
-            return Ok(());
         }
         if self.content_wanted(&envelope, client) {
             return Ok(());
@@ -1889,19 +1863,6 @@ impl Task {
                 self.enter(entering, done, client);
                 true
             }
-            Command::Client(Cmd::VoiceCalls(workspace_id)) => {
-                self.voice_calls(workspace_id, client)
-            }
-            Command::Client(Cmd::VoiceCall(workspace, request, op)) => {
-                self.voice_call(workspace, request, op, client)
-            }
-            Command::Client(Cmd::VoiceJoin(workspace_id, call)) => {
-                self.voice_join(workspace_id, call, client)
-            }
-            Command::Client(Cmd::VoiceLeave(workspace_id)) => {
-                self.voice_leave(workspace_id, client)
-            }
-            Command::Client(Cmd::VoiceShow(ws, showing)) => self.voice_show(ws, showing, client),
             Command::Client(Cmd::CallPictures(workspace_id, pictures)) => {
                 self.publish_call_pictures(workspace_id, pictures);
                 true
@@ -2065,9 +2026,6 @@ impl Task {
             if !self.send_ownership(workspace_id, client) {
                 break;
             }
-        }
-        for join in self.voice.resume() {
-            sent_ok &= client.send(join).is_ok();
         }
         sent_ok
     }

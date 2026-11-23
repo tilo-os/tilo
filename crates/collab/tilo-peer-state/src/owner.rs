@@ -463,16 +463,14 @@ impl NativeCommittedView {
 }
 
 /// What a publication of `peer` under `device` would change for every other
-/// device of the workspace: its media governance, its security basis and its
-/// signer. A publication that leaves it as it was is no change the workspace's
+/// device of the workspace: its security basis and its signer. A publication that leaves it as it was is no change the workspace's
 /// devices have to hear about.
 fn security_digest(peer: &StatePeer, device: &DeviceCert) -> Result<[u8; 32], String> {
-    let policy = peer.validated_media_policy().ok().flatten();
     let basis = peer
         .security_basis()
         .transpose()
         .map_err(|e| e.to_string())?;
-    let bytes = postcard::to_stdvec(&(policy, basis, device)).map_err(|e| e.to_string())?;
+    let bytes = postcard::to_stdvec(&(basis, device)).map_err(|e| e.to_string())?;
     Ok(*blake3::hash(&bytes).as_bytes())
 }
 

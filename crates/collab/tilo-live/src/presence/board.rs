@@ -62,7 +62,65 @@ pub struct Call {
     pub camera: bool,
     /// This device shares its screen in the call.
     pub screen: bool,
+    /// This device's microphone is off in the call.
+    pub muted: bool,
+    /// This device hears nothing of the call (and is muted).
+    pub deafened: bool,
 }
+
+impl Call {
+    /// The `call` text presence carries this in: the channel's text
+    /// ([`CallPresence::encode`]: its id, its name and the service a bridge
+    /// carries it to), then, while the device is muted or deafened, a fourth
+    /// line naming which. A channel's name and a service hold no line break,
+    /// so the lines never mix.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        let mut flags = Vec::new();
+        if self.muted || self.deafened {
+            flags.push(MUTED);
+        }
+        if self.deafened {
+            flags.push(DEAFENED);
+        }
+        let channel = self.call.encode();
+        if flags.is_empty() {
+            return channel;
+        }
+        let mut lines = channel.splitn(3, '\n');
+        let id = lines.next().unwrap_or_default();
+        let name = lines.next().unwrap_or_default();
+        let bridge = lines.next().unwrap_or_default();
+        format!("{id}\n{name}\n{bridge}\n{}", flags.join(" "))
+    }
+
+    /// What a `call` text and the camera and screen said beside it carry;
+    /// `None` for no call.
+    #[must_use]
+    pub fn decode(text: &str, camera: bool, screen: bool) -> Option<Self> {
+        let mut lines = text.splitn(4, '\n');
+        let id = lines.next().unwrap_or_default();
+        let name = lines.next().unwrap_or_default();
+        let bridge = lines.next().unwrap_or_default();
+        let flags: Vec<&str> = lines
+            .next()
+            .map(|flags| flags.split_whitespace().collect())
+            .unwrap_or_default();
+        let deafened = flags.contains(&DEAFENED);
+        Some(Self {
+            call: CallPresence::decode(&format!("{id}\n{name}\n{bridge}"))?,
+            camera,
+            screen,
+            muted: deafened || flags.contains(&MUTED),
+            deafened,
+        })
+    }
+}
+
+/// The flag a muted device's call text carries.
+const MUTED: &str = "muted";
+/// The flag a deafened device's call text carries.
+const DEAFENED: &str = "deafened";
 
 /// What someone is doing, as their device says it: their own words, or the
 /// line the device read off the steps they took.
@@ -150,6 +208,10 @@ pub struct LiveCaller {
     /// bridge rather than a person: the call is shown as bridged there, and
     /// this caller as nobody's face.
     pub bridge: Option<String>,
+    /// The device's microphone is off in the call.
+    pub muted: bool,
+    /// The device hears nothing of the call.
+    pub deafened: bool,
 }
 
 /// Someone else here, as their frames and their certificate tell it.
@@ -589,7 +651,7 @@ impl Board {
                 workspace.clone(),
                 Payload::Availability {
                     state: own.availability.id().to_owned(),
-                    call: own.call.as_ref().map(|call| call.call.encode()),
+                    call: own.call.as_ref().map(Call::encode),
                     camera: own.call.as_ref().is_some_and(|call| call.camera),
                     screen: own.call.as_ref().is_some_and(|call| call.screen),
                 },
@@ -848,12 +910,7 @@ impl Board {
                 } => self.touch(from, |member| {
                     let call = call
                         .as_deref()
-                        .and_then(CallPresence::decode)
-                        .map(|call| Call {
-                            call,
-                            camera: *camera,
-                            screen: *screen,
-                        });
+                        .and_then(|call| Call::decode(call, *camera, *screen));
                     let availability =
                         Availability::from_id(state).unwrap_or(Availability::Available);
                     let changed = member.availability != availability || member.call != call;
@@ -1055,6 +1112,8 @@ impl Board {
                 camera: presence.camera,
                 screen: presence.screen,
                 bridge: presence.call.bridge.clone(),
+                muted: presence.muted,
+                deafened: presence.deafened,
             };
             match calls
                 .iter_mut()

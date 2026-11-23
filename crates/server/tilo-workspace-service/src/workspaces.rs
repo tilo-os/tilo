@@ -197,8 +197,6 @@ pub use unattended::{Answer as PersonAnswer, AsksPeople};
 mod readings;
 #[cfg(feature = "agents")]
 mod views;
-mod voice;
-pub(crate) use voice::carried_call_workspace;
 mod wait_list;
 
 use std::collections::HashMap;
@@ -1039,7 +1037,6 @@ struct WorkspacesInner {
     jobs: Arc<device_actions::DeviceWork>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
-    calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
     /// The workspace UUID each time this device's copy turns current with
@@ -1399,7 +1396,6 @@ impl Workspaces {
                 workspaces,
                 readings: readings::Readings::default(),
                 own_opened: reads::OwnOpened::default(),
-                calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 reached: tokio::sync::broadcast::Sender::new(64),
@@ -2125,7 +2121,7 @@ impl Workspaces {
 
     /// Hold the workspace, admitting only the members its governance names,
     /// and follow its members' writes: create the records they start and keep the
-    /// governor's copy of the others current, as calls bind to chat records.
+    /// governor's copy of the others current.
     ///
     /// Members' changes stay retained as signed tails: members write directly,
     /// not through the governor, so the owner-baseline selection that retires
@@ -2860,7 +2856,7 @@ impl Workspaces {
 
     /// Bring the server in line with the workspace's committed state: admit exactly
     /// its governed members, then retain every governance change not yet
-    /// published, then re-derive its calls' key holders. Runs after each
+    /// published, Runs after each
     /// decision, before the decision is answered.
     ///
     /// The changes are kept at the device store and carried on the
@@ -2905,7 +2901,6 @@ impl Workspaces {
         workspace.publish(&self.inner.records)?;
         crate::timing::event("workspace.settle.publish", publishing, 0);
         let observing = crate::timing::start();
-        self.observe_calls(workspace);
         self.dial_holders(workspace);
         self.governance_moved(workspace);
         crate::timing::event("workspace.settle.observe", observing, 0);

@@ -689,3 +689,13 @@ reason = "the hosted-VM control protocol is one request and one reply per connec
 file = "crates/runtime/linux-vm/src/hosted/control.rs"
 enum = "Reply"
 reason = "the host's answer on the same local connection, never kept, between ends shipped in one image"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the host-kept call frames go (`VoiceCall` to `VoiceShow`): being in a call is a device's presence on the workspace's live session, which carries its media too, so no host keeps a call. Envelopes are live frames of a session and kept nowhere, and the peer protocol version is bumped from 63 to 64 with the removal and `previous-peer-frames.txt` moves to it, so a device at another version admits nothing from this one"
+
+[[break]]
+file = "crates/browser/tilo-browser-runtime/src/peer_js_state.rs"
+enum = "JsVoiceEvent"
+reason = "the host's call events go with the host-kept calls: a page reads who is in a call from its presence. The events are JSON tagged by name, handed from the page's wasm to its own JavaScript of the same build, and kept nowhere"

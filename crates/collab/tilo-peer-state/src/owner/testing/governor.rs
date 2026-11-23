@@ -357,11 +357,8 @@ impl TestGovernor {
     }
 
     /// The candidate peer of the next commit and its generation.
-    fn next_commit(&self, now: SystemTime) -> Result<(StatePeer, u64), String> {
-        let mut candidate = self.peer.clone();
-        candidate
-            .media_mut()
-            .reconcile_media_governance(&self.governor_key, now)?;
+    fn next_commit(&self) -> Result<(StatePeer, u64), String> {
+        let candidate = self.peer.clone();
         let admitted_generation = candidate
             .admitted_workspace()
             .map(crate::durability::entries)
@@ -382,7 +379,7 @@ impl TestGovernor {
     /// Re-sign the workspace's full checkpoint at the next generation.
     pub fn refresh_checkpoint(&mut self) -> Result<(), String> {
         let now = self.now();
-        let (mut candidate, generation) = self.next_commit(now)?;
+        let (mut candidate, generation) = self.next_commit()?;
         let messages = candidate.publication_mut().durable_bootstrap_messages(
             &self.governor_key,
             now,
@@ -415,7 +412,7 @@ impl TestGovernor {
             return self.refresh_checkpoint();
         };
         let now = self.now();
-        let (mut candidate, generation) = self.next_commit(now)?;
+        let (mut candidate, generation) = self.next_commit()?;
         let messages = candidate.publication_mut().durable_mutation_messages(
             &before,
             &self.governor_key,

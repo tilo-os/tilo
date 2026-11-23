@@ -241,10 +241,6 @@ pub(crate) fn admit_invited_member(
         }
     }
     crate::state::commit_governance(&mut candidate, crate::state::now_secs(now));
-    crate::workspace::media::refresh_authorization(document, &mut candidate)
-        .map_err(|error| error.to_string())?;
-    // The policy bound to the membership this admission leaves is this admission's own change.
-    crate::state::commit_governance(&mut candidate, crate::state::now_secs(now));
     let changes = candidate
         .get_changes(&before)
         .into_iter()

@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tilo_session_client::{Cmd, Event, Events, Link, Outbox, TransportPhase, VoiceEvent};
+use tilo_session_client::{CallFrame, Cmd, Event, Events, InCall, Link, Outbox, TransportPhase};
 
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
@@ -30,8 +30,6 @@ use tilo_enrollment::certification::answer_pairing;
 use tilo_enrollment::requester::certify;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::{Carrier, MemberApprover, ServerAddress, pending_pairings};
-use tilo_server_protocol::Envelope;
-use tilo_server_protocol::voice::VoiceGrant;
 use tilo_session_client::MemoryPeerStore;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -465,90 +463,249 @@ async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier
     ada.host.server.shutdown().await;
 }
 
-/// The next call event of `peer` that `pick` accepts.
-async fn voice<T>(
-    events: &Events,
-    pending: &mut Vec<Event>,
-    what: &str,
-    mut pick: impl FnMut(&VoiceEvent) -> Option<T>,
-) -> T {
-    wait_for(what, || {
-        pending.extend(events.drain());
-        let found = pending
-            .iter()
-            .enumerate()
-            .find_map(|(index, event)| match event {
-                Event::Voice(event) => pick(event).map(|value| (index, value)),
-                _ => None,
-            });
-        let found = found.map(|(index, value)| {
-            pending.drain(..=index);
-            value
-        });
-        async move { found }
-    })
-    .await
+/// One of Ada's devices in the workspace's calls: its session, and the presence board it keeps of
+/// what everyone else says, as a desktop's or a page's client keeps it.
+struct Caller {
+    link: Link,
+    events: Events,
+    device: [u8; 32],
+    board: tilo_live::presence::Board,
+    own: tilo_live::presence::Own,
+    heard: Vec<Event>,
 }
 
-async fn the_device_takes_part_in_a_call(carrier: Carrier) {
-    // Alice's governed workspace has a call; Bob, whom she invited, takes
-    // part from his page's session.
-    let workspace = crate::call::GovernedCall::start_relaying(true).await;
-    let workspace_id = workspace.workspace_id;
-    let (_bob, page) = workspace.invite("bob-browser").await;
-    let peer = start_page(
-        workspace.iroh().over(carrier),
-        page.cert.clone(),
-        workspace.host.cert.clone(),
-        page.key.clone(),
-        Arc::new(MemoryPeerStore::default()),
-    );
-    let events = peer.events();
-    peer.send(Cmd::Join(workspace_id)).unwrap();
-    ready(&[&peer]).await;
-    let mut pending = Vec::new();
+impl Caller {
+    fn new(link: Link, device: [u8; 32], person: &[u8; 32]) -> Self {
+        Self {
+            events: link.events(),
+            link,
+            device,
+            board: tilo_live::presence::Board::new(WORKSPACE, device),
+            own: tilo_live::presence::Own {
+                label: "Ada".into(),
+                user: Some(hex::encode(person)),
+                ..tilo_live::presence::Own::default()
+            },
+            heard: Vec::new(),
+        }
+    }
 
-    peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
-    let calls = voice(
-        &events,
-        &mut pending,
-        "the call list",
-        |event| match event {
-            VoiceEvent::Calls { result, .. } => Some(result.clone()),
-            _ => None,
+    /// Say this device is in `call` (or in none) on the workspace's presence.
+    fn say(&mut self, call: Option<InCall>) {
+        self.own.call = call;
+        self.board.say(&self.own);
+        self.restate();
+    }
+
+    /// Say all of this device's presence again: a frame said before the other devices were on the
+    /// live session reached nobody.
+    fn restate(&mut self) {
+        let frames = self.board.flush(now_ms());
+        self.link
+            .send(Cmd::Presence(
+                crate::support::workspace(),
+                frames.into_iter().map(|(_, frame)| frame).collect(),
+            ))
+            .unwrap();
+    }
+
+    /// Take what arrived: presence onto the board, the rest kept to look at.
+    fn listen(&mut self) {
+        for event in self.events.drain() {
+            match event {
+                Event::LiveSession {
+                    from,
+                    track: tilo_live::live::Track::Presence,
+                    body,
+                    ..
+                } => {
+                    self.board.heard(from, &body, now_ms());
+                }
+                event => self.heard.push(event),
+            }
+        }
+    }
+
+    /// The workspace's voice channels as this device lists them.
+    fn channels(&self) -> Vec<tilo_live::calls::Channel> {
+        tilo_live::calls::channels(
+            &self.board.calls(),
+            self.own.call.as_ref().map(|call| tilo_live::calls::Own {
+                device: self.device,
+                person: self.own.user.as_deref(),
+                call,
+            }),
+            &std::collections::BTreeMap::new(),
+        )
+    }
+
+    /// Whether this device heard `from`'s voice.
+    fn heard_voice_of(&self, from: [u8; 32]) -> bool {
+        self.heard
+            .iter()
+            .any(|event| matches!(event, Event::CallAudio { from: heard, .. } if *heard == from))
+    }
+}
+
+fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// A call in `channel`, as a device says it is in it.
+fn in_call(channel: &str, camera: bool, muted: bool) -> InCall {
+    InCall {
+        call: collab_types::presence::CallPresence {
+            channel: channel.into(),
+            name: "Standup".into(),
+            bridge: None,
+        },
+        camera,
+        screen: false,
+        muted,
+        deafened: false,
+    }
+}
+
+/// Ada's page and laptop meet in a voice channel by saying so in the workspace's presence: each
+/// lists the other in it and hears the other's voice, the laptop sees the page turn its camera on
+/// and mute, and once the page leaves the laptop is in the channel alone. A device of Ada's
+/// without the workspace's channel keys opens none of the call's voice.
+async fn the_device_takes_part_in_a_call(carrier: Carrier) {
+    let ada = Ada::start().await;
+    let person = ada.root.verifying_key().to_bytes();
+    let keys = live_session_keys();
+    let (key, cert, server_cert) = ada.certified(&ada.host.over(carrier)).await;
+    place(&ada.host.server, &cert).await;
+    let browser = page(&ada.host, carrier, key, &cert, &server_cert);
+    browser
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
+        .unwrap();
+    browser.join_placed(WORKSPACE, "Workspace").unwrap();
+    in_workspace(&browser, crate::support::workspace()).await;
+    let laptop = ada.laptop_peer(&server_cert).await;
+    laptop
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys))
+        .unwrap();
+    in_workspace(&laptop, crate::support::workspace()).await;
+    let (key, outsider_cert, _) = ada.certified(&ada.host.over(carrier)).await;
+    place(&ada.host.server, &outsider_cert).await;
+    let outsider = page(&ada.host, carrier, key, &outsider_cert, &server_cert);
+    outsider
+        .send(Cmd::InstallGroupKeys(
+            live_session_route(),
+            live_session_keys(),
+        ))
+        .unwrap();
+    outsider.join_placed(WORKSPACE, "Workspace").unwrap();
+    in_workspace(&outsider, crate::support::workspace()).await;
+    let outsiders = outsider.events();
+
+    let mut page = Caller::new(browser, cert.device_public_key, &person);
+    let mut desk = Caller::new(laptop, ada.laptop.cert.device_public_key, &person);
+    page.say(Some(in_call("standup", false, false)));
+    desk.say(Some(in_call("standup", false, false)));
+    let both = [page.device, desk.device];
+    let in_standup = |caller: &Caller| {
+        let channels = caller.channels();
+        let [standup] = channels.as_slice() else {
+            return None;
+        };
+        let mut devices: Vec<_> = standup.callers.iter().map(|one| one.device).collect();
+        devices.sort_unstable();
+        let mut expected = both;
+        expected.sort_unstable();
+        (standup.channel == "standup" && devices == expected).then(|| standup.clone())
+    };
+    let voice = |caller: &Caller| {
+        caller
+            .link
+            .send(Cmd::CallAudio(
+                crate::support::workspace(),
+                vec![CallFrame {
+                    timestamp_48k: 960,
+                    opus: vec![0xf8, 0xff, 0xfe],
+                }],
+            ))
+            .unwrap();
+    };
+    let standup = wait_for(
+        "each to list the other in the channel and hear them",
+        || {
+            for caller in [&mut page, &mut desk] {
+                caller.listen();
+                caller.restate();
+                voice(caller);
+            }
+            let met = in_standup(&page)
+                .and(in_standup(&desk))
+                .filter(|_| page.heard_voice_of(desk.device) && desk.heard_voice_of(page.device));
+            async move { met }
         },
     )
-    .await
-    .unwrap();
-    let [listed] = calls.as_slice() else {
-        panic!("one call is listed: {calls:?}");
-    };
-    assert_eq!(listed.state, workspace.call);
+    .await;
+    assert_eq!(standup.name, "Standup");
+    assert_eq!(
+        standup.people(),
+        [hex::encode(person)],
+        "one person on two devices"
+    );
 
-    workspace
-        .owner
-        .send(Envelope::VoiceJoin {
-            workspace_id,
-            call: workspace.call.call,
-            participation: None,
+    page.say(Some(in_call("standup", true, true)));
+    wait_for(
+        "the laptop to see the page's camera on and microphone off",
+        || {
+            desk.listen();
+            page.restate();
+            let seen = desk.channels().iter().any(|channel| {
+                channel.callers.iter().any(|caller| {
+                    caller.device == page.device
+                        && caller.camera
+                        && caller.muted
+                        && !caller.deafened
+                })
+            });
+            async move { seen.then_some(()) }
+        },
+    )
+    .await;
+
+    page.say(None);
+    wait_for("the laptop to be in the channel alone", || {
+        desk.listen();
+        page.restate();
+        let channels = desk.channels();
+        let alone = matches!(
+            channels.as_slice(),
+            [standup] if matches!(standup.callers.as_slice(), [only] if only.device == desk.device)
+        );
+        async move { alone.then_some(()) }
+    })
+    .await;
+
+    let opened: Vec<Event> = outsiders
+        .drain()
+        .into_iter()
+        .filter(|event| {
+            matches!(event, Event::CallAudio { .. })
+                || matches!(
+                    event,
+                    Event::LiveSession { from, .. } if both.contains(from)
+                )
         })
-        .unwrap();
-    peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
-        .unwrap();
-    let bob: VoiceGrant = voice(&events, &mut pending, "Bob's grant", |event| match event {
-        VoiceEvent::Granted { grant, .. } if grant.members.len() == 2 => Some((**grant).clone()),
-        _ => None,
-    })
-    .await;
-    assert!(bob.directions.publish && bob.directions.subscribe);
-    let alice = crate::call::native(&workspace.owner, |envelope| match envelope {
-        Envelope::VoiceGranted { grant, .. } if grant.members.len() == 2 => Some(*grant),
-        _ => None,
-    })
-    .await;
-    assert_eq!(alice.call, workspace.call.call);
-    peer.close();
-    workspace.shutdown().await;
+        .collect();
+    assert!(
+        opened.is_empty(),
+        "a device without the channel's keys opens none of the call: {opened:?}"
+    );
+
+    page.link.close();
+    desk.link.close();
+    outsider.close();
+    ada.host.server.shutdown().await;
 }
 
 impl Ada {

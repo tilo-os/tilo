@@ -68,40 +68,18 @@ export function callIdOf(member) {
   return member?.user || null;
 }
 
-/** Who is in each active call of `app`'s `record`, one roster per voice
- * channel with anyone in it, sorted by channel; each person once, muted
- * (deafened) when muted (deafened) on every device they are in the call
- * on. */
-export function rostersOf(calls, app, record) {
-  const channels = new Map();
-  for (const call of calls ?? []) {
-    if (!call.active || call.app !== app || call.record !== record) continue;
-    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set(), hearing: new Set()};
-    for (const member of call.members ?? []) {
-      if (!member.user) continue;
-      roster.people.add(member.user);
-      if (member.camera) roster.cameras.add(member.user);
-      if (member.screen) roster.screens.add(member.user);
-      // Heard on any of their devices: not muted.
-      if (!member.muted) roster.unmuted.add(member.user);
-      if (!member.deafened) roster.hearing.add(member.user);
-    }
-    channels.set(call.channel, roster);
-  }
-  const sorted = set => [...set].sort();
-  return [...channels].filter(([, roster]) => roster.people.size > 0)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([channel_id, roster]) => {
-      const out = {channel_id, people: sorted(roster.people)};
+/** Who is in each of the workspace's calls: one roster per voice channel
+ * with anyone in it, sorted by channel, as the workspace's presence counts
+ * them (`voice-peer.mjs`): each person once, muted (deafened) when muted
+ * (deafened) on every device they are in the call on. */
+export function rostersOf(calls) {
+  return (calls ?? []).filter(call => call.people?.length)
+    .sort((a, b) => (a.channel < b.channel ? -1 : a.channel > b.channel ? 1 : 0))
+    .map(call => {
+      const out = {channel_id: call.channel, people: call.people};
       // Written only when someone shows something, as the native service
       // does.
-      if (roster.cameras.size) out.cameras = sorted(roster.cameras);
-      if (roster.screens.size) out.screens = sorted(roster.screens);
-      const muted = [...roster.people].filter(person => !roster.unmuted.has(person));
-      if (muted.length) out.muted = muted.sort();
-      // Deafened is muted too: someone heard on another device is neither.
-      const deafened = muted.filter(person => !roster.hearing.has(person));
-      if (deafened.length) out.deafened = deafened;
+      for (const field of ['cameras', 'screens', 'muted', 'deafened']) if (call[field]?.length) out[field] = call[field];
       return out;
     });
 }
@@ -150,7 +128,7 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
       if (request.app !== 'so.tilo.chat' || request.workspace !== workspace || request.command?.version !== 1) throw new Error('unsupported local media route');
       const command = request.command.command;
       const route = key(request);
-      const rosters = () => rostersOf(voice.calls, request.app, request.record);
+      const rosters = () => rostersOf(voice.calls);
       const status = () => {
         if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, deafened: undefined, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
         if (refusal?.route === route && ['idle', 'ended'].includes(voice.call.state.phase)) return stamped({...snapshot(), state: 'ended', muted: true, deafened: undefined, capture_active: false, input_id: null, issue: refusal.issue, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});

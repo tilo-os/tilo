@@ -1,8 +1,8 @@
 //! The one admission rule for a workspace document a peer sends (`SyncResp`).
 //!
 //! The native peer ([`crate::StatePeer`]) and the shell's workspace tree both
-//! receive the same workspace document — owner, capabilities, identities, media
-//! policy, coverage, durability, receipts and window contents — so both admit it
+//! receive the same workspace document — owner, capabilities, identities,
+//! coverage, durability, receipts and window contents — so both admit it
 //! here. What differs between them is only data: how the receiver identifies
 //! the sender ([`Writer`]) and whose workspace it is. Each caller keeps its own
 //! storage and projection.
@@ -11,8 +11,6 @@
 //! merge would advance local heads past refused operations.
 use automerge::AutoCommit;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
-
-use super::media;
 
 /// How the receiver knows the sender's access in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,12 +92,10 @@ pub struct WorkspaceAdmission<'a> {
     pub now_ns: u64,
 }
 
-/// A batch every check admitted. The caller binds a returned media policy to
-/// its own authority record before installing the candidate.
+/// A batch every check admitted.
 #[derive(Debug)]
 pub struct AdmittedWorkspace {
     pub candidate: AutoCommit,
-    pub media: Option<media::WorkspaceMediaV1>,
     /// The candidate is a newer base ([`super::base`]) replacing the
     /// document held, not that document with the batch applied.
     pub rebased: bool,
@@ -145,8 +141,6 @@ pub enum WorkspaceRefusal {
     Removals(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
-    /// The media policy is malformed or its transition is not permitted.
-    Media(media::MediaPolicyError),
     /// The batch adds or changes the shortcut `0` naming who saved it
     /// without that person's device's proof ([`super::saved_shortcut`]).
     ShortcutAuthorship(String),
@@ -174,7 +168,6 @@ impl std::fmt::Display for WorkspaceRefusal {
             }
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
             Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
-            Self::Media(error) => write!(f, "{error}"),
             Self::ShortcutAuthorship(shortcut) => write!(
                 f,
                 "the shortcut `{shortcut}` names who saved it without their device's proof"
@@ -196,10 +189,9 @@ impl WorkspaceRefusal {
             | Self::ReceiptWriter
             | Self::RefusalWriter
             | Self::ShortcutAuthorship(_) => RefusalReason::Forbidden,
-            Self::Malformed(_)
-            | Self::DeclaredWorkspaceMismatch
-            | Self::Coverage(_)
-            | Self::Media(_) => RefusalReason::Malformed,
+            Self::Malformed(_) | Self::DeclaredWorkspaceMismatch | Self::Coverage(_) => {
+                RefusalReason::Malformed
+            }
             Self::Refounded
             | Self::ReceiptImmutable
             | Self::RedemptionImmutable
@@ -301,10 +293,9 @@ pub fn admit_workspace_changes(
             } else {
                 false
             };
-            let media = checked(&input, &candidate, governed)?;
+            checked(&input, &candidate, governed)?;
             Ok(AdmittedWorkspace {
                 candidate,
-                media,
                 rebased: false,
             })
         }
@@ -312,10 +303,9 @@ pub fn admit_workspace_changes(
             let candidate = super::candidate_on(*base, &changes)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            let media = checked_as(&input, &candidate, false)?;
+            checked_as(&input, &candidate, false)?;
             Ok(AdmittedWorkspace {
                 candidate,
-                media,
                 rebased: true,
             })
         }
@@ -357,10 +347,9 @@ fn holder_writes(
     let pruned = super::base::pruned(Some(before), replaced);
     let candidate = super::candidate(Some(pruned.as_ref().unwrap_or(before)), &changes)?;
     if only_own_copy_row(before, &candidate, input.source.key) {
-        let media = checked(input, &candidate, false)?;
+        checked(input, &candidate, false)?;
         return Ok(AdmittedWorkspace {
             candidate,
-            media,
             rebased: false,
         });
     }
@@ -389,10 +378,9 @@ fn holder_writes(
         input.now_ns,
     )
     .map_err(membership)?;
-    let media = checked(input, &candidate, true)?;
+    checked(input, &candidate, true)?;
     Ok(AdmittedWorkspace {
         candidate,
-        media,
         rebased: false,
     })
 }
@@ -441,8 +429,7 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 
 /// Check a candidate workspace document, however it was built: from
 /// `input.before` and a batch ([`admit_workspace_changes`]), or as a whole
-/// checkpoint replacing it. Returns the candidate's media policy for the caller
-/// to bind.
+/// checkpoint replacing it.
 ///
 /// 1. The document names this workspace ([`super::declared_workspace_mismatches`]).
 /// 2. Governance changed beyond what an operation of the batch or its writer's
@@ -454,9 +441,7 @@ fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure
 ///    ([`super::redemptions_kept`]).
 /// 5. Coverage and durable receipts never rewind
 ///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]), and
-/// 6. The media policy is well formed and its transition is permitted
-///    ([`media::validate_transition`]).
-/// 7. A shortcut names as who saved it only a proven saver
+/// 6. A shortcut names as who saved it only a proven saver
 ///    ([`super::saved_shortcut`]).
 ///
 /// # Errors
@@ -466,7 +451,7 @@ fn checked_as(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     governed: bool,
-) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
+) -> Result<(), WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
         workspace,
@@ -518,9 +503,7 @@ fn checked_as(
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::standing::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
-    crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)?;
-    media::validate_transition(before, candidate, media::TransitionMode::Admission)
-        .map_err(WorkspaceRefusal::Media)
+    crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)
 }
 
 /// [`checked_as`] where the receiver carries nothing over: every batch but a
@@ -529,7 +512,7 @@ fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     governed: bool,
-) -> Result<Option<media::WorkspaceMediaV1>, WorkspaceRefusal> {
+) -> Result<(), WorkspaceRefusal> {
     checked_as(input, candidate, governed)
 }
 

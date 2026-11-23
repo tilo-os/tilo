@@ -522,9 +522,6 @@ impl Server {
         let Some(live) = self.live_origin.as_ref() else {
             return Err(failed("the server runs no live session".into()));
         };
-        if let Some(workspaces) = self.workspaces() {
-            let _ = context.server.carried_calls.set(workspaces.downgrade());
-        }
         let server_cert = context.server.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
         // the relay it is reached through — which the endpoint names from the

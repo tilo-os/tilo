@@ -365,7 +365,7 @@ test('a microphone that fails at start ends the participation instead of claimin
   assert.ok(f.sent.some(([what]) => what === 'leave'));
 });
 
-test('peer.voice takes the page\'s live sessions through the wasm peer and lists its calls', async () => {
+test('peer.voice says the page\'s call in its presence, lists the workspace\'s calls from it and carries the media through the wasm peer', async () => {
   const played = [];
   const pictures = [];
   const showing = [];
@@ -374,11 +374,17 @@ test('peer.voice takes the page\'s live sessions through the wasm peer and lists
   let onPicture;
   const wasm = {
     joined: [],
+    left: [],
     published: [],
-    voiceJoin: (workspace, call) => wasm.joined.push([workspace, call]),
-    voiceLeave: () => {},
-    voiceCalls: () => {},
-    voiceShow: (workspace, camera, screen, muted, deafened) => wasm.shown = [camera, screen, muted, deafened],
+    // Who the workspace's presence says is in which channel: this page and Bob, once it joined.
+    channels: [],
+    callJoin: (workspace, channel) => {
+      wasm.joined.push([workspace, channel]);
+      wasm.channels = [{channel, name: 'Standup', members: grantFor().members, people: [ME, BOB]}];
+    },
+    callLeave: workspace => { wasm.left.push(workspace); wasm.channels = []; },
+    callChannels: () => JSON.stringify(wasm.channels),
+    callShow: (workspace, camera, screen, muted, deafened) => wasm.shown = [camera, screen, muted, deafened],
     callAudio: (workspace, json) => wasm.published.push([workspace, JSON.parse(json)]),
     callPictures: (workspace, json) => pictures.push([workspace, JSON.parse(json)]),
     callShowing: (workspace, json) => showing.push([workspace, JSON.parse(json)]),
@@ -394,11 +400,11 @@ test('peer.voice takes the page\'s live sessions through the wasm peer and lists
   await drain();
   assert.deepEqual(wasm.joined, [['the-workspace', CALL]]);
   assert.deepEqual(wasm.shown, [false, false, false, false]);
-  // The host's grant comes through the wasm peer's events, and its pictures
-  // go out through `callPictures` as they are made.
-  voice.pump(JSON.stringify([{workspace: 'the-workspace', kind: 'granted', grant: grantFor()}]));
-  await drain();
+  // Being in the channel is the call: the page is live once its presence lists it there, and
+  // its pictures go out through `callPictures` as they are made.
   assert.equal(voice.call.state.phase, 'live');
+  assert.deepEqual(voice.call.state.members.map(member => member.device), [HOST, BOB]);
+  assert.deepEqual((await voice.list()).map(call => [call.call, call.people]), [[CALL, [ME, BOB]]]);
   await voice.call.setVideo('camera', true);
   onPicture({source: 'camera', layer: 'mid', sequence: 1, keyframe: true, timestampUs: 0, width: 2, height: 2, payload: Uint8Array.of(7)});
   assert.deepEqual(pictures, [['the-workspace', [{source: 'camera', layer: 'mid', sequence: 1, keyframe: true, timestampUs: 0, width: 2, height: 2, payload: '07'}]]]);
@@ -414,6 +420,7 @@ test('peer.voice takes the page\'s live sessions through the wasm peer and lists
   assert.deepEqual(restarts, [['the-workspace', BOB, 'camera']]);
   voice.call.leave();
   assert.equal(voice.call.state.phase, 'idle');
+  assert.deepEqual(wasm.left, ['the-workspace']);
   voice.dispose();
 });
 

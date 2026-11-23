@@ -244,7 +244,6 @@ impl ServiceSessions {
             identity: live.clone(),
             metrics: metrics.clone(),
             app_serving: wrap(&workspaces, own_server.clone()),
-            carried_calls: Arc::default(),
             admin: Arc::default(),
             fetch: Arc::default(),
             agents: Arc::default(),
@@ -1271,9 +1270,6 @@ pub struct ServerProtocol {
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
-    /// Set once when the service starts serving browsers: the workspaces whose
-    /// calls it carries.
-    pub carried_calls: Arc<std::sync::OnceLock<crate::workspaces::WeakWorkspaces>>,
     /// Set once when the service governs workspaces: what its sessions answer a
     /// device's workspace administration with.
     pub admin: Arc<std::sync::OnceLock<Arc<crate::workspaces::Workspaces>>>,
@@ -1326,7 +1322,6 @@ impl ServerProtocol {
             metrics: self.metrics.clone(),
             own_device_public_key: self.identity.cert.device_public_key,
             app_serving: self.app_serving.clone(),
-            carried_calls: self.carried_calls.get().cloned(),
             admin: self.admin.get().cloned(),
             fetch: self.fetch.get().cloned(),
             agents: self.agents.clone(),

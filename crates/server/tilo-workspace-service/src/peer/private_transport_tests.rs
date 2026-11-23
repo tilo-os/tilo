@@ -86,7 +86,6 @@ impl Holds {
             stop: None,
             presence: None,
             revocations: &self.revocations,
-            carried_calls: None,
             admin: None,
             fetch: None,
             agents: Box::leak(Box::default()),

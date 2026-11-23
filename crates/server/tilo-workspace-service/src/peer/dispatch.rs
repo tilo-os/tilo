@@ -5,7 +5,7 @@ use super::{
     AuthenticatedPeer, Envelope, PeerError, RemoteActionRoute, SessionCtx, handle_agent_session,
     handle_content_want, handle_host_action, handle_host_said, handle_live_join,
     handle_open_document, handle_presence, handle_remote_action, handle_subscribe,
-    handle_unsubscribe, handle_voice, handle_workspaces, route_document_content,
+    handle_unsubscribe, handle_workspaces, route_document_content,
 };
 use tilo_server_protocol::WorkspaceId;
 
@@ -171,11 +171,6 @@ pub(super) async fn handle_envelope(
             route_document_content(peer, session, subscribed, env).await;
             Ok(None)
         }
-        env @ (Envelope::VoiceCall { .. }
-        | Envelope::VoiceJoin { .. }
-        | Envelope::VoiceLeave { .. }
-        | Envelope::VoiceShow { .. }
-        | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         Envelope::LiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
         }
@@ -211,10 +206,6 @@ pub(super) async fn handle_envelope(
         | Envelope::ChangeRefused { .. }
         | Envelope::LiveMember { .. }
         | Envelope::Position { .. }
-        | Envelope::VoiceCallResult { .. }
-        | Envelope::VoiceGranted { .. }
-        | Envelope::VoiceRefused { .. }
-        | Envelope::VoiceCallList { .. }
         | Envelope::DocumentOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }

@@ -6,7 +6,6 @@ use super::{
     Ed25519PublicKey, Held, InboundState, InputDisposition, MemberAccess, MissingPrerequisite,
     NeighbourMsg, OpKind, ReceiveOutcome, Route, SignedOp, StatePeer, SystemTime, backend,
     empty_genesis, empty_genesis_op, peer_handle, person_of, sealed_compaction, sealed_history,
-    workspace,
 };
 use crate::document;
 
@@ -699,18 +698,6 @@ impl StatePeer {
         }
         if let Some(before) = &desktop_before {
             self.check_shared_desktop(&candidate.doc, before, &member, authorization_time)?;
-        }
-        if let Some(workspace) = self.core.workspace_doc.as_deref()
-            && let Some(policy) =
-                workspace::media::parse(workspace).map_err(crate::AdmissionError::malformed)?
-        {
-            workspace::media::validate_bound_chat_change(
-                &policy,
-                &route.app,
-                &route.record,
-                &*candidate.doc,
-            )
-            .map_err(crate::AdmissionError::malformed)?;
         }
         let primary = if self.core.exact_selected {
             let admitted = DocumentAdmission::from_op(

@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Va
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::governance;
 
-/// The document key holding the media policy.
+/// The document key older builds kept a governed call policy under.
 const MEDIA_KEY: &str = "media_policy_v1";
 /// The document key holding the hosts serving a workspace.
 const KEEPING_DEVICES_KEY: &str = "keeping_devices_v1";
@@ -39,8 +39,9 @@ pub enum GovernanceRow {
     Identities,
     /// The workspace's name, its saved grant sets and its entry.
     Settings,
-    /// The media policy.
-    Media,
+    /// The call policy older builds kept: calls are presence now, so nothing
+    /// writes it, and it keeps its place so stored operations read the same.
+    RetiredMedia,
     /// The app versions the workspace runs.
     Versions,
     /// The bots it runs and the ones a member asked its host for.
@@ -68,7 +69,7 @@ impl GovernanceRow {
         Self::Membership,
         Self::Identities,
         Self::Settings,
-        Self::Media,
+        Self::RetiredMedia,
         Self::Versions,
         Self::Bots,
         Self::Checkpoints,
@@ -116,7 +117,7 @@ impl GovernanceRow {
             Self::Sandbox => &["sandbox"],
             Self::Identities => &["peers", "peer_identities_v1"],
             Self::Settings => &["name", "presets_v1", "entry_v1"],
-            Self::Media => &[MEDIA_KEY],
+            Self::RetiredMedia => &[MEDIA_KEY],
             Self::Versions => &[VERSIONS_KEY],
             Self::Bots => &BOT_KEYS,
             Self::Checkpoints => &CHECKPOINT_KEYS,
@@ -134,7 +135,7 @@ impl GovernanceRow {
     pub fn action(self) -> Option<&'static str> {
         match self {
             Self::Bots => Some(governance::GRANT),
-            Self::Media | Self::Checkpoints | Self::Hosts | Self::Removals => {
+            Self::RetiredMedia | Self::Checkpoints | Self::Hosts | Self::Removals => {
                 Some(governance::SETTINGS)
             }
             Self::Versions => Some(governance::INSTALL_APP),
@@ -173,7 +174,6 @@ pub fn changed_rows(
             *row != GovernanceRow::Log
                 && (membership || *row != GovernanceRow::Membership)
                 && written.get(row) != Some(digest)
-                && !(*row == GovernanceRow::Media && refreshed_media(before, after))
         })
         .map(|(row, _)| row)
         .collect()
@@ -209,7 +209,6 @@ pub fn changed_rows_by(
                         .get(*key)
                         .is_some_and(|wrote| differs(before, after, key, wrote))
                 })
-                && !(*row == GovernanceRow::Media && refreshed_media(Some(before), Some(after)))
         })
         .collect()
 }
@@ -312,31 +311,6 @@ fn differs(before: &AutoCommit, after: &AutoCommit, key: &str, wrote: &Wrote) ->
                 != at(after, &ROOT, Prop::Map(key.to_owned()))
         }
     }
-}
-
-/// Whether `after`'s media policy is `before`'s with only the authorization
-/// basis and revision renewed: what [`super::media::refresh_authorization`]
-/// writes beside the change to the rows that basis is made of, and never a
-/// policy anyone chose. It is the change's own doing, so it is no part of what
-/// the change has to be permitted for.
-fn refreshed_media(before: Option<&AutoCommit>, after: Option<&AutoCommit>) -> bool {
-    let (Some(before), Some(after)) = (before, after) else {
-        return false;
-    };
-    let (Ok(Some(held)), Ok(Some(written))) =
-        (super::media::parse(before), super::media::parse(after))
-    else {
-        return false;
-    };
-    let renewed = super::media::WorkspaceMediaV1 {
-        authorization_basis: written.authorization_basis,
-        authorization_revision: written.authorization_revision,
-        ..held.clone()
-    };
-    renewed == written
-        && held.authorization_revision.checked_add(1) == Some(written.authorization_revision)
-        && super::media::security_basis(after, &[])
-            .is_ok_and(|basis| basis == written.authorization_basis)
 }
 
 /// `value` at `object`, as bytes that are the same on every device holding it.
