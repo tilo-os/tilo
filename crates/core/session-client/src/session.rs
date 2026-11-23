@@ -395,7 +395,6 @@ fn session_task(
         fetch_grant_asked: false,
         lent,
         barriers: Vec::new(),
-        governance_answered: BTreeMap::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
         replays: BTreeSet::new(),
@@ -422,7 +421,7 @@ fn session_task(
 }
 
 /// The engine a session writes its workspaces through: this device's identity, kept beside
-/// the signer, with the membership check and founders a workspace's session runs.
+/// the signer, with the founders a workspace's session runs.
 fn session_engine(
     config: &PeerConfig,
     signer: &Arc<dyn tilo_server_client::DeviceSigner>,
@@ -435,7 +434,6 @@ fn session_engine(
             config.cert.clone(),
             Arc::clone(signer),
         ),
-        Arc::new(crate::membership_check::SessionMembership),
         Arc::new(crate::engine::Founders::default()),
     ))
 }
@@ -490,8 +488,10 @@ enum Exit {
 /// The host's answer to a write held, waiting to retire from it.
 struct AnsweredWrite {
     workspace: WorkspaceId,
-    /// The ownership entry.
+    /// The hash of the write's frame, as the host named it.
     id: [u8; 32],
+    /// The frame, which leaves this device's record once it is answered.
+    frame: Vec<u8>,
     /// Durable at this order, or refused, and why.
     outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     /// What a refusal withdraws from the replica.
@@ -571,7 +571,7 @@ struct Task {
     kept_why: BTreeMap<DocumentRoute, crate::Waits>,
     /// Signed writes of this device whose publication waits for what they need: their record
     /// here, or a signature.
-    pending_signed: BTreeMap<DocumentRoute, Vec<tilo_peer_state::owner_commit::OwnerCommitRequest>>,
+    pending_signed: BTreeMap<DocumentRoute, Vec<collab_types::SignedOp>>,
     /// Since when each document has committed writes of this device its holder has not answered.
     owed_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// Records of writes the replica let go undecided, its queue of undecided writes full: the
@@ -601,9 +601,6 @@ struct Task {
     /// Each waits for the writes that were in this device's ownership when it was called, and
     /// completes with the host's refusal of any of them ([`crate::session::outbound::Scope`]).
     barriers: Vec<Owed>,
-    /// The write carrying this device's governance of each workspace the host last answered as
-    /// durable.
-    governance_answered: BTreeMap<WorkspaceId, [u8; 32]>,
     /// Writes the owner holds for an app surface this page does not have, by that surface.
     awaiting_surface: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,
     /// Whether an app surface arrived since the session last asked for what waited for one.
@@ -670,9 +667,10 @@ pub(super) type Hears = Option<BTreeSet<DocumentRoute>>;
 /// it was written to and how long the workspace retains it.
 type HeldEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
 
-/// One write this device's ownership still holds, as [`Task::outgoing_named`] answers it: the hash
-/// of its frame, and where it was written with the changes it carries, when it names a route.
-type NamedOutgoing = Option<([u8; 32], Option<(DocumentRoute, Vec<[u8; 32]>)>)>;
+/// One write this device's record still keeps, as [`Task::outgoing_named`] answers it: the hash
+/// of its frame, the frame, and where it was written with the changes it carries, when it names a
+/// route.
+type NamedOutgoing = Option<([u8; 32], Vec<u8>, Option<(DocumentRoute, Vec<[u8; 32]>)>)>;
 
 /// A document this device is behind in: its replica refused a compaction of it.
 struct Behind {
@@ -1908,7 +1906,7 @@ impl Task {
     /// The host answered one of this device's writes on `workspace_id`'s link: retire it.
     fn acknowledge(&mut self, workspace_id: WorkspaceId, answered: Answered) {
         self.note_contact();
-        let Some((id, written)) = self.outgoing_named(workspace_id, answered.write) else {
+        let Some((id, frame, written)) = self.outgoing_named(workspace_id, answered.write) else {
             return;
         };
         let outcome = match answered.kept {
@@ -1919,17 +1917,6 @@ impl Task {
                 Err(tilo_server_protocol::refusal::Refusal::Other(reason))
             }
         };
-        if outcome.is_ok()
-            && self
-                .engine
-                .owner()
-                .governance_write(workspace_id)
-                .ok()
-                .flatten()
-                == Some(id)
-        {
-            self.governance_answered.insert(workspace_id, id);
-        }
         let withdrawn = match (&outcome, written) {
             (Err(reason), Some((route, changes))) => Some(crate::Event::Refused {
                 route,
@@ -1941,33 +1928,22 @@ impl Task {
         self.answered.push(AnsweredWrite {
             workspace: workspace_id,
             id,
+            frame,
             outcome,
             withdrawn,
         });
     }
 
-    /// This device's ownership entry of `workspace_id` whose frame hashes to `write`, with what
-    /// it was written to and the changes it carries.
+    /// This device's own frame of `workspace_id` that hashes to `write`, with what it was
+    /// written to and the changes it carries.
     fn outgoing_named(&self, workspace_id: WorkspaceId, write: [u8; 32]) -> NamedOutgoing {
-        self.engine
-            .owner()
-            .with_outgoing(workspace_id, tilo_clock::wall(), |_, outgoing| {
-                Ok(outgoing.held().find_map(|entry| {
-                    let message = neighbour_wire::NeighbourMsg::decode(entry.bytes()).ok()?;
-                    let bytes = postcard::to_allocvec(&message).ok()?;
-                    (*blake3::hash(&bytes).as_bytes() == write).then(|| {
-                        let written = DocumentRoute::of_message(&message).map(|route| {
-                            (
-                                route,
-                                tilo_peer_state::document_frame::claimed_changes(entry.bytes()),
-                            )
-                        });
-                        (entry.id(), written)
-                    })
-                }))
+        self.ownership(workspace_id)
+            .into_iter()
+            .find(|(id, ..)| *id == write)
+            .map(|(id, bytes, ..)| {
+                let written = written_to(&bytes);
+                (id, bytes, written)
             })
-            .ok()
-            .flatten()
     }
 
     /// A record this page opened was answered by its workspace: its frames are in the replica
@@ -2118,7 +2094,6 @@ impl Task {
                 tracing::warn!(%error, "sealed histories stay uncompacted");
             }
         }
-        self.renew_ownership().await;
         for workspace_id in self.workspaces.clone() {
             self.send_ownership(workspace_id);
         }
@@ -3364,16 +3339,7 @@ impl Task {
             );
             return;
         };
-        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-            workspace: route.cluster_id.clone(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                app: route.app_id.clone(),
-                document: route.document.clone(),
-                envelope: Box::new(op),
-                readers: None,
-            },
-        };
-        match self.publish_request(route, workspace, request) {
+        match self.publish_request(route, workspace, op) {
             Publishing::Refused(refusal) => {
                 let refused = BTreeMap::from([(route.clone(), refusal.to_string())]);
                 self.note_refused(route, &refusal);
@@ -3396,8 +3362,8 @@ impl Task {
             let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
                 continue;
             };
-            for request in requests {
-                match self.publish_request(&route, workspace, request) {
+            for envelope in requests {
+                match self.publish_request(&route, workspace, envelope) {
                     Publishing::Refused(refusal) => {
                         self.note_refused(&route, &refusal);
                         refused.insert(route.clone(), refusal.to_string());
@@ -3415,25 +3381,31 @@ impl Task {
         }
     }
 
-    /// Take `request` into this device's ownership.
+    /// Take `envelope`, this device's signed write of `route`, into its workspace: admitted where
+    /// the replica does not hold it yet, and kept in the record as a frame its link carries until
+    /// the host answers it.
     fn publish_request(
         &mut self,
         route: &DocumentRoute,
         workspace: tilo_desktop_model::WorkspaceId,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        envelope: collab_types::SignedOp,
     ) -> Publishing {
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
-        match self
-            .engine
-            .owner()
-            .commit_admitted(workspace, vec![request.clone()], now)
-        {
-            Ok(committed) => {
-                if !committed.is_empty() {
-                    self.owes(route);
-                    self.landed(route, Some(self.config.cert.device_public_key));
-                    self.count_ownership();
-                }
+        let retry = envelope.clone();
+        match self.engine.owner().admit_writes(
+            workspace,
+            vec![tilo_peer_state::owner::WorkspaceDocumentWrite {
+                app: route.app_id.clone(),
+                document: route.document.clone(),
+                readers: None,
+                envelope,
+            }],
+            now,
+        ) {
+            Ok(()) => {
+                self.owes(route);
+                self.landed(route, Some(self.config.cert.device_public_key));
+                self.count_ownership();
                 Publishing::Owned
             }
             Err(
@@ -3445,7 +3417,7 @@ impl Task {
                 self.pending_signed
                     .entry(route.clone())
                     .or_default()
-                    .push(request);
+                    .push(retry);
                 Publishing::Waiting
             }
             Err(refusal @ tilo_peer_state::owner::WriteRefusal::HistoryFull { .. }) => {
@@ -3454,7 +3426,7 @@ impl Task {
                 self.pending_signed
                     .entry(route.clone())
                     .or_default()
-                    .push(request);
+                    .push(retry);
                 Publishing::History
             }
             Err(refusal) => {
@@ -3502,16 +3474,7 @@ impl Task {
             .await;
         match written {
             Ok(receipt) => {
-                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    workspace: route.cluster_id.clone(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                        app: route.app_id.clone(),
-                        document: route.document.clone(),
-                        envelope: Box::new(receipt.envelope),
-                        readers: None,
-                    },
-                };
-                match self.publish_request(route, workspace, request) {
+                match self.publish_request(route, workspace, receipt.envelope) {
                     Publishing::Owned | Publishing::Waiting => Some(Ok(())),
                     Publishing::History => {
                         self.note_history(route);
@@ -3587,34 +3550,31 @@ impl Task {
         self.fail("write-refused", refusal.to_string());
     }
 
-    /// Send `workspace_id`'s writes in this device's ownership that its link has not sent.
+    /// Send `workspace_id`'s frames of this device's own that its link has not sent. A document
+    /// write stays in the record until the host answers it, so one unanswered when the link or
+    /// the device goes is sent again on the next link; any other frame leaves the record once a
+    /// link carried it, as nothing answers it.
     fn send_ownership(&mut self, workspace_id: WorkspaceId) {
         let Some(link) = self.links.get(&workspace_id) else {
             return;
         };
-        let entries: Vec<([u8; 32], Vec<u8>)> = self
-            .engine
-            .owner()
-            .with_outgoing(workspace_id, tilo_clock::wall(), |_, outgoing| {
-                Ok(outgoing
-                    .held()
-                    .map(|entry| (entry.id(), entry.bytes().to_vec()))
-                    .collect())
-            })
-            .unwrap_or_default();
-        for (id, bytes) in entries {
+        let owner = self.engine.owner();
+        for (id, bytes, ..) in self.ownership(workspace_id) {
             if !self.sent.insert((workspace_id, id)) {
                 continue;
             }
-            match neighbour_wire::NeighbourMsg::decode(&bytes) {
-                Ok(message) => {
-                    if link.sync.send(message).is_err() {
-                        self.sent.remove(&(workspace_id, id));
-                    }
-                }
+            let message = match neighbour_wire::NeighbourMsg::decode(&bytes) {
+                Ok(message) => message,
                 Err(error) => {
-                    tracing::warn!(%error, "a write in this device's ownership did not decode");
+                    tracing::warn!(%error, "a frame of this device's own did not decode");
+                    continue;
                 }
+            };
+            let answered = matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. });
+            if link.sync.send(message).is_err() {
+                self.sent.remove(&(workspace_id, id));
+            } else if !answered && let Err(error) = owner.sent(workspace_id, &bytes) {
+                self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
             }
         }
         self.count_ownership();
@@ -3626,12 +3586,7 @@ impl Task {
         let pending = self
             .workspaces
             .iter()
-            .map(|workspace_id| {
-                self.engine
-                    .owner()
-                    .unadmitted_writes(*workspace_id)
-                    .unwrap_or_default()
-            })
+            .map(|workspace_id| self.engine.owner().frames(*workspace_id).len())
             .sum();
         self.reports
             .change(|status| status.outgoing_pending = pending);
@@ -3721,26 +3676,13 @@ impl Task {
             .iter()
             .filter(|workspace_id| scope.reaches(**workspace_id))
             .flat_map(|workspace_id| {
-                let mut owed = self
-                    .engine
-                    .owner()
-                    .owed_writes(*workspace_id)
-                    .unwrap_or_default();
+                let owed: Vec<[u8; 32]> = self
+                    .ownership(*workspace_id)
+                    .into_iter()
+                    .map(|(id, ..)| id)
+                    .collect();
                 match scope {
-                    Scope::Session => owed,
-                    Scope::Workspaces(_) => {
-                        owed.extend(
-                            self.engine
-                                .owner()
-                                .governance_write(*workspace_id)
-                                .ok()
-                                .flatten()
-                                .filter(|id| {
-                                    self.governance_answered.get(workspace_id) != Some(id)
-                                }),
-                        );
-                        owed
-                    }
+                    Scope::Session | Scope::Workspaces(_) => owed,
                     Scope::Documents(documents) => self.owed_to(*workspace_id, documents, owed),
                 }
             })
@@ -3785,24 +3727,21 @@ impl Task {
             .or_insert_with(tilo_clock::now);
     }
 
-    /// What this device's ownership holds of `workspace`: id, bytes, channel and retention.
+    /// The frames of this device's own that `workspace`'s record keeps, oldest first: the hash
+    /// its host answers it by, its bytes, the channel it was written to and how long the
+    /// workspace retains it.
     fn ownership(&self, workspace: WorkspaceId) -> Vec<HeldEntry> {
         self.engine
             .owner()
-            .with_outgoing(workspace, tilo_clock::wall(), |_, outgoing| {
-                Ok(outgoing
-                    .held()
-                    .map(|entry| {
-                        (
-                            entry.id(),
-                            entry.bytes().to_vec(),
-                            entry.channel(),
-                            entry.retention(),
-                        )
-                    })
-                    .collect())
+            .frames(workspace)
+            .into_iter()
+            .filter_map(|bytes| {
+                let message = neighbour_wire::NeighbourMsg::decode(&bytes).ok()?;
+                let (channel, retention) = neighbour_wire::retention(&message, false)?;
+                let id = *blake3::hash(&postcard::to_allocvec(&message).ok()?).as_bytes();
+                Some((id, bytes, channel, retention))
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// The documents of `scope`'s workspaces that hold writes of this device not committed to
@@ -3852,18 +3791,7 @@ impl Task {
             .workspaces
             .iter()
             .filter(|workspace_id| workspaces.contains(*workspace_id))
-            .flat_map(|workspace_id| {
-                let unanswered: BTreeSet<[u8; 32]> = self
-                    .engine
-                    .owner()
-                    .owed_writes(*workspace_id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-                self.ownership(*workspace_id)
-                    .into_iter()
-                    .filter(move |entry| unanswered.contains(&entry.0))
-            })
+            .flat_map(|workspace_id| self.ownership(*workspace_id))
             .filter_map(|entry| written_to(&entry.1).map(|(route, _)| route))
             .collect();
         self.owed_since
@@ -3884,25 +3812,6 @@ impl Task {
         kept
     }
 
-    /// Renew this device's sealed writes that expired held while its host was away.
-    async fn renew_ownership(&mut self) {
-        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
-        let mut renewed = 0usize;
-        for workspace_id in self.workspaces.clone() {
-            match self
-                .engine
-                .owner()
-                .renew_outgoing(workspace_id, self.signer.as_ref(), now)
-                .await
-            {
-                Ok(count) => renewed = renewed.saturating_add(count),
-                Err(error) => tracing::warn!(%error, "expired sealed writes stay unrenewed"),
-            }
-        }
-        if renewed > 0 {
-            self.count_ownership();
-        }
-    }
 
     /// Move each held barrier whose routes hold nothing any more on to the ownership.
     fn release_barriers(&mut self, refused: &BTreeMap<DocumentRoute, String>) {
@@ -3948,19 +3857,9 @@ impl Task {
             return;
         }
         let answered = std::mem::take(&mut self.answered);
-        let mut answers: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
+        let owner = self.engine.owner();
         for answer in &answered {
-            let host = match answer.outcome {
-                Ok(order) => tilo_peer_state::owner::HostAnswer::Durable(order),
-                Err(_) => tilo_peer_state::owner::HostAnswer::Refused,
-            };
-            answers
-                .entry(answer.workspace)
-                .or_default()
-                .insert(answer.id, host);
-        }
-        for (workspace, answers) in answers {
-            if let Err(error) = self.engine.owner().retire_answered(workspace, &answers) {
+            if let Err(error) = owner.sent(answer.workspace, &answer.frame) {
                 self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
             }
         }
@@ -4129,7 +4028,6 @@ async fn ask_action(
             target: to,
             message,
             placement: None,
-            agent: None,
         },
         tilo_clock::unix_now_ns(),
         signer.as_ref(),
