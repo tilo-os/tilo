@@ -1,5 +1,5 @@
 use super::*;
-use crate::media_model::SourceIdentity;
+use crate::imager_model::SourceIdentity;
 use std::io::Read;
 
 fn request(

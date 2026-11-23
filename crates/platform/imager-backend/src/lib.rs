@@ -164,9 +164,11 @@ pub mod user_transfer;
 /// Every start and size is aligned to this many bytes.
 pub const ALIGN_BYTES: u64 = 1 << 20;
 /// The installer's guided-alongside minimum: 2 GiB ESP + 1 GiB boot + 32 GiB root.
-pub const MIN_TARGET_BYTES: u64 = 35 << 30;
+pub const MIN_TARGET_BYTES: u64 = destination::disks::MIN_ALONGSIDE_ESP_BYTES
+    + destination::disks::BOOT_BYTES
+    + destination::disks::MIN_ALONGSIDE_BYTES;
 /// GPT type of the staging ESP.
-pub const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+pub const ESP_TYPE: &str = staging_handoff_model::gpt::EFI_SYSTEM;
 /// Firmware boot option description.
 pub const BOOT_ENTRY_DESCRIPTION: &str = "Tilo installer";
 
@@ -180,14 +182,7 @@ pub use staging_handoff_model::is_operation_id;
 
 /// Canonical lowercase GUID text (`8-4-4-4-12` hex digits).
 pub fn is_guid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(i, c)| {
-            if [8, 13, 18, 23].contains(&i) {
-                c == b'-'
-            } else {
-                c.is_ascii_digit() || (b'a'..=b'f').contains(&c)
-            }
-        })
+    staging_handoff_model::is_guid(value) && !value.bytes().any(|byte| byte.is_ascii_uppercase())
 }
 
 /// Two GUIDs name the same object regardless of case or Windows braces.

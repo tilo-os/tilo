@@ -28,6 +28,16 @@ pub struct Partition {
     pub last_lba: u64,
 }
 
+impl Partition {
+    /// The partition's inclusive block range.
+    pub fn extent(&self) -> staging_handoff_model::Extent {
+        staging_handoff_model::Extent {
+            first_lba: self.first_lba,
+            last_lba: self.last_lba,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemVolume {
     pub partition_guid: String,

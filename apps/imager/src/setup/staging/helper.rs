@@ -1833,7 +1833,7 @@ impl Engine<'_> {
             Which::Root => Step::WriteRoot,
         };
         let s = disk.sector_bytes;
-        let part_bytes = (p.last_lba - p.first_lba + 1) * s;
+        let part_bytes = p.extent().lbas() * s;
         // Zero the first and last MiB so no stale signature (e.g. NTFS from
         // the shrunk region) is probed next to the real one.
         let zeros = vec![0_u8; MIB.min(part_bytes) as usize];
@@ -2280,7 +2280,7 @@ impl Engine<'_> {
             description: self.plan().boot_entry.description.clone(),
             partition_number: esp.number,
             start_lba: esp.first_lba,
-            size_lba: esp.last_lba - esp.first_lba + 1,
+            size_lba: esp.extent().lbas(),
             partition_guid: esp.guid.to_ascii_lowercase(),
             file_path: self.plan().boot_entry.loader_path.clone(),
         })

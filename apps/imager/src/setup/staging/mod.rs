@@ -26,7 +26,7 @@ pub(crate) const PROVISIONAL_STAGING_ESP_BYTES: u64 = 2 << 30;
 #[cfg(feature = "installation")]
 pub(crate) const PROVISIONAL_STAGING_ROOT_BYTES: u64 = 40 << 30;
 pub use imager_backend::ESP_TYPE;
-pub const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
+pub use imager_backend::staging::STAGING_ROOT_TYPE;
 pub const STAGING_ESP_NAME: &str = "Tilo installer boot";
 pub const STAGING_ROOT_NAME: &str = "Tilo installer";
 pub use imager_backend::BOOT_ENTRY_DESCRIPTION;

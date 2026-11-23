@@ -19,7 +19,7 @@ pub fn attest_target_descriptor(target: &TargetDrive, file: &std::fs::File) -> i
 }
 
 use super::JobResult;
-use crate::media_model::TargetDrive;
+use crate::imager_model::TargetDrive;
 use sha2::{Digest, Sha256};
 #[cfg(any(
     test,

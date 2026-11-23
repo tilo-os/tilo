@@ -39,12 +39,12 @@ mod user_commands;
 
 const HANDOFF_MAX_BYTES: usize = 64 * 1024;
 const HANDOFF_RELATIVE: &str = "EFI/tilo-staging/handoff.json";
-const EFI_GLOBAL: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
-const LOADER_VENDOR: &str = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
-const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+const EFI_GLOBAL: &str = staging_handoff_model::gpt::EFI_GLOBAL_VARIABLE;
+const LOADER_VENDOR: &str = staging_handoff_model::gpt::SYSTEMD_LOADER;
+const ESP_TYPE: &str = staging_handoff_model::gpt::EFI_SYSTEM;
 /// The Tilo staging root type; only the live installer UKI resolves it
 /// (`os/usr/libexec/tilo-root-discover`).
-const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
+const STAGING_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_STAGING_ROOT;
 const GUIDED_EFI_BYTES: i128 = 2 * 1024 * 1024 * 1024;
 const GUIDED_BOOT_BYTES: i128 = 1024 * 1024 * 1024;
 const MIN_GUIDED_ROOT_BYTES: i128 = 32 * 1024 * 1024 * 1024;
@@ -257,17 +257,9 @@ fn dollar(text: &str, pattern: impl Fn(&str) -> bool) -> bool {
     pattern(text) || text.strip_suffix('\n').is_some_and(pattern)
 }
 
-fn is_guid_text(text: &str) -> bool {
-    let groups: Vec<&str> = text.split('-').collect();
-    groups.len() == 5
-        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
-            group.len() == length && group.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-}
-
 /// `GUID_RE.match(text)`.
 fn is_guid(text: &str) -> bool {
-    dollar(text, is_guid_text)
+    dollar(text, staging_handoff_model::is_guid)
 }
 
 /// `BOOT_ID_RE.match(text)`: four uppercase hex digits.

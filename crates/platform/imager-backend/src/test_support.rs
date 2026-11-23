@@ -4,6 +4,9 @@
 //! and scratch on a filesystem the cache, transfer scratch and prepared-media store accept, below
 //! `TILO_IMAGER_TEST_CACHE_ROOT` when set, else below the checkout's `target/test-fs/imager`.
 
+/// A real GPT byte fixture for the native and frontend setup tests.
+#[cfg(target_os = "linux")]
+pub mod media;
 #[cfg(target_os = "linux")]
 use std::{
     path::{Path, PathBuf},

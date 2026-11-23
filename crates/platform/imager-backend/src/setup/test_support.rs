@@ -1,7 +1,5 @@
 //! Protocol fixtures shared by native setup tests.
 
-pub(crate) mod media;
-
 /// A protocol-shaped declaration for tests that separately attest the consumer.
 pub(crate) fn home_consumer() -> crate::home_admission::ConsumerCapability {
     crate::home_admission::ConsumerCapability {

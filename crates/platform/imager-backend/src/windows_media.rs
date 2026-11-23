@@ -46,14 +46,14 @@ impl WindowsMedia {
     /// Returns an error if receipt verification fails, native storage inspection
     /// fails, or the receipt's independence from the target cannot be established.
     /// Unsupported platforms and unknown or stacked storage mappings fail closed.
-    pub fn validate(&self, target: impl Into<crate::media_model::TargetDrive>) -> io::Result<()> {
+    pub fn validate(&self, target: impl Into<crate::imager_model::TargetDrive>) -> io::Result<()> {
         self.check_receipt()?;
         independent_storage(&self.receipt, &target.into())
     }
 }
 
 #[cfg(windows)]
-fn independent_storage(path: &Path, target: &crate::media_model::TargetDrive) -> io::Result<()> {
+fn independent_storage(path: &Path, target: &crate::imager_model::TargetDrive) -> io::Result<()> {
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
@@ -138,7 +138,7 @@ fn independent_storage(path: &Path, target: &crate::media_model::TargetDrive) ->
     Ok(())
 }
 #[cfg(unix)]
-fn independent_storage(path: &Path, target: &crate::media_model::TargetDrive) -> io::Result<()> {
+fn independent_storage(path: &Path, target: &crate::imager_model::TargetDrive) -> io::Result<()> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let recovery = std::fs::metadata(path)?;
     let disk = std::fs::metadata(target.dev_path())?;
@@ -182,7 +182,7 @@ fn plain_disk(mut sys: PathBuf) -> io::Result<PathBuf> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn independent_storage(_: &Path, _: &crate::media_model::TargetDrive) -> io::Result<()> {
+fn independent_storage(_: &Path, _: &crate::imager_model::TargetDrive) -> io::Result<()> {
     Err(io::ErrorKind::Unsupported.into())
 }
 

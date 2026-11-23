@@ -79,18 +79,14 @@ pub mod customize_image;
 pub mod handoff;
 mod helpers;
 mod host;
-mod media_capacity;
 #[cfg(target_os = "linux")]
 pub mod media_layout;
 pub mod model;
 mod page;
-pub mod probe;
-pub mod profile;
 pub mod release;
 pub mod resource;
 pub mod setup;
 mod window_view;
-pub(crate) mod windows_media;
 pub mod write;
 pub mod write_setup;
 

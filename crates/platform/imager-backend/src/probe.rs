@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use block_devices::BlockDevice;
 
-use crate::media_model::{
+use crate::imager_model::{
     Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition,
 };
 
@@ -265,7 +265,7 @@ pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
                     .get("IsSystem")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-            let removable = matches!(bus.to_ascii_lowercase().as_str(), "usb" | "sd" | "mmc");
+            let removable = crate::imager_model::is_external_transport(&bus);
             let partitions = windows_partitions(disk);
             Some(TargetDrive {
                 name: format!("PhysicalDrive{number}"),

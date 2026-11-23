@@ -5,7 +5,7 @@ use super::{io, revalidate_target};
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 fn unmount_udisks_filesystems(
     udisks: &block_devices::udisks::Udisks,
-    target: &crate::media_model::TargetDrive,
+    target: &crate::imager_model::TargetDrive,
 ) -> io::Result<()> {
     for name in std::iter::once(target.name.as_str()).chain(
         target
@@ -40,7 +40,7 @@ fn unmount_udisks_filesystems(
 /// reviewed device. Polkit owns user authentication; `O_EXCL` prevents a
 /// mounted or concurrently opened device from being written.
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
-pub fn open_udisks_device(target: &crate::media_model::TargetDrive) -> io::Result<std::fs::File> {
+pub fn open_udisks_device(target: &crate::imager_model::TargetDrive) -> io::Result<std::fs::File> {
     use std::collections::HashMap;
     use zbus::zvariant::{OwnedFd, Value};
 

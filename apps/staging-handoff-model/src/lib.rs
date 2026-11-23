@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod migration;
 pub use migration::Migration;
+pub mod gpt;
 pub mod prepared;
 
 pub const HANDOFF_FILE: &str = "handoff.json";

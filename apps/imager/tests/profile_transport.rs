@@ -1,7 +1,8 @@
 //! Production Imager codec → live extractor → installer validator → backend binding.
 #![cfg(target_os = "linux")]
-use imager::{model, profile};
+use imager::model;
 use imager_backend::destination::media_profile;
+use imager_backend::profile;
 use sha2::{Digest, Sha256};
 use std::{fs, process::Command};
 use tilo_test_env::SpawnUnderEnvLock as _;

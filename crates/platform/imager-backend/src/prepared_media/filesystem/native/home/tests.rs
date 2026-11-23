@@ -1,5 +1,5 @@
 use super::*;
-use crate::setup::test_support::media::disk;
+use crate::test_support::media::disk;
 use std::{cell::RefCell, fs, os::unix::fs::MetadataExt as _};
 struct Fixture {
     raw: File,

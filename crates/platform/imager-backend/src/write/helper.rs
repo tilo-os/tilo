@@ -1,7 +1,7 @@
 //! Authenticated helper transport and supervision, independent of the UI runtime.
 #[cfg(test)]
 mod tests;
-use crate::media_model::SourceIdentity;
+use crate::imager_model::SourceIdentity;
 use sha2::{Digest, Sha256};
 use std::{
     fs::OpenOptions,
@@ -119,26 +119,8 @@ pub struct ReviewedSource {
     pub identity: Option<SourceIdentity>,
 }
 
-#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub enum HelperPhase {
-    #[default]
-    Idle,
-    Writing,
-    Verifying,
-    Success,
-    Failed,
-}
-
 /// Secret-free progress snapshots crossing the helper boundary.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct HelperProgress {
-    pub phase: HelperPhase,
-    pub write_frac: f64,
-    pub verify_frac: f64,
-    pub rate_bps: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
+pub use crate::imager_model::{JobPhase as HelperPhase, Progress as HelperProgress};
 
 #[cfg(any(test, feature = "test-support", target_os = "windows"))]
 pub const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--tilo-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;

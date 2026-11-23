@@ -23,7 +23,7 @@ pub const COMMANDS: [&str; 6] = [
     "unpack-setup-handoff",
 ];
 
-const TILO_ROOT_TYPE: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
+const TILO_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_ROOT;
 const SFDISK_MAX_BYTES: u64 = 1024 * 1024;
 const MIB: u128 = 1 << 20;
 const GIB: u128 = 1 << 30;

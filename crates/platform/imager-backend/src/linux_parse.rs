@@ -235,28 +235,57 @@ pub enum MountSource {
     Number(u32, u32),
 }
 
+/// One line of `/proc/self/mountinfo`, split into the fields its readers use.
+#[derive(Clone, Copy, Debug)]
+pub struct MountEntry<'a> {
+    pub mount_id: &'a str,
+    /// The `major:minor` device number.
+    pub device: &'a str,
+    pub mountpoint: &'a str,
+    pub options: &'a str,
+    pub filesystem: &'a str,
+    pub source: &'a str,
+}
+
+/// Splits `/proc/self/mountinfo` into its entries, skipping malformed lines.
+pub fn mount_entries(mountinfo: &str) -> impl Iterator<Item = MountEntry<'_>> {
+    mountinfo.lines().filter_map(|line| {
+        let (left, right) = line.split_once(" - ")?;
+        let mut left = left.split_whitespace();
+        let mount_id = left.next()?;
+        let _parent = left.next()?;
+        let device = left.next()?;
+        let _root = left.next()?;
+        let mountpoint = left.next()?;
+        let options = left.next()?;
+        let mut right = right.split_whitespace();
+        let filesystem = right.next()?;
+        let source = right.next().unwrap_or_default();
+        Some(MountEntry {
+            mount_id,
+            device,
+            mountpoint,
+            options,
+            filesystem,
+            source,
+        })
+    })
+}
+
 pub fn mount_source(mountinfo: &str, mountpoint: &str) -> Option<MountSource> {
     let mut found = None;
-    for line in mountinfo.lines() {
-        let fields: Vec<&str> = line.split(' ').collect();
-        let Some(dash) = fields.iter().position(|f| *f == "-") else {
-            continue;
-        };
-        if fields.get(4) != Some(&mountpoint) {
+    for entry in mount_entries(mountinfo) {
+        if entry.mountpoint != mountpoint {
             continue;
         }
-        let source = fields
-            .get(dash.saturating_add(2))
-            .copied()
-            .unwrap_or_default();
-        let Some((major, minor)) = fields.get(2).and_then(|f| f.split_once(':')) else {
+        let Some((major, minor)) = entry.device.split_once(':') else {
             continue;
         };
         let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
             continue;
         };
-        found = if source.starts_with("/dev/") {
-            Some(MountSource::Path(source.to_string()))
+        found = if entry.source.starts_with("/dev/") {
+            Some(MountSource::Path(entry.source.to_string()))
         } else if major != 0 {
             Some(MountSource::Number(major, minor))
         } else {

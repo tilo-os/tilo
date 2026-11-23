@@ -18,8 +18,7 @@ use crate::model::{
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 
-pub use crate::profile::{PROFILE_BLOCK_SIZE, PROFILE_MAGIC};
-const _: () = assert!(PROFILE_BLOCK_SIZE == imager_backend::media_model::PROFILE_BLOCK_SIZE);
+pub use imager_backend::profile::{PROFILE_BLOCK_SIZE, PROFILE_MAGIC};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobStart {
@@ -73,7 +72,7 @@ pub struct WriteRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_stage: Option<std::path::PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) windows_preparation: Option<crate::windows_media::WindowsMedia>,
+    pub(crate) windows_preparation: Option<imager_backend::windows_media::WindowsMedia>,
     #[serde(default)]
     pub provision_migration_data: bool,
     #[cfg(target_os = "linux")]
@@ -97,7 +96,10 @@ fn validate_windows_preparation(req: &WriteRequest) -> io::Result<()> {
             ));
         }
         held.prepared.verify()?;
-        crate::profile::encode_profile_block_with_windows(&req.profile, Some(&held.prepared))?;
+        imager_backend::profile::encode_profile_block_with_windows(
+            &req.profile,
+            Some(&held.prepared),
+        )?;
     }
     Ok(())
 }
@@ -171,8 +173,8 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
 }
 
 #[cfg(test)]
-use crate::profile::write_profile_block_bound;
-pub use crate::profile::{encode_profile_block, write_profile_block};
+use imager_backend::profile::write_profile_block_bound;
+pub use imager_backend::profile::{encode_profile_block, write_profile_block};
 
 pub use imager_backend::write::JobResult;
 
@@ -382,7 +384,7 @@ fn run_job_paths_bound(
     expected_identity: Option<SourceIdentity>,
     expected_sha256: Option<&str>,
     should_cancel: &impl Fn() -> bool,
-    mut on_progress: impl FnMut(Progress),
+    on_progress: impl FnMut(Progress),
 ) -> JobResult {
     imager_backend::write::job::run_job_paths_bound(
         src,
@@ -391,7 +393,7 @@ fn run_job_paths_bound(
         expected_identity,
         expected_sha256,
         should_cancel,
-        |progress| on_progress(progress.into()),
+        on_progress,
     )
 }
 
@@ -400,7 +402,7 @@ fn run_job_file_bound(
     req: &WriteRequest,
     device: &mut std::fs::File,
     should_cancel: &impl Fn() -> bool,
-    mut on_progress: impl FnMut(Progress),
+    on_progress: impl FnMut(Progress),
 ) -> JobResult {
     if let Err(error) = validate_windows_preparation(req).and_then(|()| {
         req.windows_preparation
@@ -428,7 +430,7 @@ fn run_job_file_bound(
         },
         device,
         should_cancel,
-        |progress| on_progress(progress.into()),
+        on_progress,
         |device| {
             #[cfg(target_os = "linux")]
             {
@@ -455,7 +457,7 @@ fn run_job_file_bound(
             }
         },
         || {
-            crate::profile::encode_profile_block_with_windows(
+            imager_backend::profile::encode_profile_block_with_windows(
                 &req.profile,
                 req.windows_preparation.as_ref().map(|held| &held.prepared),
             )
@@ -474,7 +476,7 @@ pub(crate) fn attest_target_descriptor(
 fn run_system_job(
     req: &WriteRequest,
     should_cancel: &impl Fn() -> bool,
-    mut on_progress: impl FnMut(Progress),
+    on_progress: impl FnMut(Progress),
     authenticated_caller: Option<u32>,
 ) -> JobResult {
     if let Err(error) = validate_windows_preparation(req).and_then(|()| {
@@ -497,7 +499,7 @@ fn run_system_job(
             authenticated_caller,
         },
         should_cancel,
-        |progress| on_progress(progress.into()),
+        on_progress,
     )
 }
 
@@ -531,9 +533,7 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
     ) -> JobResult {
         #[cfg(any(test, target_os = "linux"))]
         {
-            run_job_file_bound(self.req, device, &|| should_cancel(), |progress| {
-                on_progress(progress.into())
-            })
+            run_job_file_bound(self.req, device, &|| should_cancel(), on_progress)
         }
         #[cfg(not(any(test, target_os = "linux")))]
         {
@@ -547,7 +547,7 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
         destination: &Path,
         should_cancel: &dyn Fn() -> bool,
     ) -> io::Result<()> {
-        crate::profile::write_windows_profile_block_bound(
+        imager_backend::profile::write_windows_profile_block_bound(
             destination,
             self.req.target.size,
             &self.req.profile,
@@ -636,7 +636,7 @@ fn run_udisks_job(
             authenticated_caller: None,
         },
         should_cancel,
-        |progress| on_progress(progress.into()),
+        on_progress,
     )
 }
 
@@ -746,7 +746,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
             run_system_job(
                 &request,
                 &|| should_cancel(),
-                |progress| on_progress(progress.into()),
+                on_progress,
                 authorized.caller_uid,
             )
         },
@@ -787,7 +787,7 @@ fn run_privileged_helper(
         &bytes,
         &|| control.is_cancelled(),
         |progress| {
-            let _ = tx.send(progress.into());
+            let _ = tx.send(progress);
         },
     )
 }
@@ -806,7 +806,7 @@ fn relay_helper_progress(
         cancel_path,
         &|| control.is_cancelled(),
         &mut |progress| {
-            let _ = tx.send(progress.into());
+            let _ = tx.send(progress);
         },
     )
 }

@@ -1,7 +1,7 @@
 //! A real GPT byte fixture for native setup's production layout parser.
 use std::{fs::File, os::unix::fs::FileExt};
-const IMAGE_BYTES: u64 = 4 * 1024 * 1024;
-const MEDIA_BYTES: u64 = 64 * 1024 * 1024;
+pub const IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+pub const MEDIA_BYTES: u64 = 64 * 1024 * 1024;
 fn field(raw: &mut [u8], start: usize, value: &[u8]) {
     raw.get_mut(start..start + value.len())
         .expect("fixture field")
@@ -29,7 +29,7 @@ fn header(current: u64, alternate: u64, array_lba: u64, entries: &[u8]) -> Vec<u
     field(&mut raw, 16, &crc.to_le_bytes());
     raw
 }
-pub(crate) fn disk() -> (tempfile::TempDir, std::path::PathBuf, File) {
+pub fn disk() -> (tempfile::TempDir, std::path::PathBuf, File) {
     let dir = tempfile::tempdir().expect("fixture directory");
     let path = dir.path().join("medium");
     let file = std::fs::OpenOptions::new()

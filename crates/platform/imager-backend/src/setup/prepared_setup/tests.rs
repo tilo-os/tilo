@@ -792,7 +792,7 @@ fn offline_home_fixture(root: &Path) -> (Manifest, PathBuf, PathBuf, AccountId) 
         selection: PortableHomeSelection::FullHome,
         applications: false,
     });
-    let (_media_directory, _media_path, raw_media) = crate::setup::test_support::media::disk();
+    let (_media_directory, _media_path, raw_media) = crate::test_support::media::disk();
     let media = crate::media_layout::provision(
         &raw_media,
         4 * 1024 * 1024,

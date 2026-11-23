@@ -1,5 +1,5 @@
 //! Linux filesystem authority for the reviewed removable medium.
-use crate::media_model::TargetDrive;
+use crate::imager_model::TargetDrive;
 use crate::migration_directory::PinnedDirectory;
 use block_devices::{BlockDevice, Lsblk};
 use cap_primitives::fs::MetadataExt;

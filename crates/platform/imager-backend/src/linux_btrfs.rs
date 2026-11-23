@@ -37,14 +37,11 @@ fn partition_bytes(partition: &crate::platform::Partition, sector: u64) -> IoRes
 fn mount_line(target: &str) -> IoResult<(u64, String)> {
     let text = std::fs::read_to_string("/proc/self/mountinfo")
         .map_err(|_| "Btrfs mount table unavailable")?;
-    let mut matching = text.lines().filter_map(|line| {
-        let (left, right) = line.split_once(" - ")?;
-        let fields: Vec<_> = left.split_whitespace().collect();
-        let after: Vec<_> = right.split_whitespace().collect();
-        (fields.get(4) == Some(&target)
-            && after.first() == Some(&"btrfs")
-            && fields.get(5)?.split(',').any(|value| value == "rw"))
-        .then(|| Some((fields.first()?.parse().ok()?, after.get(1)?.to_string())))?
+    let mut matching = crate::linux_parse::mount_entries(&text).filter_map(|entry| {
+        (entry.mountpoint == target
+            && entry.filesystem == "btrfs"
+            && entry.options.split(',').any(|value| value == "rw"))
+        .then(|| Some((entry.mount_id.parse().ok()?, entry.source.to_string())))?
     });
     let result = matching.next().ok_or("no supported writable Btrfs root")?;
     if matching.next().is_some() {

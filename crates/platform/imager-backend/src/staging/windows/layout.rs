@@ -77,14 +77,7 @@ pub fn normalize_guid(text: &str) -> Option<String> {
         .strip_prefix('{')
         .and_then(|rest| rest.strip_suffix('}'))
         .unwrap_or(trimmed);
-    let groups: Vec<&str> = bare.split('-').collect();
-    let lengths = [8, 4, 4, 4, 12];
-    let valid = groups.len() == lengths.len()
-        && groups
-            .iter()
-            .zip(lengths)
-            .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()));
-    valid.then(|| bare.to_ascii_lowercase())
+    staging_handoff_model::is_guid(bare).then(|| bare.to_ascii_lowercase())
 }
 
 fn is_zero_guid(guid: &str) -> bool {

@@ -42,6 +42,14 @@ impl ValidationError {
     }
 }
 
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
 /// Validate a destination startup secret against its actual unlock policy.
 ///
 /// # Errors
