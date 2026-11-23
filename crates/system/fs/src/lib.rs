@@ -37,7 +37,7 @@ pub mod eviction;
 pub mod file_watch;
 #[cfg(feature = "filesystem")]
 pub mod fs;
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
 pub mod fuse_session;
 #[cfg(feature = "filesystem")]
 pub mod hydration;
@@ -53,6 +53,8 @@ pub mod namespace;
 pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
+#[cfg(feature = "filesystem")]
+pub mod node;
 #[cfg(feature = "document-media")]
 pub mod public_content;
 #[cfg(feature = "filesystem")]

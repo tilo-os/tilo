@@ -114,7 +114,7 @@ pub fn no_exec() -> bool {
     NO_EXEC.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn set_limits(max_open_files: u64) -> Result<(), String> {
     for (resource, value) in [
         (libc::RLIMIT_CORE, 0),

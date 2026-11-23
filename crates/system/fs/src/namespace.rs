@@ -10,12 +10,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, UNIX_EPOCH};
 
+use crate::node::{FileAttr, FileType, INodeNo};
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId, FileNameV1, FileNodeKind,
     MAX_FILE_NAME_BYTES, TreeChunk,
 };
-use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
 use uuid::Uuid;
 

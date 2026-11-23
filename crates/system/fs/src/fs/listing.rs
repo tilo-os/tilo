@@ -9,7 +9,7 @@
 //! listing asks again. An ACL change is different: a page must not show what
 //! was just revoked, so that rebuilds even mid-listing.
 
-use fuser::FileType;
+use crate::node::FileType;
 use tilo_lock::MutexRecover as _;
 
 use super::{QuickFS, child_path};

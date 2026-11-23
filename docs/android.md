@@ -307,5 +307,11 @@ Useful probes:
 
 Nothing in CI runs on a device. t's `android` check runs
 `cargo clippy -D warnings` on every selected app's `<app>-android` example for
-`aarch64-linux-android` and `x86_64-linux-android` (tools/ci/clippy-android.sh);
-it is a type check, not an APK build.
+`aarch64-linux-android` and `x86_64-linux-android` (tools/ci/clippy-android.sh),
+and type-checks the device daemon (`tilo-runtime`) for both, since the Tilo app
+runs it in its own process. It is a type check, not an APK build.
+
+On Android the daemon leaves out what a phone has no use for: the workspace
+folder's FUSE mount (`tilo-fs` keeps the tree and its sync, and a mount's FUSE
+adapter is built only for Linux and macOS) and native app launch, which it
+refuses, since there is no app sandbox there.
