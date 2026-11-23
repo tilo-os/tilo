@@ -231,6 +231,7 @@ impl Checker<'_> {
             "join_call" | "leave_call" | "mute_call" | "deafen_call" | "camera_call"
             | "screen_call" => return self.builtin_call(name, args, span),
             "delivery" => return self.builtin_delivery(args, span),
+            "reach" => return self.builtin_reach(args, span),
             "members" => return self.builtin_members(args, span),
             "speakers" => return self.builtin_speakers(args, span),
             "created" | "updated" | "history" => {

@@ -1026,6 +1026,19 @@ view thread_chip<T>(thread: T, count: Int) {
     }
 }
 
+/// How far the person's own change of `of` has gone, as one quiet line under it: that it has
+/// reached nobody yet while no other device that keeps the workspace has taken it in (it waits on
+/// this device while they are all offline), and that the workspace refused it once it did.
+/// Nothing once it reached another device, nor for a change that came from one.
+view reach_note<R>(of: R) {
+    let state = reach(of).state
+    if state == "pending" {
+        ui.Text(phrase("tilolang-reach-pending"), role: .caption, secondary: true)
+    } else if state == "refused" {
+        ui.Text(phrase("tilolang-reach-refused"), role: .caption, secondary: true)
+    }
+}
+
 /// What `of` was made from, when an action made it from another resource: one quiet row under
 /// the title, naming where it came from in a word and that resource's title, its type's glyph
 /// before it, which opens it. A resource made on its own shows nothing.

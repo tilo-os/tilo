@@ -33,6 +33,8 @@ mod direct_held_writes;
 mod direct_lost_history;
 #[path = "direct_opened.rs"]
 mod direct_opened;
+#[path = "direct_reach.rs"]
+mod direct_reach;
 #[path = "direct_two_devices.rs"]
 mod direct_two_devices;
 #[path = "renewed_enrollment.rs"]

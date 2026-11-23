@@ -113,6 +113,11 @@ pub enum Command {
         inputs: Json,
         answer: Option<Json>,
     },
+    /// This device's changes of the record `record` that no other device keeping the workspace
+    /// has taken in yet, and those the workspace refused. Answered as [`Reply::Reach`]. The
+    /// device's sync keeps them and its workspace service answers; a store answers none
+    /// ([`read`]), as a store on one device alone has no other device to reach.
+    Reach { record: String },
 }
 
 /// One edit of a resource's content.
@@ -177,6 +182,17 @@ pub enum Reply {
     Contents(Vec<Option<Json>>),
     /// Whether this device runs an action that runs once ([`Command::Turn`]).
     Turn(Turn),
+    /// How far this device's changes of a record have gone ([`Command::Reach`]).
+    Reach(Reach),
+}
+
+/// This device's changes of one record that no other device keeping the workspace has taken in
+/// yet, and those the workspace refused for good, each by its hash in hex. Any other change of
+/// the record reached another device, or came from one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reach {
+    pub pending: Vec<String>,
+    pub refused: Vec<String>,
 }
 
 /// Whether this device runs an action that runs once in the workspace.
@@ -341,7 +357,8 @@ fn write_into(
         | Command::MadeFrom { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }
-        | Command::Turn { .. } => return Err(StoreError::NotAWrite),
+        | Command::Turn { .. }
+        | Command::Reach { .. } => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -428,6 +445,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         }
         Command::Position { query, id } => Reply::Position(store.position(query, id, may_read)),
         Command::PageAt { query, at } => Reply::Page(store.at(query, *at, may_read)),
+        Command::Reach { .. } => Reply::Reach(Reach::default()),
         Command::Put { .. }
         | Command::Remove { .. }
         | Command::Undo { .. }

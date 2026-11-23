@@ -148,6 +148,11 @@ tilolang-call-sharing = Sharing screen
 tilolang-call-from-discord = From Discord
 tilolang-call-from = From { $service }
 
+# Under a change of the person's own while no other device of the workspace has it yet, and once
+# the workspace refused it.
+tilolang-reach-pending = Not reached anyone yet
+tilolang-reach-refused = The workspace refused this
+
 app-activate-window = Show this window
 app-activate-window-description = Bring this app's window to the front.
 tilolang-form-cancel = Cancel

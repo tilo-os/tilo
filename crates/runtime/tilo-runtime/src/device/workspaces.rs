@@ -504,12 +504,17 @@ impl ServiceWorkspaces {
 
     /// Hand every write of another device the workspaces held here take in
     /// to the apps following the workspace's records, on the brokers and
-    /// `fanout`.
+    /// `fanout`; and tell them each record of theirs whose reach moved, as
+    /// this device's own writes reach the workspace's other devices.
     pub(crate) fn follow_admitted_writes(
         &self,
         brokers: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     ) {
+        tilo_rt::app().spawn(tilo_workspace_service::apps::collab_inbound::follow_reach(
+            self.copies(),
+            Arc::clone(&fanout),
+        ));
         tilo_rt::app().spawn(
             tilo_workspace_service::apps::collab_inbound::follow_admitted_writes(
                 self.copies(),

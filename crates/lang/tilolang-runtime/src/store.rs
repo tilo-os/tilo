@@ -1331,6 +1331,46 @@ impl Settled {
     }
 }
 
+/// This device's own changes of one record that no other device keeping the workspace has taken
+/// in yet, and those the workspace refused for good, each by its hash in hex: what `reach(r)`
+/// reads ([`Store::reach`]). Any other change of the record has reached another device, or came
+/// from one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordReach {
+    pub pending: Vec<String>,
+    pub refused: Vec<String>,
+}
+
+impl RecordReach {
+    /// Where changes named `changes` stand together, as `reach(r)` says it: `refused` when the
+    /// workspace refused one, else `pending` when one has not reached another device yet (or is
+    /// not committed yet, which names no change), else `reached`.
+    #[must_use]
+    pub fn state_of<'a>(&self, changes: impl IntoIterator<Item = &'a str>) -> &'static str {
+        let mut pending = false;
+        for change in changes {
+            if self.refused.iter().any(|refused| refused == change) {
+                return "refused";
+            }
+            pending |= change.is_empty() || self.pending.iter().any(|waiting| waiting == change);
+        }
+        if pending { "pending" } else { "reached" }
+    }
+
+    /// Where the whole record stands: `pending` while any change of it is, else `refused` when
+    /// one was, else `reached`.
+    #[must_use]
+    pub fn state(&self) -> &'static str {
+        if !self.pending.is_empty() {
+            "pending"
+        } else if !self.refused.is_empty() {
+            "refused"
+        } else {
+            "reached"
+        }
+    }
+}
+
 /// How the outside effect a resource's actions queued last stands, as `delivery(r)` reads it:
 /// `waiting`, `held`, `sending`, `sent`, `rejected`, `withdrawn` or `unknown`, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1982,6 +2022,15 @@ pub trait Store {
     /// How the outside effect each resource's actions queued last stands, by document: what
     /// `delivery(r)` reads.
     fn outbox_states(&self) -> Vec<(DocId, DeliveryState)>;
+
+    /// This device's changes of the record `doc` that no other device keeping the workspace has
+    /// taken in yet, and those the workspace refused: what `reach(r)` reads. The device's sync
+    /// keeps them, and the store asks it; a store on this device alone has no other device to
+    /// reach, and answers none.
+    fn reach(&self, doc: &DocId) -> RecordReach {
+        let _ = doc;
+        RecordReach::default()
+    }
 
     /// # Errors
     ///

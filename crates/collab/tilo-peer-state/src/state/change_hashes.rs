@@ -4,7 +4,7 @@
 use collab_types::DocumentMutation;
 
 /// The hashes of the changes `payload`, one document mutation, carries.
-pub(super) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
+pub(crate) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
     let Ok(mutation) = DocumentMutation::decode(payload) else {
         return Vec::new();
     };

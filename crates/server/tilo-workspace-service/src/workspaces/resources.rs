@@ -1075,6 +1075,13 @@ impl Workspaces {
                 .await
                 .map(tilo_resource_store::wire::Reply::Turn);
         }
+        if let tilo_resource_store::wire::Command::Reach { record } = &command {
+            return Ok(tilo_resource_store::wire::Reply::Reach(self.record_reach(
+                workspace,
+                context.app_id(),
+                record,
+            )));
+        }
         let device = self.member_identity()?;
         let writing = command.writes();
         // What a view's caller writes outside an invocation: each write's resource type and verb.
@@ -1120,6 +1127,44 @@ impl Workspaces {
         }
         self.write_resources(governed, device, context.app_id(), command)
             .await
+    }
+
+    /// This device's changes of `app`'s `record` in `workspace` that no other device keeping the
+    /// workspace has taken in yet, and those the workspace refused, as this device's sync keeps
+    /// them ([`tilo_peer_state::reach`]): what the app's views read as `reach(r)`. An app asks
+    /// only of its own records.
+    #[cfg(feature = "apps")]
+    fn record_reach(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> tilo_resource_store::wire::Reach {
+        let Some(workspace) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
+            return tilo_resource_store::wire::Reach::default();
+        };
+        let reach = self.inner.store.record_reach(workspace, app, record);
+        let changes = |writes: Vec<tilo_peer_state::reach::OwnWrite>| {
+            writes
+                .into_iter()
+                .flat_map(|write| write.changes)
+                .map(hex::encode)
+                .collect()
+        };
+        tilo_resource_store::wire::Reach {
+            pending: changes(reach.pending),
+            refused: changes(reach.refused),
+        }
+    }
+
+    /// Each record of a workspace here whose reach moved: one of this device's writes of it was
+    /// sent, taken in by another device that keeps the workspace, or refused. What tells an
+    /// app's windows to read `reach(r)` again ([`crate::apps::collab_inbound::follow_reach`]).
+    #[must_use]
+    pub fn reach_moved(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<tilo_peer_state::reach::ReachMoved> {
+        self.inner.store.reach_moved()
     }
 
     /// Whether this device runs `app`'s action `address` on `inputs`, which runs once in
@@ -1336,7 +1381,8 @@ fn stamp_resource_invoker(
         | Command::PageAt { .. }
         | Command::Contents { .. }
         | Command::Fields { .. }
-        | Command::Turn { .. } => return,
+        | Command::Turn { .. }
+        | Command::Reach { .. } => return,
     };
     let invoker = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));

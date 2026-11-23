@@ -601,6 +601,17 @@ impl Checker<'_> {
         )
     }
 
+    /// `reach(r)`: how far this device's own changes of `r` have gone, as a `host.Reach`: pending
+    /// until another device that keeps the workspace has taken them in, then reached, or refused
+    /// by the workspace. Of an item, the changes that made and edited it; of a whole record, any
+    /// change of it. A view that read it runs again when it moves.
+    pub(super) fn builtin_reach(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("reach", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Reach, vec![r], host_ty("Reach"))
+    }
+
     /// `members(r)`: the workspace's members who can read `r` now, as membership and grants decide.
     pub(super) fn builtin_members(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("members", args, span) else {

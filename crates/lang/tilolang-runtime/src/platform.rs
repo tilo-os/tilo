@@ -341,6 +341,31 @@ impl Core {
         value
     }
 
+    /// `reach(r)`: how far this device's own changes of `at` have gone, as `host.Reach`. Of an
+    /// item, the changes its versions name; of a whole record, every change of it. The record's
+    /// sync says when an answer moves it, as it says another device's write: a view that read it
+    /// runs again then. A resource of an app this runtime does not run is read where that app
+    /// runs, and reads as reached here.
+    fn reach_of(&self, at: &ResourceRef) -> HResult<Value> {
+        let state = if crate::foreign::is_foreign(at) {
+            "reached"
+        } else {
+            let reach = self.store.borrow().reach(&at.doc);
+            self.read_versions_of(at);
+            if at.item.is_none() {
+                reach.state()
+            } else {
+                let versions = self
+                    .store
+                    .borrow()
+                    .versions(at)
+                    .map_err(|error| crate::engine::HostFail::Trap(error.to_string()))?;
+                reach.state_of(versions.iter().map(|version| version.change.as_str()))
+            }
+        };
+        Ok(Value::Tuple(vec![Value::Text(state.to_owned())]))
+    }
+
     /// The list the host keeps under `key` for the views (empty while it said none); a view that
     /// read it runs again when it moves.
     fn host_list(&self, key: StateKey) -> Value {
@@ -376,6 +401,11 @@ impl Core {
             Imp::Delivery => {
                 let target = self.ref_arg(a.h(0)?)?;
                 let value = self.delivery_of(&target.target.doc);
+                self.ret_h(value)
+            }
+            Imp::Reach => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.reach_of(&target.target)?;
                 self.ret_h(value)
             }
             Imp::Lenses => {

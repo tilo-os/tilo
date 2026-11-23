@@ -41,10 +41,14 @@
 //! first frame names and admits the device at its other end before the link
 //! listens ([`Serving::admitting`]).
 //!
-//! The device a member dials answers each of the member's own writes it took
-//! in, or refused for good, on a unidirectional stream of its own opened after
-//! its frames' ([`Answered`]); the member lets an answered write go from its
-//! ownership, as it does what a server host answers.
+//! Each end of a link answers the other's own writes it took in, or refused
+//! for good, on a unidirectional stream of its own opened after its frames'
+//! ([`Answered`]); a device that takes the workspace's records only as it opens
+//! them answers none, as it keeps no copy of the workspace. A store device
+//! keeps which of its own writes no other device keeping the workspace has
+//! answered yet ([`crate::reach`]), and sends them again on each link that comes
+//! up, so a write made while every other device was away is answered once one
+//! links.
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::frames::Budget;
@@ -74,12 +78,12 @@ use tilo_server_protocol::refusal::Refusal;
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
-/// ALPN of a direct replica link between two devices of one workspace, on which
-/// the dialled device answers the dialling one's writes ([`Answered`]).
+/// ALPN of a direct link between two devices of one workspace, on which each
+/// answers the other's writes ([`Answered`]).
 pub use tilo_server_protocol::transport::DIRECT_ALPN;
 
-/// What the dialled device made of one of the dialling device's own writes,
-/// named by the hash of the write's frame as the writer keeps it held.
+/// What the device at a link's other end made of one of this device's own
+/// writes, named by the hash of the write's frame as the writer sent it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Answered {
     /// The hash of the write's frame.
@@ -93,9 +97,9 @@ pub struct Answered {
 /// Whether the workspace keeps a write ([`Answered`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Kept {
-    /// The dialled device took it in.
+    /// The other device took it in.
     Durable,
-    /// The dialled device refused it for good: no later attempt of it is
+    /// The other device refused it for good: no later attempt of it is
     /// admitted. Its verdict reaches the writer in the workspace as before,
     /// and `reason` is why, in the refusing workspace's own words: what the
     /// writer answers a wait for that write with.
@@ -771,12 +775,13 @@ impl Dialed {
     }
 }
 
-/// Where the dialled device's answers to the dialling one's writes go, and
-/// what writes them on the stream it opens for them: after its frames', so the
-/// dialling device takes the two in that order.
+/// Where this device's answers to the other device's writes go, and what
+/// writes them on the stream it opens for them: after its frames', so the
+/// other device takes the two in that order. A device that keeps no copy of
+/// the workspace (`answers` false) answers nothing and opens no stream.
 async fn answering(
     transport: &dyn Transport,
-    dialing: bool,
+    answers: bool,
 ) -> Result<
     (
         Option<tokio::sync::mpsc::UnboundedSender<Answered>>,
@@ -784,12 +789,15 @@ async fn answering(
     ),
     String,
 > {
-    let (answering, answers) = tokio::sync::mpsc::unbounded_channel::<Answered>();
-    if dialing {
-        return Ok((None, Box::pin(answer_all(None, answers))));
+    let (answering, answered) = tokio::sync::mpsc::unbounded_channel::<Answered>();
+    if !answers {
+        return Ok((None, Box::pin(answer_all(None, answered))));
     }
     let stream = transport.open_uni().await?;
-    Ok((Some(answering), Box::pin(answer_all(Some(stream), answers))))
+    Ok((
+        Some(answering),
+        Box::pin(answer_all(Some(stream), answered)),
+    ))
 }
 
 /// Write each of `answers` on `stream` as it comes; on no stream, wait for the link to end.
@@ -837,7 +845,7 @@ struct Inner {
     store: Option<Arc<Store>>,
     outgoing: broadcast::Sender<Authored>,
     heard: broadcast::Sender<Heard>,
-    /// What the device this one dialled answered of this device's writes.
+    /// What the devices at this device's links' other ends answered of its writes.
     answered: broadcast::Sender<Answered>,
     changed: watch::Sender<u64>,
     /// Set once the other device's retained history is in hand.
@@ -1148,6 +1156,8 @@ impl DirectSync {
         #[cfg(not(target_arch = "wasm32"))]
         self.keep(&message, false)
             .map_err(|error| error.to_string())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.note_own(&message);
         self.0.changed.send_modify(bump);
         self.outgoing(Authored {
             from: self.device(),
@@ -1198,10 +1208,10 @@ impl DirectSync {
         self.0.changed.subscribe()
     }
 
-    /// What the device this one dialled answers of this device's own writes,
-    /// on a link of [`DIRECT_ALPN`]: what its ownership lets go of. A receiver
-    /// that falls behind loses answers, and the writes they name wait for the
-    /// next link's catch-up.
+    /// What the devices at this device's links' other ends answer of its own
+    /// writes, on links of [`DIRECT_ALPN`]. A receiver that falls behind loses
+    /// answers, and the writes they name wait for the next link's catch-up.
+    /// A store device keeps every answer besides ([`Self::record_reach`]).
     #[must_use]
     pub fn answers(&self) -> broadcast::Receiver<Answered> {
         self.0.answered.subscribe()
@@ -1324,6 +1334,8 @@ impl DirectSync {
         #[cfg(not(target_arch = "wasm32"))]
         self.keep(&message, false)
             .map_err(|error| error.to_string())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.note_own(&message);
         self.outgoing(Authored {
             from: self.device(),
             message,
@@ -1350,6 +1362,10 @@ impl DirectSync {
         {
             return Ok(false);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if from == self.device() {
+            self.note_own(message);
+        }
         self.outgoing(Authored {
             from,
             message: message.clone(),
@@ -1363,6 +1379,46 @@ impl DirectSync {
             sink(from, message);
         }
         Ok(true)
+    }
+
+    /// Note `message`, this device's own write, as pending at its store until
+    /// another device keeping the workspace takes it in ([`crate::reach`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn note_own(&self, message: &NeighbourMsg) {
+        if let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) {
+            store.note_own_write(workspace, message);
+        }
+    }
+
+    /// This device's writes of `app`'s `record` that no other device keeping
+    /// the workspace has taken in yet, and those it refused, as this device's
+    /// store keeps them; `None` for a device that keeps no store.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn record_reach(&self, app: &str, record: &str) -> Option<crate::reach::RecordReach> {
+        let store = self.0.store.as_ref()?;
+        let workspace = self.workspace().ok()?;
+        Some(store.record_reach(workspace, app, record))
+    }
+
+    /// This device's own writes no other device keeping the workspace has
+    /// answered yet, each to go out once more as a link starts: the device at
+    /// its other end answers each, whether it took it in just now or before.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unreached(&self) -> Vec<Authored> {
+        let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) else {
+            return Vec::new();
+        };
+        let device = self.device();
+        store
+            .unreached(workspace)
+            .into_iter()
+            .map(|message| Authored {
+                from: device,
+                message,
+                published: true,
+            })
+            .collect()
     }
 
     /// Hand `authored` to every open link; no open link is no error, as the
@@ -1892,7 +1948,19 @@ impl DirectSync {
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
         // rather than not at all.
-        let catch_up = self.link_catch_up(dialing).await?;
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(
+                unused_mut,
+                reason = "a page keeps no store of its writes to send again"
+            )
+        )]
+        let mut catch_up = self.link_catch_up(dialing).await?;
+        // This device's writes no device keeping the workspace answered yet go
+        // once more, after what the link opens with: the other device answers
+        // each, so a write made while it was away reaches it and says so.
+        #[cfg(not(target_arch = "wasm32"))]
+        catch_up.extend(self.unreached());
         tracing::debug!(
             workspace = ?self.workspace().ok(),
             remote = %short(&remote),
@@ -1902,7 +1970,10 @@ impl DirectSync {
             "a direct link starts"
         );
         let send = transport.open_uni().await?;
-        let (answering, answer_all) = answering(transport, dialing).await?;
+        // Both ends answer each other's writes, except a device that takes the
+        // records only as it opens them: it keeps no copy of the workspace, so
+        // its taking a write in is no write reaching the workspace.
+        let (answering, answer_all) = answering(transport, !(dialing && self.0.opens)).await?;
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
@@ -1939,7 +2010,6 @@ impl DirectSync {
             &own,
             in_hand,
             Answering {
-                dialing,
                 sender: answering.as_ref(),
             },
             admit,
@@ -2735,16 +2805,15 @@ impl DirectSync {
         };
         tokio::select! {
             result = received => result,
-            result = Box::pin(self.take_answers(transport, answering.dialing)) => result,
+            result = Box::pin(self.take_answers(transport)) => result,
         }
     }
 
-    /// Take what the device this one dialled answers of its writes, on the
-    /// stream it opens after its frames'.
-    async fn take_answers(&self, transport: &dyn Transport, dialing: bool) -> Result<(), String> {
-        if !dialing {
-            return std::future::pending().await;
-        }
+    /// Take what the device at the link's other end answers of this device's
+    /// writes, on the stream it opens after its frames', and keep each at this
+    /// device's store ([`crate::reach`]). A device that answers nothing opens
+    /// no such stream, and this waits for the link to end.
+    async fn take_answers(&self, transport: &dyn Transport) -> Result<(), String> {
         let mut recv = transport.accept_uni().await?;
         while let Some(bytes) = crate::frames::read_frame(&mut recv, MAX_FRAME_BYTES).await? {
             let answered: Answered =
@@ -2762,6 +2831,10 @@ impl DirectSync {
             {
                 tracing::debug!("a test loses an answer this link brought");
                 continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) {
+                store.answered_own_write(workspace, answered.write, answered.kept.clone());
             }
             let _ = self.0.answered.send(answered);
         }
@@ -3360,11 +3433,10 @@ impl DirectSync {
     }
 }
 
-/// Who answers whose writes on one link: the dialling device takes answers, and the dialled one
-/// sends them through `sender` where the link carries them.
+/// Where this device's answers to the other device's writes go on one link: through `sender`,
+/// where this device answers them.
 #[derive(Clone, Copy)]
 struct Answering<'a> {
-    dialing: bool,
     sender: Option<&'a tokio::sync::mpsc::UnboundedSender<Answered>>,
 }
 

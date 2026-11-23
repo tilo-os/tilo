@@ -95,7 +95,7 @@ mod keeping_devices;
 pub use keeping_devices::{
     WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
 };
-mod change_hashes;
+pub(crate) mod change_hashes;
 pub(crate) mod seed;
 mod workspace_name;
 mod workspace_settings;

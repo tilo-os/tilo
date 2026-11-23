@@ -81,6 +81,36 @@ pub fn follow_admitted_writes(
     }
 }
 
+/// Follow each record of the workspaces of `workspaces` whose reach moved, from now on: one of this
+/// device's writes of it went out, was taken in by another device that keeps the workspace, or was
+/// refused. The app's windows are told the record moved, as when another device writes it, and a
+/// view that read `reach(r)` of it reads it again. A receiver that fell behind tells the windows
+/// that any record may have moved. Run the answer on the runtime the embedder's apps are served
+/// on.
+pub fn follow_reach(
+    workspaces: &crate::workspaces::Workspaces,
+    fanout: Arc<FanoutState>,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let mut moved = workspaces.reach_moved();
+    async move {
+        loop {
+            match moved.recv().await {
+                Ok(moved) => tell_records_moved(
+                    &fanout,
+                    &CrdtRoute::record(&moved.app, &moved.workspace.to_string(), &moved.record),
+                ),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::debug!(
+                        missed,
+                        "records whose reach moved went by unheard; their views read it again when they next move"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+}
+
 /// How far an admitted device's live op may be dated from this clock.
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 

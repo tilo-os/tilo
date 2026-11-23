@@ -20,68 +20,47 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActCall, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen,
-    ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, BytesLength, CallFn,
-    CallMembers, ChangeView, ClipboardCopyImage, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText,
-    CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove,
-    CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
-    CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
-    Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
-    EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileBook, FileBookCover, FileBookInfo, FileCopy, FileFiles, FileList, FileMkdir,
-    FileMove, FileOfBytes, FileOfText, FilePart, FileReadPath, FileRemove, FileRename, FileRestore,
-    FileSize, FileStat, FileOpen, FileOpenPath, FileText, FileTrash, FileTrashEntries, FileWatch, FileWrite, FileZip,
-    FilterLit,
-    Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
-    FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
-    FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FontFamilies, FloatMin,
-    FloatPow, FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt, FloatTan,
-    FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, ForeignRef, Grep, GroupBy,
-    IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
-    Invoked, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg,
-    ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
-    ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH,
-    MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
-    MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
-    ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print,
-    PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
-    RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
-    RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-    ResourceRef, RichAppended, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
-    RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit,
-    SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues,
-    Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt,
-    StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen,
-    StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToFloat,
-    StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse,
-    TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiChild,
-    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-    VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
-    FileAt, FileBook, FileBookInfo, FileFiles, FileList, FileOfBytes, FileOfText, FilePart,
-    FileReadPath, FileSize, FileStat, FileText, FileWatch, FileZip, FilterLit, Filters, Find,
-    FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax,
-    FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs,
-    IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker, IsError,
-    IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
-    ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
-    ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue,
-    MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd,
-    MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
-    Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase, Print, PrintRows, ProposalNote,
-    Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
-    ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
-    ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed,
-    RichEmpty, RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen,
-    RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
-    Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
-    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
-    StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay,
+    Abort, ActCall, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet,
+    ActThen, ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
+    Base64Decode, BytesLength, CallFn, CallMembers, ChangeView, ClipboardCopyImage,
+    ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty,
+    CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
+    CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith, CountBy, DateShow, DayParse,
+    DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DurationText, Earlier,
+    EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
+    EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
+    FileCopy, FileCrop, FileEncode, FileFiles, FileImageInfo, FileList, FileMkdir, FileMove,
+    FileOfBytes, FileOfText, FileOpen, FileOpenPath, FilePart, FileReadPath, FileRemove,
+    FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail, FileTrash,
+    FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
+    FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil, FloatCeilTo,
+    FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract, FloatGamma,
+    FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin, FloatPow,
+    FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt, FloatTan, FloatTanh,
+    FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, FontFamilies, ForeignRef, Grep,
+    GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush,
+    Invoke, Invoked, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses,
+    LinesRun, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+    ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
+    MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
+    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
+    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PageCall, PersonNamed,
+    Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+    RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
+    RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+    ResTextSet, ResourceRef, RichAppended, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown,
+    RichNew, RichPart, RichRelinked, RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove,
+    SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords,
+    SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading,
+    StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin,
+    StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith,
+    StrToFloat, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock, TimeDay,
     TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
-    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState,
-    UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI,
-    ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
-    WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
+    UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
+    UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet,
+    WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
+    WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -605,10 +584,8 @@ impl Core {
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
             PageCall => self.page_import(a),
-            FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo | FileBookCover
-            | SheetFile => {
-                self.file_import(imp, a)
-            }
+            FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo
+            | FileBookCover | SheetFile => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile => self.file_make(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {
                 self.image_import(imp, a)
@@ -619,11 +596,9 @@ impl Core {
             SheetNumbers => self.sheet_numbers(a),
             SheetRecords => self.sheet_records(a),
             SheetEntry => self.sheet_entry(a),
-            FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen | FileMkdir
-            | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
-            | FileTrashEntries | FileRestore => {
-                self.file_device_import(imp, a)
-            }
+            FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen
+            | FileMkdir | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
+            | FileTrashEntries | FileRestore => self.file_device_import(imp, a),
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }
@@ -636,9 +611,9 @@ impl Core {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | CallMembers | Invoked | LinesRun
-            | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
-            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
+            | Delivery | Reach | MetaOf | Versions | Links | RunChanges | Unseen | FirstUnseen
+            | SeenBy | Mentions | Steps | VersionEnd | FieldChanged | Phrase | Word
+            | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
                 self.members_import(imp, a)
             }

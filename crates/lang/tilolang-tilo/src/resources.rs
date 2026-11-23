@@ -39,8 +39,8 @@ use tilolang_runtime::meta::{FieldKind, Meta, Ty};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, ClockField, DeliveryState, FieldKey, FieldRead,
     FieldSpec, FieldValue, Link, LinkHow, Listing, Lit, Mutation, NewResource, NextChange,
-    OutboxEntry, OutboxState, PagedItems, Pred, Scalar, Settled, Store, StoreError, SubId, Txn,
-    Version, VersionKind, doc_of, field_json, field_of, ordered_cmp,
+    OutboxEntry, OutboxState, PagedItems, Pred, RecordReach, Scalar, Settled, Store, StoreError,
+    SubId, Txn, Version, VersionKind, doc_of, field_json, field_of, ordered_cmp,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -354,6 +354,9 @@ struct Inner {
     /// Each resource's versions as last read, by id, until a write of it or of what it holds:
     /// a list sorted by when its rows last changed reads every row's, each time it is read.
     versions: RefCell<HashMap<String, Vec<Version>>>,
+    /// How far this device's changes of each record have gone, as last asked, by record: until
+    /// the record moves or this store writes ([`Store::reach`]).
+    reach: RefCell<HashMap<DocId, RecordReach>>,
     /// The time a scenario's sample data is written at, while its writes are held back
     /// ([`ResourceStore::hold_sample`]).
     sample: RefCell<Option<String>>,
@@ -622,6 +625,7 @@ impl ResourceStore {
                 minted: StdCell::new(0),
                 wrote: RefCell::default(),
                 versions: RefCell::default(),
+                reach: RefCell::default(),
                 sample: RefCell::default(),
                 refused: RefCell::default(),
                 watches: RefCell::default(),
@@ -1071,6 +1075,11 @@ impl ResourceStore {
             .versions
             .borrow_mut()
             .retain(|id, _| !docs.contains(doc_of(id)));
+        // A record moves when an answer to one of this device's writes of it comes, too.
+        self.inner
+            .reach
+            .borrow_mut()
+            .retain(|doc, _| !docs.contains(doc));
         self.inner
             .listings
             .borrow_mut()
@@ -1792,6 +1801,8 @@ impl ResourceStore {
     fn command(&self, command: Command) -> Result<Reply, StoreError> {
         if command.writes() {
             self.forget_versions_of(&command);
+            // What this write adds is pending until another device takes it in.
+            self.inner.reach.borrow_mut().clear();
         }
         self.inner.port.command(command).map_err(backend)
     }
@@ -5391,6 +5402,38 @@ impl Store for ResourceStore {
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
         self.effect_write(entry, note, |fields| settle_fields(fields, outcome))
+    }
+
+    /// Asked of the device's workspace service, which answers from the device's sync, once a
+    /// record until it moves.
+    fn reach(&self, doc: &DocId) -> RecordReach {
+        if let Some(known) = self.inner.reach.borrow().get(doc) {
+            return known.clone();
+        }
+        let known = match self.inner.port.command(Command::Reach {
+            record: doc.clone(),
+        }) {
+            Ok(Reply::Reach(reach)) => RecordReach {
+                pending: reach.pending,
+                refused: reach.refused,
+            },
+            Ok(other) => {
+                tracing::warn!(
+                    ?other,
+                    "an ask for a record's reach was answered with something else"
+                );
+                RecordReach::default()
+            }
+            Err(error) => {
+                tracing::debug!(%error, "a record's reach could not be asked for; it reads as reached");
+                RecordReach::default()
+            }
+        };
+        self.inner
+            .reach
+            .borrow_mut()
+            .insert(doc.clone(), known.clone());
+        known
     }
 
     fn outbox_states(&self) -> Vec<(DocId, DeliveryState)> {

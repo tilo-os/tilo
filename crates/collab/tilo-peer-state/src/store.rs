@@ -110,6 +110,9 @@ pub struct Store {
     root: PathBuf,
     appetite: Appetite,
     held: std::sync::Mutex<Held>,
+    /// This device's own writes of each workspace no other device keeping it has taken in yet,
+    /// and those refused ([`crate::reach`]).
+    reach: crate::reach::Ledgers,
 }
 
 impl std::fmt::Debug for Store {
@@ -476,6 +479,7 @@ impl Store {
                 limits,
                 channel_order: 0,
             }),
+            reach: crate::reach::Ledgers::default(),
         };
         let holders = store.stored_holders()?;
         let channels = store.stored_channels()?;
@@ -940,6 +944,7 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        self.reach.forget(&self.root, workspace)?;
         Ok(Retired {
             frames: u64::try_from(frames).unwrap_or(u64::MAX),
             bytes,
@@ -1086,6 +1091,50 @@ impl Store {
             .insert(route, channel);
         drop(held);
         Ok(true)
+    }
+
+    /// Note `message`, a record write of this device's own that it sends to `workspace`'s
+    /// other devices, as pending until one that keeps the workspace takes it in
+    /// ([`crate::reach`]). Anything but an app's record write is not noted.
+    pub fn note_own_write(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
+        self.reach.note(&self.root, workspace, message);
+    }
+
+    /// Take another device's answer to this device's write `write` (its frame's hash) of
+    /// `workspace`: kept, it reached that device; refused, it is listed refused.
+    pub fn answered_own_write(
+        &self,
+        workspace: WorkspaceId,
+        write: [u8; 32],
+        kept: crate::direct::Kept,
+    ) {
+        self.reach.answer(&self.root, workspace, write, kept);
+    }
+
+    /// This device's writes of `app`'s `record` in `workspace` that no other device keeping
+    /// it has taken in yet, and those the workspace refused.
+    #[must_use]
+    pub fn record_reach(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+    ) -> crate::reach::RecordReach {
+        self.reach.record(&self.root, workspace, app, record)
+    }
+
+    /// This device's writes of `workspace` no other device keeping it has taken in yet, in
+    /// the order it wrote them: what a link that comes up sends again, so its answer comes.
+    #[must_use]
+    pub fn unreached(&self, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
+        self.reach.unreached(&self.root, workspace)
+    }
+
+    /// Told each record of any workspace here whose reach moved: one of this device's writes
+    /// of it was noted, taken in by another device, or refused.
+    #[must_use]
+    pub fn reach_moved(&self) -> tokio::sync::broadcast::Receiver<crate::reach::ReachMoved> {
+        self.reach.moved()
     }
 
     /// `workspace`'s channel governance, each frame with its author, in the
@@ -1306,6 +1355,7 @@ impl Store {
                 limits: held.limits,
                 channel_order: 0,
             }),
+            reach: crate::reach::Ledgers::default(),
         };
         let mut kept = set_aside.held.lock_recover();
         set_aside.read_segments(&mut kept)?;

@@ -453,6 +453,19 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Reach",
+        id: "host-reach",
+        doc: "How far this device's own changes of a resource have gone, as `reach(r)` answers: \
+              what a message shows while nobody else has it yet.",
+        fields: &[(
+            "state",
+            "Text",
+            "`pending` (no other device that keeps the workspace has taken it in yet; it waits on \
+             this device while they are all offline), `reached`, or `refused` (the workspace \
+             refused it for good).",
+        )],
+    },
+    ValueType {
         name: "Lens",
         id: "host-lens",
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",

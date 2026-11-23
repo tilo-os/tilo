@@ -59,6 +59,10 @@ pub mod new_device;
 pub mod opening;
 mod ordered;
 mod postcard_sink;
+/// How far this device's own writes have gone: pending until another device keeping the
+/// workspace took them in.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod reach;
 pub mod replica;
 /// A workspace's retained sealed history: the frames a store device keeps
 /// without a key to open them.

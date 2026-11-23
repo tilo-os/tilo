@@ -293,6 +293,8 @@ imports! {
     // `run_line(r, line)`: run `line` as the person's own step, from the conversation `r`.
     ActRunLine = "act_run_line" ([H, H] -> [H]);
     Delivery = "delivery" ([H] -> [H]);
+    // `reach(r)`: how far this device's own changes of `r` have gone, as its sync keeps it.
+    Reach = "reach" ([H] -> [H]);
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Viewer = "viewer" ([] -> [H]);
     Members = "members" ([H] -> [H]);

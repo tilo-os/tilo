@@ -129,6 +129,9 @@ tilolang-call-sharing = Teilt Bildschirm
 tilolang-call-from-discord = Aus Discord
 tilolang-call-from = Aus { $service }
 
+tilolang-reach-pending = Noch bei niemandem angekommen
+tilolang-reach-refused = Der Arbeitsbereich hat das abgelehnt
+
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
 tilolang-form-cancel = Abbrechen
