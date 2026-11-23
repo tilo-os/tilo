@@ -516,9 +516,7 @@ fn the_page_keeps_a_file_an_action_makes() {
              default view slip for Slip\n\
              \n\
              view slip(s: Slip) {\n\
-             std.page(s) {\n\
-             ui.Text(s.paper.name, role: .body)\n\
-             }\n\
+             ui.Text(\"{s.paper.name} {s.paper.url}\", role: .body)\n\
              }\n\
              \n\
              scenario \"a slip with its paper\" {\n\
@@ -536,8 +534,8 @@ fn the_page_keeps_a_file_an_action_makes() {
     assert_eq!(answer["ok"], true, "{}", answer["message"]);
     let body = answer["body"].as_str().expect("a body");
     assert!(
-        body.contains("Lease.md"),
-        "the file a scenario made stands in the page: {body}"
+        body.contains("Lease.md") && body.contains("tilo-blob://"),
+        "the file a scenario made stands in the page, with the address its bytes are kept at: {body}"
     );
     tilolang_web::app_close(handle(&answer));
 }

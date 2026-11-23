@@ -3000,3 +3000,96 @@ scenario "a mailbox on its own" -> Mailbox {
     )
     inbox
 }
+
+/// A letter that came with a file: the conversation shows what it came with, each file a chip
+/// that saves it to Files.
+scenario "a letter with its papers" {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", unread: 1, total: 1))
+    let lease = a.threads.insert(
+        Thread(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            latest: 2026-06-30T10:25,
+            snippet: "The new lease is attached. Please sign by Friday.",
+            senders: "Mill Lane Lettings",
+            count: 1,
+            unread: true,
+        ),
+    )
+    lease.boxes.add("inbox")
+    lease.messages.insert(
+        Message(
+            key: "lease@lettings.example",
+            account: a.key,
+            subject: "Your lease renewal",
+            from: "office@lettings.example",
+            from_name: "Mill Lane Lettings",
+            to: "sam@rivera.example",
+            received: 2026-06-30T10:25,
+            snippet: "The new lease is attached.",
+            body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
+            message_id: "lease@lettings.example",
+            unread: true,
+            mailbox: "inbox",
+            attachments: [
+                File.of_text(
+                    "Lease.md",
+                    "# Tenancy agreement\n\nThe rent is due on the first of every month, and the term runs for a year.",
+                ),
+            ],
+        ),
+    )
+}
+
+/// A conversation the person deleted: it stands in the trash, where the place offers to empty
+/// it and the conversation can be deleted for good.
+scenario "a conversation in the trash" {
+    let m = root Mail
+    let a = m.accounts.insert(
+        Account(
+            key: "sam@rivera.example",
+            address: "sam@rivera.example",
+            name: "Sam Rivera",
+            online: true,
+        ),
+    )
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", total: 1))
+    a.mailboxes.insert(Mailbox(key: "trash", name: "Trash", role: "trash", total: 1))
+    let dinner = a.threads.insert(
+        Thread(
+            key: "dinner@bo.example",
+            account: a.key,
+            subject: "Dinner on Friday?",
+            latest: 2026-06-30T08:51,
+            snippet: "Shall we try the new place on Mill Lane? I can book for eight.",
+            senders: "Bo Chen",
+            count: 1,
+        ),
+    )
+    dinner.boxes.add("trash")
+    dinner.messages.insert(
+        Message(
+            key: "dinner@bo.example",
+            account: a.key,
+            subject: "Dinner on Friday?",
+            from: "bo@chen.example",
+            from_name: "Bo Chen",
+            to: "sam@rivera.example",
+            received: 2026-06-30T08:51,
+            snippet: "Shall we try the new place?",
+            body: "Shall we try the new place on Mill Lane? I can book for eight.\n\nBo",
+            message_id: "dinner@bo.example",
+            mailbox: "trash",
+        ),
+    )
+}
