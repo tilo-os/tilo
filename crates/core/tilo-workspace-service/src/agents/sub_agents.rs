@@ -142,8 +142,8 @@ pub(super) fn kind_of(agent: &Agent) -> Interaction {
 pub(super) fn told(turn: &Turn) -> String {
     // A person's own agent is told how it starts and steers a team where its turn is offered
     // one ([`super::team`]): the news it is asked with when work of a sub-agent of its ends
-    // says what to do then. Its person also asks for one with `ask-agent` under the cause kind
-    // `sub-agent`, which this server answers.
+    // says what to do then. Its person reaches one as any agent, by a message in Chat that
+    // mentions it, which starts that agent's own turn.
     let Some(sub) = &turn.agent.sub else {
         return super::team::told(turn);
     };

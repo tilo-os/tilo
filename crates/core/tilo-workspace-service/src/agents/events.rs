@@ -4,10 +4,11 @@
 //! An event says what starts it, optionally a question its person's model answers about what
 //! happened and a count, and what its person's assistant is then told ([`Definition`]). It is
 //! a saved shortcut like any other ([`event_shortcut`]): its trigger is the event's, a judge
-//! step asks the question, the library's count step counts, and the last step hands the
-//! instruction over through Chat's `ask-agent`, in the conversation the person has with their
-//! assistant, under the firing's own key, so a run taken again starts nothing twice. What it
-//! starts is the assistant's own work under the assistant's own bounds.
+//! step asks the question, the library's count step counts, and the last step writes the
+//! instruction to the person's assistant through Chat's `write_to`: a message in the
+//! conversation the person has with their assistant, which is the assistant's trigger and
+//! starts its turn there, under the firing's own key, so a run taken again starts nothing
+//! twice. What it starts is the assistant's own work under the assistant's own bounds.
 //!
 //! The actions are answered by the device's broker beside its shortcut library
 //! ([`WorkspaceEvents`]): an event a member sets up on a device of theirs is signed by that
@@ -447,7 +448,7 @@ fn when(id: &str, value: Binding, then: Vec<Step>) -> Step {
 
 /// The shortcut that is the event `kept`: its trigger; the look-round's look, where it looks;
 /// the question, where it asks one; the count, advanced only on a yes; and the instruction
-/// handed to its person's assistant through Chat's `ask-agent`, keyed by the firing.
+/// written to its person's assistant through Chat's `write_to`, keyed by the firing.
 ///
 /// # Errors
 /// As [`Definition::trigger`].
