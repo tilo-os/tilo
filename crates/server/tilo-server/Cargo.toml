@@ -262,7 +262,7 @@ tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

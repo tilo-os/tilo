@@ -122,7 +122,7 @@ tracing.workspace = true
 # App workers: an app's code runs in a confined process of this executable,
 # spoken to over framed messages; what it returns is admitted through the
 # isolate before the host signs it.
-wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
 tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 # The content records reference: lent to a record's view, held in memory in
 # its worker, carried between the two by hash.

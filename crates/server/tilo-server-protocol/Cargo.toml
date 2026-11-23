@@ -27,7 +27,7 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 # A window shown on a page answers its device in frames, as a page's stream carries them.
-wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
 # The handshake signs and verifies challenge nonces with device keys.
 ed25519-dalek.workspace = true
 toml.workspace = true
