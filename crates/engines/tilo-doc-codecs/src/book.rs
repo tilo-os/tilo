@@ -10,8 +10,6 @@
 //! reader makes of a chapter's markup is [`crate::rich::blocks_of_html`], so a book and a page on
 //! the web are read by one importer.
 
-use std::io::Cursor;
-
 use bounded_zip::epub::{self, strip_fragment};
 use bounded_zip::{BoundedArchive, ZipLimits};
 
@@ -84,8 +82,6 @@ impl From<BookProblem> for CodecError {
     }
 }
 
-type Archive<'a> = BoundedArchive<Cursor<&'a [u8]>>;
-
 /// Read the EPUB `bytes` as a book: its metadata, its cover and its chapters in reading order.
 ///
 /// # Errors
@@ -124,7 +120,7 @@ pub fn read(bytes: &[u8]) -> Result<Book, CodecError> {
         let title = toc
             .get(name)
             .cloned()
-            .unwrap_or_else(|| format!("Chapter {}", chapters.len() + 1));
+            .unwrap_or_else(|| format!("Chapter {}", chapters.len().saturating_add(1)));
         chapters.push(Chapter { title, xhtml });
     }
     if chapters.is_empty() {
@@ -308,7 +304,7 @@ mod tests {
         zw.write_all(CONTAINER.as_bytes()).unwrap();
         let package = package(r#"<itemref idref="c1"/>"#).replace(
             "</manifest>",
-            r#"<item ref="x" href="cover.png" media-type="image/png" properties="cover-image"/></manifest>"#,
+            r#"<item id="x" href="cover.png" media-type="image/png" properties="cover-image"/></manifest>"#,
         );
         zw.start_file("OEBPS/content.opf", SimpleFileOptions::default())
             .unwrap();

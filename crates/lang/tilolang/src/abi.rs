@@ -200,6 +200,9 @@ imports! {
     WebText = "web_text" ([H] -> [H]);
     BytesLength = "bytes_length" ([H] -> [I64]);
     JsonParse = "json_parse" ([H] -> [H]);
+    // The families this device sets text in: the ones the toolkit ships and the ones the
+    // machine has installed, each once.
+    FontFamilies = "font_families" ([] -> [H]);
     JsonDecode = "json_decode" ([H, H, H] -> [H]);
     JsonEncode = "json_encode" ([H] -> [H]);
     StageReading = "stage_reading" ([H, H] -> []);
@@ -382,6 +385,7 @@ imports! {
     // package says about it (title, author, language, subject).
     FileBook = "file_book" ([H] -> [H]);
     FileBookInfo = "file_book_info" ([H] -> [H]);
+    FileBookCover = "file_book_cover" ([H] -> [H]);
     // A file an action makes of what it holds: the text, the bytes, or the content an address names, as a
     // file called by its name; and an archive of the files it holds, each under its own name.
     FileOfText = "file_of_text" ([H, H] -> [H]);

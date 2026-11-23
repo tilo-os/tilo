@@ -444,6 +444,7 @@ impl Env {
                 key: a.key.clone(),
                 group: a.group.clone(),
                 did: a.did.clone(),
+                search: a.search.clone(),
                 opens: a.opens.clone(),
             };
             add(
@@ -1865,6 +1866,7 @@ impl Resolver<'_> {
             key: None,
             group: None,
             did: None,
+            search: None,
             opens: Vec::new(),
         };
         let mut seen: Vec<&str> = Vec::new();
@@ -1958,6 +1960,27 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
                 ),
+                // `search: Found`: the action answers the system's search over its remote
+                // service, and the records of the type `Found` it writes are what the search
+                // places.
+                ("search", ExprKind::Ident(target)) => {
+                    if self.env.own_type(target).is_some() {
+                        out.search = Some(target.clone());
+                    } else {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            format!(
+                                "`search:` names a type of this package whose records the search places; `{target}` is not one"
+                            ),
+                        );
+                    }
+                }
+                ("search", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`search:` names the type of the records the action finds: `search: Found`",
+                ),
                 // `opens: ["text/markdown", .md]`: the kinds of file a person opens this app
                 // with, each a media type in quotes or an extension with a dot.
                 ("opens", ExprKind::List(items)) => {
@@ -1978,7 +2001,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:` and `opens:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:` and `opens:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

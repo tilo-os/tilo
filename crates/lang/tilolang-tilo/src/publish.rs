@@ -219,7 +219,9 @@ pub fn action_type(
     let build = build_of(meta, kind, action, planner);
     let (label, placeholder) = naming_of(action, params.len(), words);
     let spec = spec_of(meta, action, label, placeholder, params, build);
-    Arc::clone(described(meta, spec, action, words).action_type())
+    // The kind an action's `search:` answers with, as its app publishes the type.
+    let search = action.search.as_ref().map(|target| meta.kind_of(target));
+    Arc::clone(described(meta, spec, action, search, words).action_type())
 }
 
 /// The schema of the value the action `action` of `meta` returns, in the API's JSON: what an
@@ -416,7 +418,13 @@ fn spec_of(
 
 /// `spec` made into its type in the order a native verb's declaration is made into it: its kind,
 /// description, icon, then whether it is destructive, which settles its confirmation.
-fn described(meta: &Meta, spec: ActionSpec, action: &ActionMeta, words: &dyn Words) -> ActionSpec {
+fn described(
+    meta: &Meta,
+    spec: ActionSpec,
+    action: &ActionMeta,
+    search: Option<String>,
+    words: &dyn Words,
+) -> ActionSpec {
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
         spec = spec.with_description(said_of(words, &action.id, "doc", None, &action.doc));
@@ -450,6 +458,18 @@ fn described(meta: &Meta, spec: ActionSpec, action: &ActionMeta, words: &dyn Wor
             let tag = format!("{}{capability}", tilo_actions::OUTSIDE_CAPABILITY_PREFIX);
             if !contract.tags.contains(&tag) {
                 contract.tags.push(tag);
+            }
+        }
+        // The app's search over its remote service (`search: Found`): a query naming its kind
+        // asks this action, and the records of the kind it writes are what the search places.
+        if let Some(kind) = search {
+            for tag in [
+                tilo_actions::SEARCH_TAG.to_owned(),
+                format!("{}{kind}", tilo_actions::SEARCH_KIND_PREFIX),
+            ] {
+                if !contract.tags.contains(&tag) {
+                    contract.tags.push(tag);
+                }
             }
         }
     }

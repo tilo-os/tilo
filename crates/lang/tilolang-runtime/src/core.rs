@@ -28,10 +28,10 @@ use Imp::{
     CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
     Describe, DescribeRef, DurationText, Earlier, EditField, EntryParts, EnumGetF, EnumGetH,
     EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged,
-    FileAt, FileBook, FileBookInfo, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
+    FileAt, FileBook, FileBookCover, FileBookInfo, FileFiles, FileOfBytes, FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit,
     Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil,
     FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract,
-    FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin,
+    FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FontFamilies, FloatMin,
     FloatPow, FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt, FloatTan,
     FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, ForeignRef, Grep, GroupBy,
     IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke,
@@ -155,6 +155,9 @@ pub struct Core {
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
+    /// The families text is set in on this device (`Runtime::set_fonts`): what a reading face's
+    /// picker offers. Until the host sets one, it offers none.
+    pub fonts: RefCell<Option<Box<dyn crate::fonts::FontHost>>>,
     /// The person's clipboard (`Runtime::set_clipboard`): what a copy offers and what a paste
     /// reads. Until the host sets one, nothing copies and nothing pastes.
     pub clipboard: RefCell<Option<Box<dyn crate::clipboard::ClipboardHost>>>,
@@ -350,6 +353,7 @@ impl Core {
             models: RefCell::new(None),
             web: RefCell::new(None),
             blobs: RefCell::new(None),
+            fonts: RefCell::new(None),
             clipboard: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
@@ -555,7 +559,8 @@ impl Core {
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
             PageCall => self.page_import(a),
-            FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo | SheetFile => {
+            FilePart | FileSize | FileText | FileFiles | FileBook | FileBookInfo | FileBookCover
+            | SheetFile => {
                 self.file_import(imp, a)
             }
             FileOfText | FileOfBytes | FileAt | FileZip | SheetOfFile => self.file_make(imp, a),
@@ -572,6 +577,7 @@ impl Core {
                 self.clipboard_import(imp, a)
             }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
+            FontFamilies => self.font_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | StateGet | StateAt | ArgAt
             | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView

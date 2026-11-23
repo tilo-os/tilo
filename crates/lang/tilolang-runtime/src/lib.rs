@@ -28,6 +28,7 @@ pub mod engine;
 mod entry;
 pub mod error;
 mod exec;
+pub mod fonts;
 pub mod foreign;
 pub mod handles;
 pub mod held;

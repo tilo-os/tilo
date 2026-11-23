@@ -673,6 +673,7 @@ fn build_meta(
                     applies: false,
                     outside: Vec::new(),
                     moderates: false,
+                    search: None,
                     opens: Vec::new(),
                 });
                 meta.scenarios.push(ScenarioMeta {
@@ -772,6 +773,7 @@ fn build_meta(
                         .get(idx)
                         .map(|f| f.facts.outside_caps.iter().cloned().collect())
                         .unwrap_or_default(),
+                    search: c.present.search.clone(),
                     opens: c.present.opens.clone(),
                     moderates: c.present.moderates,
                 });
@@ -1039,6 +1041,7 @@ pub fn compile_program_reading(
             role: None,
             scenario: false,
             did: None,
+            search: None,
             present: None,
             toggles: None,
             key: None,

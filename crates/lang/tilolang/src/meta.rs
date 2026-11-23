@@ -648,6 +648,11 @@ pub struct ActionMeta {
     /// what the platform tags the action with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outside: Vec<String>,
+    /// `search: Found`: the type this action's answers are of, where it is the app's search over
+    /// a remote service: a query naming the app or its kind asks this action, and the records of
+    /// this type it writes are what the search places.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
     /// `opens: ["text/markdown", .md]`: the kinds of file this action takes, each a media type
     /// (`text/markdown`) or an extension without its dot (`md`). A file of one of them opens in the
     /// app with this action, which the platform knows by the manifest's `[providers]`.

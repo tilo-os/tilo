@@ -433,10 +433,15 @@ impl Session {
                         })
                         .find(|(resource, action)| {
                             app_of_resource(resource.id.as_str()).as_deref() == Some(app.as_str())
-                                && action
+                                && (action
                                     .contract
                                     .outside_capabilities()
                                     .any(|capability| capability.ends_with(".search"))
+                                    || action
+                                        .contract
+                                        .tags
+                                        .iter()
+                                        .any(|tag| tag == tilo_actions::SEARCH_TAG))
                         })?;
                     // What the app holds of the kind now, before it answers: what it holds
                     // afterwards that it did not hold now is what the search found.

@@ -36,6 +36,8 @@ mod e2e_call_fn;
 mod e2e_cleanup;
 #[path = "e2e_counter.rs"]
 mod e2e_counter;
+#[path = "e2e_ebook.rs"]
+mod e2e_ebook;
 #[path = "e2e_enums.rs"]
 mod e2e_enums;
 #[path = "e2e_layout.rs"]

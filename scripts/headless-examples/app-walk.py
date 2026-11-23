@@ -1397,6 +1397,44 @@ class Walk:
         self.session.right_click_at(x + w / 2, y + h / 2)
         return {"right_clicked": selector, "rect": target["rect"]}
 
+    def op_drag(self, value) -> dict:
+        """Drag from one point of the window to another, as a person marks a passage: a press,
+        moves along the way, and the release. `{"reading": n}` drags across line `n` of the
+        window's reading page instead, where its text is drawn."""
+        if "reading" in value:
+            window = self.window_of() or {}
+            rect = window.get("rect")
+            if not rect:
+                raise Failed("no window to mark a passage in")
+            x, y, w, h = rect
+            side = min(320.0, w * 0.28)
+            lines = value["reading"]
+            # One line, or the first and last of a passage crossing several.
+            first, last = (lines, lines) if not isinstance(lines, list) else (lines[0], lines[-1])
+            left = x + side + 24.0
+            start = [left, y + 132.0 + float(first) * 26.0]
+            end = [left + min(360.0, w - side - 80.0), y + 132.0 + float(last) * 26.0]
+        else:
+            start, end = value["from"], value["to"]
+        self.session.control({"op": "pointer_move", "x": float(start[0]), "y": float(start[1])})
+        self.session.control({"op": "pointer_button", "pressed": True, "button": "left"})
+        for step in range(1, 7):
+            x = start[0] + (end[0] - start[0]) * step / 6
+            y = start[1] + (end[1] - start[1]) * step / 6
+            self.session.control({"op": "pointer_move", "x": float(x), "y": float(y)})
+        self.session.control({"op": "pointer_button", "pressed": False, "button": "left"})
+        return {"dragged": [start, end]}
+
+    def op_reading(self, _value) -> dict:
+        """The rectangle the window's reading page is drawn in, so a step can mark a passage
+        across a line of it: the window's content, beside the sidebar and under the bar."""
+        window = self.window_of() or {}
+        rect = window.get("rect")
+        if not rect:
+            raise Failed("no window to read in")
+        x, y, w, h = rect
+        return {"reading": [x + min(320.0, w * 0.28), y + 120.0, x + w - 40.0, y + h - 120.0]}
+
     def op_right_click_at(self, value) -> dict:
         """A second-button press at a point of the window, for the menu empty
         space offers and nothing names: `[x, y]`, as the step file writes it."""

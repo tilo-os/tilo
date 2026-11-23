@@ -717,6 +717,7 @@ impl Reader<'_> {
             role: verb.destructive.then(|| "destructive".to_owned()),
             scenario: false,
             did: None,
+            search: None,
             present: None,
             toggles: None,
             key: None,

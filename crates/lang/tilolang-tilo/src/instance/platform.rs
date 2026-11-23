@@ -308,6 +308,13 @@ pub trait Platform {
         WebReply::failed("this host reaches no services")
     }
 
+    /// The families this device sets text in: the toolkit's catalog, which a platform with the
+    /// toolkit has. One without it answers none, so a picker offers the face the text already
+    /// sets.
+    fn fonts(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The content at the content address `hash`, when this device's content store holds it: a
     /// file an action reads (`.text()`), and the one `file.save` writes out. A platform that
     /// holds no store answers none.
@@ -404,6 +411,15 @@ pub struct PlatformWeb(pub(super) Rc<dyn Platform>);
 impl tilolang_runtime::web::WebTransport for PlatformWeb {
     fn fetch(&self, request: &WebRequest) -> WebReply {
         self.0.web(request)
+    }
+}
+
+/// This device's text-setting families, as the platform running the instance answers them.
+pub struct PlatformFonts(pub(super) Rc<dyn Platform>);
+
+impl tilolang_runtime::fonts::FontHost for PlatformFonts {
+    fn families(&self) -> Vec<String> {
+        self.0.fonts()
     }
 }
 

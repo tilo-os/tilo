@@ -42,7 +42,7 @@ description = "Find what uses space and reclaim it with confidence."
 [apps.disks]
 description = "Inspect, format, and manage disks and removable storage."
 [apps.ebook]
-description = "Read books comfortably with typography that respects the text."
+description = "Read EPUB books with your place kept, highlights, notes and a page that turns."
 [apps.feeds]
 description = "Follow the sites and people you care about in one reader."
 [apps.file-explorer]

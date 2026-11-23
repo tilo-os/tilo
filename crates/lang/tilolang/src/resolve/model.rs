@@ -221,6 +221,9 @@ pub struct Presentation {
     /// `did: "moved this"`: what the action did, as history's sentence reads it after who did it ("Ana
     /// moved this").
     pub did: Option<String>,
+    /// `search: Found`: the type this action's answers are of, where it answers the system's
+    /// search over a remote service.
+    pub search: Option<String>,
     /// `opens: ["text/markdown", .md]`: the kinds of file this action takes, each a media type
     /// (`text/markdown`) or an extension (`md`). The platform opens a file of one of them with this
     /// action ([`crate::meta::ActionMeta::opens`]).

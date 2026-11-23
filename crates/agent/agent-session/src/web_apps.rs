@@ -16,7 +16,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         clocks::definition(),
         tilo_console::definition(),
         diffmerge::definition(),
-        ebook::definition(),
         feeds::definition(),
         file_explorer::page_definition(),
         hex_editor::definition(),

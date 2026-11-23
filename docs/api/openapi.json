@@ -13086,426 +13086,6 @@
         ],
         "description": ""
       },
-      "ebook.library.shelve.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "author": {
-            "type": "string"
-          },
-          "subject": {
-            "type": "string"
-          },
-          "shared": {
-            "type": "boolean"
-          },
-          "content": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "oneOf": [
-                  {
-                    "items": {
-                      "maximum": 255,
-                      "minimum": 0,
-                      "type": "integer"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "content": true,
-                    "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                    "type": "string"
-                  },
-                  {
-                    "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                    "type": "string"
-                  },
-                  {
-                    "properties": {
-                      "inline": {
-                        "type": "array"
-                      }
-                    },
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            ]
-          }
-        },
-        "required": [
-          "book",
-          "title",
-          "author",
-          "subject",
-          "shared"
-        ],
-        "description": ""
-      },
-      "ebook.library.shelve-found.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "author": {
-            "type": "string"
-          },
-          "subject": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "book",
-          "title",
-          "author",
-          "subject"
-        ],
-        "description": ""
-      },
-      "ebook.library.remove-from-library.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "book"
-        ],
-        "description": ""
-      },
-      "ebook.library.index-book.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "index": {
-            "oneOf": [
-              {
-                "items": {
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "content": true,
-                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                "type": "string"
-              },
-              {
-                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                "type": "string"
-              },
-              {
-                "properties": {
-                  "inline": {
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "book",
-          "index"
-        ],
-        "description": ""
-      },
-      "ebook.library.record-progress.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "chapter": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "block": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "fraction": {
-            "type": "number"
-          },
-          "opened": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "book",
-          "chapter",
-          "block",
-          "fraction",
-          "opened"
-        ],
-        "description": ""
-      },
-      "ebook.library.add-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "passage": {
-            "additionalProperties": false,
-            "properties": {
-              "block": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "book": {
-                "type": "string"
-              },
-              "chapter": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "end": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "excerpt": {
-                "type": "string"
-              },
-              "start": {
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "book",
-              "chapter",
-              "block",
-              "start",
-              "end",
-              "excerpt"
-            ],
-            "type": "object"
-          },
-          "color": {
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "passage",
-          "color",
-          "text"
-        ],
-        "description": ""
-      },
-      "ebook.library.add-comment.Arguments": {
-        "type": "object",
-        "properties": {
-          "highlight": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "highlight",
-          "text"
-        ],
-        "description": ""
-      },
-      "ebook.library.toggle-bookmark.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "chapter": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "block": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "excerpt": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "book",
-          "chapter",
-          "block",
-          "excerpt"
-        ],
-        "description": ""
-      },
-      "ebook.library.highlight.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "chapter": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "color": {
-            "type": "string"
-          },
-          "replacing": {
-            "items": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "pieces": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "block": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "end": {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "excerpt": {
-                  "type": "string"
-                },
-                "start": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "block",
-                "start",
-                "end",
-                "excerpt"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "book",
-          "chapter",
-          "color",
-          "replacing",
-          "pieces"
-        ],
-        "description": ""
-      },
-      "ebook.library.change-color.Arguments": {
-        "type": "object",
-        "properties": {
-          "highlight": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "color": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "highlight",
-          "color"
-        ],
-        "description": ""
-      },
-      "ebook.library.delete-highlight.Arguments": {
-        "type": "object",
-        "properties": {
-          "highlight": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "highlight"
-        ],
-        "description": ""
-      },
-      "ebook.library.delete-annotation.Arguments": {
-        "type": "object",
-        "properties": {
-          "annotation": {
-            "format": "uuid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "annotation"
-        ],
-        "description": ""
-      },
-      "ebook.library.remove-font.Arguments": {
-        "type": "object",
-        "properties": {
-          "font": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "font"
-        ],
-        "description": ""
-      },
-      "ebook.library.delete-scheme.Arguments": {
-        "type": "object",
-        "properties": {
-          "scheme": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "scheme"
-        ],
-        "description": ""
-      },
-      "ebook.library.read-chapter.Arguments": {
-        "type": "object",
-        "properties": {
-          "book": {
-            "type": "string"
-          },
-          "chapter": {
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "book"
-        ],
-        "description": ""
-      },
       "feeds.library.add-subscription.Arguments": {
         "type": "object",
         "properties": {
@@ -28122,6 +27702,1268 @@
         ],
         "description": "Deletes a comment. Only its author may. The platform takes it back rather than asking first,\nand the removal is a version of the comment, so who removed it stays answerable."
       },
+      "tl.so.tilo.ebook.Book.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Book.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "author",
+              "subject",
+              "language",
+              "source",
+              "cover"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Book.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Book.remove_book.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes a book off the shelf, its chapters and marks with it. Reading it again adds it again\nfrom its file."
+      },
+      "tl.so.tilo.ebook.Book.record_at.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "chapter": {
+            "type": "integer"
+          },
+          "block": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "place": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "who",
+          "chapter",
+          "block",
+          "page",
+          "place"
+        ],
+        "description": "Where the person reading is in `b`: their own record, changed in place so its history says\nwhere they read and when."
+      },
+      "tl.so.tilo.ebook.Book.read_chapter.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "c": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.ebook.Chapter",
+            "type": "object"
+          }
+        },
+        "required": [
+          "who",
+          "c"
+        ],
+        "description": "Opens `c` in `b`: the contents and where the person is are kept together."
+      },
+      "tl.so.tilo.ebook.Book.show_page.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "chapter": {
+            "type": "integer"
+          },
+          "block": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "who",
+          "chapter",
+          "block",
+          "page"
+        ],
+        "description": "Shows page `page` of the book's open chapter, counted from 0 (a spread in the two-page mode)."
+      },
+      "tl.so.tilo.ebook.Book.show_passage.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "chapter": {
+            "type": "integer"
+          },
+          "block": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "who",
+          "chapter",
+          "block"
+        ],
+        "description": "Shows the first page of the chapter `chapter` in `b`: a link to a passage lands on it."
+      },
+      "tl.so.tilo.ebook.Book.show_place.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "chapter": {
+            "type": "integer"
+          },
+          "block": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "place": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "who",
+          "chapter",
+          "block",
+          "page",
+          "place"
+        ],
+        "description": "How far down the column the person scrolled."
+      },
+      "tl.so.tilo.ebook.Book.saw_blocks.Arguments": {
+        "type": "object",
+        "properties": {
+          "who": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "person": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "person"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent"
+                ],
+                "type": "object"
+              }
+            ],
+            "pick": "subject",
+            "type": "object"
+          },
+          "blocks": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "who",
+          "blocks"
+        ],
+        "description": "Notes the block the page begins at as the person scrolls the column, so a bookmark lands\nwhere they are."
+      },
+      "tl.so.tilo.ebook.Book.highlight.Arguments": {
+        "type": "object",
+        "properties": {
+          "chapter": {
+            "type": "integer"
+          },
+          "ranges": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "color": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "chapter",
+          "ranges",
+          "color"
+        ],
+        "description": "Highlights the passage of `b`'s open chapter: its ranges, each `block, start, end`."
+      },
+      "tl.so.tilo.ebook.Book.add_note.Arguments": {
+        "type": "object",
+        "properties": {
+          "chapter": {
+            "type": "integer"
+          },
+          "ranges": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "color": {
+            "type": "string"
+          },
+          "text": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "chapter",
+          "ranges",
+          "color",
+          "text"
+        ],
+        "description": "Writes a note on the passage of `b`'s open chapter."
+      },
+      "tl.so.tilo.ebook.Book.toggle_bookmark.Arguments": {
+        "type": "object",
+        "properties": {
+          "chapter": {
+            "type": "integer"
+          },
+          "block": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chapter",
+          "block"
+        ],
+        "description": "Bookmarks where the page `block` begins in `b`'s open chapter, or takes the bookmark off\nagain."
+      },
+      "tl.so.tilo.ebook.Book.comment.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.ebook.Mark",
+            "type": "object"
+          },
+          "text": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "required": [
+                  "rich"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "m",
+          "text"
+        ],
+        "description": "Comments on the highlight `m`, in the book `b`."
+      },
+      "tl.so.tilo.ebook.Book.change_color.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.ebook.Mark",
+            "type": "object"
+          },
+          "color": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "m",
+          "color"
+        ],
+        "description": "Recolours a highlight, and the notes on it."
+      },
+      "tl.so.tilo.ebook.Book.delete_mark.Arguments": {
+        "type": "object",
+        "properties": {
+          "m": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.ebook.Mark",
+            "type": "object"
+          }
+        },
+        "required": [
+          "m"
+        ],
+        "description": "Deletes a mark, and the comments on it."
+      },
+      "tl.so.tilo.ebook.Chapter.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Chapter.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "body"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Chapter.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Mark.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Mark.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "kind",
+              "excerpt",
+              "color",
+              "text",
+              "on"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Mark.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Piece.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Piece.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Piece.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Progress.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Progress.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Progress.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Scheme.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Scheme.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name",
+              "page",
+              "ink",
+              "accent"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Scheme.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "builtin"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Found.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Found.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title",
+              "author",
+              "url",
+              "language",
+              "query"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Found.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Library.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.Library.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "face",
+              "scheme",
+              "draft_scheme",
+              "custom_page",
+              "custom_ink"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Library.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "justified"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.Library.open_book.Arguments": {
+        "type": "object",
+        "properties": {
+          "file": {}
+        },
+        "required": [
+          "file"
+        ],
+        "description": "Adds the EPUB `file` to the shelf and opens it. Its title, author and language are the book's\nown; each chapter becomes a resource holding its words, so the book is searchable and a\nreader opens the chapter they are at."
+      },
+      "tl.so.tilo.ebook.Library.drop_books.Arguments": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "description": "Adds the EPUB files a person dropped on the shelf, each as `open_book` adds it."
+      },
+      "tl.so.tilo.ebook.Library.set_text_size.Arguments": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "size"
+        ],
+        "description": "Sets the page's text size, within what a page can be read at."
+      },
+      "tl.so.tilo.ebook.Library.set_line_spacing.Arguments": {
+        "type": "object",
+        "properties": {
+          "spacing": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "spacing"
+        ],
+        "description": "Sets the page's line spacing."
+      },
+      "tl.so.tilo.ebook.Library.set_face.Arguments": {
+        "type": "object",
+        "properties": {
+          "face": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "face"
+        ],
+        "description": "Sets the face the page is set in."
+      },
+      "tl.so.tilo.ebook.Library.set_justified.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Whether the page's paragraphs are justified."
+      },
+      "tl.so.tilo.ebook.Library.cycle_scheme.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Steps to the next palette the reader ships with: its bar's quick switch."
+      },
+      "tl.so.tilo.ebook.Library.set_scheme.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "The palette the page is set in, by name."
+      },
+      "tl.so.tilo.ebook.Library.add_scheme.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "page": {
+            "type": "string"
+          },
+          "ink": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "page",
+          "ink"
+        ],
+        "description": "A palette of the person's own, from a paper and an ink colour."
+      },
+      "tl.so.tilo.ebook.Library.delete_scheme.Arguments": {
+        "type": "object",
+        "properties": {
+          "scheme": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.ebook.Scheme",
+            "type": "object"
+          }
+        },
+        "required": [
+          "scheme"
+        ],
+        "description": "Deletes a palette of the person's own. The four the reader ships with stay."
+      },
+      "tl.so.tilo.ebook.Library.find_books.Arguments": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "description": "Searches Project Gutenberg for books matching `query`, taking the answers an earlier search\nleft behind. The books stand under the shelf until a person downloads one."
+      },
+      "tl.so.tilo.ebook.Library.download_found.Arguments": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.ebook.Found",
+            "type": "object"
+          }
+        },
+        "required": [
+          "f"
+        ],
+        "description": "Downloads the book an online search found and opens it."
+      },
+      "tl.so.tilo.ebook.Library.clear_found.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Takes an online search's answers away."
+      },
+      "tl.so.tilo.ebook.FoundAuthor.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.FoundAuthor.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.FoundAuthor.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.FoundBook.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.FoundBook.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.FoundBook.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.FoundAnswer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.ebook.FoundAnswer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.ebook.FoundAnswer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
       "tl.so.tilo.lang.gallery.Item.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -38316,96 +39158,6 @@
       "arguments": "#/components/schemas/disks.system.show-tab.Arguments"
     },
     {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "shelve",
-      "arguments": "#/components/schemas/ebook.library.shelve.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "shelve-found",
-      "arguments": "#/components/schemas/ebook.library.shelve-found.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "remove-from-library",
-      "arguments": "#/components/schemas/ebook.library.remove-from-library.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "index-book",
-      "arguments": "#/components/schemas/ebook.library.index-book.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "record-progress",
-      "arguments": "#/components/schemas/ebook.library.record-progress.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "add-note",
-      "arguments": "#/components/schemas/ebook.library.add-note.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "add-comment",
-      "arguments": "#/components/schemas/ebook.library.add-comment.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "toggle-bookmark",
-      "arguments": "#/components/schemas/ebook.library.toggle-bookmark.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "highlight",
-      "arguments": "#/components/schemas/ebook.library.highlight.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "change-color",
-      "arguments": "#/components/schemas/ebook.library.change-color.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "delete-highlight",
-      "arguments": "#/components/schemas/ebook.library.delete-highlight.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "delete-annotation",
-      "arguments": "#/components/schemas/ebook.library.delete-annotation.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "remove-font",
-      "arguments": "#/components/schemas/ebook.library.remove-font.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "delete-scheme",
-      "arguments": "#/components/schemas/ebook.library.delete-scheme.Arguments"
-    },
-    {
-      "app": "so.tilo.ebook",
-      "resource": "ebook.library",
-      "action": "read-chapter",
-      "arguments": "#/components/schemas/ebook.library.read-chapter.Arguments"
-    },
-    {
       "app": "so.tilo.feeds",
       "resource": "feeds.library",
       "action": "add-subscription",
@@ -42160,6 +42912,378 @@
       "resource": "tl.so.tilo.lang.discussion.Comments",
       "action": "delete",
       "arguments": "#/components/schemas/tl.so.tilo.lang.discussion.Comments.delete.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tilolang.personal",
+      "action": "view-state",
+      "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tilolang.personal",
+      "action": "seen",
+      "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tilolang.personal",
+      "action": "seen-runs",
+      "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "remove_book",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.remove_book.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "record_at",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.record_at.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "read_chapter",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.read_chapter.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "show_page",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.show_page.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "show_passage",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.show_passage.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "show_place",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.show_place.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "saw_blocks",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.saw_blocks.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "highlight",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.highlight.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "add_note",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.add_note.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "toggle_bookmark",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.toggle_bookmark.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "comment",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.comment.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "change_color",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.change_color.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Book",
+      "action": "delete_mark",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Book.delete_mark.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Chapter",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Chapter.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Chapter",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Chapter.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Chapter",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Chapter.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Mark",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Mark.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Mark",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Mark.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Mark",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Mark.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Piece",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Piece.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Piece",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Piece.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Piece",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Piece.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Progress",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Progress.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Progress",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Progress.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Progress",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Progress.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Scheme",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Scheme.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Scheme",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Scheme.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Scheme",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Scheme.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Found",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Found.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Found",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Found.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Found",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Found.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "open_book",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.open_book.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "drop_books",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.drop_books.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "set_text_size",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.set_text_size.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "set_line_spacing",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.set_line_spacing.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "set_face",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.set_face.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "set_justified",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.set_justified.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "cycle_scheme",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.cycle_scheme.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "set_scheme",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.set_scheme.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "add_scheme",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.add_scheme.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "delete_scheme",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.delete_scheme.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "find_books",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.find_books.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "download_found",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.download_found.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.Library",
+      "action": "clear_found",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.Library.clear_found.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundAuthor",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundAuthor.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundAuthor",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundAuthor.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundAuthor",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundAuthor.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundBook",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundBook.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundBook",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundBook.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundBook",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundBook.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundAnswer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundAnswer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundAnswer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundAnswer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.ebook",
+      "resource": "tl.so.tilo.ebook.FoundAnswer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.ebook.FoundAnswer.edit-flag.Arguments"
     },
     {
       "app": "so.tilo.lang.gallery",

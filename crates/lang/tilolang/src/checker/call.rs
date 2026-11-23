@@ -247,6 +247,21 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            // `fonts()`: the families this device sets text in, as a reading face's picker
+            // offers them.
+            "fonts" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E022",
+                        span,
+                        "`fonts()` takes nothing: the families this device has",
+                    );
+                }
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::host(Imp::FontFamilies, Vec::new(), Ty::List(Box::new(Ty::Text)));
+            }
             "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
             "invoke" => return self.builtin_invoke(args, span),
@@ -3065,6 +3080,11 @@ impl Checker<'_> {
             }
             (Ty::File, "book_info") if args.is_empty() => {
                 Ex::host(Imp::FileBookInfo, vec![r], Ty::Map(Box::new(Ty::Text)))
+            }
+            // The cover picture the package carries, kept as a file of this device, when it has
+            // one.
+            (Ty::File, "book_cover") if args.is_empty() => {
+                Ex::host(Imp::FileBookCover, vec![r], Ty::Option(Box::new(Ty::File)))
             }
             // A map read as a value: its keys, the value one key holds, and — in the code that
             // runs — the entry put there or taken out.

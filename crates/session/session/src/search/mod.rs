@@ -1011,7 +1011,9 @@ impl SessionSearch {
                 nouns.push(&named.noun);
             }
         }
-        // The apps that ask an outside origin for a query (`outside:<origin>.search`).
+        // The apps that answer a query from a service: those that ask an outside origin
+        // (`outside:<origin>.search`), and those that declare the action themselves
+        // (`search: Found`), whose answers are of the kind their tag names.
         let searchers: std::collections::BTreeSet<String> = own
             .iter()
             .filter(|action| {
@@ -1019,8 +1021,26 @@ impl SessionSearch {
                     .contract
                     .outside_capabilities()
                     .any(|capability| capability.ends_with(".search"))
+                    || action
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == tilo_actions::SEARCH_TAG)
             })
             .filter_map(|action| app_of(action.address.resource.as_str()))
+            .collect();
+        // The kind each app's declared search answers with, where it declares one.
+        let declared: std::collections::BTreeMap<String, String> = own
+            .iter()
+            .filter_map(|action| {
+                let app = app_of(action.address.resource.as_str())?;
+                let kind = action
+                    .contract
+                    .tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix(tilo_actions::SEARCH_KIND_PREFIX))?;
+                Some((app, kind.to_owned()))
+            })
             .collect();
         let mut found: Vec<(usize, (String, String, String, bool))> = Vec::new();
         for (resource, named) in types.iter() {
@@ -1046,6 +1066,11 @@ impl SessionSearch {
             else {
                 continue;
             };
+            // An app that declares its search answers with one kind alone: a query naming its
+            // kind asks it, and its other types are not what it finds.
+            if declared.get(&app).is_some_and(|declared| *declared != kind) {
+                continue;
+            }
             // Does any word of the query name this type? The same rule the ranking uses: a noun
             // or plural of it, or the app's name, with the rest sent to the app.
             let keywords = tilo_desktop_search::availability::keywords_for(&app);

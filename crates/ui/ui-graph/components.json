@@ -6788,6 +6788,137 @@
       }
     },
     {
+      "name": "Reading",
+      "doc": "A document read a page at a time: its text set in a reading face, broken into pages the box it is given fits, one page (or a spread, or a column) shown, and the page turned by the reader. The app keeps where the reader is: it says which page shows here, and hears `turned` when the reader moves and `selected` when they mark a passage.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "The text read: its paragraphs, headings, quotes, lists and section breaks.",
+          "type": {
+            "option": "rich_text"
+          },
+          "positional": true
+        },
+        {
+          "name": "scale",
+          "doc": "The text's size as a multiple of the reading base (1.0 unless said), between 0.8 and 2.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "spacing",
+          "doc": "The line spacing as a multiple of the face's own (1.2 unless said).",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "justified",
+          "doc": "Whether paragraphs are justified like a book's or set ragged; ragged unless said.",
+          "type": "bool"
+        },
+        {
+          "name": "face",
+          "doc": "The face the body is set in: `serif`, `sans`, `mono`, or a reading face the toolkit ships (`libertinus`, `literata`, `garamond`, `source_serif`). Serif unless said.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "language",
+          "doc": "The book's language, for hyphenation in its words.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "mode",
+          "doc": "How the text is shown: `paged` a page at a time, `continuous` one column scrolled, or `two_up` two pages side by side.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "page",
+          "doc": "The page shown, counted from 0 (a spread, in two pages side by side); a page past the end shows the last.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "place",
+          "doc": "How far down the column stands in the continuous mode, `0` its top to `1` its foot.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "reveal",
+          "doc": "The block to show, counted from 0: the page it stands on is the page shown. Asking for the same block again after another moved the page shows it again, so a link to a passage lands on it every time.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "paper",
+          "doc": "The paper behind the words, as a colour (`#rrggbb`); the theme's content colour unless said.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "ink",
+          "doc": "The words' colour, as a colour (`#rrggbb`); the theme's text colour unless said.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "highlights",
+          "doc": "The passages the reader marked, drawn under their words: each `block:start:end:colour`, its characters in that block's words and the colour of its band (`#rrggbb`).",
+          "type": {
+            "list": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "pages",
+          "doc": "How many pages (or spreads) the text has, each time it changes.",
+          "value": "int"
+        },
+        {
+          "name": "turned",
+          "doc": "The page the reader turned to, by a key or a press: carries the page, counted from 0, and the block the page begins at.",
+          "value": "int",
+          "at": "int"
+        },
+        {
+          "name": "moved",
+          "doc": "How far down the column the reader scrolled in the continuous mode: carries `0`..`1`.",
+          "value": "float"
+        },
+        {
+          "name": "selected",
+          "doc": "The passage the reader selected: carries the block, its first and last character.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "showing",
+          "doc": "The first block the page shows, and the character it starts at, each time the page changes: where a bookmark made now is kept.",
+          "value": {
+            "list": "int"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Document"
+      }
+    },
+    {
       "name": "RichInput",
       "doc": "A field that types rich text, bound to what it edits: a reference a completion picks is written as a reference, which each reader renders as an inline view of what it names.",
       "props": [

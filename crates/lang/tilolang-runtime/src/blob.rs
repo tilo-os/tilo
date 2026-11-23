@@ -366,7 +366,7 @@ impl Core {
             // The book a file is: its chapters as rich text, each beginning with its title as a
             // heading, and what its package says about it. Reading a book is a read of the
             // content's bytes, like `.text()`: the same bytes always read the same book.
-            Imp::FileBook | Imp::FileBookInfo => {
+            Imp::FileBook | Imp::FileBookInfo | Imp::FileBookCover => {
                 let file = self.file_arg(a.h(0)?)?;
                 let bytes = self
                     .blobs
@@ -383,6 +383,18 @@ impl Core {
                     Ok(book) => book,
                     Err(why) => return trap(format!("`{}` is not a book: {why}", file.name)),
                 };
+                if matches!(imp, Imp::FileBookCover) {
+                    let Some((media, cover)) = book.cover else {
+                        return self.ret_h(Value::Opt(None));
+                    };
+                    let name = format!("cover.{}", media.rsplit('/').next().unwrap_or("bin"));
+                    let made = self
+                        .blobs
+                        .borrow()
+                        .as_ref()
+                        .and_then(|blobs| made(blobs.as_ref(), &name, Held::Bytes(cover)).ok());
+                    return self.ret_h(Value::Opt(made.map(|file| Box::new(Value::file(file)))));
+                }
                 if matches!(imp, Imp::FileBookInfo) {
                     let facts = [
                         ("title", book.title),

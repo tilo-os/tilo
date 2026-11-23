@@ -477,6 +477,68 @@ mod tests {
     }
 
     #[test]
+    fn a_toc_reads_the_nav_labels_and_falls_back_to_the_ncx() {
+        let nav = r#"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+            <nav epub:type="toc"><ol>
+              <li><a href="c1.xhtml">The Glass</a></li>
+              <li><a href="c2.xhtml#top">The Tide</a></li>
+            </ol></nav></body></html>"#;
+        let opf = r#"<package><manifest>
+            <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+            <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+            <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/>
+          </manifest><spine toc="ncx"><itemref idref="c1"/><itemref idref="c2"/></spine></package>"#;
+        let bytes = epub(&[
+            (CONTAINER_PATH, CONTAINER),
+            ("OEBPS/content.opf", opf),
+            ("OEBPS/nav.xhtml", nav),
+        ]);
+        let mut archive = BoundedArchive::from_bytes(&bytes, ZipLimits::default()).unwrap();
+        let path = find_opf_path(&mut archive).unwrap();
+        let pkg = read_package(&mut archive, &path).unwrap();
+        let toc = read_toc(&mut archive, &pkg);
+        assert_eq!(
+            toc.get("OEBPS/c1.xhtml").map(String::as_str),
+            Some("The Glass")
+        );
+        assert_eq!(
+            toc.get("OEBPS/c2.xhtml").map(String::as_str),
+            Some("The Tide"),
+            "a label's fragment is stripped from the entry it names"
+        );
+
+        // No nav: the NCX supplies the labels.
+        let ncx = r#"<ncx><navMap>
+            <navPoint><navLabel><text>One</text></navLabel><content src="c1.xhtml"/></navPoint>
+            <navPoint><navLabel><text>Two</text></navLabel><content src="c2.xhtml"/></navPoint>
+          </navMap></ncx>"#;
+        let opf = opf.replace(r#"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#, "");
+        let bytes = epub(&[
+            (CONTAINER_PATH, CONTAINER),
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/toc.ncx", ncx),
+        ]);
+        let mut archive = BoundedArchive::from_bytes(&bytes, ZipLimits::default()).unwrap();
+        let path = find_opf_path(&mut archive).unwrap();
+        let pkg = read_package(&mut archive, &path).unwrap();
+        let toc = read_toc(&mut archive, &pkg);
+        assert_eq!(toc.get("OEBPS/c1.xhtml").map(String::as_str), Some("One"));
+        assert_eq!(toc.get("OEBPS/c2.xhtml").map(String::as_str), Some("Two"));
+
+        // Neither: no labels, and the reader falls back to each chapter's first heading.
+        let bytes = epub(&[
+            (CONTAINER_PATH, CONTAINER),
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/c1.xhtml", "<html/>"),
+        ]);
+        let mut archive = BoundedArchive::from_bytes(&bytes, ZipLimits::default()).unwrap();
+        let path = find_opf_path(&mut archive).unwrap();
+        let pkg = read_package(&mut archive, &path).unwrap();
+        assert!(read_toc(&mut archive, &pkg).is_empty());
+    }
+
+    #[test]
     fn container_errors_are_specific_and_bounded() {
         let bytes = epub(&[("mimetype", "application/epub+zip")]);
         let mut archive = BoundedArchive::from_bytes(&bytes, ZipLimits::default()).unwrap();

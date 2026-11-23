@@ -1175,6 +1175,11 @@ impl Runtime {
     pub fn set_clipboard(&self, host: impl crate::clipboard::ClipboardHost + 'static) {
         *self.core.clipboard.borrow_mut() = Some(Box::new(host));
     }
+    /// The families text is set in on this device ([`crate::fonts`]): what a reading face's
+    /// picker offers.
+    pub fn set_fonts(&self, host: impl crate::fonts::FontHost + 'static) {
+        *self.core.fonts.borrow_mut() = Some(Box::new(host));
+    }
 
     /// The host a notice is raised to: the desktop's notifications show it, a test's record
     /// keeps it. The notice is the record the run wrote either way; a host hears each once.

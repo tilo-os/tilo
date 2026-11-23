@@ -465,6 +465,22 @@ pub fn shipped_families() -> Vec<String> {
     families
 }
 
+/// Every family this device can set text in: the ones Tilo ships and the ones the machine has
+/// installed, each once, sorted. What a person picks a reading face from.
+#[must_use]
+pub fn installed_families() -> Vec<String> {
+    static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    FAMILIES
+        .get_or_init(|| {
+            let mut families = shipped_families();
+            families.extend(crate::text_render::TextRenderer::new().system_families());
+            families.sort_unstable_by_key(|family| family.to_ascii_lowercase());
+            families.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+            families
+        })
+        .clone()
+}
+
 /// The catalog every test lays its text out in: this build's pinned faces, none of the machine's.
 #[cfg(any(test, feature = "test-support"))]
 pub fn fixture_catalog() -> FontCatalog {

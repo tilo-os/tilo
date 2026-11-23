@@ -78,6 +78,8 @@ pub mod rich_text_line;
 pub use rich_text_line::{DeclaredLine, LineSignal, RichTextLine, RichTextLineProps};
 pub mod block_editor;
 mod block_editor_body;
+pub mod reading;
+pub use reading::{Reading, ReadingMode, ReadingProps};
 pub mod rich_doc;
 pub mod slash_menu;
 pub use slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};

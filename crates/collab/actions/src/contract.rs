@@ -338,6 +338,15 @@ pub const OPENS_PATH_EXTENSION_PREFIX: &str = "open:path-ext:";
 /// origin for what the query names — the service's `search` capability.
 pub const OUTSIDE_CAPABILITY_PREFIX: &str = "outside:";
 
+/// The tag of an action an app declares as its search over a remote service (`search: Found`):
+/// the system's search asks it for what its query names, and the records it writes are its
+/// answers.
+pub const SEARCH_TAG: &str = "search";
+
+/// The tag naming the kind an app's declared search answers with, after this prefix
+/// (`search_kind:tl.so.tilo.ebook.Found`): the type its `search:` names.
+pub const SEARCH_KIND_PREFIX: &str = "search_kind:";
+
 /// Facet the executor writes on a change made by a verb its app marks
 /// `#[action(incoming_message)]`: a message someone received. The
 /// `IncomingMessage` trigger fires on it without knowing the app's schema.
