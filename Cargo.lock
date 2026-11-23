@@ -19511,6 +19511,7 @@ dependencies = [
 name = "tilo-fs"
 version = "0.1.0"
 dependencies = [
+ "account-credentials",
  "accounts",
  "anyhow",
  "bao-tree",
@@ -19555,6 +19556,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-content",
  "tilo-content-device",
  "tilo-device-identity",
@@ -19588,6 +19590,7 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
+ "tilo-advisory-lock",
  "tilo-files",
  "tilo-paths",
  "tilo-test-env",

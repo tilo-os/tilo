@@ -340,8 +340,8 @@ pub struct CloudVolume {
     /// Serialises fetches of one revision, so concurrent readers of the same range download it once.
     flights: Mutex<HashMap<RevKey, Arc<Mutex<()>>>>,
     uploading: Mutex<()>,
-    /// Serialises local mutations, including open handles.
-    mutation: Mutex<()>,
+    /// Serialises local mutations with the import transition, including open handles.
+    mutation: Mutex<bool>,
     /// Sync passes may update metadata, but must never delay ordinary writes.
     syncing: Mutex<()>,
     health: Mutex<Option<MountHealth>>,
@@ -425,7 +425,7 @@ impl CloudVolume {
             saving: Mutex::new(()),
             flights: Mutex::new(HashMap::new()),
             uploading: Mutex::new(()),
-            mutation: Mutex::new(()),
+            mutation: Mutex::new(false),
             syncing: Mutex::new(()),
             health: Mutex::new(None),
             quota: Mutex::new(None),
@@ -442,10 +442,48 @@ impl CloudVolume {
         }))
     }
 
-    fn mutation(&self) -> MutexGuard<'_, ()> {
-        self.mutation
+    fn mutation(&self) -> Result<MutexGuard<'_, bool>, Errno> {
+        let frozen = self
+            .mutation
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *frozen {
+            return Err(libc::EROFS);
+        }
+        Ok(frozen)
+    }
+
+    /// Freeze only a quiescent, clean volume; a failed preparation changes nothing.
+    pub fn prepare_import(&self) -> Result<(), String> {
+        let mut frozen = self
+            .mutation
+            .try_lock()
+            .map_err(|_| "a file mutation is running; try again".to_string())?;
+        if *frozen {
+            return Err("the volume is already frozen".into());
+        }
+        let _upload = self
+            .uploading
+            .try_lock()
+            .map_err(|_| "an upload is running; wait for sync to finish".to_string())?;
+        let _sync = self
+            .syncing
+            .try_lock()
+            .map_err(|_| "a sync pass is running; try again".to_string())?;
+        let inner = self.inner();
+        if !inner.outbox.is_empty()
+            || inner
+                .local
+                .values()
+                .any(|local| local.dirty || local.writers > 0)
+            || inner.handles.values().any(|handle| handle.write)
+        {
+            return Err(
+                "local changes or writable handles remain; close files and sync first".into(),
+            );
+        }
+        *frozen = true;
+        Ok(())
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -757,7 +795,7 @@ impl CloudVolume {
     /// Make `revision` the current version of the file at `path`. Refused while a local edit of the file
     /// waits to upload, which the restore would otherwise race.
     pub fn restore_revision_at(&self, path: &str, revision: &str) -> Result<(), Error> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().revisions {
             return Err(Error::Unsupported("revisions"));
         }
@@ -775,7 +813,7 @@ impl CloudVolume {
     }
 
     pub fn share_link_at(&self, path: &str) -> Result<String, Error> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().share_links {
             return Err(Error::Unsupported("share links"));
         }
@@ -1080,7 +1118,7 @@ impl CloudVolume {
         append: bool,
     ) -> Result<u64, Errno> {
         let _mutation = if write || truncate {
-            Some(self.mutation())
+            Some(self.mutation()?)
         } else {
             None
         };
@@ -1125,7 +1163,7 @@ impl CloudVolume {
     }
 
     pub fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Result<usize, Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let (path, append) = {
             let mut inner = self.inner();
             let handle = inner.handles.get(&fh).ok_or(libc::EBADF)?;
@@ -1161,7 +1199,7 @@ impl CloudVolume {
     }
 
     pub fn release(&self, fh: u64) -> Result<(), Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let queued = {
             let mut inner = self.inner();
             let Some(handle) = inner.handles.remove(&fh) else {
@@ -1188,7 +1226,7 @@ impl CloudVolume {
     }
 
     pub fn truncate(&self, ino: u64, size: u64) -> Result<Attr, Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let id = self.inner().id(ino)?;
         self.ensure_staged(&id, size == 0)?;
         let mut inner = self.inner();
@@ -1236,7 +1274,7 @@ impl CloudVolume {
     }
 
     pub fn create(&self, parent: u64, name: &str) -> Result<(Attr, u64), Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let staged = uuid::Uuid::new_v4().simple().to_string();
         File::create(self.staged_path(&staged)).map_err(|e| io_errno(&e))?;
         let mut inner = self.inner();
@@ -1274,7 +1312,7 @@ impl CloudVolume {
     }
 
     pub fn mkdir(&self, parent: u64, name: &str) -> Result<Attr, Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let mut inner = self.inner();
         let folder = Self::folder_id(&inner, parent)?;
         Self::check_new_name(&inner, &folder, name)?;
@@ -1325,7 +1363,7 @@ impl CloudVolume {
     }
 
     fn remove(&self, parent: u64, name: &str, dir: bool) -> Result<(), Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let mut inner = self.inner();
         let folder = Self::folder_id(&inner, parent)?;
         let item = inner
@@ -1363,7 +1401,7 @@ impl CloudVolume {
         new_parent: u64,
         new_name: &str,
     ) -> Result<(), Errno> {
-        let _mutation = self.mutation();
+        let _mutation = self.mutation()?;
         let (source, target, from, to) = {
             let inner = self.inner();
             let from = Self::folder_id(&inner, parent)?;
@@ -1483,7 +1521,7 @@ impl CloudVolume {
 
     fn upload_queued(&self, unless_paused: bool) -> Result<usize, Error> {
         let _serial = self.uploading.lock_recover();
-        drop(self.mutation());
+        drop(self.mutation().map_err(|_| Error::Forbidden)?);
         let mut done = 0_usize;
         loop {
             let Some(op) = self.inner().outbox.front().cloned() else {
@@ -1911,7 +1949,7 @@ impl CloudVolume {
             .syncing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        drop(self.mutation());
+        drop(self.mutation().map_err(|_| Error::Forbidden)?);
         let result = match self.source.capabilities().change_feed {
             ChangeFeed::Cursor => self.sync_feed(),
             ChangeFeed::Poll => {

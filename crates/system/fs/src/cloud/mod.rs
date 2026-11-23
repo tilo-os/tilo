@@ -18,6 +18,7 @@
 pub mod account_source;
 pub mod credential;
 pub mod fuse;
+mod import;
 pub mod providers;
 pub mod service;
 pub mod volume;
