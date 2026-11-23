@@ -709,6 +709,11 @@ pub trait AgentEngine: Send + Sync {
 
 /// `inputs` with every object's keys in order and every whole number as an integer: the same
 /// inputs, however they were written, hash to the same lease.
+///
+/// Kept apart from `tilo_canonical_json` on purpose: `tilo_canonical_json` preserves `serde_json`'s
+/// float spelling so `{"a":1.0}` encodes as `{"a":1.0}`, whereas lease keys normalize whole floats
+/// below `2^53` to integers so `{"a":1.0}` encodes as `{"a":1}` and matches `{"a":1}`. Merging
+/// this into `tilo_canonical_json` would change existing `Turn::Once` lease hashes.
 fn canonical(inputs: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match inputs {
@@ -776,5 +781,30 @@ pub trait HostJobs: Send + Sync {
     /// Stop the job running here for `invocation`, when it still runs.
     fn cancel(&self, invocation: InvocationId) {
         let _ = invocation;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Turn, canonical};
+
+    #[test]
+    fn canonical_normalizes_whole_floats_to_integers_for_lease_keys() {
+        let whole_float: serde_json::Value = serde_json::from_str(r#"{"a":1.0}"#).unwrap();
+        let encoded = serde_json::to_vec(&canonical(&whole_float)).unwrap();
+        assert_eq!(encoded, br#"{"a":1}"#);
+
+        let lease = Turn::Once {
+            address: "so.tilo.notes/notebook-1#migrate".to_owned(),
+            inputs: whole_float,
+        }
+        .lease();
+        assert_eq!(
+            lease,
+            format!(
+                "once/so.tilo.notes/notebook-1#migrate/{}",
+                blake3::hash(br#"{"a":1}"#).to_hex()
+            )
+        );
     }
 }
