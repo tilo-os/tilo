@@ -139,6 +139,11 @@ build_host() {
     # the session without a stack (stories/shell/mail-password.py).
     cargo build --locked --timings "${args[@]}" \
         -p tilo-account-probe --example mail_stand_in || return 1
+    # The power authorities a session serves on its own system bus, for a machine with no battery,
+    # no platform profile and no polkit behind them (a check's VM,
+    # crates/system/power/examples/fake_power.rs).
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-power-mgmt --example fake_power || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
     # longer comes from building beside the session, and the session's gateway
     # runs with the features the workspace builds it with.
@@ -294,6 +299,7 @@ cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"
 # The stand-in mail server a user story starts beside its shells, under the name that says what
 # it is (the stack stages the same example as `mail-stand-in`).
 cp -p "$target/$host_profile/examples/mail_stand_in" "$out/bin/mail-stand-in"
+cp -p "$target/$host_profile/examples/fake_power" "$out/bin/fake-power"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
 cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime-engines" "$out/thin-app/"

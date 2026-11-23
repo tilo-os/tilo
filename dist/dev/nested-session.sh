@@ -158,7 +158,27 @@ if [[ -z $runtime_base ]]; then
     fi
     say "no XDG_RUNTIME_DIR: the session's runtime directory is under $runtime_base"
 fi
-runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+# A session that is its machine's own login uses the seat's runtime directory
+# itself (`TILO_SESSION_RUNTIME`), as a login does: the launcher's system grant
+# and the compositor both name `/run/user/<uid>`, and Settings reads what they
+# publish there. Any other session gets a private directory under the base, so
+# two sessions beside one desktop never meet.
+exact_runtime=0
+if [[ -n ${TILO_SESSION_RUNTIME:-} ]]; then
+    runtime=$(realpath -m "$TILO_SESSION_RUNTIME")
+    runtime_base=$(dirname "$runtime")
+    exact_runtime=1
+else
+    runtime=$runtime_base/tilo-nested-$(printf '%s' "$state" | sha256sum | cut -c1-12)
+fi
+# A session's own runtime directory is made afresh; a seat's is emptied, never
+# removed: its parent (/run/user) is not this user's to write, and a login's
+# directory outlives each session in it.
+empty_runtime() {
+    if ((exact_runtime)); then
+        find "$runtime" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+    fi
+}
 # Where the session's sockets go is a pure answer, so asking it takes no
 # tools, no build, no display and no state: a tool that reaches into a session
 # asks here and gets the same path the session itself will use.
@@ -180,7 +200,16 @@ for name in DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE AT_SPI_BUS_ADDRESS \
     unset "$name"
 done
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$runtime/no-host-session-bus
-export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/no-system-bus
+# A session that serves its own machine (`TILO_SESSION_SYSTEM_BUS=1`, which a
+# check's machine has and a desktop's guest does not) runs a system bus of its
+# own, started below: never the desktop's the session may be running beside.
+serve_system_bus=0
+if [[ ${TILO_SESSION_SYSTEM_BUS:-} == 1 || $TILO_MACHINE == owned ]]; then
+    serve_system_bus=1
+    export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/dbus/system_bus_socket
+else
+    export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$runtime/no-system-bus
+fi
 
 for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
@@ -428,8 +457,11 @@ export TILO_SYSTEM_INTERFACES=$repo_root/os/usr/share/tilo/system-interfaces.tom
 # BlueZ, holds its logind or UPower, registers an agent on its system bus or
 # joins its systemd user manager's session target; and the programs the session
 # starts (its apps above all, through the launcher) inherit the same answer
-# rather than reaching for the desktop's daemons themselves.
-export TILO_MACHINE=hosted
+# rather than reaching for the desktop's daemons themselves. A caller that runs
+# this session as its machine's own login says so (`TILO_MACHINE=owned`): then
+# the machine's daemons are this session's, and the system bus it starts below
+# is the one they are on.
+[[ ${TILO_MACHINE:-} == owned ]] || export TILO_MACHINE=hosted
 # The private D-Bus answers no Secret Service, so secrets (the collaboration
 # channels' keys among them) go to the sealed file store a headless machine
 # uses, in the state directory.
@@ -565,6 +597,15 @@ fi
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
 # --- 8. Run ---------------------------------------------------------------------
+if ((exact_runtime)); then
+    # The seat's own directory, and never one planted at its name: everything
+    # the session serves lives under it.
+    [[ -L $runtime ]] && die "refusing runtime directory $runtime: it is a symlink"
+    if [[ -e $runtime && ! -O $runtime ]]; then
+        die "refusing runtime directory $runtime: it is not this user's"
+    fi
+    mkdir -p -m 700 "$runtime"
+fi
 if ((own_runtime_base)); then
     # This user's own directory, and never one planted at its name: everything
     # the session serves lives under it.
@@ -574,8 +615,13 @@ if ((own_runtime_base)); then
     fi
     mkdir -p -m 700 "$runtime_base"
 fi
-rm -rf "$runtime"
-mkdir -m 700 "$runtime"
+if ((exact_runtime)); then
+    empty_runtime
+    mkdir -p -m 700 "$runtime"
+else
+    rm -rf "$runtime"
+    mkdir -m 700 "$runtime"
+fi
 export XDG_RUNTIME_DIR=$runtime
 control=$runtime/control.sock
 children=()
@@ -683,13 +729,38 @@ if ((!keep_identity)) && [[ ! -f $marker ]]; then
     # while it lives.
     stop_groups "$pid"
     children=()
-    rm -rf "$runtime"
-    mkdir -m 700 "$runtime"
+    if ((exact_runtime)); then
+        empty_runtime
+        mkdir -p -m 700 "$runtime"
+    else
+        rm -rf "$runtime"
+        mkdir -m 700 "$runtime"
+    fi
 fi
 
 # --- The session's own desktop ------------------------------------------------
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
+if ((serve_system_bus)); then
+    # The session's own system bus. A device's systemd starts the machine's
+    # authorities on it; a machine with no systemd (a check's VM) starts them
+    # here.
+    mkdir -p "$runtime/dbus"
+    setsid "$dbus_daemon" --session --address="unix:path=$runtime/dbus/system_bus_socket" \
+        --nofork --nopidfile > "$logs/system-bus.log" 2>&1 &
+    children+=("$!")
+    wait_for_socket "$runtime/dbus/system_bus_socket" "$!" \
+        || die "the session's system bus did not start (see $logs/system-bus.log)"
+    # The power authorities Settings reads on the system bus: UPower's manager
+    # and display device, and power-profiles-daemon's profiles. This machine has
+    # no battery or platform profile behind them and no polkit to answer a real
+    # upowerd's first call, so the tree's fake serves both interfaces, as a
+    # machine with no battery reports to them.
+    [[ -x $bin/fake-power ]] \
+        || die "missing $bin/fake-power (this session serves its machine's system bus; run without --no-build)"
+    setsid "$bin/fake-power" --bus "$DBUS_SYSTEM_BUS_ADDRESS" > "$logs/power.log" 2>&1 &
+    children+=("$!")
+fi
 setsid "$bin/tilo-model-gateway" serve --socket "$runtime/tilo/services/model-gateway.sock" \
     > "$logs/model-gateway.log" 2>&1 &
 children+=("$!")

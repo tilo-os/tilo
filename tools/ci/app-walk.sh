@@ -43,6 +43,15 @@ if [[ $(id -u) == 0 ]]; then
     id "$walk_account" >/dev/null 2>&1 \
         || useradd --create-home --shell /bin/bash "$walk_account"
     export TILO_SESSION_USER=$walk_account
+    # The seat's runtime directory, which logind gives a login at /run/user/<uid>: the launcher's
+    # system grant, the compositor's display snapshot and the session's own sockets are all named
+    # from it, as on a device.
+    walk_uid=$(id -u "$walk_account")
+    install -d -m 0700 -o "$walk_account" -g "$(id -g "$walk_account")" "/run/user/$walk_uid"
+    export TILO_SESSION_RUNTIME="/run/user/$walk_uid"
+    # The machine's authorities Settings reads: a system bus of the session's own, with the power
+    # services a device's systemd starts on it.
+    export TILO_SESSION_SYSTEM_BUS=1
 fi
 
 out=$(realpath -m "$out")

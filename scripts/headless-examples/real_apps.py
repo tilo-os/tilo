@@ -228,9 +228,10 @@ def account_env(account, state: Path) -> dict:
         # The caller's temporary directory is the caller's alone; the session
         # scratch belongs to the account like the rest of its state.
         "TMPDIR": str(state / "tmp"),
-        # The caller's runtime directory is its own too, and private: the
-        # session makes one under /tmp, as a login without a seat does.
-        "XDG_RUNTIME_DIR": "",
+        # The seat's runtime directory, when the caller made one: a login's
+        # session has `/run/user/<uid>`, which the launcher and the compositor
+        # both name. Without one the session makes its own under /tmp.
+        "XDG_RUNTIME_DIR": os.environ.get("TILO_SESSION_RUNTIME", ""),
     }
     # Behind any git settings the caller already gave its programs.
     count = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
