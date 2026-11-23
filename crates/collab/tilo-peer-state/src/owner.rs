@@ -43,7 +43,6 @@ pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_fi
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 pub use history_keys::SealedHistoryKeys;
-#[cfg(not(target_arch = "wasm32"))]
 pub use journaled::{JournalParts, Journaled};
 pub use publication::ownership_run_name;
 pub use stored::{
