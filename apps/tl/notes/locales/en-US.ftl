@@ -196,11 +196,11 @@ d-s4ewx4fo-title = Title
 d-s4ewx4fo-text = Text
 
 d-gc34cbhl = File a note
-    .doc = Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
+    .doc = Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
 
 d-gc34cbhl-title = Title
 
-d-gc34cbhl-name = Name
+d-gc34cbhl-tag = Tag
 
 d-j33acdci = New tag
     .doc = Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by.
