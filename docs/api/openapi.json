@@ -31493,7 +31493,8 @@
               "settings_open",
               "strips_tabs",
               "frames_snap",
-              "canvas_asked"
+              "canvas_asked",
+              "reporting"
             ],
             "type": "string"
           },
@@ -32200,6 +32201,45 @@
         ],
         "description": "What a press on a dock item does, by the app the item stands for: a window of that app on this\nscreen comes to the front, so the shell says which window the person is in and the top bar's\ncommands are its own; the window is the one the item was drawn for, so a press never opens a\nsecond copy. An app with no window open is opened (`session.open_app`), and the launcher\nshows.\n\nIt takes the app's key and not the item: an item the shell's document holds reaches an action as\na document reference, and the press names the one thing it needs, so a run's item reaches it\nwithout a `DockItem` parameter to fit."
       },
+      "tl.so.tilo.shell.Shell.report_problem.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Start a pick: what a report about a problem is about, chosen on the whole screen. The windows\nstand as cards; one is picked, and the report's box opens about it."
+      },
+      "tl.so.tilo.shell.Shell.pick_report_window.Arguments": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "description": "The window `key` is what the report is about: it joins the report, the picker closes, and the\nreport's box opens about the window, the person free to point at the part of it that is wrong."
+      },
+      "tl.so.tilo.shell.Shell.pick_report_region.Arguments": {
+        "type": "object",
+        "properties": {
+          "area": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "area"
+        ],
+        "description": "The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas\npixels — picks the window it covers first, as a click on that card does. A rectangle over none\nof them keeps the picker up, its outline saying what was covered."
+      },
+      "tl.so.tilo.shell.Shell.cancel_report.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Leave the pick with nothing attached: no window, no report."
+      },
       "tl.so.tilo.shell.Shell.open_style_settings.Arguments": {
         "type": "object",
         "properties": {},
@@ -32345,6 +32385,57 @@
         "description": "A bound control changes the field it shows."
       },
       "tl.so.tilo.shell.DockItem.$origin.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "What the outside service said is taken in."
+      },
+      "tl.so.tilo.shell.ReportPick.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.shell.ReportPick.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "key",
+              "title",
+              "app_name"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.ReportPick.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.shell.ReportPick.$origin.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -42892,6 +42983,30 @@
     {
       "app": "so.tilo.shell",
       "resource": "tl.so.tilo.shell.Shell",
+      "action": "report_problem",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.report_problem.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Shell",
+      "action": "pick_report_window",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.pick_report_window.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Shell",
+      "action": "pick_report_region",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.pick_report_region.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Shell",
+      "action": "cancel_report",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.cancel_report.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.Shell",
       "action": "open_style_settings",
       "arguments": "#/components/schemas/tl.so.tilo.shell.Shell.open_style_settings.Arguments"
     },
@@ -42966,6 +43081,30 @@
       "resource": "tl.so.tilo.shell.DockItem",
       "action": "$origin",
       "arguments": "#/components/schemas/tl.so.tilo.shell.DockItem.$origin.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.ReportPick",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.ReportPick.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.ReportPick",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.ReportPick.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.ReportPick",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.ReportPick.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.shell",
+      "resource": "tl.so.tilo.shell.ReportPick",
+      "action": "$origin",
+      "arguments": "#/components/schemas/tl.so.tilo.shell.ReportPick.$origin.Arguments"
     },
     {
       "app": "so.tilo.shell",
