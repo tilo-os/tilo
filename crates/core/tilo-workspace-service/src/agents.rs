@@ -710,6 +710,10 @@ pub struct Turn {
     /// Whether the person wrote it themselves, rather than a cause asking for them: their own
     /// words reach a turn of theirs that is going.
     pub typed: bool,
+    /// The person who saved the shortcut whose trigger fired, where that is not the person the
+    /// change answers ([`Turn::person`]): one more link in the line of who asked, bounding what
+    /// the turn may do. None for a turn no saved shortcut started, or where one person did both.
+    pub saved_by: Option<String>,
     /// Whether it was asked where only the person and the agent read: their own direct
     /// conversation. What the agent learns of them is kept and read only in such a turn.
     pub private: bool,
@@ -1249,7 +1253,12 @@ impl ServerAgents {
             None => request.chars().take(120).collect(),
         };
         let line = sub_agents::line_of(&roster, &agent, &event);
-        let person = triggered::asker(&event).unwrap_or(saver);
+        // Who asked: whoever made the change, as every one of the agent's own triggers answers
+        // it. Where the shortcut that fired was saved by someone else, that person asked too,
+        // and both bound what the turn does.
+        let asker = triggered::asker(&event);
+        let person = asker.clone().unwrap_or_else(|| saver.clone());
+        let saved_by = asker.filter(|asker| asker != &saver).map(|_| saver.clone());
         let agent_id = agent.id.0.clone();
         let turn = Turn {
             agent,
@@ -1262,6 +1271,7 @@ impl ServerAgents {
             history: Vec::new(),
             invocation: Some(invocation.to_string()),
             typed: true,
+            saved_by,
             private: triggered::alone_with(&event, &agent_id, &person),
             line,
             task,
@@ -1365,6 +1375,13 @@ impl ServerAgents {
             .ok_or("the ask names no person")?;
         // The person is the one whose root made the agent's key ([`agent_caller`]).
         let agent = self.agent_caller(workspace_id, &turn.agent, person).await?;
+        // Every person who asked bounds the turn: whoever made the change, and the person who
+        // saved the shortcut whose trigger fired, where that is someone else. What the turn
+        // does there is allowed only where all of them, and the agent's own grants, allow it.
+        let agent = match &turn.saved_by {
+            Some(saver) => agent.agent_of(saver.clone()),
+            None => agent,
+        };
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())

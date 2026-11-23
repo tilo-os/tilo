@@ -335,6 +335,7 @@ mod tests {
             asked: message.to_owned(),
             invocation: None,
             typed: true,
+            saved_by: None,
             private: false,
             line: None,
             task: None,

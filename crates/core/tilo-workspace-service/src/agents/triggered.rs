@@ -14,6 +14,11 @@
 //! carried in for someone outside the workspace, the person whose trigger fired), and the agent
 //! answers where the change was made, with an ordinary write there. There is no record of
 //! asking and no queue beside the turn's own claim ([`crate::work::takes_turn`]).
+//!
+//! A Moderator puts an agent to watching a workspace's chat with one more shortcut of the same
+//! kind ([`moderates`]): it fires on every message a member posts, and its one step starts the
+//! same answer there. Whoever saved that shortcut is one more person who asked the turn, beside
+//! whoever posted, so what the agent may do there is allowed only where both do.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,6 +61,10 @@ pub const MESSAGE: &str = "tl.so.tilo.chat.Message";
 pub const TASKS: &str = "so.tilo.tasks";
 /// The kind of a task of [`TASKS`].
 pub const TASK: &str = "tl.so.tilo.tasks.Task";
+/// The workspace's moderation record, whose reports an agent watching chat also sees.
+pub const MODERATION: &str = "tilo.moderation";
+/// The verbs that file a report on it.
+pub const REPORTS: [&str; 2] = ["report-message", "report-person"];
 
 /// The resource `agent` is published as: `agents.agent:<id>`.
 #[must_use]
@@ -82,6 +91,12 @@ pub fn answer_address(agent: &str) -> ActionAddress {
 #[must_use]
 pub fn shortcut_id(agent: &str) -> String {
     format!("agent-{agent}")
+}
+
+/// The id of the shortcut that makes `agent` watch a workspace's chat.
+#[must_use]
+pub fn moderation_shortcut_id(agent: &str) -> String {
+    format!("moderation-{agent}")
 }
 
 /// tilolang Discussion, whose comments an agent answers a task with.
@@ -113,26 +128,58 @@ pub fn names(member: &tilo_action_policy::MemberId) -> String {
 /// a copy of one carried back from elsewhere, so its answer never starts it again.
 #[must_use]
 pub fn triggers(agent: &str, name: &str) -> Shortcut {
-    let member = format!("agent:{agent}");
-    let watch = |kind: &str, field: &str, test: Test| TriggerSpec::ResourceChanged {
-        kind: kind.to_owned(),
-        actions: Vec::new(),
-        fields: Vec::new(),
-        by: ActorFilter::Anyone,
-        filter: ChangeFilter::of([
-            ("by", Test::IsNot(json!(member))),
-            ("origin", Test::IsNot(json!(member))),
-            (field, test),
-        ]),
-    };
+    answering(
+        agent,
+        shortcut_id(agent),
+        name.to_owned(),
+        vec![
+            // A message whose text mentions it, in any conversation.
+            watch(agent, MESSAGE, "item.body", Test::Has(json!(named(agent)))),
+            // A message in its direct conversation: the conversation it is in is with it.
+            watch(
+                agent,
+                MESSAGE,
+                "item.$in.person",
+                Test::Has(json!(named(agent))),
+            ),
+            // A task given to it.
+            watch(agent, TASK, "item.assignee", Test::Has(json!(named(agent)))),
+        ],
+    )
+}
+
+/// What a Moderator saves to put `agent` to watching a workspace's chat: one shortcut named
+/// after it, whose one step starts the agent's turn on a message a member posted, answered
+/// where the message was posted, and on a report filed against a message or a person, answered
+/// in the moderation record. It fires on every message and report like the agent's own triggers
+/// do, leaving out the agent's own changes and a copy of one carried back from elsewhere, so
+/// the agent's removal or reply never starts it again. Saved as an ordinary shortcut of the
+/// person who keeps the agent ([`triggers`] beside it), the same runner fires it and the same
+/// answer takes its turn; removing that shortcut turns the watch off again.
+#[must_use]
+pub fn moderates(agent: &str, name: &str) -> Shortcut {
+    answering(
+        agent,
+        moderation_shortcut_id(agent),
+        format!("{name} moderates"),
+        vec![
+            watch_all(agent, MESSAGE),
+            watch_actions(agent, MODERATION, REPORTS.to_vec()),
+        ],
+    )
+}
+
+/// `agent`'s one step that starts its turn on the change a trigger hands it, as the shortcut
+/// `id`, named `name`, whose triggers are `triggers`.
+fn answering(agent: &str, id: String, name: String, triggers: Vec<TriggerSpec>) -> Shortcut {
     let mut step_args = std::collections::BTreeMap::new();
     step_args.insert(
         EVENT_INPUT.to_owned(),
         Binding::Input(EVENT_INPUT.to_owned()),
     );
     Shortcut {
-        id: shortcut_id(agent),
-        name: name.to_owned(),
+        id,
+        name,
         inputs: vec![ActionParam::required(
             EVENT_INPUT,
             ParamType::Object,
@@ -150,16 +197,58 @@ pub fn triggers(agent: &str, name: &str) -> Shortcut {
         step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
-        triggers: vec![
-            // A message whose text mentions it, in any conversation.
-            watch(MESSAGE, "item.body", Test::Has(json!(named(agent)))),
-            // A message in its direct conversation: the conversation it is in is with it.
-            watch(MESSAGE, "item.$in.person", Test::Has(json!(named(agent)))),
-            // A task given to it.
-            watch(TASK, "item.assignee", Test::Has(json!(named(agent)))),
-        ],
+        triggers,
         saved_by: None,
         saved_proof: None,
+    }
+}
+
+/// A change of `kind` that fires for `agent`, narrowed by `narrowing`, and never by the agent's
+/// own change or a copy of one carried back from elsewhere.
+fn watch(agent: &str, kind: &str, field: &str, test: Test) -> TriggerSpec {
+    watching(agent, kind, Vec::new(), vec![(field, test)])
+}
+
+/// A change of `kind` that fires for `agent` on any change of it, and never by the agent's own
+/// change or a copy of one carried back from elsewhere.
+fn watch_all(agent: &str, kind: &str) -> TriggerSpec {
+    watching(agent, kind, Vec::new(), Vec::new())
+}
+
+/// A change of `kind` made by one of the `actions` that fires for `agent`, and never by the
+/// agent's own change or a copy of one carried back from elsewhere.
+fn watch_actions(agent: &str, kind: &str, actions: Vec<&str>) -> TriggerSpec {
+    watching(
+        agent,
+        kind,
+        actions.into_iter().map(str::to_owned).collect(),
+        Vec::new(),
+    )
+}
+
+/// A change of `kind` that fires for `agent`, made by one of `actions` where they are named,
+/// narrowed by `narrowing`, and never by the agent's own change or a copy of one carried back
+/// from elsewhere.
+fn watching(
+    agent: &str,
+    kind: &str,
+    actions: Vec<String>,
+    narrowing: Vec<(&str, Test)>,
+) -> TriggerSpec {
+    let member = format!("agent:{agent}");
+    TriggerSpec::ResourceChanged {
+        kind: kind.to_owned(),
+        actions,
+        fields: Vec::new(),
+        by: ActorFilter::Anyone,
+        filter: ChangeFilter::of(
+            [
+                ("by", Test::IsNot(json!(member.clone()))),
+                ("origin", Test::IsNot(json!(member))),
+            ]
+            .into_iter()
+            .chain(narrowing),
+        ),
     }
 }
 
@@ -173,13 +262,15 @@ pub struct Where {
 }
 
 impl Where {
-    /// Where `event` asks to be answered: a message of Chat, or a task of Tasks. `None` for a
-    /// change of anything else, which no agent's trigger answers.
+    /// Where `event` asks to be answered: a message of Chat, a task of Tasks, or a report on the
+    /// workspace's moderation record. `None` for a change of anything else, which no agent's
+    /// trigger answers.
     #[must_use]
     pub fn of(event: &DocumentEvent) -> Option<Self> {
         let app = match event.kind.as_str() {
             MESSAGE => CHAT,
             TASK => TASKS,
+            MODERATION => MODERATION,
             _ => return None,
         };
         let item = event.item.as_ref()?.id.clone();
@@ -263,6 +354,11 @@ pub(super) async fn write_answer(
         document: String::new(),
     };
     let mut arguments = Map::new();
+    if place.app == MODERATION {
+        // A moderation turn says nothing into the record: what it did is its actions there,
+        // and its decision holds its words.
+        return Ok(());
+    }
     let (app, resource, action) = if place.app == CHAT {
         arguments.insert("body".into(), json!(words));
         arguments.insert("reply_to".into(), json!(published(CHAT, &place.item)));
@@ -322,7 +418,7 @@ pub fn alone_with(event: &DocumentEvent, agent: &str, person: &str) -> bool {
 /// What the change says, as the turn is told it: the text of the item it made.
 #[must_use]
 pub fn said(event: &DocumentEvent) -> String {
-    said_in(event, &["title", "body", "notes", "text"])
+    said_in(event, &["title", "body", "notes", "text", "reason"])
 }
 
 /// The text the item `event` made holds in `fields`, in their order.

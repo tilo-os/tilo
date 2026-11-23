@@ -66,6 +66,12 @@ fn create_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The MCP client it connects as; none for an agent a device of the workspace runs.",
         ),
+        ActionParam::optional(
+            "moderates",
+            ParamType::Boolean,
+            "Whether it watches the workspace's chat, seeing every message a member posts, so a \
+             Moderator can have it act on what is not allowed.",
+        ),
     ]
 }
 
@@ -322,6 +328,12 @@ impl Workspaces {
             .get("mcp_client")
             .and_then(Value::as_str)
             .is_none_or(|client| client.trim().is_empty());
+        // A Moderator's ask for the chat watch, kept beside the agent's own triggers.
+        let moderates = arguments.remove("moderates");
+        #[cfg(feature = "agents")]
+        let moderates = matches!(moderates, Some(Value::Bool(true)));
+        #[cfg(not(feature = "agents"))]
+        let _ = moderates;
         let id = if let Some(id) = named {
             id
         } else {
@@ -345,6 +357,9 @@ impl Workspaces {
         if answers_triggers {
             self.save_default_triggers(workspace, acting, &id, &name)
                 .await;
+            if moderates {
+                self.save_moderates(workspace, acting, &id, &name).await;
+            }
         }
         Ok(id)
     }
@@ -371,6 +386,22 @@ impl Workspaces {
         }
     }
 
+    /// Save `agent`'s chat watch (`triggered::moderates`) as `acting`'s person's, when it is
+    /// this device's own person who keeps the agent: it is one more shortcut of theirs, saved
+    /// when they make the agent that watches the workspace's chat.
+    #[cfg(feature = "agents")]
+    async fn save_moderates(&self, workspace: &str, acting: &Acting, agent: &str, name: &str) {
+        if !self.is_own_person(acting) {
+            return;
+        }
+        let save = tilo_automation::ShortcutChange::Save(Box::new(
+            crate::agents::triggered::moderates(agent, name),
+        ));
+        if let Err(error) = self.change_own_shortcuts(workspace, save).await {
+            tracing::warn!(%workspace, %agent, %error, "an agent's chat watch was not saved");
+        }
+    }
+
     /// Take away the triggers saved for `agent`, once it is retired: the shortcut this device's
     /// person saved for it. Another person's agent is theirs to take away.
     #[cfg(feature = "agents")]
@@ -378,25 +409,29 @@ impl Workspaces {
         if !self.is_own_person(acting) {
             return;
         }
-        let shortcut = crate::agents::triggered::shortcut_id(agent);
         // Nothing was saved where the agent was reached by its client's conversation rather than
         // its triggers, or where another device of the person saved it.
-        let saved = self
+        let saved: Vec<String> = self
             .described()
             .await
             .into_iter()
             .find(|held| held.id().to_string() == workspace)
-            .is_some_and(|held| {
+            .map(|held| {
                 held.shortcuts
                     .iter()
-                    .any(|saved| saved.id() == shortcut.as_str())
-            });
-        if !saved {
-            return;
-        }
-        let delete = tilo_automation::ShortcutChange::Delete(shortcut);
-        if let Err(error) = self.change_own_shortcuts(workspace, delete).await {
-            tracing::warn!(%workspace, %agent, %error, "a retired agent's triggers were not removed");
+                    .map(|saved| saved.id().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let its = [
+            crate::agents::triggered::shortcut_id(agent),
+            crate::agents::triggered::moderation_shortcut_id(agent),
+        ];
+        for shortcut in its.into_iter().filter(|its| saved.contains(its)) {
+            let delete = tilo_automation::ShortcutChange::Delete(shortcut);
+            if let Err(error) = self.change_own_shortcuts(workspace, delete).await {
+                tracing::warn!(%workspace, %agent, %error, "a retired agent's triggers were not removed");
+            }
         }
     }
 
