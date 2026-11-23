@@ -84,11 +84,14 @@ view reader(d: Document) {
             }
             row(gap: .none, fill) {
                 if rail {
-                    rail_view(d, page_at, rail, note)
+                    rail_view(d, page_at, zoom, note)
                 }
-                ui.Scroll(fill) {
-                    stack(gap: .section) {
-                        for p in d.pages {
+                // The pages, each built as it scrolls into view: turning to one, in the rail or
+                // with the window's keys, scrolls the list to its row.
+                ui.VirtualList(fill, page_column: true, reveal: at_page_row(d, page_at)) {
+                    on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
+                    for p in d.pages {
+                        ui.ListItem(item: p) {
                             page_sheet(d, p, zoom, tool, colour, from, to, note)
                         }
                     }
@@ -229,16 +232,12 @@ fn open_comments(d: Document) -> Int {
 
 /// Turns to the page `step` places on, and remembers it.
 fn turn(d: Document, page_at: State<Int>, zoom: State<Float>, step: Int) {
-    let at = (page_at + step).clamp(0, d.pages.len() - 1)
-    set(page_at, at)
-    if let p = d.pages.at(at) {
-        remember_reading(d, p, 0.0, zoom)
-    }
+    turned_to(d, page_at, zoom, (page_at + step).clamp(0, d.pages.len() - 1))
 }
 
 /// The rail of page thumbnails beside the pages: choosing one turns to it, dragging reorders,
 /// and its foot takes more pages in.
-view rail_view(d: Document, page_at: Int, rail: State<Bool>, note: State<Text>) {
+view rail_view(d: Document, page_at: State<Int>, zoom: State<Float>, note: State<Text>) {
     let at = d.pages.at(page_at)
     ui.PageSidebar(
         aspect: if let p = at { p.width / p.height } else { 0.77 },
@@ -247,9 +246,27 @@ view rail_view(d: Document, page_at: Int, rail: State<Bool>, note: State<Text>) 
         header: "Pages",
         add: "Import…",
     ) {
-        on select(index: Int): set(note, "Page {index + 1}")
+        on select(index: Int): turned_to(d, page_at, zoom, index)
         on reorder(index: Int, at: Int): reorder(d, index, at)
         on add_page: file.choose(import_after(d, at), accept: ["application/pdf", "image/*"])
+    }
+}
+
+/// The row the page column shows for the page at `at`: what the list scrolls to when the person
+/// turns a page.
+fn at_page_row(d: Document, at: Int) -> Option<Text> {
+    if let p = d.pages.at(at) {
+        .some(p.id)
+    } else {
+        .none
+    }
+}
+
+/// Turns to the page at `at` and remembers it.
+fn turned_to(d: Document, page_at: State<Int>, zoom: State<Float>, at: Int) {
+    set(page_at, at)
+    if let p = d.pages.at(at) {
+        remember_reading(d, p, 0.0, zoom)
     }
 }
 
