@@ -722,6 +722,13 @@ impl Workspaces {
     /// The page of `cursors`, where this device's store stands, that one
     /// answer carries: the cursors of the lineages after `after`, in lineage
     /// order, at most [`CURSORS_PER_ANSWER`], and whether more follow them.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        allow(
+            clippy::unused_self,
+            reason = "only a test build reads the store's own page size"
+        )
+    )]
     pub(crate) fn standing_page(
         &self,
         mut cursors: Vec<tilo_peer_state::store::Cursor>,
