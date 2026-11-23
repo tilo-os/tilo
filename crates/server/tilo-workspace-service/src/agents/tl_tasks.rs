@@ -4,7 +4,7 @@
 //! A read is decided by who reads: a turn's agent for the person it acts for reads what both
 //! may ([`Reader::Turn`]), and a server step done for one person reads what that person may
 //! ([`Reader::Person`]). Every field read here is one the store indexes, as Tasks declares it:
-//! a task's scalars, and the scalars of the record its `work` names. What Tasks decides (whether
+//! a task's scalars, and its `work`, the record it holds or names. What Tasks decides (whether
 //! a session may begin, when a task's pieces are through, what a wait ends with) is never
 //! decided here: the engine invokes the action, and Tasks refuses or carries it out.
 
@@ -169,29 +169,126 @@ impl Reader<'_> {
     }
 
     /// What `task` keeps of its work; the default where nothing worked it yet.
+    ///
+    /// Tasks keeps a task's `Work` in the task's field `work`, and what made it go on in the
+    /// work's `resumed`: each a record held where its field is, or a resource of its own the
+    /// field refers to. Either is read here, so the engine follows where Tasks keeps them.
     pub(super) async fn work(&self, workspace: &str, task: &Task) -> Result<Work, String> {
-        let Some(id) = &task.work else {
+        let held = match &task.work {
+            Some(id) => {
+                self.record(workspace, WORK, Json::String(id.clone()))
+                    .await?
+            }
+            None => {
+                let command = Command::Content {
+                    kind: TASK.to_owned(),
+                    id: task.id.clone(),
+                };
+                match self.read(workspace, command).await? {
+                    Reply::Content(Some(Json::Object(mut content))) => match content.remove("work")
+                    {
+                        Some(work) => self.record(workspace, WORK, work).await?,
+                        None => None,
+                    },
+                    Reply::Content(_) => None,
+                    other => {
+                        return Err(format!(
+                            "the store answered a read of a task's content with {other:?}"
+                        ));
+                    }
+                }
+            }
+        };
+        let Some(work) = held else {
             return Ok(Work::default());
         };
-        let Some(work) = self.get(workspace, WORK, id).await? else {
-            return Ok(Work::default());
-        };
-        let resumed = match text(&work, "resumed") {
+        let resumed = match work.get("resumed") {
             Some(resumed) => self
-                .get(workspace, RESUMED, &resumed)
+                .record(workspace, RESUMED, resumed.clone())
                 .await?
-                .and_then(|resumed| text(&resumed, "cause")),
+                .and_then(|resumed| resumed.text("cause")),
             None => None,
         };
         Ok(Work {
-            folder: text(&work, "folder").unwrap_or_default(),
-            note: text(&work, "note").unwrap_or_default(),
-            budget_micros: int(&work, "budget_micros"),
-            spent_micros: int(&work, "spent_micros").unwrap_or_default(),
-            sessions: int(&work, "sessions").unwrap_or_default(),
-            interrupted: text(&work, "session_since").is_some(),
+            folder: work.text("folder").unwrap_or_default(),
+            note: work.text("note").unwrap_or_default(),
+            budget_micros: work.int("budget_micros"),
+            spent_micros: work.int("spent_micros").unwrap_or_default(),
+            sessions: work.int("sessions").unwrap_or_default(),
+            interrupted: work.get("session_since").is_some(),
             resumed,
         })
+    }
+
+    /// The record of `kind` a field holds as `held`: inline, or by reference (its id, or a
+    /// reference as tilolang writes one); none for none.
+    async fn record(
+        &self,
+        workspace: &str,
+        kind: &str,
+        held: Json,
+    ) -> Result<Option<Fields>, String> {
+        match Fields::unwrapped(held) {
+            None => Ok(None),
+            Some(Json::String(id)) => {
+                Ok(self.get(workspace, kind, &id).await?.map(Fields::Indexed))
+            }
+            Some(Json::Object(record)) => match record.get("ref").and_then(Json::as_str) {
+                Some(id) => Ok(self.get(workspace, kind, id).await?.map(Fields::Indexed)),
+                None => Ok(Some(Fields::Held(match record.get("fields") {
+                    Some(Json::Object(fields)) => fields.clone(),
+                    _ => record,
+                }))),
+            },
+            Some(other) => Err(format!("a task's {kind} is no record: {other}")),
+        }
+    }
+}
+
+/// A record's fields, by name: a resource as the store indexes it, or a record held in its
+/// holder's content.
+enum Fields {
+    Indexed(Indexed),
+    Held(Map<String, Json>),
+}
+
+impl Fields {
+    /// What an optional field holds, unwrapped as tilolang writes one; none for none.
+    fn unwrapped(held: Json) -> Option<Json> {
+        match held {
+            Json::Null => None,
+            Json::Object(mut tagged) if tagged.contains_key("none") && tagged.len() == 1 => {
+                let _ = tagged.remove("none");
+                None
+            }
+            Json::Object(mut tagged) if tagged.len() == 1 && tagged.contains_key("some") => {
+                tagged.remove("some").and_then(Self::unwrapped)
+            }
+            other => Some(other),
+        }
+    }
+
+    /// The field `name`, set: none for an absent one or one that holds nothing.
+    fn get(&self, name: &str) -> Option<Json> {
+        let held = match self {
+            Self::Indexed(resource) => match resource.scalar(name) {
+                Value::Text(text) if text.is_empty() => return None,
+                Value::Text(text) => Json::String(text),
+                Value::Int(number) => Json::from(number),
+                _ => return None,
+            },
+            Self::Held(fields) => fields.get(name).cloned()?,
+        };
+        Self::unwrapped(held).filter(|held| held.as_str() != Some(""))
+    }
+
+    fn text(&self, name: &str) -> Option<String> {
+        self.get(name)
+            .and_then(|held| held.as_str().map(str::to_owned))
+    }
+
+    fn int(&self, name: &str) -> Option<i64> {
+        self.get(name).and_then(|held| held.as_i64())
     }
 }
 
@@ -229,7 +326,8 @@ pub(super) struct Task {
     pub at: Option<String>,
     /// The automation that ends its wait early, by its id; empty when none does.
     pub waiting_on: String,
-    /// The record of its work, by its id; none until something worked it.
+    /// The record of its work, where the task refers to one of its own: by its id. None where
+    /// the task holds its work itself, or nothing worked it yet.
     work: Option<String>,
 }
 
@@ -359,11 +457,15 @@ pub(super) fn tracker() -> String {
     format!("tl:{APP}")
 }
 
-/// What the engine's tests of Tasks stand on: a workspace whose store they fill, and a broker
-/// standing where the device's would.
+/// What the engine's tests of Tasks stand on: a workspace, Tasks running on its person's device
+/// as tilolang runs it (with Discussion and Notes beside it), and a broker standing where the
+/// device's would. What Tasks writes reaches the workspace's store as a device's writes do, so
+/// the engine reads what Tasks really keeps.
 #[cfg(all(test, feature = "apps"))]
 pub(super) mod testing {
     use std::collections::BTreeMap;
+    use std::rc::Rc;
+    use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
 
     use serde_json::{Map, Value};
@@ -371,34 +473,99 @@ pub(super) mod testing {
         ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
         InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, ResourceReads,
     };
+    use tilo_actions::{ActionInvoker, ActionOutput};
     use tilo_resource_store::wire::Command;
-    use tilo_resource_store::{Cell, Resource, Stamp, Value as Stored};
     use tilo_server_protocol::WorkspaceId;
 
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::{TestGroupKeys, TestHost, governor, test_host_holding};
 
-    /// The device's broker as a turn's calls reach it: it decides each call, Tasks' rules
-    /// standing behind it (`refuses` names the actions it refuses, with Tasks' words), and keeps
-    /// who asked what. Reads are the workspace's store, as the turn's person may read it.
+    /// The packages the device runs, each with its ids lock: Tasks and what it builds on.
+    const PACKAGES: [(&str, &str); 3] = [
+        (
+            include_str!("../../../../../apps/tl/discussion/app.tl"),
+            include_str!("../../../../../apps/tl/discussion/app.ids"),
+        ),
+        (
+            include_str!("../../../../../apps/tl/notes/app.tl"),
+            include_str!("../../../../../apps/tl/notes/app.ids"),
+        ),
+        (
+            include_str!("../../../../../apps/tl/tasks/app.tl"),
+            include_str!("../../../../../apps/tl/tasks/app.ids"),
+        ),
+    ];
+
+    /// The documents a device's store changed, each whole: what sync carries to the workspace.
+    type Documents = Vec<(String, Vec<u8>)>;
+
+    /// One invocation of a package's action on the device, and where its answer goes.
+    struct Ask {
+        invoker: ActionInvoker,
+        resource: String,
+        action: String,
+        arguments: Map<String, Value>,
+        answer: mpsc::Sender<(Result<ActionOutput, String>, Documents)>,
+    }
+
+    /// The person's device: tilolang's host over a store of its own, on a thread of its own (a
+    /// host is held by one thread), invoked as the device's action service invokes it.
+    fn device(person: String, asks: mpsc::Receiver<Ask>, opened: mpsc::Sender<Documents>) {
+        use tilo_service::Service as _;
+        use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
+
+        let port = Rc::new(LocalPort::in_memory());
+        let store = ResourceStore::new(Rc::clone(&port) as Rc<dyn Port>);
+        let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person.clone()));
+        let host = tilolang_tilo::host::Host::open(store, viewer, None, || None).unwrap();
+        for (source, ids) in PACKAGES {
+            host.load_builtin(source, ids).unwrap();
+        }
+        let mut service = tilolang_tilo::resource_service::ResourceService::new(host, person);
+        let mut sent: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut moved = || {
+            let mut documents = Vec::new();
+            for doc in port.documents() {
+                let Some(bytes) = port.save(&doc) else {
+                    continue;
+                };
+                if sent.get(&doc) != Some(&bytes) {
+                    sent.insert(doc.clone(), bytes.clone());
+                    documents.push((doc, bytes));
+                }
+            }
+            documents
+        };
+        opened.send(moved()).unwrap();
+        while let Ok(ask) = asks.recv() {
+            let started =
+                service.invoke_as(&ask.invoker, &ask.resource, &ask.action, &ask.arguments);
+            let done = match started {
+                Ok(tilo_service::Started::Done(output)) => Ok(output),
+                Ok(tilo_service::Started::Accepted) => Ok(ActionOutput::default()),
+                Ok(tilo_service::Started::Later(later)) => later
+                    .wait_timeout(std::time::Duration::from_secs(10))
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| panic!("{} did not end", ask.action))
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = ask.answer.send((done, moved()));
+        }
+    }
+
+    /// The device's broker as a turn's calls reach it: it decides each call (`refuses` names
+    /// the actions it denies the turn, with its words) and keeps who asked what. A call it lets
+    /// through to a package runs there, Tasks' own rules deciding it; any other (Files') is
+    /// answered as done. Reads are the workspace's store, as the turn's person may read it.
     pub(in crate::agents) struct Broker {
         workspaces: Workspaces,
         workspace: String,
         person: String,
         refuses: BTreeMap<&'static str, &'static str>,
+        device: Mutex<mpsc::Sender<Ask>>,
         pub asked: Mutex<Vec<(Caller, String, String, Map<String, Value>)>>,
-        /// The resource each action answers it made, by the action.
-        makes: Mutex<BTreeMap<String, String>>,
-    }
-
-    impl Broker {
-        /// Answer `action` with `resource` as what it made.
-        pub fn made(&self, action: &str, resource: &str) {
-            self.makes
-                .lock()
-                .unwrap()
-                .insert(action.to_owned(), resource.to_owned());
-        }
     }
 
     impl ResourceReads for Broker {
@@ -446,6 +613,34 @@ pub(super) mod testing {
         }
     }
 
+    /// Run `action` on `resource` on the device as `invoker`, and carry what it wrote to the
+    /// workspace's store: what the action answered, or the words it was refused with.
+    fn on_device(
+        device: &Mutex<mpsc::Sender<Ask>>,
+        workspaces: &Workspaces,
+        workspace: &str,
+        invoker: ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Result<ActionOutput, String> {
+        let (answer, answered) = mpsc::channel();
+        device
+            .lock()
+            .unwrap()
+            .send(Ask {
+                invoker,
+                resource: resource.to_owned(),
+                action: action.to_owned(),
+                arguments,
+                answer,
+            })
+            .unwrap();
+        let (done, documents) = answered.recv().unwrap();
+        tokio::runtime::Handle::current().block_on(workspaces.take_documents(workspace, documents));
+        done
+    }
+
     struct Provider(Arc<Broker>);
 
     impl ActionProvider for Provider {
@@ -462,39 +657,46 @@ pub(super) mod testing {
             caller: &Caller,
             request: InvokeRequest,
         ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            let broker = &self.0;
+            let resource = request.target.address.resource.clone();
             let action = request.target.address.action.clone();
             let arguments = match &request.argument {
                 InvokeArgument::Json(arguments) => arguments.clone(),
                 _ => Map::new(),
             };
-            self.0.asked.lock().unwrap().push((
+            broker.asked.lock().unwrap().push((
                 caller.clone(),
-                request.target.address.resource.clone(),
+                resource.clone(),
                 action.clone(),
-                arguments,
+                arguments.clone(),
             ));
-            if let Some(words) = self.0.refuses.get(action.as_str()) {
+            if let Some(words) = broker.refuses.get(action.as_str()) {
                 return Pending::ready(Err(ActionCallError::Refused {
                     reason: (*words).to_owned(),
                 }));
             }
-            let resources = self
-                .0
-                .makes
-                .lock()
-                .unwrap()
-                .get(action.as_str())
-                .cloned()
-                .into_iter()
-                .collect();
+            let output = if resource.starts_with("tl:") {
+                let ran = on_device(
+                    &broker.device,
+                    &broker.workspaces,
+                    &broker.workspace,
+                    ActionInvoker::admitted(caller.acting()),
+                    &resource,
+                    &action,
+                    arguments,
+                );
+                match ran {
+                    Ok(output) => output,
+                    Err(reason) => {
+                        return Pending::ready(Err(ActionCallError::Refused { reason }));
+                    }
+                }
+            } else {
+                ActionOutput::default()
+            };
             Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,
-                status: ReceiptStatus::Completed {
-                    output: tilo_actions::ActionOutput {
-                        value: None,
-                        resources,
-                    },
-                },
+                status: ReceiptStatus::Completed { output },
             }))
         }
 
@@ -531,7 +733,7 @@ pub(super) mod testing {
         }
     }
 
-    /// A workspace of a test host, its person and the store Tasks keeps there.
+    /// A workspace of a test host, its person, and Tasks on the person's device.
     pub(in crate::agents) struct Host {
         host: TestHost,
         _dir: tempfile::TempDir,
@@ -539,6 +741,9 @@ pub(super) mod testing {
         pub workspace: String,
         /// The person, by their root in hex.
         pub person: String,
+        /// The person's root.
+        pub root: [u8; 32],
+        device: Mutex<mpsc::Sender<Ask>>,
     }
 
     impl Host {
@@ -560,68 +765,104 @@ pub(super) mod testing {
                 document: String::new(),
             };
             let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+            let person = hex::encode(cert.user_public_key);
+            let (device, asks) = mpsc::channel();
+            let (opened, documents) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("tasks-device".into())
+                .spawn({
+                    let person = person.clone();
+                    move || self::device(person, asks, opened)
+                })
+                .unwrap();
+            let documents = tokio::task::spawn_blocking(move || documents.recv().unwrap())
+                .await
+                .unwrap();
+            workspaces.take_documents(&workspace, documents).await;
             Self {
                 host,
                 _dir: dir,
                 workspaces,
                 workspace,
-                person: hex::encode(cert.user_public_key),
+                person,
+                root: cert.user_public_key,
+                device: Mutex::new(device),
             }
         }
 
-        /// Put the resource `id` of `kind`, every member reading it, with `fields`.
-        pub async fn put(&self, kind: &str, id: &str, fields: Vec<(&str, Stored)>) {
-            self.put_for(kind, id, "*", fields).await;
+        /// Run `action` on `resource` as the person, on their device: the resources it made.
+        ///
+        /// # Panics
+        /// Tasks refused it.
+        pub async fn act(&self, resource: &str, action: &str, arguments: Value) -> Vec<String> {
+            self.act_as(
+                ActionInvoker::person(self.person.clone()),
+                resource,
+                action,
+                arguments,
+            )
+            .await
+            .unwrap_or_else(|refused| panic!("{action}: {refused}"))
         }
 
-        /// Put the resource `id` of `kind`, read by `readers`, with `fields`.
-        pub async fn put_for(
+        /// [`Self::act`] as `invoker`: the resources it made, or Tasks' words refusing it.
+        pub async fn act_as(
             &self,
-            kind: &str,
-            id: &str,
-            readers: &str,
-            fields: Vec<(&str, Stored)>,
-        ) {
-            self.workspaces
-                .own_resource_command(
-                    &self.workspace,
-                    super::APP,
-                    Command::Put {
-                        kind: kind.into(),
-                        id: id.into(),
-                        resource: Resource {
-                            readers: readers.into(),
-                            parent: None,
-                            order: None,
-                            fields: fields
-                                .into_iter()
-                                .map(|(name, value)| (name.to_owned(), Cell::One(value)))
-                                .collect(),
-                        },
-                        stamp: Stamp {
-                            verb: "new_task".into(),
-                            invoker: self.person.clone(),
-                            invocation: id.into(),
-                            ..Stamp::default()
-                        },
-                    },
+            invoker: ActionInvoker,
+            resource: &str,
+            action: &str,
+            arguments: Value,
+        ) -> Result<Vec<String>, String> {
+            let Value::Object(arguments) = arguments else {
+                panic!("arguments by name: {arguments}")
+            };
+            let device = self.device.lock().unwrap().clone();
+            let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
+            let (resource, action) = (resource.to_owned(), action.to_owned());
+            tokio::task::spawn_blocking(move || {
+                on_device(
+                    &Mutex::new(device),
+                    &workspaces,
+                    &workspace,
+                    invoker,
+                    &resource,
+                    &action,
+                    arguments,
                 )
-                .await
-                .unwrap();
+            })
+            .await
+            .unwrap()
+            .map(|output| output.resources)
         }
 
-        /// A broker over this workspace that refuses `refuses`, with Tasks' words.
+        /// A new task of Tasks titled `title`, with `more` of what a new task is given: its id.
+        pub async fn new_task(&self, title: &str, more: Value) -> String {
+            let mut arguments = serde_json::json!({ "title": title });
+            if let (Value::Object(all), Value::Object(more)) = (&mut arguments, more) {
+                all.extend(more);
+            }
+            let made = self.act(&super::tracker(), "new_task", arguments).await;
+            super::task_of(&made[0]).unwrap().to_owned()
+        }
+
+        /// The task `id` as the person reads it.
+        pub async fn task(&self, id: &str) -> super::Task {
+            super::Reader::Person(&self.workspaces, &self.person)
+                .task(&self.workspace, id)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+
+        /// A broker over this workspace and its person's device that denies `refuses`.
         pub fn broker(&self, refuses: &[(&'static str, &'static str)]) -> Arc<Broker> {
             Arc::new(Broker {
                 workspaces: self.workspaces.clone(),
                 workspace: self.workspace.clone(),
                 person: self.person.clone(),
                 refuses: refuses.iter().copied().collect(),
+                device: Mutex::new(self.device.lock().unwrap().clone()),
                 asked: Mutex::default(),
-                makes: Mutex::new(BTreeMap::from([(
-                    "write_note".to_owned(),
-                    "tl:so.tilo.notes:n-1".to_owned(),
-                )])),
             })
         }
 
@@ -635,11 +876,14 @@ pub(super) mod testing {
             )
         }
 
-        /// The turn's agent, as its calls name it.
+        /// The turn's agent, `scout`, acting for the person, as its calls name it.
         pub fn caller(&self) -> Caller {
-            Caller::authenticated([9; 32], [7; 32]).in_workspace(self.workspace.clone())
+            Caller::authenticated(self.root, [7; 32])
+                .in_workspace(self.workspace.clone())
+                .delegated_to("scout")
         }
 
+        /// Shut the host down; the device's thread ends with the last broker over it.
         pub async fn end(self) {
             self.host.shutdown().await;
         }

@@ -206,8 +206,6 @@ impl Tracker {
 
 #[cfg(all(test, feature = "apps"))]
 mod tests {
-    use tilo_resource_store::Value as Stored;
-
     use super::*;
     use crate::agents::tl_tasks::testing::Host;
 
@@ -224,19 +222,6 @@ mod tests {
             workspace: host.workspace.clone(),
             caller: host.caller(),
         };
-        // Tasks gives the new task its id and number.
-        host.put(
-            tl_tasks::TASK,
-            "t-3",
-            vec![
-                ("number", Stored::Int(3)),
-                ("title", Stored::Text("Tidy the shared folder".into())),
-                ("status", Stored::Text("backlog".into())),
-                ("assignee", Stored::Text(tl_tasks::agent("scout"))),
-            ],
-        )
-        .await;
-        broker.made("new_task", "tl:so.tilo.tasks:t-3");
         let filed = tracker
             .file(
                 "scout",
@@ -245,86 +230,63 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(filed.issue, tl_tasks::resource("t-3"));
-        assert_eq!(filed.number, Some(3));
+        let id = tl_tasks::task_of(&filed.issue).unwrap().to_owned();
+        assert_eq!(filed.number, Some(1), "Tasks numbered it");
+        let task = host.task(&id).await;
+        assert_eq!(task.title, "Tidy the shared folder");
+        assert_eq!(task.assignee, Some(tl_tasks::agent("scout")));
         let asked = broker.asked.lock().unwrap().clone();
         assert_eq!(asked[0].1, tl_tasks::tracker());
         assert_eq!(asked[0].2, "new_task");
-        assert_eq!(asked[0].3["title"], "Tidy the shared folder");
-        assert_eq!(asked[0].3["assignee"], json!({"agent": "scout"}));
         assert_eq!(asked[1].2, "comment");
         assert_eq!(asked[1].3["text"], "It holds 40 copies of one file.");
 
-        tracker.give(&filed.issue).await.unwrap();
-        tracker.cancel(&filed.issue).await.unwrap();
-        let asked = broker.asked.lock().unwrap().clone();
-        let tail: Vec<_> = asked[2..]
-            .iter()
-            .map(|(_, resource, action, arguments)| {
-                (resource.as_str(), action.as_str(), arguments.clone())
-            })
-            .collect();
-        let task = tl_tasks::resource("t-3");
-        assert_eq!(
-            tail,
-            [
-                (
-                    task.as_str(),
-                    "assign",
-                    json!({"who": null}).as_object().cloned().unwrap()
-                ),
-                (
-                    task.as_str(),
-                    "assign",
-                    json!({"who": {"agent": "scout"}})
-                        .as_object()
-                        .cloned()
-                        .unwrap()
-                ),
-                (
-                    task.as_str(),
-                    "set_status",
-                    json!({"status": "cancelled"}).as_object().cloned().unwrap()
-                ),
-            ]
-        );
-
         // What its person did is read where they did it.
-        let read = |status: &'static str, by: Option<String>| {
-            let mut fields = vec![
-                ("number", Stored::Int(3)),
-                ("title", Stored::Text("Tidy the shared folder".into())),
-                ("status", Stored::Text(status.into())),
-                ("assignee", Stored::Text(tl_tasks::agent("scout"))),
-            ];
-            if let Some(by) = by {
-                fields.push(("assigned_by", Stored::Text(by)));
-            }
-            fields
-        };
-        let decided = async |fields| {
-            host.put(tl_tasks::TASK, "t-3", fields).await;
+        let stands = async || {
             let read = issues(
                 &host.workspaces,
                 &host.workspace,
                 &host.person,
-                &[task.clone()],
+                std::slice::from_ref(&filed.issue),
             )
             .await
             .unwrap();
-            in_tracker(&read, &task)
+            in_tracker(&read, &filed.issue)
         };
-        assert_eq!(decided(read("backlog", None)).await, InTracker::Waits);
+        assert_eq!(stands().await, InTracker::Waits);
+        tracker.give(&filed.issue).await.unwrap();
         assert_eq!(
-            decided(read("backlog", Some(tl_tasks::agent("scout")))).await,
+            stands().await,
             InTracker::Waits,
             "the assistant giving it to itself is no nod"
         );
+        host.act(&filed.issue, "assign", json!({"who": null})).await;
+        host.act(&filed.issue, "assign", json!({"who": {"agent": "scout"}}))
+            .await;
+        assert_eq!(stands().await, InTracker::Given);
+        tracker.cancel(&filed.issue).await.unwrap();
+        assert_eq!(stands().await, InTracker::Dropped);
+
+        let asked = broker.asked.lock().unwrap().clone();
+        let tail: Vec<_> = asked[2..]
+            .iter()
+            .map(|(_, resource, action, arguments)| {
+                (
+                    resource.as_str(),
+                    action.as_str(),
+                    Value::Object(arguments.clone()),
+                )
+            })
+            .collect();
+        let task = filed.issue.as_str();
         assert_eq!(
-            decided(read("todo", Some(tl_tasks::person(&host.person)))).await,
-            InTracker::Given
+            tail,
+            [
+                (task, "assign", json!({"who": null})),
+                (task, "assign", json!({"who": {"agent": "scout"}})),
+                (task, "set_status", json!({"status": "cancelled"})),
+            ]
         );
-        assert_eq!(decided(read("cancelled", None)).await, InTracker::Dropped);
         let gone = issues(
             &host.workspaces,
             &host.workspace,

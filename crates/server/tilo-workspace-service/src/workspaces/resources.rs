@@ -1257,6 +1257,19 @@ impl Workspaces {
         drop(governed);
         Ok(answer)
     }
+
+    /// Take `documents` (each whole, by its id) into the store of `workspace`, as a member's
+    /// device's writes reach it by sync: what the tests of the agents' work on an app's resources
+    /// stand on, the app running where it runs, on a device.
+    #[cfg(all(test, feature = "apps", feature = "agents"))]
+    pub(crate) async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
+        let state = self.workspace(workspace).await.unwrap();
+        let mut governed = state.lock().await;
+        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
+        for (doc, bytes) in documents {
+            store.load(&doc, &bytes).unwrap();
+        }
+    }
 }
 
 impl Workspaces {

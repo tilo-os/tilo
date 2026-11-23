@@ -714,43 +714,27 @@ fn told(request: &str, work: &Before, place: &Place) -> String {
 
 #[cfg(all(test, feature = "apps"))]
 mod tests {
+    use serde_json::json;
     use tilo_actions::remote::ActionProvider as _;
-    use tilo_resource_store::Value as Stored;
 
     use super::*;
     use crate::agents::tl_tasks::testing::{Broker, Host};
 
-    /// A workspace whose store holds the task `t-7`, "Book the venue", its work (`work`, the
-    /// fields of its `Work`) and what made it go on (`resumed`), and a turn of the agent on it
-    /// through a broker that refuses `refuses`.
+    /// A workspace whose Tasks holds the task "Book the venue", its work as its person's
+    /// `before` actions on it left it, and a turn of the agent on it through a broker that
+    /// denies `refuses`.
     async fn worked(
-        work: &[(&str, Stored)],
-        resumed: Option<&str>,
+        before: &[(&str, serde_json::Value)],
         refuses: &[(&'static str, &'static str)],
     ) -> (Host, TaskWork, Arc<Broker>) {
         let host = Host::new().await;
-        let mut work: Vec<(&str, Stored)> = work.to_vec();
-        if let Some(cause) = resumed {
-            host.put(
-                "tl.so.tilo.tasks.Resumed",
-                "r-1",
-                vec![("cause", Stored::Text(cause.into()))],
-            )
+        let id = host
+            .new_task("Book the venue", json!({"assignee": {"agent": "scout"}}))
             .await;
-            work.push(("resumed", Stored::Text("r-1".into())));
+        for (action, arguments) in before {
+            host.act(&tl_tasks::resource(&id), action, arguments.clone())
+                .await;
         }
-        host.put("tl.so.tilo.tasks.Work", "w-1", work).await;
-        host.put(
-            tl_tasks::TASK,
-            "t-7",
-            vec![
-                ("number", Stored::Int(7)),
-                ("title", Stored::Text("Book the venue".into())),
-                ("status", Stored::Text("todo".into())),
-                ("work", Stored::Text("w-1".into())),
-            ],
-        )
-        .await;
         let broker = host.broker(refuses);
         let service = host.service(&broker);
         let task = TaskWork {
@@ -758,9 +742,20 @@ mod tests {
             service,
             caller: host.caller(),
             workspace: host.workspace.clone(),
-            task: "t-7".into(),
+            task: id,
         };
         (host, task, broker)
+    }
+
+    /// What the task's work holds now, as the turn reads it.
+    async fn work_of(task: &TaskWork) -> tl_tasks::Work {
+        let reader = task.reader();
+        let read = reader
+            .task(&task.workspace, &task.task)
+            .await
+            .unwrap()
+            .unwrap();
+        reader.work(&task.workspace, &read).await.unwrap()
     }
 
     /// Which actions were asked, in order.
@@ -781,11 +776,11 @@ mod tests {
         const SPENT: &str = "I stopped: this task's budget is spent. Raise it to let me go on.";
         let (host, task, broker) = worked(
             &[
-                ("budget_micros", Stored::Int(10)),
-                ("spent_micros", Stored::Int(10)),
+                ("set_budget", json!({"micros": 10})),
+                ("session_began", json!({})),
+                ("session_ended", json!({"spent_micros": 10})),
             ],
-            None,
-            &[("session_began", SPENT)],
+            &[],
         )
         .await;
         let mut request = "Book the venue".to_owned();
@@ -806,11 +801,14 @@ mod tests {
     async fn a_session_is_told_its_tasks_work_and_counted_when_it_ends() {
         let (host, task, broker) = worked(
             &[
-                ("budget_micros", Stored::Int(1_000_000)),
-                ("spent_micros", Stored::Int(250_000)),
-                ("sessions", Stored::Int(2)),
+                ("set_budget", json!({"micros": 1_000_000})),
+                ("session_began", json!({})),
+                ("session_ended", json!({"spent_micros": 125_000})),
+                ("session_began", json!({})),
+                ("session_ended", json!({"spent_micros": 125_000})),
+                ("wait", json!({"what": "the venue's reply"})),
+                ("resume", json!({"cause": "the pieces are through"})),
             ],
-            Some("the pieces are through"),
             &[],
         )
         .await;
@@ -823,8 +821,13 @@ mod tests {
         );
         assert!(request.contains("not your first session"), "{request}");
         assert!(request.contains("$0.75 of $1.00 is left"), "{request}");
-        assert!(request.contains("`tl:so.tilo.notes:n-1`"), "{request}");
-        assert!(request.contains("`Tasks/7 Book the venue`"), "{request}");
+        assert!(request.contains("`tl:so.tilo.notes:"), "{request}");
+        assert!(request.contains("`Tasks/1 Book the venue`"), "{request}");
+        let work = work_of(&task).await;
+        assert!(work.note.starts_with("tl:so.tilo.notes:"), "{work:?}");
+        assert_eq!(work.folder, "Tasks/1 Book the venue");
+        assert_eq!(work.sessions, 3);
+        assert!(work.interrupted, "the session is under way");
         assert_eq!(
             actions(&broker),
             ["session_began", "write_note", "set_place", "new-folder"]
@@ -848,11 +851,15 @@ mod tests {
         assert_eq!(counted["worked_ms"], 3_000);
         assert_eq!(asked[5].2, "stop");
         assert_eq!(stop["why"], "budget");
+        let work = work_of(&task).await;
+        assert_eq!(work.spent_micros, 1_000_000);
+        assert_eq!(work.money_left(), Some(0));
+        assert!(!work.interrupted);
         // Every write is the agent's own, on the task it works.
         for (caller, resource, action, _) in &asked {
             assert_eq!(caller, &task.caller, "{action}");
             if action != "new-folder" {
-                assert_eq!(resource, &tl_tasks::resource("t-7"), "{action}");
+                assert_eq!(resource, &tl_tasks::resource(&task.task), "{action}");
             }
         }
         host.end().await;
@@ -865,7 +872,6 @@ mod tests {
         const DENIED: &str = "the agent may not change this task";
         let (host, task, broker) = worked(
             &[],
-            None,
             &[
                 ("session_began", DENIED),
                 ("stop", DENIED),

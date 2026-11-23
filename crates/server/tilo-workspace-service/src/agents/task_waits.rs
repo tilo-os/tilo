@@ -41,6 +41,10 @@ pub(super) fn told(
     let Some(actions) = actions else {
         return false;
     };
+    let Some(id) = WorkspaceId::parse(workspace) else {
+        return false;
+    };
+    let provider = WorkspaceActionProvider::new(actions.clone(), id);
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return false;
     };
@@ -51,7 +55,7 @@ pub(super) fn told(
             .name("task-wait".into())
             .spawn_scoped(scope, || {
                 runtime.block_on(go_on(
-                    workspaces, actions, workspace, person, automation, words,
+                    workspaces, &provider, workspace, person, automation, words,
                 ))
             })
             .ok()
@@ -79,7 +83,7 @@ fn cause_of(words: &str) -> String {
 /// [`told`], on the runtime: how many tasks were told to go on.
 async fn go_on(
     workspaces: &Workspaces,
-    actions: &WorkspaceActions,
+    provider: &WorkspaceActionProvider,
     workspace: &str,
     person: &str,
     automation: &str,
@@ -115,13 +119,14 @@ async fn go_on(
     let caller = Caller::authenticated(root, device)
         .in_workspace(workspace.to_owned())
         .delegated_to(automation.to_owned());
-    let provider = WorkspaceActionProvider::new(actions.clone(), id);
     let mut arguments = Map::new();
     arguments.insert("cause".into(), Value::from(cause_of(words)));
+    // The wait this automation ends: Tasks refuses it when a newer wait names another.
+    arguments.insert("on".into(), Value::from(automation));
     let mut told: usize = 0;
     for task in waiting {
         let resumed = tl_tasks::invoke(
-            &provider,
+            provider,
             &caller,
             workspace,
             &task.resource(),
@@ -142,6 +147,67 @@ async fn go_on(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A task given to the agent by its person waits on the person's automation; that automation
+    /// tells it to go on with what it handed over, as the automation acting for the person. An
+    /// older automation, whose wait a newer one replaced, ends nothing.
+    #[cfg(feature = "apps")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_automation_a_task_waits_on_tells_it_to_go_on_and_an_older_one_does_not() {
+        use serde_json::json;
+
+        let host = tl_tasks::testing::Host::new().await;
+        let id = host.new_task("Book the venue", json!({})).await;
+        let task = tl_tasks::resource(&id);
+        host.act(&task, "assign", json!({"who": {"agent": "scout"}}))
+            .await;
+        host.act(
+            &task,
+            "wait",
+            json!({"what": "the venue's reply", "on": "older"}),
+        )
+        .await;
+        host.act(
+            &task,
+            "wait",
+            json!({"what": "the venue's reply", "on": "newer"}),
+        )
+        .await;
+        let broker = host.broker(&[]);
+        let provider = host.service(&broker);
+        let told = |automation: &'static str| {
+            go_on(
+                &host.workspaces,
+                &provider,
+                &host.workspace,
+                &host.person,
+                automation,
+                "The venue confirmed the date.",
+            )
+        };
+        assert_eq!(told("older").await, Ok(0));
+        assert_eq!(host.task(&id).await.waiting_on, "newer", "it waits still");
+        assert_eq!(told("newer").await, Ok(1));
+        let asked = broker.asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let (caller, resource, action, arguments) = &asked[0];
+        assert_eq!(
+            (resource.as_str(), action.as_str()),
+            (task.as_str(), "resume")
+        );
+        assert_eq!(arguments["on"], "newer");
+        assert_eq!(arguments["cause"], "The venue confirmed the date.");
+        assert!(caller.acting().is_agent(), "{caller:?}");
+        let went_on = host.task(&id).await;
+        assert_eq!(went_on.waiting_on, "");
+        let reader = Reader::Person(&host.workspaces, &host.person);
+        let work = reader.work(&host.workspace, &went_on).await.unwrap();
+        assert_eq!(
+            work.resumed.as_deref(),
+            Some("The venue confirmed the date.")
+        );
+        host.end().await;
+    }
 
     #[test]
     fn what_lets_a_task_go_on_is_one_line_of_what_the_automation_hands_over() {
