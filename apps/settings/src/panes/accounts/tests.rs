@@ -1056,3 +1056,50 @@ fn linked_accounts_show_where_the_workspace_is_connected_to_a_service() {
     );
     assert!(shown.contains(&t("accounts-linked-unlink")), "{shown:?}");
 }
+
+#[test]
+fn the_mail_form_names_its_fields_to_assistive_technology() {
+    let mut pane = AccountsPane::from_dir(sample_directory(), true);
+    pane.command(AccountViewCommand::Add(AccountKind::Mail));
+    assert!(pane.form_open(), "Add opens the inline form");
+    let mut app = window_showing(pane);
+    let controls = app.harness().controls();
+    let names: Vec<_> = controls.iter().filter_map(|c| c.name.clone()).collect();
+    let field = controls
+        .iter()
+        .find(|control| {
+            control.name.as_deref() == Some("Display name")
+                && control.role == ui::accesskit::Role::TextInput
+        })
+        .unwrap_or_else(|| panic!("the exported tree names the display-name field: {names:#?}"));
+    assert!(
+        control_rect(app.harness(), &field.id).is_some_and(|rect| rect.width() > 0.0),
+        "the named field is drawn where a press reaches it"
+    );
+
+    // A screen reader, or an agent acting for one, reaches the field by that
+    // name: focus and the text land in the form's own draft.
+    let id = app
+        .harness()
+        .a11y_node_named("Display name")
+        .expect("the field is exported by its name");
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::Focus)
+        .expect("the field takes focus");
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::SetValue("Ada".into()))
+        .expect("the field takes the text");
+    assert_eq!(
+        change(&mut app, |pane| pane.form_name.get()),
+        "Ada",
+        "typing by accessible name reaches the draft"
+    );
+}
+
+/// Where the exported node `id` stands, if it is drawn.
+fn control_rect(harness: &ui::headless::FrameHarness, id: &str) -> Option<ui::vello::kurbo::Rect> {
+    let id = ui::accesskit::NodeId(id.parse().ok()?);
+    let node = harness.a11y_node(id)?;
+    node.bounds()
+        .map(|bounds| ui::vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+}
