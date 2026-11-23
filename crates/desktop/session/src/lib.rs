@@ -466,9 +466,6 @@ pub mod workspace_settings;
 mod workspace_terminals;
 #[cfg(target_os = "linux")]
 mod workspaces;
-// What a desktop kept of its workspaces itself, handed to this computer's Tilo service once.
-#[cfg(target_os = "linux")]
-pub mod workspace_import;
 // A session a display manager starts where Tilo's service runs as the person: the service starts
 // the shell.
 #[cfg(target_os = "linux")]
