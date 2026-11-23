@@ -20,7 +20,7 @@ use super::ticket::Tickets;
 use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_owned};
 use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
-use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, profile, unix};
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
 use ed25519_dalek::SigningKey;
 use std::{
     io,
@@ -295,7 +295,7 @@ impl Daemon {
         let identity = Identity::here()?;
         let take_work =
             take_work::Server::from_login(identity.login.as_ref().map(|(_, device)| device));
-        unix::private_directory(identity.place.dir())?;
+        host::private_directory(identity.place.dir())?;
         let place = DaemonPlace::of(
             identity.place.dir(),
             &identity.key.verifying_key().to_bytes(),
@@ -314,7 +314,7 @@ impl Daemon {
                 super::serve::lock_device(&place)?
             }
         };
-        unix::private_directory(root)?;
+        host::private_directory(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
@@ -811,11 +811,11 @@ impl RuntimeServices for Daemon {
     }
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
-        unix::launch(
+        host::launch(
             command,
             app_id,
             &self.workspace,
-            &unix::ServiceSockets {
+            &host::ServiceSockets {
                 collab: self.broker.app_socket(),
                 identity: &self.identity_socket,
                 blobs: &self.blob_socket,
