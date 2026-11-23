@@ -90,7 +90,7 @@ pub(super) async fn person_with_an_assistant(
 /// The program [`before_board_entries`] carried out for the person of
 /// `cert`, its progress kept in `state` and its time read from `clock`: as
 /// it starts, and as it starts again after its holder stopped.
-async fn waiting(
+fn waiting(
     (workspaces, workspace, cert): (&Workspaces, &str, &DeviceCert),
     assistant: &Arc<Assistant>,
     clock: &Arc<tilo_clock::ManualClock>,
@@ -149,7 +149,7 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
     keep(vec![standup.clone(), lunch.clone(), offsite.clone()]).await;
 
     let manual = Arc::new(tilo_clock::ManualClock::new(at("2026-10-19T06:00:00Z")));
-    let mut runner = waiting(set, &assistant, &manual, state.clone()).await;
+    let mut runner = waiting(set, &assistant, &manual, state.clone());
     let mut expected: Vec<(String, u64)> = Vec::new();
 
     // Nothing before its moment, and its moment once, however often the
@@ -188,7 +188,7 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
     // The server restarts: what was answered stays answered, and the next
     // moment still comes.
     drop(runner);
-    let mut runner = waiting(set, &assistant, &manual, state.clone()).await;
+    let mut runner = waiting(set, &assistant, &manual, state.clone());
     pass(&mut runner, &manual, "2026-10-23T07:00:00Z").await;
     assert_eq!(handed(&assistant), expected);
     pass(&mut runner, &manual, "2026-10-23T07:15:00Z").await;

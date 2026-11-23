@@ -394,10 +394,6 @@ async fn a_scheduled_event_runs_at_its_time_once_and_again_at_the_next() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "a schedule's and a moment's missed fire time across one restart are one story"
-)]
 async fn a_restarted_host_fires_what_it_missed_once_whether_a_schedule_or_a_moment() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
