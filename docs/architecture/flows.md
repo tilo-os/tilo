@@ -52,8 +52,9 @@ The person runs Tilo OS on their laptop, the Tilo app on their Android phone and
 Tilo server OS on a home server. The server can instead run Tilo only as a
 container, for someone who doesn't want to give it a whole machine.
 
-- They need nothing from tilo.sh. They sign in and control all their
-  workspaces without paying, and tilo.sh hosts nothing for them.
+- They pay tilo.sh nothing, and it hosts nothing for them. They can still
+  sign in there and control all their workspaces, which live on their own
+  devices.
 - The server serves its own Tilo web UI. That's on by default and can be
   turned off.
 - The Android app connects like any other device.
