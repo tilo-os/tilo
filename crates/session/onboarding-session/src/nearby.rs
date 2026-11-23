@@ -158,7 +158,7 @@ fn refused(error: &anyhow::Error) -> NearbyFailure {
         NearbyCause::Expired
     } else if said.contains("is not the ticket's secret") || said.contains("not a Tilo ticket") {
         NearbyCause::Wrong
-    } else if said.contains("can't be reached from here") {
+    } else if said.contains("can't be reached from here") || said.contains("did not take it") {
         NearbyCause::Unreached
     } else if said.contains("reaching Tilo on this computer") || said.contains("didn't start") {
         NearbyCause::NotStarted

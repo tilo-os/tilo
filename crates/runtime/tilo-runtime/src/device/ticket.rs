@@ -997,6 +997,11 @@ fn certify_refused(error: &ActionCallError) -> String {
             )
         }
         ActionCallError::UnknownAction => tilo_api::daemon::enter::TOO_OLD.to_owned(),
+        ActionCallError::Unavailable { reason } => format!(
+            "The device that made this ticket did not take it: {}. If its `tilo device add` \
+             ended, ask for a new ticket.",
+            reason.trim_end_matches('.')
+        ),
         _ => "The device that made this ticket can't be reached from here: it may be asleep, or \
               its `tilo device add` ended. Ask for a new ticket."
             .to_owned(),

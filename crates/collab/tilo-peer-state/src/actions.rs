@@ -429,6 +429,16 @@ impl ActionService {
             .map_or_else(|| Arc::clone(&self.0.dispatcher), Arc::clone)
     }
 
+    /// The provider that alone answers a request [`Self::authorize`] handed to `dispatcher`: one
+    /// admitted for a device with no certificate yet ([`Self::admit_uncertified`]) answers every
+    /// request of its caller, and no provider beside it does.
+    fn alone(
+        &self,
+        dispatcher: &Arc<dyn ActionProvider + Send + Sync>,
+    ) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+        (!Arc::ptr_eq(dispatcher, &self.0.dispatcher)).then(|| Arc::clone(dispatcher))
+    }
+
     /// What owns invocation `id` for `caller`: the dispatcher where it keeps the invocation,
     /// else the first provider beside it that does. A provider that observes an invocation is the
     /// one that ran it, so what follows or cancels it is asked there.
@@ -709,7 +719,9 @@ impl ActionService {
                 })
             }
             RemoteActionMessage::Invoke(invoke) => {
-                let provider = self.provider_for(&invoke.target.provider);
+                let provider = self
+                    .alone(dispatcher)
+                    .unwrap_or_else(|| self.provider_for(&invoke.target.provider));
                 let status = match self.spend(caller) {
                     Ok(()) => await_answer(provider.invoke(caller, invoke.clone()))
                         .await
@@ -732,7 +744,9 @@ impl ActionService {
             } => {
                 let state = self
                     .observe(
-                        &self.owner(caller, invocation),
+                        &self
+                            .alone(dispatcher)
+                            .unwrap_or_else(|| self.owner(caller, invocation)),
                         caller,
                         invocation,
                         *wait_ms,
@@ -746,8 +760,12 @@ impl ActionService {
                 })
             }
             RemoteActionMessage::Cancel { invocation } => {
-                let result =
-                    await_answer(self.owner(caller, invocation).cancel(caller, invocation)).await;
+                let result = await_answer(
+                    self.alone(dispatcher)
+                        .unwrap_or_else(|| self.owner(caller, invocation))
+                        .cancel(caller, invocation),
+                )
+                .await;
                 Some(RemoteActionMessage::CancelResponse {
                     invocation: *invocation,
                     result,
