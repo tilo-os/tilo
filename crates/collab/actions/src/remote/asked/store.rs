@@ -92,10 +92,10 @@ impl Kept {
             .iter()
             .filter(|record| record.status != Status::Asked)
             .count();
-        let mut drop = answered.saturating_sub(ANSWERED_KEPT);
+        let mut excess = answered.saturating_sub(ANSWERED_KEPT);
         self.records.retain(|record| {
-            if drop > 0 && record.status != Status::Asked {
-                drop -= 1;
+            if excess > 0 && record.status != Status::Asked {
+                excess = excess.saturating_sub(1);
                 false
             } else {
                 true
@@ -165,6 +165,7 @@ impl AskedStore {
             });
         }
         kept.moved();
+        drop(kept);
         Ok(())
     }
 
@@ -264,6 +265,7 @@ impl AskedStore {
         self.keep(&record.kept());
         kept.records.push(record);
         kept.moved();
+        drop(kept);
         Ok(at)
     }
 
@@ -287,6 +289,7 @@ impl AskedStore {
         if admitted {
             record.relayed = true;
         }
+        drop(kept);
         admitted
     }
 
@@ -315,7 +318,7 @@ impl AskedStore {
                 })
             }
             Ok(Admitted::Approved(caller, request, (dispatch, context))) => Pending::ready(
-                readmit(&self.dispatch(&dispatch), &caller, request, &context),
+                readmit(&self.dispatch(&dispatch), &caller, *request, &context),
             ),
             Ok(Admitted::Granting(caller, request, (dispatch, context), grant, person)) => {
                 let dispatch = self.dispatch(&dispatch);
@@ -406,10 +409,11 @@ impl AskedStore {
                     grant,
                     person.to_owned(),
                 ),
-                None => Admitted::Approved(caller, request, (dispatch, context)),
+                None => Admitted::Approved(caller, Box::new(request), (dispatch, context)),
             }
         };
         kept.moved();
+        drop(kept);
         Ok(admitted)
     }
 
@@ -435,7 +439,7 @@ type KeptBy = (String, serde_json::Value);
 
 enum Admitted {
     Declined(Caller, InvocationId, String),
-    Approved(Caller, InvokeRequest, KeptBy),
+    Approved(Caller, Box<InvokeRequest>, KeptBy),
     Granting(
         Caller,
         Box<InvokeRequest>,
@@ -571,6 +575,7 @@ impl AskedRecords for AskedStore {
                 }
             })
             .collect();
+        drop(kept);
         rows.sort_by_key(|row| row.asked_at_ms);
         rows
     }

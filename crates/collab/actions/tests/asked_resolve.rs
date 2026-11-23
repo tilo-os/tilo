@@ -32,7 +32,7 @@ const WORKSPACE: &str = "acme";
 /// What the dispatch was handed.
 #[derive(Debug, PartialEq)]
 enum Handed {
-    Readmit(Caller, InvokeRequest),
+    Readmit(Caller, Box<InvokeRequest>),
     Declined(Caller, InvocationId),
 }
 
@@ -50,11 +50,15 @@ impl AskedDispatch for Noted {
         request: InvokeRequest,
         context: &serde_json::Value,
     ) -> Result<(), ActionCallError> {
-        assert_eq!(*context, self.context(request.invocation));
+        if *context != self.context(request.invocation) {
+            return Err(ActionCallError::Refused {
+                reason: format!("handed back with another context: {context}"),
+            });
+        }
         self.0
             .lock()
             .unwrap()
-            .push(Handed::Readmit(caller.clone(), request));
+            .push(Handed::Readmit(caller.clone(), Box::new(request)));
         Ok(())
     }
 
@@ -389,7 +393,7 @@ fn approve_and_grant_writes_the_grant_then_approves() {
         .write_asked(WORKSPACE, &scout(), &call, &facts())
         .unwrap();
     resolve(&host, &at, &ada(), Offer::ApproveAndGrant, None).unwrap();
-    let written = grants.written.lock().unwrap();
+    let written = grants.written.lock().unwrap().clone();
     let [(workspace, person, grant)] = written.as_slice() else {
         panic!("one grant: {written:?}");
     };
@@ -413,6 +417,7 @@ fn approve_and_grant_writes_the_grant_then_approves() {
         matches!(handed.as_slice(), [Handed::Readmit(_, request)] if request.invocation == call.invocation),
         "{handed:?}"
     );
+    drop(handed);
 }
 
 /// A device's own question grants nothing.
