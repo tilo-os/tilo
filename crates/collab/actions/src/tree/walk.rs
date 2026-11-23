@@ -24,7 +24,10 @@ use super::{
     pick, rank,
 };
 use crate::ActionDescriptor;
-use crate::remote::{ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery};
+use crate::InvocationId;
+use crate::remote::{
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationState,
+};
 
 /// Resource rows one directory level reads at most, across its pages.
 pub const LEVEL_PAGES: usize = 4;
@@ -515,7 +518,19 @@ impl<P> Tree<P> {
     }
 }
 
-impl<P: ActionProvider + Sync> Tree<P> {
+impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
+    /// The provider's word on `invocation`, read off a runtime's worker
+    /// ([`observed_off_the_worker`](crate::remote::observed_off_the_worker)): a provider that
+    /// waits on a device must not wait on the worker the answer needs.
+    pub(super) async fn observed(&self, invocation: &InvocationId) -> Option<InvocationState> {
+        crate::remote::observed_off_the_worker(
+            self.provider.clone(),
+            self.caller.clone(),
+            *invocation,
+        )
+        .await
+    }
+
     /// One catalogue page asked of the provider as this tree's caller, waited for until it
     /// answers, for at most [`ANSWER_WAIT`]. A workspace that just started opens the documents
     /// a listing reads before it answers, and an ask given up sooner left the caller waiting
@@ -723,7 +738,7 @@ impl Resolved {
     }
 }
 
-impl<P: ActionProvider + Sync> Tree<P> {
+impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// One directory level: the resources under `parent` and their actions,
     /// over as many pages as a bounded read takes.
     pub async fn level(
@@ -1627,7 +1642,7 @@ pub fn app_names(ids: &[String]) -> Vec<String> {
     names
 }
 
-impl<P: ActionProvider + Sync> Tree<P> {
+impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// The app a kind names (`tasks.tracker` is the Tasks app's tracker), as
     /// the app id and the provider serving it: a kind begins with the app it
     /// belongs to. `None` when the name is no kind or its app does not run.

@@ -50,7 +50,7 @@ enum Unread {
     Unavailable(String),
 }
 
-impl<P: ActionProvider + Sync> Tree<P> {
+impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// `level`, read on until it holds more than `children` resources or
     /// the directory ends: what a listing paging past the first bounded
     /// read needs, so every resource a directory holds is reachable.

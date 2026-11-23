@@ -1152,6 +1152,29 @@ impl From<WireActionCallError> for ActionCallError {
     }
 }
 
+/// What `provider` says of `invocation`, read off the runtime's worker when one drives the
+/// caller. A provider that asks a device for an answer waits for the runtime to carry it (a
+/// session's actions do), and a wait on a worker stops the task that carries it: with enough
+/// callers inside that wait at once, nothing is left to deliver any of their answers, and each
+/// waits out the provider's own deadline.
+pub async fn observed_off_the_worker<P>(
+    provider: P,
+    caller: Caller,
+    invocation: InvocationId,
+) -> Option<InvocationState>
+where
+    P: ActionProvider + Send + 'static,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return tokio::task::spawn_blocking(move || provider.observe(&caller, &invocation))
+            .await
+            .ok()
+            .flatten();
+    }
+    provider.observe(&caller, &invocation)
+}
+
 /// A peer that runs actions on behalf of authenticated remote callers.
 ///
 /// Implementations resolve authority from `caller` alone and must be
