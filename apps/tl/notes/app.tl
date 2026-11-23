@@ -2143,11 +2143,9 @@ scenario "a week of notes" {
         ),
     )
     invoke(tag(plan, "planning"))
-    let ada = person("Ada")
-    let leo = person("Leo")
-    invoke(react(plan, "🎉"), by: ada, at: 2026-06-29T07:05Z)
-    invoke(react(plan, "🎉"), by: leo, at: 2026-06-29T07:06Z)
-    invoke(react(plan, "🚀"), by: leo, at: 2026-06-29T07:06Z)
+    plan.reactions.add("🎉", person("Ada"))
+    plan.reactions.add("🎉", person("Leo"))
+    plan.reactions.add("🚀", person("Leo"))
     let standups = notebook.notes.insert(
         Note(title: "Standups", body: RichText("Ten minutes, every morning."), parent: plan),
     )

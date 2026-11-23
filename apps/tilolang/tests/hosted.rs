@@ -93,6 +93,8 @@ const RICHBODY: &str = "so.tilo.lang.richbody";
 const TASKS: &str = "so.tilo.lang.tasks";
 /// The conversations the workspace has.
 const CHAT: &str = "so.tilo.lang.chat";
+/// What people said about the workspace's resources.
+const DISCUSSION: &str = "so.tilo.lang.discussion";
 /// The day at a glance, over Tasks', Notes' and Chat's own places.
 const TODAY: &str = "so.tilo.lang.today";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
