@@ -812,11 +812,11 @@ impl PowerService {
     ) {
         deadlines.profile_owner_stream = None;
         if let Some(owner) = owner {
-            let owned: zbus::names::OwnedUniqueName = owner.to_owned().into();
-            debug!(target: "tilo::power", %owned, "power-profiles-daemon acquired bus name");
+            let unique: zbus::names::OwnedUniqueName = owner.to_owned().into();
+            debug!(target: "tilo::power", %unique, "power-profiles-daemon acquired bus name");
             let replaced =
-                matches!(&self.profiles_owner, ProfilesOwner::Bus(prev) if prev != &owned);
-            self.profiles_owner = ProfilesOwner::Bus(owned);
+                matches!(&self.profiles_owner, ProfilesOwner::Bus(prev) if prev != &unique);
+            self.profiles_owner = ProfilesOwner::Bus(unique);
             if replaced {
                 self.bridge.clear_profiles();
                 self.reapply_policy();

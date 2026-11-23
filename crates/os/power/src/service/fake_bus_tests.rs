@@ -1026,7 +1026,7 @@ async fn startup_reads_power_profiles_even_without_an_owner_and_does_not_retry()
         async move {
             let _tap = tap;
             while let Some(Ok(msg)) = tap_stream.next().await {
-                if msg.header().member().map(|m| m.as_str()) == Some("Get")
+                if msg.header().member().map(zbus::names::MemberName::as_str) == Some("Get")
                     && let Ok((_iface, prop)) = msg.body().deserialize::<(String, String)>()
                 {
                     requested.lock().expect("requested").push(prop);
@@ -1050,13 +1050,11 @@ async fn startup_reads_power_profiles_even_without_an_owner_and_does_not_retry()
         }
     })
     .await;
-    {
-        let props = requested.lock().expect("requested");
-        assert!(
-            props.iter().any(|p| p == "Profiles") && props.iter().any(|p| p == "ActiveProfile"),
-            "startup must send initial Profiles and ActiveProfile reads even with no owner: {props:?}"
-        );
-    }
+    let props = requested.lock().expect("requested").clone();
+    assert!(
+        props.iter().any(|p| p == "Profiles") && props.iter().any(|p| p == "ActiveProfile"),
+        "startup must send initial Profiles and ActiveProfile reads even with no owner: {props:?}"
+    );
     let settled_wakeups = wakeups.load(Ordering::SeqCst);
     tokio::time::sleep(SIGNAL_STREAM_RETRY_DELAY + Duration::from_millis(500)).await;
     let wakeups_after_window = wakeups.load(Ordering::SeqCst);
@@ -1389,26 +1387,26 @@ async fn stale_signal_from_departed_owner_does_not_overwrite_new_owner() {
 struct InvalidatingPowerProfiles {
     active: String,
     profiles: Vec<String>,
-    hang_reads: Arc<std::sync::atomic::AtomicBool>,
-    hung_reads: Arc<std::sync::atomic::AtomicUsize>,
+    stall_reads: Arc<std::sync::atomic::AtomicBool>,
+    stalled_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[zbus::interface(name = "net.hadess.PowerProfiles")]
 impl InvalidatingPowerProfiles {
     #[zbus(property(emits_changed_signal = "invalidates"))]
     async fn active_profile(&self) -> String {
-        if self.hang_reads.load(Ordering::SeqCst) {
-            self.hung_reads.fetch_add(1, Ordering::SeqCst);
-            std::future::pending().await
+        if self.stall_reads.load(Ordering::SeqCst) {
+            self.stalled_count.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>().await;
         }
         self.active.clone()
     }
 
     #[zbus(property(emits_changed_signal = "invalidates"))]
     async fn profiles(&self) -> Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
-        if self.hang_reads.load(Ordering::SeqCst) {
-            self.hung_reads.fetch_add(1, Ordering::SeqCst);
-            std::future::pending().await
+        if self.stall_reads.load(Ordering::SeqCst) {
+            self.stalled_count.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>().await;
         }
         profile_entries(&self.profiles)
     }
@@ -1419,8 +1417,8 @@ async fn invalidated_power_profile_properties_are_reread_into_bridge() {
     let (server, client) = p2p_with_profiles_iface(InvalidatingPowerProfiles {
         active: "balanced".into(),
         profiles: vec!["balanced".into(), "power-saver".into()],
-        hang_reads: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        hung_reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        stall_reads: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        stalled_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     })
     .await;
 
@@ -1481,8 +1479,8 @@ async fn invalidated_power_profile_properties_are_reread_into_bridge() {
 async fn an_invalidated_property_reread_against_a_silent_daemon_does_not_block_lid_handling() {
     let bus = tilo_test_env::PrivateBus::start();
     let base = serve_base_daemons_on_bus(bus.address()).await;
-    let hang_reads = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let hung_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let stall_reads = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stalled_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let daemon = Builder::address(bus.address())
         .expect("addr")
         .serve_at(
@@ -1490,8 +1488,8 @@ async fn an_invalidated_property_reread_against_a_silent_daemon_does_not_block_l
             InvalidatingPowerProfiles {
                 active: "balanced".into(),
                 profiles: vec!["balanced".into(), "power-saver".into()],
-                hang_reads: Arc::clone(&hang_reads),
-                hung_reads: Arc::clone(&hung_reads),
+                stall_reads: Arc::clone(&stall_reads),
+                stalled_count: Arc::clone(&stalled_count),
             },
         )
         .expect("invalidating daemon")
@@ -1512,7 +1510,7 @@ async fn an_invalidated_property_reread_against_a_silent_daemon_does_not_block_l
     .await;
     apply_quiet_policy(&bridge, &wakeups).await;
 
-    hang_reads.store(true, Ordering::SeqCst);
+    stall_reads.store(true, Ordering::SeqCst);
     let iface = daemon
         .object_server()
         .interface::<_, InvalidatingPowerProfiles>(PROFILES_PATH)
@@ -1525,7 +1523,7 @@ async fn an_invalidated_property_reread_against_a_silent_daemon_does_not_block_l
         .await
         .expect("ActiveProfile invalidated");
     eventually("invalidation triggers a stalled re-read", || {
-        hung_reads.load(Ordering::SeqCst) >= 1
+        stalled_count.load(Ordering::SeqCst) >= 1
     })
     .await;
 
