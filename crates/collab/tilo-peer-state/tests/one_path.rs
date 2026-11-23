@@ -31,6 +31,11 @@ async fn write(
     workspace: tilo_desktop_model::WorkspaceId,
     device: &SigningKey,
 ) {
+    let founding = !owner
+        .with_current(workspace, |view| {
+            Ok(view.peer().holds_document(APP, RECORD))
+        })
+        .expect("the device holds the workspace");
     let written = owner
         .write_local(
             workspace,
@@ -41,7 +46,7 @@ async fn write(
                 document: RECORD,
                 readers: None,
                 changes: &note("written"),
-                founding: false,
+                founding,
                 snapshot: true,
                 sealed: None,
                 now: tilo_clock::wall(),
@@ -49,6 +54,24 @@ async fn write(
         )
         .await;
     written.expect("the device writes its record");
+}
+
+/// Everything the fixture's copy of the workspace holds that `owners` do not yet: the governance
+/// its enrollments wrote after each device was installed.
+fn sync_from_fixture(fixture: &TestWorkspace, owners: &[&NativeWorkspaceOwner]) {
+    let message = fixture.peer().workspace_message();
+    let device = fixture.device().device_public_key;
+    let now = tilo_clock::wall();
+    for owner in owners {
+        owner
+            .receive(
+                fixture.workspace_id(),
+                TransportOrigin::ServerDelta(device),
+                message.clone(),
+                now,
+            )
+            .unwrap();
+    }
 }
 
 /// A workspace `root`'s person made, with the device `certificate` holding it,
@@ -66,6 +89,7 @@ fn held(
     let fixture = empty(&a_cert, &a_key);
     let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     let fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
+    sync_from_fixture(&fixture, &[&owner_a, &owner_b]);
     (owner_a, fixture, a_key, b_key)
 }
 
@@ -321,6 +345,7 @@ fn held_certified(
     let fixture = empty(&a_cert, &a_key);
     let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
     let fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
+    sync_from_fixture(&fixture, &[&owner_a, &owner_b]);
     (owner_a, fixture, a_key, b_key, a_cert)
 }
 
@@ -343,7 +368,8 @@ async fn two_devices_offline_role_changes_converge() {
     let fixture = empty(&a_cert, &a_key);
     let workspace = fixture.workspace_id();
     let fixture = testing::enroll_into(fixture, &owner_a, &a_key, &a_cert).unwrap();
-    let _fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
+    let fixture = testing::enroll_into(fixture, &owner_b, &b_key, &b_cert).unwrap();
+    sync_from_fixture(&fixture, &[&owner_a, &owner_b]);
     let now = tilo_clock::wall();
     let grant_action = |id: &str, person: [u8; 32]| {
         tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
