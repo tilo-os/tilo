@@ -58,6 +58,11 @@ one resource to everyone.
   keep and which work they take. A server is a device that keeps
   more. A device without a resource's keys keeps and forwards its sealed changes
   without reading them.
+  Every device checks a sealed change's signer and its grants. A device that can
+  read the change also checks its contents, with the same check admission uses.
+  A change that fails a reader's check is refused on its own, and the record
+  stays readable without it. One bad change, from a buggy writer or a hostile
+  member, never makes a resource unreadable.
   A workspace held only by one person's computer is complete.
 - Changes move over one link, device to device. Reaching a device through a
   server means reaching it through a device that is online.
