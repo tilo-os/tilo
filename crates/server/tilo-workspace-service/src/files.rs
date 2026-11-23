@@ -45,6 +45,7 @@ pub mod access;
 mod folders;
 mod puts;
 pub mod socket;
+pub mod store;
 
 pub use folders::{Folder, Folders};
 pub use puts::Puts;
