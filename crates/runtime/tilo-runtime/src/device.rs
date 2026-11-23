@@ -30,8 +30,12 @@ pub mod compute;
 mod confirm;
 mod content;
 mod host_runs;
+#[cfg(target_os = "linux")]
+pub mod package_runs;
 pub mod peer;
 mod person;
+#[cfg(target_os = "linux")]
+pub mod processes;
 pub mod serve;
 pub mod services;
 pub mod take_work;

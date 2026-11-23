@@ -527,6 +527,26 @@ pub fn take() -> Option<Descriptor> {
     None
 }
 
+/// Start `command` holding the other end of a new link, as its stdin, named by [`FD_ENV`]: a
+/// tilolang host reads it there, and a launcher takes it off stdin and places it at [`CHILD_FD`]
+/// in the sandbox it starts. Answers this end and the child. Every tilolang host is handed its
+/// link this way, whatever starts it.
+///
+/// Stdin, rather than a descriptor placed in a `pre_exec` step: that step makes
+/// `Command::spawn` `fork()` the caller, which for the compositor's session is the whole desktop.
+///
+/// # Errors
+/// No link could be made, or the program did not start.
+#[cfg(unix)]
+pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, std::process::Child)> {
+    let (ours, theirs) = pair()?;
+    command
+        .env(FD_ENV, "0")
+        .stdin(std::process::Stdio::from(theirs));
+    let child = command.spawn()?;
+    Ok((ours, child))
+}
+
 /// Close `link` for good, both ways: whatever the other end sends from now on fails at once
 /// instead of waiting unread in a process that no longer reads it.
 ///

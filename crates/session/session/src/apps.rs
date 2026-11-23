@@ -192,7 +192,7 @@ struct State {
     wake: Option<tilo_service::Wake>,
     /// The tilolang processes, once the session lent its links: one per workspace and author, running
     /// the instances of the tilolang apps' windows.
-    processes: Option<Arc<tilo_app_launch::tilolang_processes::Processes>>,
+    processes: Option<Arc<tilo_runtime::device::processes::Processes>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
     connectors: Option<Rc<crate::connectors::ConnectorHost>>,
     /// The files apps are handed, while the session serves them where a launcher binds each app's
@@ -624,7 +624,7 @@ impl Apps {
         state.processes = state
             .launcher
             .clone()
-            .map(tilo_app_launch::tilolang_processes::Processes::new);
+            .map(tilo_runtime::device::processes::Processes::new);
         state.links = Some(links);
         state.connectors = Some(connectors);
     }
@@ -657,7 +657,7 @@ impl Apps {
             return false;
         }
         drop(state);
-        tilo_app_launch::tilolang_processes::runs_in_process(app)
+        tilo_runtime::device::package_runs::runs_in_process(app)
     }
 
     /// The connections and grants a tilolang instance of `app` in `workspace` runs with, opened
@@ -679,7 +679,7 @@ impl Apps {
         };
         // An app whose types hold an outside service's resources reaches its connector, which
         // holds the network and ownership the host has none of.
-        let origin = match tilo_app_launch::tilolang_processes::origin_of(app)? {
+        let origin = match tilo_runtime::device::package_runs::origin_of(app)? {
             None => None,
             Some((origin, _)) => {
                 let Some(connectors) = connectors else {
@@ -754,7 +754,7 @@ impl Apps {
                 return;
             }
         };
-        processes.hand_over(tilo_app_launch::tilolang_processes::Instance {
+        processes.hand_over(tilo_runtime::device::processes::Instance {
             access: resources.access,
             app,
             workspace,
@@ -766,7 +766,15 @@ impl Apps {
             origin: resources.origin,
             content: resources.content,
             chooser: resources.chooser,
-            opens: hosted.opens,
+            document: hosted.opens.record,
+            reveal: hosted.opens.reveal,
+            open: hosted
+                .opens
+                .content
+                .map(|content| runtime_portal::process_link::OpenedFile {
+                    hash: content.hash,
+                    name: content.name,
+                }),
             locale: Self::person_locale(),
         });
     }
@@ -1031,7 +1039,9 @@ impl Apps {
             }
             // The windows whose instances a tilolang host runs are told on its link.
             if let Some(processes) = &processes {
-                processes.policy_changed(&workspace);
+                processes.policy_changed(&workspace.id, |app| {
+                    tilo_app_launch::authority::access(&workspace, app)
+                });
             }
         }
     }
@@ -1993,7 +2003,7 @@ impl Apps {
         }
         planned
             .args
-            .push(tilo_app_launch::tilolang_processes::PROCESS_ARG.to_owned());
+            .push(tilo_runtime::device::processes::PROCESS_ARG.to_owned());
         Ok(())
     }
 
@@ -2054,7 +2064,7 @@ impl Apps {
                 ))
             })?;
         processes
-            .hand_over_now(tilo_app_launch::tilolang_processes::Instance {
+            .hand_over_now(tilo_runtime::device::processes::Instance {
                 access: resources.access,
                 app: app.to_owned(),
                 workspace: workspace.id.clone(),
@@ -2066,7 +2076,9 @@ impl Apps {
                 origin: resources.origin,
                 content: resources.content,
                 chooser: resources.chooser,
-                opens: tilo_app_launch::Opens::default(),
+                document: None,
+                reveal: None,
+                open: None,
                 locale: Self::person_locale(),
             })
             .map_err(|error| ApiError::Failed(error.to_string()))?;

@@ -43,7 +43,8 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-files = { path = "../../platform/tilo-files" }
+# `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 anyhow.workspace = true
 automerge.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
@@ -68,6 +69,14 @@ iroh-blobs.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
+# The tilolang hosts this device runs: the link each is handed (which the
+# process-boundary tests also drive as an app inside a login does), the sealed
+# module, the log targets a launch's latency and an app's output are kept
+# under, and where an earlier version of an app kept its documents.
+runtime-portal = { path = "../runtime-portal" }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
+tilo-app-state = { path = "../../system/app-state" }
 # The installed applications this runtime launches, read through their signed
 # manifests.
 app-catalogue = { path = "../../packaging/app-catalogue" }
@@ -158,9 +167,6 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 # The relays the replica tests start.
 tilo-server = { path = "../../server/tilo-server" }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
-# The attachment an app makes to the host this runtime serves, which the
-# process-boundary tests drive as an app inside a login does.
-runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.

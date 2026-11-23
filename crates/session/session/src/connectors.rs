@@ -122,7 +122,7 @@ impl ConnectorHost {
         let child = Self::start(&planned, &socket)?;
         // Its account sign-ins come first, when its app's signed manifest grants them: the
         // workspace's accounts, and the sign-ins the person's grant on Passwords releases to it.
-        let granted = tilo_app_launch::tilolang_processes::origin_of(app)
+        let granted = tilo_runtime::device::package_runs::origin_of(app)
             .is_ok_and(|declared| declared == Some((origin.to_owned(), true)));
         if granted {
             crate::account_sign_ins::hand(&ours, app, workspace).map_err(|error| {

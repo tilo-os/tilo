@@ -1,7 +1,7 @@
 //! The apps a desktop session's task programs compile against: every installed app's package or
 //! signed surface, and the packages the session runs itself.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
@@ -11,26 +11,16 @@ use super::{ApiAsk, SessionServices, WAIT};
 
 /// The apps a task's programs may name here, as the session knows them: each tilolang app's own
 /// package, verified as a launch verifies it, which declares the names a program calls its
-/// actions and roots by, and the signed surface of every other app. With them, the id each
-/// tilolang app keeps its records under when it was renamed.
+/// actions and roots by, and the signed surface of every other app.
 /// One catalogue, whoever reads it: `tilolang check` reads the same packages and surfaces from
 /// the apps' directories.
-fn installed_apps(
-    kept: &BTreeSet<String>,
-) -> (
-    Vec<runtime_portal::process_link::App>,
-    BTreeMap<String, String>,
-) {
+fn installed_apps(kept: &BTreeSet<String>) -> Vec<runtime_portal::process_link::App> {
     use runtime_portal::process_link::App;
     let mut apps = Vec::new();
-    let mut documents_under = BTreeMap::new();
     let mut named: BTreeSet<String> = kept.clone();
-    for package in tilo_app_launch::tilolang_processes::task_packages() {
+    for package in tilo_runtime::device::package_runs::task_packages() {
         if !named.insert(package.app.clone()) {
             continue;
-        }
-        if let Some(under) = package.documents_under {
-            documents_under.insert(package.app, under);
         }
         apps.push(App::Module(package.module));
     }
@@ -56,7 +46,7 @@ fn installed_apps(
             surface,
         });
     }
-    (apps, documents_under)
+    apps
 }
 
 /// Where a session's task catalogue is read: what its own APIs answer of the packages it runs
@@ -81,12 +71,11 @@ impl TaskCatalogue for SessionCatalogue {
         self.session.ask(ApiAsk::Apps(done));
         let mut apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
         let kept = self.session.kept.lock_recover().clone();
-        let (installed, documents_under) = installed_apps(&kept);
-        apps.extend(installed);
+        apps.extend(installed_apps(&kept));
         Catalogue {
             apps,
-            documents_under,
             changed_at_document: kept,
+            ..Catalogue::default()
         }
     }
 }

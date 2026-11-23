@@ -123,31 +123,29 @@ fn program() -> io::Result<std::path::PathBuf> {
 /// Start a task host of its own: the tilolang host's program, holding the other end of the api
 /// this returns and nothing else of this process. It ends with this process, and with its last
 /// task.
+///
+/// It is handed its link as every tilolang host is ([`runtime_portal::process_link::spawn`]), but
+/// started straight from its program rather than through the device's launcher: it runs in
+/// whatever serves a task's programs (an API server, `tilo mcp`, a session), where no launcher or
+/// runtime bundle need be installed, holds no storage and no connection but the program's, and
+/// lives for one task, ending with the thread that started it.
 #[cfg(target_os = "linux")]
 fn start_program() -> io::Result<OwnedFd> {
-    use std::os::fd::{AsRawFd as _, BorrowedFd};
     use std::os::unix::process::CommandExt as _;
-    let (ours, theirs) = runtime_portal::process_link::pair()?;
-    let raw = theirs.as_raw_fd();
     let mut command = std::process::Command::new(program()?);
     command
-        .env(runtime_portal::process_link::FD_ENV, raw.to_string())
         .env_remove(runtime_portal::process_link::STORAGE_ENV)
-        .stdin(std::process::Stdio::null())
         // This process's own output may be a protocol (`tilo mcp` speaks on it).
         .stdout(std::process::Stdio::null());
-    // SAFETY: runs in the forked child before exec and calls only async-signal-safe system calls
-    // (fcntl, prctl), allocating nothing; `raw` stays open in the parent until the spawn returns.
+    // SAFETY: runs in the forked child before exec and calls only an async-signal-safe system
+    // call (prctl), allocating nothing.
     unsafe {
-        command.pre_exec(move || {
-            let api = BorrowedFd::borrow_raw(raw);
-            rustix::io::fcntl_setfd(api, rustix::io::FdFlags::empty())?;
+        command.pre_exec(|| {
             rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
             Ok(())
         });
     }
-    let mut child = command.spawn()?;
-    drop(theirs);
+    let (ours, mut child) = runtime_portal::process_link::spawn(command)?;
     std::thread::Builder::new()
         .name("tilo-task-host".into())
         .spawn(move || match child.wait() {

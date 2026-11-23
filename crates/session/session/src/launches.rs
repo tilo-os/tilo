@@ -569,7 +569,7 @@ impl LauncherServices for Launches {
             Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) => launch,
             // A tilolang app's call starts its code with no view, whether or not its launch
             // parses as a package: nothing of it opens a window.
-            _ if tilo_app_launch::tilolang_processes::runs_in_process(app) => {
+            _ if tilo_runtime::device::package_runs::runs_in_process(app) => {
                 tilo_app_launch::Launch::Package {
                     app: app.to_owned(),
                     open: None,

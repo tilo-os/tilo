@@ -1,6 +1,9 @@
 //! Tilolang processes: one process per workspace and app, which runs that app's code in that
 //! workspace, each view's call in it (`docs/designs/app-language/app-window.md`).
 //!
+//! The device holds them, as it holds the rest of its work; the desktop session is a client that
+//! hands each window's instance over, and a device with no desktop starts them the same way.
+//!
 //! A tilolang app's window is a launched process of its own, with its own launch identity for its
 //! surface and accessibility, started as its window alone (no `--tilolang-process`: the launcher gives
 //! it no collaboration connection). The session hands each window's instance to the process of its
@@ -22,10 +25,10 @@
 //! do in the app, said again on the sockets of the workspace's processes when its policy changes
 //! ([`Processes::policy_changed`]): a viewer's window offers no change they cannot make.
 //!
-//! A process is started through the launch kind "tilolang process" (`tilo-launcher
-//! tilolang-process`), keyed by its workspace, its app and the runtimes it runs on, with the
-//! storage of that workspace and app; it ends once the last of its calls ended, which it says on
-//! its socket.
+//! A process is started through the platform's launcher ([`spawn_host`]; on Linux the launch kind
+//! "tilolang process", `tilo-launcher tilolang-process`), keyed by its workspace, its app and the
+//! runtimes it runs on, with the storage of that workspace and app; it ends once the last of its
+//! calls ended, which it says on its socket.
 //!
 //! In a development session (`TILO_LAUNCHER_LIVE_MODULES`), a reinstall of an app a process runs is
 //! verified as a launch verifies it and handed to the process on its socket ([`Processes::reinstalled`]):
@@ -37,7 +40,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -45,6 +47,8 @@ use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
     AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenedFile, Packet as _, ToProcess,
 };
+
+use super::package_runs::{installed_apps, runs_in_process, verified_installed};
 
 /// Hand the process behind `socket` the instance `request` with its connections, keeping them
 /// to hand to another process should this one have ended.
@@ -69,107 +73,6 @@ const PERSON_VIEWS_APP: &str = "so.tilo.lang.views";
 
 /// How many of its last error lines a process that ended without saying why is reported by.
 const SAID_LINES: usize = 8;
-
-/// Whether the installed app `app` is a tilolang app: its manifest's entrypoint runs a tilolang
-/// runtime. Read only to decide how its windows are launched; what a process runs is read from the
-/// installation verified as a launch verifies it.
-#[must_use]
-pub fn runs_in_process(app: &str) -> bool {
-    app_catalogue::apps::read_one_from_env(app)
-        .ok()
-        .flatten()
-        .and_then(|installed| launcher::manifest::read_manifest(&installed.manifest_path).ok())
-        .and_then(|manifest| manifest.entrypoint.runtime)
-        .is_some_and(|runtime| launcher::run::tilolang_process::is_tilolang(&runtime))
-}
-
-/// An installed tilolang app as an agent task's programs reach it: its package, verified as a
-/// launch verifies it, and the id its records are kept under when it was renamed from an earlier
-/// one.
-pub struct TaskPackage {
-    pub app: String,
-    pub module: runtime_portal::process_link::Module,
-    pub documents_under: Option<String>,
-}
-
-/// Every installed tilolang app a task's programs name, each verified as a launch verifies it.
-/// The task's process runs in the session, so no process of the app's runtimes is started. A program names an app by what its package declares (its actions,
-/// its roots), which only the package itself holds: a program is compiled against its
-/// declarations, not against the surface it publishes.
-#[must_use]
-pub fn task_packages() -> Vec<TaskPackage> {
-    let apps = match app_catalogue::apps::read_from_env() {
-        Ok(apps) => apps,
-        Err(error) => {
-            tracing::warn!(%error, "a task names no tilolang app: the installed apps are not known");
-            return Vec::new();
-        }
-    };
-    let earlier = tilo_action_policy::earlier::held();
-    apps.iter()
-        .filter(|app| runs_in_process(&app.app_id))
-        .filter_map(|app| match verified_package(&app.app_id) {
-            Ok(verified) => Some(TaskPackage {
-                app: app.app_id.to_string(),
-                module: verified.module,
-                documents_under: Some(earlier.documents_under(&app.app_id).to_owned())
-                    .filter(|under| under.as_str() != app.app_id.as_str()),
-            }),
-            Err(error) => {
-                tracing::warn!(package_id = %app.app_id, %error, "a task leaves out an app it could not verify");
-                None
-            }
-        })
-        .collect()
-}
-
-/// The tilolang apps installed here, by id, each with the id its records are kept under (its
-/// earliest, when it was renamed): what an instance tells another app it uses by.
-fn installed_apps() -> std::collections::BTreeMap<String, String> {
-    let apps = match app_catalogue::apps::read_from_env() {
-        Ok(apps) => apps,
-        Err(error) => {
-            tracing::warn!(%error, "an instance reads no other app: the installed apps are not known");
-            return std::collections::BTreeMap::new();
-        }
-    };
-    let earlier = tilo_action_policy::earlier::held();
-    apps.iter()
-        .filter(|app| runs_in_process(&app.app_id))
-        .map(|app| {
-            (
-                app.app_id.to_string(),
-                earlier.documents_under(&app.app_id).to_owned(),
-            )
-        })
-        .collect()
-}
-
-/// The one origin (`imap`, `youtube`) the installed app `app` reaches an outside service through,
-/// when it declares one, and whether its signed manifest grants that origin's connector the
-/// workspace's account sign-ins ([`tilo_app_package::manifest::ACCOUNT_SIGN_INS`]).
-///
-/// # Errors
-/// The manifest does not read, or it declares more than one origin.
-pub fn origin_of(app: &str) -> Result<Option<(String, bool)>, String> {
-    let installed = app_catalogue::apps::read_one_from_env(app)
-        .ok()
-        .flatten()
-        .ok_or_else(|| format!("{app} is not installed here"))?;
-    let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
-        .map_err(|error| format!("reading {app}'s manifest: {error}"))?;
-    match manifest.entrypoint.origins.as_slice() {
-        [] => Ok(None),
-        [origin] => Ok(Some((
-            origin.clone(),
-            manifest.declares_capability(tilo_app_package::manifest::ACCOUNT_SIGN_INS),
-        ))),
-        more => Err(format!(
-            "{app} declares {} origins; an instance reaches one connector",
-            more.len()
-        )),
-    }
-}
 
 /// What identifies one process: one workspace and one app, on the runtimes its package names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -199,9 +102,9 @@ struct Build {
     module: u64,
 }
 
-/// One instance, as the session hands it over: the app and workspace it runs in, the window it
+/// One instance, as the desktop hands it over: the app and workspace it runs in, the window it
 /// draws (or none, for an action that shows nothing), who is at it, and the connections the
-/// session made for it.
+/// desktop made for it.
 pub struct Instance {
     pub app: String,
     pub workspace: String,
@@ -224,27 +127,28 @@ pub struct Instance {
     pub content: Option<OwnedFd>,
     /// Its connection to the person's chooser, when this session serves one.
     pub chooser: Option<OwnedFd>,
-    /// What the window was asked to show.
-    pub opens: crate::Opens,
-    /// What the person may do in the app ([`crate::authority::access`]).
+    /// The record the window was asked to show, by its id.
+    pub document: Option<String>,
+    /// The item the window opens on, by its anchor.
+    pub reveal: Option<String>,
+    /// The file the window opens, as content the instance reads from the content store.
+    pub open: Option<OpenedFile>,
+    /// What the person may do in the app, projected from the workspace's policy.
     pub access: Option<tilo_action_policy::MemberAccess>,
     /// The person's formats and language, as the session resolved them: what the instance writes
     /// its dates and clocks in, and the language its window reads every word in.
     pub locale: runtime_portal::process_link::Locale,
 }
 
-/// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`
-/// and reading what an earlier version of its app kept (the directory, and where the process sees
-/// it beneath its mount).
-type Starts = dyn Fn(&str, &str, &Path, Option<(&Path, &Path)>) -> Command + Send + Sync;
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
 type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
 
-/// The tilolang processes this session runs, by workspace, app and runtimes.
+/// The tilolang processes this device runs, by workspace, app and runtimes.
 pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
     data_home: PathBuf,
-    starts: Box<Starts>,
+    /// The platform's launcher, which starts each process in its sandbox ([`spawn_host`]).
+    launcher: PathBuf,
     verifies: Box<Verifies>,
     running: Mutex<HashMap<HostKey, Host>>,
     generations: AtomicU64,
@@ -253,43 +157,21 @@ pub struct Processes {
 }
 
 impl Processes {
-    /// The processes this session starts through `launcher`, keeping what they keep under the person's
-    /// data home.
+    /// The processes this device starts through `launcher`, keeping what they keep under the
+    /// person's data home.
     #[must_use]
     pub fn new(launcher: PathBuf) -> Arc<Self> {
         let data_home =
             tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        Self::with(
-            data_home,
-            Box::new(move |runtime, app_runtime, storage, earlier| {
-                let mut command = Command::new(&launcher);
-                command
-                    .arg(launcher::run::tilolang_process::SUBCOMMAND)
-                    .arg("--runtime")
-                    .arg(runtime)
-                    .arg("--app-runtime")
-                    .arg(app_runtime)
-                    .arg("--storage")
-                    .arg(storage);
-                if let Some((dir, under)) = earlier {
-                    command
-                        .arg("--earlier")
-                        .arg(dir)
-                        .arg("--earlier-under")
-                        .arg(under);
-                }
-                command
-            }),
-            Box::new(verified_installed),
-        )
+        Self::with(data_home, launcher, Box::new(verified_installed))
     }
 
-    /// Processes over `data_home`, started by `starts` and running what `verifies` verified.
+    /// Processes over `data_home`, started through `launcher` and running what `verifies` verified.
     #[must_use]
-    pub fn with(data_home: PathBuf, starts: Box<Starts>, verifies: Box<Verifies>) -> Arc<Self> {
+    pub fn with(data_home: PathBuf, launcher: PathBuf, verifies: Box<Verifies>) -> Arc<Self> {
         Arc::new(Self {
             data_home,
-            starts,
+            launcher,
             verifies,
             running: Mutex::new(HashMap::new()),
             generations: AtomicU64::new(1),
@@ -339,18 +221,22 @@ impl Processes {
     }
 
     /// Say on every process running in `workspace` what the person may now do in each app it runs,
-    /// from the workspace's policy as the session holds it now: a role given or taken back
-    /// enables or disables what the windows already open offer. A process started later is handed
-    /// it with each instance.
-    pub fn policy_changed(&self, workspace: &crate::workspace::Workspace) {
+    /// `access` of the app, from the workspace's policy as the caller holds it now: a role given
+    /// or taken back enables or disables what the windows already open offer. A process started
+    /// later is handed it with each instance.
+    pub fn policy_changed(
+        &self,
+        workspace: &str,
+        access: impl Fn(&str) -> Option<tilo_action_policy::MemberAccess>,
+    ) {
         for (key, process) in self.running().iter() {
-            if key.workspace != workspace.id {
+            if key.workspace != workspace {
                 continue;
             }
             let app = key.app.clone();
             let access = runtime_portal::process_link::AppAccess {
+                access: access(&app),
                 app: app.clone(),
-                access: crate::authority::access(workspace, &app),
             };
             if let Err(error) = ToProcess::Access(access).send(&process.socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next
@@ -431,12 +317,9 @@ impl Processes {
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.
             language: instance.locale.language,
-            document: instance.opens.record,
-            reveal: instance.opens.reveal,
-            open: instance.opens.content.map(|content| OpenedFile {
-                hash: content.hash,
-                name: content.name,
-            }),
+            document: instance.document,
+            reveal: instance.reveal,
+            open: instance.open,
             installed: if uses_packages {
                 installed_apps()
             } else {
@@ -685,29 +568,19 @@ impl Processes {
         dir.is_dir().then_some((dir, under))
     }
 
-    /// Start the process `key`, with its socket as its stdin, and follow it on a thread of its own
-    /// until it ends.
+    /// Start the process `key`, with its socket at the launch kind's descriptor, and follow it on a
+    /// thread of its own until it ends.
     fn start(self: &Arc<Self>, key: &HostKey) -> std::io::Result<Host> {
         let storage = self.storage(key)?;
-        let (ours, theirs) = runtime_portal::process_link::pair()?;
         let earlier = self.earlier(key);
-        let mut command = (self.starts)(
-            &key.runtime,
-            &key.app_runtime,
+        let (ours, mut child) = spawn_host(
+            &self.launcher,
+            key,
             &storage,
             earlier
                 .as_ref()
                 .map(|(dir, under)| (dir.as_path(), under.as_path())),
-        );
-        command
-            // The socket goes as the launcher's stdin, which it moves to the launch kind's
-            // descriptor itself: a descriptor placed anywhere else takes a `pre_exec` step, and
-            // that makes `Command::spawn` `fork()` the compositor (`runtime_portal::launch_hold`).
-            .stdin(std::process::Stdio::from(theirs))
-            // Read here: what it said last is why it ended when it could not say so itself.
-            .stderr(std::process::Stdio::piped());
-        let mut child = command.spawn()?;
-        drop(command);
+        )?;
         let tag = format!("{} {}", key.workspace, key.app);
         let said = child.stderr.take().map(|stderr| {
             std::thread::Builder::new()
@@ -815,38 +688,44 @@ impl Processes {
     }
 }
 
+/// Start the tilolang host `key`, keeping `storage` and reading what an earlier version of its app
+/// kept (the directory, and where the host sees it beneath its mount), on its process link: the
+/// one place a host is started, and the only one that names the platform. On Linux the launcher
+/// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
+/// its sandbox.
+fn spawn_host(
+    launcher: &Path,
+    key: &HostKey,
+    storage: &Path,
+    earlier: Option<(&Path, &Path)>,
+) -> std::io::Result<(OwnedFd, std::process::Child)> {
+    let mut command = std::process::Command::new(launcher);
+    command
+        .arg(launcher::run::tilolang_process::SUBCOMMAND)
+        .arg("--runtime")
+        .arg(&key.runtime)
+        .arg("--app-runtime")
+        .arg(&key.app_runtime)
+        .arg("--storage")
+        .arg(storage);
+    if let Some((dir, under)) = earlier {
+        command
+            .arg("--earlier")
+            .arg(dir)
+            .arg("--earlier-under")
+            .arg(under);
+    }
+    // Read here: what it said last is why it ended when it could not say so itself.
+    command.stderr(std::process::Stdio::piped());
+    runtime_portal::process_link::spawn(command)
+}
+
 /// The hash of an encoded module: whether a process runs that build already.
 fn hash(module: &[u8]) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::hash::DefaultHasher::new();
     module.hash(&mut hasher);
     hasher.finish()
-}
-
-/// `app`, installed here, verified as a launch verifies it.
-fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
-    let installed = package_store::find_installed(app)
-        .map_err(|error| format!("the package store cannot be read: {error}"))?
-        .ok_or_else(|| format!("{app} is not installed"))?;
-    launcher::run::tilolang_process::verified_instance(
-        &installed,
-        &installed.manifest_path,
-        &installed.payload_root,
-        &installed.package_id_hex,
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// `app`, installed here, verified as a launch verifies it, on runtimes installed here.
-fn verified_installed(_workspace: &str, app: &str) -> Result<VerifiedInstance, String> {
-    let verified = verified_package(app)?;
-    if !verified.runs_here() {
-        return Err(format!(
-            "{app} names runtimes not installed here ({}, {})",
-            verified.runtime, verified.app_runtime
-        ));
-    }
-    Ok(verified)
 }
 
 /// A process's error output, read on a thread of its own: its last lines once it has ended.
@@ -932,7 +811,7 @@ mod tests {
     fn processes(data_home: PathBuf) -> Arc<Processes> {
         Processes::with(
             data_home,
-            Box::new(|_, _, _, _| Command::new("true")),
+            PathBuf::from("/nonexistent"),
             Box::new(|_, _| Err("no package store here".to_owned())),
         )
     }
@@ -1004,7 +883,7 @@ mod tests {
         let store = Arc::clone(&installed);
         let processes = Processes::with(
             std::env::temp_dir(),
-            Box::new(|_, _, _, _| Command::new("true")),
+            PathBuf::from("/nonexistent"),
             Box::new(move |_, _| {
                 Ok(VerifiedInstance {
                     runtime: "tilolang@1".to_owned(),
@@ -1102,19 +981,19 @@ mod tests {
         policy
             .members
             .insert("ada".to_owned(), tilo_action_policy::Role::Viewer);
-        let workspace = crate::workspace::Workspace {
-            policy: Some(policy),
-            person: "ada".to_owned(),
-            ..crate::workspace::Workspace::new(WORKSPACE, std::env::temp_dir())
+        let policy = Arc::new(policy);
+        let access = |app: &str| {
+            (app == NOTES)
+                .then(|| tilo_action_policy::MemberAccess::person(Arc::clone(&policy), "ada"))
         };
-        processes.policy_changed(&workspace);
+        processes.policy_changed(WORKSPACE, access);
         let handed = ToProcess::receive(&theirs).unwrap();
         let Some(ToProcess::Access(said)) = handed else {
             panic!("the workspace's process is told the person's access: {handed:?}");
         };
         assert_eq!(said.app, NOTES);
         // What a launched Notes reads of the person's authority, as it reads back off the socket.
-        let expected = crate::authority::access(&workspace, NOTES).unwrap();
+        let expected = access(NOTES).unwrap();
         let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
         assert_eq!(said.access, Some(expected));
 
