@@ -254,17 +254,7 @@ fn plan_new_channels(
             .filter(|_| guild.only_channel.is_none())
         {
             Some(parent) => match guild.by_discord(MappedKind::Category, parent) {
-                // The map keys a Tilo object by its item's id; a Chat verb addresses the
-                // resource by its document and id, as the workspace's tree names it.
-                Some(mapping) => Some(
-                    workspace
-                        .categories
-                        .iter()
-                        .find(|category| {
-                            category.id.rsplit('/').next() == Some(mapping.tilo.as_str())
-                        })
-                        .map_or_else(|| mapping.tilo.clone(), |category| category.id.clone()),
-                ),
+                Some(mapping) => Some(mapping.tilo.clone()),
                 // A category kept in Discord only takes its channels along.
                 None if guild.discord_only.contains(parent) => continue,
                 // Its category is created this round; the channel follows next.

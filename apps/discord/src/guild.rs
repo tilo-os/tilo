@@ -649,16 +649,17 @@ impl Guild {
         &mut self,
         cx: &mut ActionCx,
         kind: MappedKind,
-        #[param("The Tilo id, or the item resource a Chat verb answered")] tilo: String,
+        #[param("The Tilo id: Chat's published id of a resource a Chat verb answered")]
+        tilo: String,
         #[param("The Discord id")] discord: String,
         origin: Origin,
         #[param("The Discord author of a Discord-origin message")] persona: Option<String>,
         #[param("The Tilo thread root of a reply")] root: Option<String>,
     ) -> Result<(), Refusal> {
         guard::bot(cx)?;
-        // A verb answers the items it created as their resources
-        // (`chat.workspace/messages/<id>`); the map keys on the item's id.
-        let tilo = tilo.rsplit('/').next().unwrap_or_default().to_owned();
+        // Kept whole: Chat names an item by its document and its id
+        // (`tl:so.tilo.chat:<document>/<item>`), and the bridge reads Chat and invokes its
+        // actions by that name.
         if tilo.is_empty() || discord.is_empty() {
             return Err(Refusal::new("a mapping joins two ids"));
         }

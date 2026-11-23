@@ -222,20 +222,20 @@ tilo_test_env::scenario! {
             state.knows_channel("d_general2"),
             "a mapped channel is known before the next layout event"
         );
-        bot.apply(map(
-            MappedKind::Message,
-            "chat.workspace/messages/m1",
-            "d_m1",
-        ))
-        .unwrap();
+        bot.apply(map(MappedKind::Message, "tl:so.tilo.chat:c1/m1", "d_m1"))
+            .unwrap();
+        let state = bot.state().unwrap();
         assert_eq!(
-            bot.state()
-                .unwrap()
-                .mapping(MappedKind::Message, "m1")
+            state
+                .mapping(MappedKind::Message, "tl:so.tilo.chat:c1/m1")
                 .unwrap()
                 .discord,
             "d_m1",
-            "the item resource a Chat verb answered maps by its id"
+            "the resource a Chat verb answered maps by the id Chat names it by"
+        );
+        assert!(
+            state.mapping(MappedKind::Message, "m1").is_none(),
+            "an item's id alone names no resource of Chat's"
         );
         bot.apply(Guild::UNMAP.with(guild::Unmap {
             kind: MappedKind::Channel,
