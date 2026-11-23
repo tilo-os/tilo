@@ -653,6 +653,7 @@ needs = ["app-models"]
 
 [[check]]
 name = "codemap"
+requires = ["arch=any"]
 run = "python3 -I tools/docs/codemap.py --check"
 fix = "python3 -I tools/docs/codemap.py"
 
@@ -706,6 +707,7 @@ git = true
 
 [[check]]
 name = "fmt"
+requires = ["arch=any"]
 run = "cargo fmt --check"
 fix = "cargo fmt"
 
@@ -719,14 +721,17 @@ fix = "cargo hakari generate && cargo hakari manage-deps --yes"
 
 [[check]]
 name = "sdk-licenses"
+requires = ["arch=any"]
 run = "python3 -m unittest tools/tests/test_sdk_licenses.py && python3 -I tools/sdk/check_licenses.py"
 
 [[check]]
 name = "client-licenses"
+requires = ["arch=any"]
 run = "python3 -m unittest tools/tests/test_client_licenses.py && python3 -I tools/sdk/check_client_licenses.py"
 
 [[check]]
 name = "lockfile"
+requires = ["arch=any"]
 # Resolves against crates.io.
 egress = { to = ["index.crates.io:443", "static.crates.io:443"] }
 run = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do\n  cargo metadata --locked --format-version 1 --manifest-path \"${lock%.lock}.toml\" >/dev/null || exit 1\ndone\npython3 tools/ci/check_lock_update.py --verify\n"
@@ -737,6 +742,7 @@ fix = "find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -
 env = { CARGO_NET_OFFLINE = "false" }
 [[check]]
 name = "deny"
+requires = ["arch=any"]
 # The RustSec advisory database (GitHub) and crates.io's index.
 egress = { to = ["github.com:443", "index.crates.io:443", "static.crates.io:443"] }
 run = "cargo deny --workspace check --hide-inclusion-graph"
@@ -751,6 +757,7 @@ heavy = true
 
 [[check]]
 name = "changes"
+requires = ["arch=any"]
 run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_resource_placement.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\n"
 git = true
 
@@ -783,6 +790,7 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]
 name = "workspace-layout"
+requires = ["arch=any"]
 run = "bash ./scripts/check-workspace-complete.sh\npython3 tools/policy/check_repository_layout.py\n"
 git = true
 
@@ -950,6 +958,7 @@ needs = ["signing-tools"]
 
 [[check]]
 name = "vendored"
+requires = ["arch=any"]
 # Resolves against crates.io.
 egress = { to = ["index.crates.io:443", "static.crates.io:443"] }
 run = "bash tools/ci/test-vendored-crates.sh"
@@ -976,6 +985,7 @@ heavy = true
 
 [[check]]
 name = "sdk-types"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check\n"
 fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api\n"
@@ -1097,6 +1107,7 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets\ncargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\" --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
 fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I tools/apps/generate_catalogue_fleet.py --tilolang \"${CARGO_TARGET_DIR:-target}/debug/tilolang\""
@@ -2472,6 +2483,7 @@ heavy = true
 
 [[check]]
 name = "mirror-images"
+requires = ["arch=any"]
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/mirror-images.sh"
@@ -3301,6 +3313,7 @@ default = false
 
 [[check]]
 name = "desktop-preflight"
+requires = ["arch=any"]
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -eu\n# dist/rpm/test-signing-contract.sh runs from dist/ci/run-payload-contract-tests.sh below.\npython3 scripts/check-install-contract.py\nbash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD\ncc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c\ntest \"$(cat dist/VERSION)\" = \"$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)\"\ngrep -Fxq \"%{!?tilo_version:%global tilo_version $(cat dist/VERSION)}\" dist/rpm/tilo-session.spec\npython3 -m unittest discover -s tools/tests -p test_rpm_broker.py\ndist/ci/run-payload-contract-tests.sh\nos/tests/portal_config_validity.sh\n"
@@ -3370,6 +3383,7 @@ pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 
 [[check]]
 name = "mirror-base"
+requires = ["arch=any"]
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/base-mirror.sh"
@@ -8225,6 +8239,7 @@ on = ["dispatch"]
 # make run and the CN20K object selection through Kbuild.
 [[check]]
 name = "os-build-contracts"
+requires = ["arch=any"]
 run = '''set -eu
 python3 os/tests/test_kernel_checkpoint_make.py
 python3 os/kernel/tests/test-cn20k-debugfs.py
