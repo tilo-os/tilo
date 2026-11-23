@@ -1,8 +1,9 @@
 //! `tilolang-process`: the one binary of the tilolang runtime bundle, in the role it was started
 //! for (`tilolang_process`):
 //!
-//! - with a process link (`TILO_SVC_PROCESS_FD`): the host of a workspace's instances of an app,
-//!   which the device starts, or of a task's programs, which `tilo` starts;
+//! - with its storage (`TILO_TILOLANG_PROCESS_STORAGE`) and a process link
+//!   (`TILO_SVC_PROCESS_FD`): the host of a workspace's instances of an app, or of a task's
+//!   programs, which the device starts;
 //! - with an origin (`TILO_TILOLANG_CONNECTOR`): that origin's connector, which the system runs
 //!   for an app whose types hold an outside service's resources;
 //! - with a page link (`TILO_TILOLANG_PAGE`): a window a device shows on a web page;
@@ -26,9 +27,15 @@ mod host;
 fn main() -> std::process::ExitCode {
     // The engines this bundle answers its apps with, registered before any of them asks.
     tilo_disk_usage::register();
+    // A host is started on its process link with the storage of its workspace and app
+    // (`spawn_host` of the device). A window has a process link too, the one its session opens
+    // its later windows on, but no storage; a page window has storage but no process link.
     #[cfg(feature = "app-launch")]
-    if std::env::var_os(runtime_portal::process_link::FD_ENV).is_none() {
-        return launched();
+    {
+        use runtime_portal::process_link::{FD_ENV, STORAGE_ENV};
+        if std::env::var_os(FD_ENV).is_none() || std::env::var_os(STORAGE_ENV).is_none() {
+            return launched();
+        }
     }
     host::main()
 }
