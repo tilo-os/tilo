@@ -587,8 +587,13 @@ and screen share only, never documents, and stays as it is.
   it, and the word "broker" goes with them.
 - **Files are resources.** The tree syncs as ordinary records through
   `tree_sync` only. Bytes go through one content store, moved by
-  `RouteContent`, with keys from `workspace-keys`. Presentations (FUSE,
-  native, mirror) are views of that one tree.
+  `RouteContent`, with keys from `workspace-keys`. A person sees it as one
+  `~/<workspace>` folder on every computer, Tilo OS and any other Linux
+  alike, with files on demand and a keep-offline pin. The device daemon
+  serves it through the platform's own file-provider (FUSE on Linux, File
+  Provider on macOS, Cloud Files on Windows) with one caller resolver for
+  who wrote. There is no second copy synced onto disk beside it: the mirror
+  folder goes.
 - **Settings are resources.** A person's settings (appearance,
   accessibility, shortcuts, language) are records of their own workspace,
   so they follow the person to every device, a shared one included. A
