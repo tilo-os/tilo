@@ -1143,6 +1143,40 @@ cache = false
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["CARGO_REGISTRY_TOKEN"]
 
+# tilolang in a browser, as the npm package `tilolang`, tools/ci/publish/tilolang-npm.sh:
+# tilolang-web's page module (wasm-bindgen's `web` build) and the startup fonts its windows set
+# text in. tilolang-npm builds it in the builder image, which carries wasm-bindgen and the wasm
+# target; the SDKs' image, which carries bun, reads it back and publishes it. On release tags
+# publish-npm-tilolang publishes it at the tag's version with the token the SDKs publish with,
+# skipping a version npm already has; on main the dry run packs it as a tag would, at a stand-in.
+[[check]]
+name = "tilolang-npm"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/tilolang-npm.sh build /target/publish/tilolang-npm"
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/tilolang-npm/**"]
+default = false
+
+[[check]]
+name = "publish-npm-tilolang-dry-run"
+run = "bash tools/ci/publish/tilolang-npm.sh check /target/publish/tilolang-npm"
+needs = ["tilolang-npm"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+on = ["main", "dispatch"]
+
+[[check]]
+name = "publish-npm-tilolang"
+# Publishes with a stored token, to hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/publish/tilolang-npm.sh publish /target/publish/tilolang-npm"
+needs = ["tilolang-npm", "publish-npm-tilolang-dry-run"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+cache = false
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+secrets = ["NPM_TOKEN"]
+
 # The SDKs' native halves are designed, not built: sdk/python/native (PyO3, wheels of the same
 # tilo-sdk project) and sdk/typescript/native (napi-rs, the tilo-sdk-native packages) do not
 # exist yet, and nothing here publishes something a tree does not build. The step that will, with
