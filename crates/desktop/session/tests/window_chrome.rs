@@ -608,7 +608,7 @@ fn the_tilo_menu_holds_the_layouts_history_and_the_devices_own_pages() {
 /// The band (the row across the shell) the place `key` stands in.
 fn band_of(session: &Session, key: &str) -> Option<String> {
     let layout = crate::common::layout(session);
-    let strip = layout
+    let held = layout
         .places
         .into_iter()
         .find(|place| place.key == key)?
@@ -616,7 +616,7 @@ fn band_of(session: &Session, key: &str) -> Option<String> {
     layout
         .strips
         .into_iter()
-        .find(|strip| strip.key == strip)
+        .find(|strip| strip.key == held)
         .map(|strip| strip.row)
 }
 
@@ -675,13 +675,13 @@ fn deleting_a_strip_carries_its_windows_into_the_next_one() {
         .expect("a second band is made");
     let made = crate::common::wait_for(&mut session, "two bands", |session| {
         let rows = crate::common::layout(session).rows;
-        (rows.len() == 2).then(|| {
-            rows.iter()
-                .find(|row| row.key != first)
-                .map(|row| row.key.clone())
-        })?
-    })
-    .expect("the band made");
+        if rows.len() != 2 {
+            return None;
+        }
+        rows.into_iter()
+            .find(|row| row.key != first)
+            .map(|row| row.key)
+    });
 
     // Deleting the first band carries both its windows into the next; neither is lost.
     session
@@ -766,5 +766,59 @@ fn a_window_that_stops_answering_says_so_on_the_window_itself() {
     session.handle().set_unresponsive_windows(Vec::new());
     until(&mut session, "the card gone", |session| {
         on_screen(session, "Not responding").is_none()
+    });
+}
+
+#[test]
+fn a_window_that_controls_the_desktop_offers_to_stop() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let one = place(&mut session, &notes[0]);
+    let key = one.to_string();
+    let app = window(&session, &key)["app_key"]
+        .as_str()
+        .expect("the window names its app")
+        .to_string();
+    assert!(
+        !window(&session, &key)["controls_desktop"]
+            .as_bool()
+            .unwrap(),
+        "a window starts with no control of the desktop"
+    );
+
+    // The workspace lets the app arrange the desktop: its window offers to stop that.
+    let mut tree = session.handle().read(Clone::clone);
+    let control = tree
+        .workspaces
+        .first()
+        .expect("a workspace")
+        .desktop_control_grant(&app, tilo_action_policy::Grantee::person(PERSON));
+    tree.workspaces
+        .first_mut()
+        .expect("a workspace")
+        .grant(control);
+    session.handle().replace_tree(tree);
+    until(&mut session, "the app controls the desktop", |session| {
+        window(session, &key)["controls_desktop"]
+            .as_bool()
+            .is_some_and(|controls| controls)
+    });
+    open_menu(&mut session, &key);
+    until(&mut session, "the stop row", |session| {
+        on_screen(session, "Stop controlling the desktop").is_some()
+    });
+
+    // Choosing it takes the grant back, and the row goes with it.
+    press(&mut session, "Stop controlling the desktop");
+    until(&mut session, "the grant taken back", |session| {
+        window(session, &key)["controls_desktop"]
+            .as_bool()
+            .is_some_and(|controls| !controls)
+    });
+    until(&mut session, "the row gone", |session| {
+        on_screen(session, "Stop controlling the desktop").is_none()
     });
 }
