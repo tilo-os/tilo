@@ -2,15 +2,11 @@
 //! The amount converts at the last reference rates the host fetched
 //! ([`Rates`]), never on the keystroke.
 
-use std::collections::BTreeMap;
-
 /// Reference exchange rates the host fetched, and when.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rates {
-    /// ISO 4217 code of the currency every rate is against.
-    pub base: String,
-    /// ISO 4217 code → units of it per one `base`.
-    pub rates: BTreeMap<String, f64>,
+    /// Reference exchange rates against a base currency.
+    pub rates: tilo_net_answers::Rates,
     /// When they were fetched, in Unix seconds.
     pub fetched_at: u64,
 }
@@ -19,15 +15,7 @@ impl Rates {
     /// `amount` of currency `from` in currency `to`, if both are known.
     #[must_use]
     pub fn convert(&self, amount: f64, from: &str, to: &str) -> Option<f64> {
-        let per_base = |code: &str| {
-            if code == self.base {
-                Some(1.0)
-            } else {
-                self.rates.get(code).copied().filter(|rate| *rate > 0.0)
-            }
-        };
-        let value = amount / per_base(from)? * per_base(to)?;
-        value.is_finite().then_some(value)
+        self.rates.convert(amount, from, to)
     }
 }
 
@@ -110,17 +98,26 @@ mod tests {
 
     fn rates() -> Rates {
         Rates {
-            base: "EUR".into(),
-            rates: [("USD".to_owned(), 1.25), ("GBP".to_owned(), 0.8)]
+            rates: tilo_net_answers::Rates {
+                base: "EUR".into(),
+                date: "2026-10-16".into(),
+                rates: [
+                    ("USD".to_owned(), 1.25),
+                    ("GBP".to_owned(), 0.8),
+                    ("BAD".to_owned(), 0.0),
+                    ("NEG".to_owned(), -1.5),
+                ]
                 .into_iter()
                 .collect(),
-            fetched_at: 0,
+            },
+            fetched_at: 1_700_000_000,
         }
     }
 
     #[test]
     fn money_converts_at_the_kept_rates() {
         let rates = rates();
+        assert_eq!(rates.fetched_at, 1_700_000_000);
         assert_eq!(
             convert("10 usd in eur", &rates),
             Some(("10.00 USD".into(), "8.00 EUR".into()))
@@ -138,6 +135,14 @@ mod tests {
             convert("2,4 pfund nach euro", &rates),
             Some(("2.40 GBP".into(), "3.00 EUR".into()))
         );
+        assert_eq!(
+            convert("10 usd in gbp", &rates),
+            Some(("10.00 USD".into(), "6.40 GBP".into()))
+        );
+        assert_eq!(rates.convert(10.0, "BAD", "EUR"), None);
+        assert_eq!(rates.convert(10.0, "NEG", "EUR"), None);
+        assert_eq!(rates.convert(f64::INFINITY, "USD", "EUR"), None);
+        assert_eq!(rates.convert(f64::NAN, "USD", "EUR"), None);
         assert_eq!(convert("10 km in mi", &rates), None);
         assert_eq!(convert("usd", &rates), None);
         assert_eq!(convert("10 xyz in eur", &rates), None, "an unknown code");

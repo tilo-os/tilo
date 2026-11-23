@@ -2512,8 +2512,11 @@ mod tests {
         phase money_answers_from_the_kept_rates_and_says_when_they_are_old;
         {
             let rates = crate::answers::currency::Rates {
-                base: "EUR".into(),
-                rates: [("USD".to_owned(), 1.25)].into_iter().collect(),
+                rates: tilo_net_answers::Rates {
+                    base: "EUR".into(),
+                    date: String::new(),
+                    rates: [("USD".to_owned(), 1.25)].into_iter().collect(),
+                },
                 fetched_at: 1_000_000,
             };
             let fresh = Answers {
