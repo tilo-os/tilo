@@ -322,22 +322,36 @@ impl Page {
             workspaces: vec![workspace],
             ..Layout::default()
         };
-        let mut doc = automerge::AutoCommit::new();
+        self.put_layout_tree(&tree);
+    }
+
+    /// Write `tree` as the workspace's shared layout, over the layout the page wrote: what a
+    /// member's device writes when they open, close or move a window.
+    pub fn put_layout_tree(&mut self, tree: &tilo_desktop_model::Layout) {
+        let route = self.layout_route();
+        // Over the layout as this page last published it, so a later write follows from it.
+        let mut doc = self
+            .documents
+            .get(&route)
+            .and_then(|kept| kept.last())
+            .and_then(|(_, bytes)| automerge::AutoCommit::load(bytes).ok())
+            .unwrap_or_default();
+        let before = doc.get_heads();
         tilo_desktop_model::desktop_doc::write_shared(
             &mut doc,
-            &tree,
+            tree,
             &[],
             &std::collections::BTreeMap::new(),
         );
         doc.commit();
         let bytes = doc.save();
-        let route = self.layout_route();
-        self.peer
-            .write(
-                route.clone(),
-                &collab_types::DocumentMutation::Snapshot(bytes.clone()),
-            )
-            .unwrap();
+        // The record whole the first time, what changed after.
+        let mutation = if before.is_empty() {
+            collab_types::DocumentMutation::Snapshot(bytes.clone())
+        } else {
+            collab_types::DocumentMutation::Incremental(doc.save_after(&before))
+        };
+        self.peer.write(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.
         self.documents
             .entry(route)
@@ -570,11 +584,22 @@ impl Page {
                 Err(tilo_session_client::TryRecvError::Empty) => {}
                 Err(error) => panic!("the barrier ended: {error}"),
             }
-            assert!(
-                Instant::now() < deadline,
-                "the page's edits never became durable: the host did not answer its barrier \
-                 within {BARRIER_BOUND:?}"
-            );
+            if Instant::now() >= deadline {
+                // What the session still keeps, and what each write waits for, says why.
+                let kept = match self.peer.kept_of(&[self.workspace]) {
+                    Ok(kept) => tilo_test_env::within("the session says what it keeps", kept)
+                        .await
+                        .map_or_else(
+                            |error| format!("nothing: {error:?}"),
+                            |kept| format!("{kept:?}"),
+                        ),
+                    Err(error) => format!("nothing: {error:?}"),
+                };
+                panic!(
+                    "the page's edits never became durable: the host did not answer its barrier \
+                     within {BARRIER_BOUND:?}; the session keeps {kept}"
+                );
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

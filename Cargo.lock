@@ -17507,6 +17507,8 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-service",
  "tilolang-cli",
+ "tilolang-tilo",
+ "tilolang-web",
  "tokio",
  "tokio-rustls",
  "totp",

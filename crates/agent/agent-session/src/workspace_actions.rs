@@ -54,6 +54,7 @@ mod asked_in_turn;
 mod bounded;
 mod call_wait;
 mod canonical;
+mod canvas;
 mod carried;
 mod catalogue;
 mod catch_up;

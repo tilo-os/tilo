@@ -94,6 +94,9 @@ mod computer_agent;
 #[path = "workspace_actions/computer_restart.rs"]
 mod computer_restart;
 #[cfg(test)]
+#[path = "workspace_actions/front_page_canvas.rs"]
+mod front_page_canvas;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
 #[cfg(test)]

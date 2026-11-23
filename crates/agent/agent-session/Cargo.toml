@@ -106,6 +106,10 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 # The shared desktop an agent puts the views it works in on.
 tilo-desktop-model = { path = "../../session/desktop-model" }
+# The workspace's canvas on its front page: the shell's package, run and written as HTML as
+# a page shows an app.
+tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+tilolang-web = { path = "../../lang/tilolang-web" }
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
