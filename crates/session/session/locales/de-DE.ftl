@@ -254,6 +254,7 @@ session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
 session-notifications-reply = In der Benachrichtigung antworten
 session-notifications-open = Die Benachrichtigung öffnen
+session-notifications-hand-to-agent = Die Benachrichtigung an deinen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
@@ -565,6 +566,7 @@ so-tilo-session-notifications-act = Eine Aktion wählen
 so-tilo-session-notifications-clear = Alle löschen
 so-tilo-session-notifications-dismiss = Verwerfen
 so-tilo-session-notifications-notify = Benachrichtigung senden
+so-tilo-session-notifications-hand-to-agent = An den Agenten geben
 so-tilo-session-notifications-open-notice = Öffnen
 so-tilo-session-notifications-set-quiet = Meldungen zurückhalten
 so-tilo-session-notifications-undo-clear = Die gelöschten Benachrichtigungen zurückholen

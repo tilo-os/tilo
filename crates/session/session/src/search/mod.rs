@@ -565,6 +565,18 @@ impl SessionSearch {
         *self.agents.borrow_mut() = Some(agents.to_vec());
     }
 
+    /// The agent `workspace` keeps for the person here, by its id and name, as the pass read it:
+    /// whom a send goes to, and a new one where the workspace keeps none.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn kept_agent(&self, workspace: &str) -> Option<(String, String)> {
+        self.agents
+            .borrow()
+            .as_ref()?
+            .iter()
+            .find(|agent| agent.workspace == workspace)
+            .map(|agent| (agent.id.clone(), agent.name.clone()))
+    }
+
     /// Record every agent each workspace's record lists, whoever keeps it: what a box that sends
     /// a message addresses besides the people present and what the apps published.
     pub(crate) fn set_listed_agents(&self, agents: &[ListedAgent]) {

@@ -249,6 +249,7 @@ session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
 session-notifications-reply = Reply in the notification
 session-notifications-open = Open the notification
+session-notifications-hand-to-agent = Hand the notification to your agent
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } from { $device }
@@ -560,6 +561,7 @@ so-tilo-session-notifications-act = Choose an action
 so-tilo-session-notifications-clear = Clear all
 so-tilo-session-notifications-dismiss = Dismiss
 so-tilo-session-notifications-notify = Post a notification
+so-tilo-session-notifications-hand-to-agent = Hand to agent
 so-tilo-session-notifications-open-notice = Open
 so-tilo-session-notifications-set-quiet = Hold banners back
 so-tilo-session-notifications-undo-clear = Bring back the cleared notifications

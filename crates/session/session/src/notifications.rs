@@ -398,6 +398,8 @@ pub(crate) struct SessionNotifications {
     signals: Rc<NoticeSignals>,
     opened: Opened,
     opening: RefCell<Vec<u64>>,
+    /// The kept notifications the person handed to an agent, by id, until the pass sends them.
+    handed: RefCell<Vec<u64>>,
     chosen: Chosen,
     by_sender: BTreeMap<u32, u64>,
     up: BTreeSet<u32>,
@@ -521,6 +523,7 @@ impl SessionNotifications {
             signals,
             opened,
             opening: RefCell::new(Vec::new()),
+            handed: RefCell::default(),
             chosen,
             by_sender: BTreeMap::new(),
             up: BTreeSet::new(),
@@ -800,6 +803,30 @@ impl SessionNotifications {
     /// The notifications the person chose to open since the last look.
     pub(crate) fn take_opening(&self) -> Vec<u64> {
         std::mem::take(&mut *self.opening.borrow_mut())
+    }
+
+    /// Hand the notification `id` the centre shows to the agent the person keeps in the
+    /// workspace in front: what the row asks, carried out by the pass that sends it to the agent
+    /// ([`Shared::deliver_hands`]). A notification no longer shown is not handed on.
+    pub(crate) fn hand(&self, id: u64) {
+        if self.notice_of(id).is_some() {
+            self.handed.borrow_mut().push(id);
+        }
+    }
+
+    /// The notification `id`, still up as a banner or kept in the centre.
+    pub(crate) fn notice_of(&self, id: u64) -> Option<notifications::Notification> {
+        let log = self.desktop.log();
+        log.active()
+            .iter()
+            .find(|notification| notification.id == id)
+            .or_else(|| log.history_entry(id))
+            .cloned()
+    }
+
+    /// The notifications handed to an agent since the last look.
+    pub(crate) fn take_handed(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.handed.borrow_mut())
     }
 
     /// Dismiss a retained notification, or every one an app grouped: the centre and the panel list
@@ -1272,6 +1299,15 @@ pub enum CentreAction {
         #[param("The notification")]
         notification: u64,
     },
+    /// Hand a notification to the agent the person keeps: it works on what it was told, and
+    /// its answer comes where their conversation with it is
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    HandToAgent {
+        /// The notification's id, as the rows carry it.
+        #[param("The notification")]
+        notification: u64,
+    },
     /// Tell the person something, as an app's `notify` does: it rises as a banner and waits in
     /// the centre until they dismiss it
     #[effect(kind = "outside")]
@@ -1342,6 +1378,7 @@ impl Service for Served {
                 "undo-clear" => t("session-notifications-undo-clear"),
                 "reply" => t("session-notifications-reply"),
                 "open-notice" => t("session-notifications-open"),
+                "hand-to-agent" => t("session-notifications-hand-to-agent"),
                 _ => continue,
             };
             spec.type_mut().label = label;
@@ -1391,6 +1428,9 @@ impl Service for Served {
             CentreAction::OpenNotice { notification } => {
                 self.notifications.borrow().ask_open(notification);
             }
+            CentreAction::HandToAgent { notification } => {
+                self.notifications.borrow().hand(notification);
+            }
             CentreAction::Notify {
                 title,
                 body,
@@ -1426,6 +1466,36 @@ impl crate::Shared {
     /// What the session's own roles tell the person, as the one place that shows it.
     pub(crate) fn telling(&self) -> Rc<dyn Notices> {
         RoleNotices::of(&self.notifications)
+    }
+
+    /// Send each kept notification the person handed to an agent ([`SessionNotifications::hand`])
+    /// to the agent they keep in the workspace in front, through the session's one send: the
+    /// notification's title is what it is asked, and the whole of it is what the agent reads. A
+    /// new agent is kept where the workspace keeps none, as the canvas and search do.
+    pub(crate) fn deliver_hands(&self) {
+        let handed = self.notifications.borrow().take_handed();
+        for id in handed {
+            let Some(notification) = self.notifications.borrow().notice_of(id) else {
+                continue;
+            };
+            let title: String = notification.title.chars().take(240).collect();
+            let body = if notification.body.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}\n\n{}", notification.body)
+            };
+            let workspace = self.active_workspace_id();
+            let to = crate::agents::agent_recipient(self.search.kept_agent(&workspace));
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("to".into(), serde_json::json!([to]));
+            arguments.insert("text".into(), serde_json::json!(body));
+            arguments.insert("workspace".into(), serde_json::json!(workspace));
+            // The send goes out in the pass that took it, as any other: its answer is nobody's
+            // here, and the person reads where it landed in Chat.
+            if let Err(error) = self.sends.send(None, &arguments) {
+                tracing::warn!(%error, "a notification was not handed to an agent");
+            }
+        }
     }
 
     /// Open what the person chose on a scheduled notification, in the workspace that scheduled it,

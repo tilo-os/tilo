@@ -2220,6 +2220,23 @@
           ]
         },
         {
+          "id": "hand-to-agent",
+          "label": "Hand the notification to your agent",
+          "description": "Hand a notification to the agent the person keeps: it works on what it was told, and its answer comes where their conversation with it is",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "notification",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
           "id": "notify",
           "label": "Post a notification",
           "description": "Tell the person something, as an app's `notify` does: it rises as a banner and waits in the centre until they dismiss it",

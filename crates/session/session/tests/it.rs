@@ -167,6 +167,8 @@ mod network_unlock_enrolment;
 mod no_locale_leaks;
 #[path = "no_view_call.rs"]
 mod no_view_call;
+#[path = "notification_agent.rs"]
+mod notification_agent;
 #[path = "offline_start.rs"]
 mod offline_start;
 #[path = "origin_connector.rs"]

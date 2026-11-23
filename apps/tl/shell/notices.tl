@@ -128,9 +128,10 @@ view notice_group(sender: Text, notices: List<device.Notice>) {
     }
 }
 
-/// One notice: its title, what it says, its sender, its actions and the way to dismiss it. An
-/// unread one is lifted and bears a dot in the person's colour, toned by its kind, so a failure
-/// reads as one at a glance. Pressing it opens what it names.
+/// One notice: its title, what it says, its sender, its actions, the way to hand it to the
+/// person's agent and the way to dismiss it. An unread one is lifted and bears a dot in the
+/// person's colour, toned by its kind, so a failure reads as one at a glance. Pressing it opens
+/// what it names.
 view notice_row(n: device.Notice) {
     ui.ListRow(n.title, secondary: n.body, meta: n.from, selected: not n.seen) {
         trailing: {
@@ -157,6 +158,9 @@ view notice_row(n: device.Notice) {
                     )
                 }
             }
+        }
+        ui.Button("Hand to agent", icon: .sparkles, size: .small, role: .plain) {
+            on press: device.hand_to_agent(device.notifications, notification: n.number)
         }
         ui.Button("Dismiss", icon: .x, icon_only: true, size: .small, role: .plain) {
             on press: device.dismiss(device.notifications, notification: n.number)

@@ -316,9 +316,11 @@ impl Session {
         let after = Instant::now();
         let answering = self.serve_drawn_frame();
         self.follow_shell_over_frame()?;
-        // A send taken since this pass's settle — a tool's, answered over the frame just drawn, or
-        // the canvas's, asked as the shell was read over it — goes to Chat now: a message never
-        // waits for the next wake of the loop, nor for the frame that wake draws.
+        // A notification the person handed to their agent, and a send taken since this pass's
+        // settle — a tool's, answered over the frame just drawn, or the canvas's, asked as the
+        // shell was read over it — go to Chat now: a message never waits for the next wake of the
+        // loop, nor for the frame that wake draws.
+        self.shared.deliver_hands();
         self.shared.deliver_sends();
         // What search and the session's steps read of what the session publishes is read once the
         // frame is out: a key's turn draws what it opens before anything is read, and the reading
@@ -709,7 +711,9 @@ impl Session {
             let person = engine.identity().device_cert.user_public_key;
             self.shared.settings.sync(&self.shared.records, &person);
         }
-        // What was sent since the last look, by a box, an agent or a script.
+        // What was handed to an agent, and what was sent since the last look, by a box, an agent
+        // or a script.
+        self.shared.deliver_hands();
         self.shared.deliver_sends();
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
