@@ -113,6 +113,11 @@ pub struct PackageMeta {
     /// app claims them: a link of one of them opens in this app.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub schemes: Vec<String>,
+    /// The runtime bundle the app shows a web page with (`engine: "tilo-runtime/…"`): the
+    /// package's manifest requires it, and the launcher runs the app in the web engine's
+    /// sandbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,

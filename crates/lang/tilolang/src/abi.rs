@@ -160,6 +160,7 @@ imports! {
     ActorEq = "actor_eq" ([H, H] -> [I32]);
     ActorName = "actor_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
+    PageCall = "page_call" ([H] -> [H]);
     WebGet = "web_get" ([H, H, H] -> [H]);
     WebPost = "web_post" ([H, H, H] -> [H]);
     WebOk = "web_ok" ([H] -> [I32]);

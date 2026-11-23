@@ -56,6 +56,10 @@ pub struct AppHeader {
     /// `(schemes: ["tube"])`: the URI schemes the app opens, as a native app's manifest claims
     /// them: a link of one of them starts this app, which shows what the link names.
     pub schemes: Vec<String>,
+    /// `(engine: "tilo-runtime/2026.10.23-chromium")`: the runtime bundle the app shows a web
+    /// page with. The package's manifest requires it, and the launcher runs the app in the
+    /// web engine's sandbox.
+    pub engine: Option<String>,
     pub span: Span,
 }
 

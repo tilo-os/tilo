@@ -27,6 +27,7 @@ pub mod names;
 pub mod native;
 pub mod notices;
 pub mod origin;
+pub mod page;
 pub mod personal;
 pub mod platform_apps;
 pub mod publish;

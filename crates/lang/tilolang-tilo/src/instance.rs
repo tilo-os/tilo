@@ -365,7 +365,9 @@ pub struct Instance {
     /// the level later starts from it.
     root_space: Option<crate::runtime::space::Space>,
     detail_space: Option<crate::runtime::space::Space>,
-    transport: Box<dyn Transport>,
+    transport: Rc<RefCell<Box<dyn Transport>>>,
+    /// The page this app's window shows, when one is asked: its calls go to the window.
+    page: Option<Rc<crate::page::PageStation>>,
     /// What waits to be sent this frame.
     out: Vec<ToUi>,
     /// The lenses on each resource of the package, as presence last reported them.
@@ -499,7 +501,8 @@ impl Instance {
             facts_stale: false,
             root_space: None,
             detail_space: None,
-            transport,
+            transport: Rc::new(RefCell::new(transport)),
+            page: None,
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
@@ -994,6 +997,11 @@ impl Instance {
             .set_blobs(PlatformBlobs(Rc::clone(&self.platform)));
         host.runtime()
             .set_clipboard(PlatformClipboard(Rc::clone(&self.platform)));
+        // The page this window shows: a `page.call` is one message to it and one answer back.
+        let page = Rc::new(crate::page::PageStation::new(Rc::clone(&self.transport)));
+        host.runtime()
+            .set_page(crate::page::SharedPage(Rc::clone(&page)));
+        self.page = Some(page);
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
@@ -1515,8 +1523,18 @@ impl Instance {
     /// Take what the window sent and do it. Whether anything was.
     fn receive(&mut self) -> bool {
         let mut changed = false;
+        // What arrived while a page call waited for its answer, in the order it came.
+        let waited = self
+            .page
+            .as_ref()
+            .map(|page| page.waiting())
+            .unwrap_or_default();
+        for message in waited {
+            changed = true;
+            self.event(message);
+        }
         loop {
-            let batch = match self.transport.recv() {
+            let batch = match self.transport.borrow_mut().recv() {
                 Ok(Some(batch)) => batch,
                 // Nothing more, or the window closed: the instance ends on this turn.
                 Ok(None) | Err(tilo_render_protocol::WireError::Closed) => break,
@@ -1725,6 +1743,9 @@ impl Instance {
                 self.answer(answer);
                 Ok(())
             }
+            // No page call waits for an answer yet: the window's page runs nothing the app's
+            // actions ask of it.
+            ToApp::PageAnswer { .. } => Ok(()),
             ToApp::FormEdit { form, field, text } => {
                 self.form_edit(form, &field, text);
                 Ok(())
@@ -2656,7 +2677,7 @@ impl Instance {
             self.patches_sent = self.patches_sent.saturating_add(1);
         }
         match ui::encode_batch(&messages) {
-            Ok(batch) => match self.transport.send(batch) {
+            Ok(batch) => match self.transport.borrow_mut().send(batch) {
                 // A window that closed is shown nothing more.
                 Ok(()) | Err(tilo_render_protocol::WireError::Closed) => {}
                 Err(error) => tracing::warn!(%error, "the window's connection failed"),

@@ -37,8 +37,9 @@ use Imp::{
     ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
     MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PersonNamed,
-    Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+    MissingV, ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall,
+    PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
+    RandomFloat, RandomId,
     RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
     RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
     ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
@@ -149,6 +150,10 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
+    /// Where `page.call` reaches (`Runtime::set_page`): the page the app's window shows, which
+    /// is the window's engine and not the app's. Until the host sets one, every call answers
+    /// with a failure saying no page is shown.
+    pub page: RefCell<Option<Box<dyn crate::page::PageHost>>>,
     /// The device's files (`Runtime::set_blobs`): the content store a file's bytes are kept in,
     /// and the chooser the person picks with. Until the host sets one, it holds no files.
     pub blobs: RefCell<Option<Box<dyn crate::blob::BlobHost>>>,
@@ -349,6 +354,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
+            page: RefCell::new(None),
             blobs: RefCell::new(None),
             clipboard: RefCell::new(None),
             notices: RefCell::new(None),
@@ -550,6 +556,7 @@ impl Core {
             | InvocationPush | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength | Base64Decode => self.web_import(imp, a),
+            PageCall => self.page_import(a),
             FilePart | FileSize | FileText | FileFiles => self.file_import(imp, a),
             FileOfText | FileOfBytes | FileAt | FileZip => self.file_make(imp, a),
             FileImageInfo | FileCrop | FileTurn | FileResize | FileEncode | FileThumbnail => {

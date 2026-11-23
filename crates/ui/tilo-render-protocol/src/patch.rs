@@ -648,6 +648,14 @@ pub enum ToUi {
     /// Whether the window shows the history of what it shows now ([`ToApp::History`]): its bar's
     /// History control stands open while it does. Back, or opening something else, closes it.
     History(bool),
+    /// Ask the window's page engine to do something, as the app's page actions do: `request` is
+    /// the page's own request, encoded (`tilo_webview`'s page protocol), which the window runs
+    /// on the engine it holds for this window and answers with [`ToApp::PageAnswer`].
+    Page {
+        request_id: u32,
+        #[serde(with = "serde_bytes")]
+        request: Vec<u8>,
+    },
 }
 
 /// What the person did, as the window tells its app.
@@ -794,10 +802,21 @@ pub enum ToApp {
         call: Vec<u8>,
         invoker: Option<String>,
     },
+    /// What became of the page request [`ToUi::Page`] asked for: the page's own answer, encoded,
+    /// or a refusal. A page that is gone answers too, so a waiting action is never left waiting.
+    PageAnswer {
+        request_id: u32,
+        #[serde(with = "serde_bytes")]
+        answer: Vec<u8>,
+    },
 }
 
 /// Largest batch either side sends or accepts.
 pub const MAX_BATCH_BYTES: usize = 16 << 20;
+
+/// Largest page request or answer one message carries: a page's reading, its outline and a
+/// picture of it fit, and nothing a page could say grows a window without bound.
+pub const MAX_PAGE_BYTES: usize = 8 << 20;
 
 /// One frame's messages as the bytes a transport carries.
 ///

@@ -212,6 +212,14 @@ impl<'a> Validator<'a> {
             ToUi::Heard(heard) => {
                 self.carried(heard.len(), "over the limit of bytes in what was heard")
             }
+            ToUi::Page { request, .. } => {
+                if request.len() > super::MAX_PAGE_BYTES {
+                    return Err(Refused::invalid(
+                        "over the limit of bytes in a page request",
+                    ));
+                }
+                Ok(())
+            }
             ToUi::Front {
                 shows: Some((_, target)),
                 ..
@@ -747,6 +755,14 @@ impl<'a> Validator<'a> {
             }
             ToApp::Invoke { address, argument } => self.invoke(address, argument.as_deref())?,
             ToApp::Serving { call, invoker } => self.serving(call, invoker.as_deref())?,
+            ToApp::PageAnswer { answer, .. } => {
+                if answer.len() > super::MAX_PAGE_BYTES {
+                    return Err(Refused::invalid(
+                        "over the limit of bytes in a page answer",
+                    ));
+                }
+                Ok(())
+            }
             ToApp::Back
             | ToApp::Answer(_)
             | ToApp::Undo

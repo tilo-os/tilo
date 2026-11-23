@@ -204,6 +204,7 @@ struct AppOptions {
     schemes: Vec<String>,
     profile_resources: bool,
     web: Vec<String>,
+    engine: Option<String>,
 }
 
 /// The launcher categories an app declares (`category: .office`), in lower case.
@@ -436,8 +437,8 @@ impl<'a> Parser<'a> {
                 break;
             }
             let key = self.ident(
-                "`icon`, `category`, `tagline`, `keywords`, `previously`, `resources`, `web` or \
-                 `schemes`",
+                "`icon`, `category`, `tagline`, `keywords`, `previously`, `resources`, `web`, \
+                 `schemes` or `engine`",
             )?;
             self.expect(&Tok::Colon)?;
             if key.name == "tagline" {
@@ -518,6 +519,14 @@ impl<'a> Parser<'a> {
                     out.schemes
                         .push(self.plain_string("a URI scheme in quotes, such as \"tube\"")?);
                 }
+            } else if key.name == "engine" {
+                if out.engine.is_some() {
+                    return self.fail(key.span, "`engine:` is given twice".to_owned());
+                }
+                out.engine = Some(self.plain_string(
+                    "the runtime bundle the app shows a page with, such as \
+                     \"tilo-runtime/2026.10.23-chromium\"",
+                )?);
             } else if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
                     return self.fail(key.span, "`previously:` is given twice".to_owned());
@@ -545,7 +554,8 @@ impl<'a> Parser<'a> {
                         key.span,
                         format!(
                             "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
-                             `previously:`, `resources:`, `web:` and `schemes:`, not `{}:`",
+                             `previously:`, `resources:`, `web:`, `schemes:` and `engine:`, \
+                             not `{}:`",
                             key.name
                         ),
                     );
@@ -818,6 +828,7 @@ impl<'a> Parser<'a> {
                 profile_resources: options.profile_resources,
                 web: options.web,
                 schemes: options.schemes,
+                engine: options.engine,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -868,6 +879,7 @@ impl<'a> Parser<'a> {
                         profile_resources: options.profile_resources,
                         web: options.web,
                         schemes: options.schemes,
+                        engine: options.engine,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }
