@@ -19,6 +19,10 @@ pub struct DocumentEvent {
     pub workspace: String,
     /// The record's id.
     pub record: String,
+    /// The app whose record changed: the cause names it, and a trigger of a tilolang app reads
+    /// its own from it.
+    #[serde(default)]
+    pub app: String,
     pub kind: String,
     /// The change's hash, hex: the event's identity.
     pub change: String,
@@ -91,6 +95,11 @@ pub fn event_of(
     DocumentEvent {
         workspace: workspace.to_owned(),
         record: record.to_owned(),
+        // The verb names the app it is an action of; a change that is no verb names none.
+        app: match &context.what {
+            Some(Did::Verb(call)) => call.action.app.clone(),
+            _ => String::new(),
+        },
         kind: kind.to_owned(),
         change: change.to_owned(),
         actor: context

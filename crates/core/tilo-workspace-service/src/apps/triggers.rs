@@ -513,17 +513,46 @@ pub fn store_events(
 /// `event`, of one resource a store write touched, with what the write left it holding
 /// ([`Workspaces::store_wrote`]): its fields and content, under `$in` the resource it is nested
 /// in (its kind as `$kind`, its id as `$id`, and its fields), and the item it names.
-fn with_what_it_holds(event: &mut DocumentEvent, wrote: tilo_resource_store::Wrote) {
+fn with_what_it_holds(
+    event: &mut DocumentEvent,
+    wrote: tilo_resource_store::Wrote,
+    held: Vec<tilo_resource_store::Wrote>,
+) {
     let tilo_resource_store::Wrote {
         kind,
         id,
         mut holds,
-        parent,
+        parents,
     } = wrote;
-    if let Some((parent_kind, parent_id, mut fields)) = parent {
+    // The nearest parent is the item's `$in`; each one further up is its own parent's `$in`, so
+    // the outermost is wrapped first.
+    let mut nested = None;
+    for (parent_kind, parent_id, mut fields) in parents.into_iter().rev() {
         fields.insert("$kind".to_owned(), Value::String(parent_kind));
         fields.insert("$id".to_owned(), Value::String(parent_id));
-        holds.insert("$in".to_owned(), Value::Object(fields));
+        if let Some(inner) = nested.take() {
+            fields.insert("$in".to_owned(), inner);
+        }
+        nested = Some(Value::Object(fields));
+    }
+    if let Some(nested) = nested {
+        holds.insert("$in".to_owned(), nested);
+    }
+    // What the write nested in it, under its own kind and id: a message's attachments.
+    if !held.is_empty() {
+        holds.insert(
+            "$held".to_owned(),
+            Value::Array(
+                held.into_iter()
+                    .map(|nested| {
+                        let mut one = nested.holds;
+                        one.insert("$kind".to_owned(), Value::String(nested.kind));
+                        one.insert("$id".to_owned(), Value::String(nested.id));
+                        Value::Object(one)
+                    })
+                    .collect(),
+            ),
+        );
     }
     let label = holds
         .get("title")
@@ -814,8 +843,20 @@ impl Runner {
                         continue;
                     }
                     let wrote = self.workspaces.store_wrote(workspace, record, change).await;
+                    // What the same write nested in the item, a message's attachments among
+                    // them: the turn reads them with the item it was started on.
+                    let held: Vec<_> = wrote
+                        .iter()
+                        .filter(|wrote| {
+                            wrote
+                                .parents
+                                .first()
+                                .is_some_and(|(_, parent, _)| parent == &event.record)
+                        })
+                        .cloned()
+                        .collect();
                     if let Some(wrote) = wrote.into_iter().find(|wrote| wrote.id == event.record) {
-                        with_what_it_holds(&mut event, wrote);
+                        with_what_it_holds(&mut event, wrote, held);
                     }
                     events.push(event);
                 }

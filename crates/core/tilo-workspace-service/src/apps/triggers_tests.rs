@@ -560,6 +560,204 @@ impl crate::work::AgentEngine for ActsAsScout {
     }
 }
 
+/// The turn is told the files its cause carries: their names and the address the file-read
+/// tool reads them at, so the agent reads what the person sent.
+#[cfg(feature = "agents")]
+#[test]
+fn a_cause_tells_the_files_its_item_carries() {
+    use crate::agents::triggered;
+
+    let event: DocumentEvent = serde_json::from_value(json!({
+        "workspace": "w",
+        "record": "general",
+        "app": "so.tilo.lang.chat",
+        "kind": "tl.so.tilo.lang.chat.Message",
+        "change": "c0ffee",
+        "actor": {"by": {"member": {"person": "ada"}}},
+        "did": {"did": "verb", "action": {"app": "so.tilo.lang.chat", "kind": "tl.so.tilo.lang.chat.Message", "action": "send"}},
+        "item": {"kind": "tl.so.tilo.lang.chat.Message", "id": "m-1", "label": ""},
+        "after": {
+            "body": {"blocks": [{"text": "read this", "marks": []}]},
+            "$held": [{
+                "$kind": "tl.so.tilo.lang.chat.Attached",
+                "name": "plan.txt",
+                "media": "text/plain",
+                "size": 12,
+                "blob": "abc123",
+            }],
+        },
+    }))
+    .unwrap();
+    let said = triggered::said(&event);
+    assert!(said.contains("read this"), "{said}");
+    assert!(
+        said.contains("tilo.content:abc123") && said.contains("files#read-text"),
+        "the turn is told where to read the file: {said}"
+    );
+}
+
+/// A turn starts only on a change the agent may read: a message that was removed before the
+/// turn began, and one a broker refuses the agent, are both refused, in words the person who
+/// asked sees.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, end to end, reads as one test"
+)]
+async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
+    use crate::agents::triggered::{MayRead, Where, unreadable};
+    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+
+    const CHAT: &str = "so.tilo.lang.chat";
+    const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    let person = hex::encode(cert.user_public_key);
+    let stamp = Stamp {
+        verb: "send".into(),
+        invoker: person.clone(),
+        invocation: "i-1".into(),
+        at: jiff::Timestamp::now().to_string(),
+        ..Stamp::default()
+    };
+    workspaces
+        .own_resource_command(
+            &workspace,
+            CHAT,
+            Command::Batch(vec![
+                Command::Put {
+                    kind: "tl.so.tilo.lang.chat.TextChannel".into(),
+                    id: "general".into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: None,
+                        order: None,
+                        fields: [("name".to_owned(), Cell::One(Value::Text("general".into())))]
+                            .into(),
+                    },
+                    stamp: stamp.clone(),
+                },
+                Command::Put {
+                    kind: MESSAGE.into(),
+                    id: "m-1".into(),
+                    resource: Resource {
+                        readers: "*".into(),
+                        parent: Some("general".into()),
+                        order: None,
+                        fields: [("title".to_owned(), Cell::One(Value::Text("hello".into())))]
+                            .into(),
+                    },
+                    stamp: stamp.clone(),
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+    let event: DocumentEvent = serde_json::from_value(json!({
+        "workspace": workspace,
+        "record": "record",
+        "app": CHAT,
+        "kind": MESSAGE,
+        "change": "c0ffee",
+        "actor": {"by": {"member": {"person": person}}},
+        "did": {"did": "verb", "action": {"app": CHAT, "kind": MESSAGE, "action": "send"}},
+        "item": {"kind": MESSAGE, "id": "m-1", "label": "hello"},
+        "after": {"title": "hello", "$in": {"$id": "general", "$kind": "Direct"}},
+    }))
+    .unwrap();
+    let place = Where::of(&event).unwrap();
+
+    struct Allows;
+    impl MayRead for Allows {
+        fn may_read_resource(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _workspace: &str,
+            _target: (&str, &str, &str),
+        ) -> Result<(), ActionCallError> {
+            Ok(())
+        }
+    }
+    struct Denies;
+    impl MayRead for Denies {
+        fn may_read_resource(
+            &self,
+            _caller: &tilo_actions::remote::Caller,
+            _workspace: &str,
+            _target: (&str, &str, &str),
+        ) -> Result<(), ActionCallError> {
+            Err(ActionCallError::Refused {
+                reason: "not yours".into(),
+            })
+        }
+    }
+
+    assert_eq!(
+        unreadable(
+            workspaces,
+            Some(&Allows as &dyn MayRead),
+            "scout",
+            &person,
+            &event,
+            &place
+        )
+        .await,
+        None,
+        "an agent that may read what triggered it takes the turn"
+    );
+    let refused = unreadable(
+        workspaces,
+        Some(&Denies as &dyn MayRead),
+        "scout",
+        &person,
+        &event,
+        &place,
+    )
+    .await
+    .expect("a message the agent may not read is refused");
+    assert!(refused.contains("may not read"), "{refused}");
+
+    workspaces
+        .own_resource_command(
+            &workspace,
+            CHAT,
+            Command::Remove {
+                kind: MESSAGE.into(),
+                id: "m-1".into(),
+                stamp,
+            },
+        )
+        .await
+        .unwrap();
+    let refused = unreadable(
+        workspaces,
+        Some(&Allows as &dyn MayRead),
+        "scout",
+        &person,
+        &event,
+        &place,
+    )
+    .await
+    .expect("a message removed before the turn began is refused");
+    assert!(refused.contains("no longer"), "{refused}");
+    host.shutdown().await;
+}
+
 /// An agent's triggers fire on a message that mentions it, one in its direct conversation and
 /// one an outside author's provider carried in, and each starts one turn of the agent, placed
 /// once workspace-wide; what the agent writes itself, its answer, fires none of them.
@@ -613,13 +811,14 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     let person = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
     let scout = Who::member(MemberId::agent("scout"));
     let bridge = Who::member(MemberId::bot("bridge"));
-    // `by` puts the resource `id` of `kind` in `parent`, with `fields` and the rich `body`.
+    // `by` puts the resource `id` of `kind` in `parent`, with `fields` and the `content` its
+    // fields hold, a message's rich body among them.
     let put = async |kind: &str,
                      id: &str,
                      parent: Option<&str>,
                      by: &Who,
                      fields: Vec<(&str, &str)>,
-                     body: Option<serde_json::Value>| {
+                     content: Vec<(&str, serde_json::Value)>| {
         // The write serves an invocation of `by`'s, as the chat app's write for an action that
         // was delivered to it.
         let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
@@ -644,14 +843,17 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
             },
             stamp: stamp.clone(),
         }];
-        if let Some(body) = body {
+        if !content.is_empty() {
             commands.push(Command::Edit {
                 kind: kind.into(),
                 id: id.into(),
-                edits: vec![Edit::Set {
-                    field: "body".into(),
-                    value: body,
-                }],
+                edits: content
+                    .into_iter()
+                    .map(|(field, value)| Edit::Set {
+                        field: field.into(),
+                        value,
+                    })
+                    .collect(),
                 stamp,
             });
         }
@@ -687,13 +889,19 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         runner.pass(since).await;
         started.0.lock().unwrap()[before..].to_vec()
     };
+    // One member of a conversation, as the app keeps it in `people`.
+    let actor = |who: &Who| json!({"actor": serde_json::to_value(who).unwrap()});
+    // The `people` of a direct conversation, as a list field of the app is written.
+    let people = |members: Vec<serde_json::Value>| json!({"json": {"list": members}});
+    // A message's `body`.
+    let body = |words: &str, mention: bool| vec![("body", rich(words, mention))];
     put(
         "tl.so.tilo.lang.chat.TextChannel",
         "general",
         None,
         &person,
         vec![("name", "general")],
-        None,
+        Vec::new(),
     )
     .await;
     put(
@@ -701,11 +909,8 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         "with-scout",
         None,
         &person,
-        vec![
-            ("name", "Scout"),
-            ("person", &serde_json::to_string(&scout).unwrap()),
-        ],
-        None,
+        vec![("name", "Scout")],
+        vec![("people", people(vec![actor(&person), actor(&scout)]))],
     )
     .await;
     let now = fired(&mut runner).await;
@@ -721,7 +926,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &person,
         vec![],
-        Some(rich("Scout, look at this", true)),
+        body("Scout, look at this", true),
     )
     .await;
     let firings = fired(&mut runner).await;
@@ -733,11 +938,17 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     assert_eq!(
         (
             place.app.as_str(),
+            place.kind.as_str(),
             place.record.as_str(),
             place.item.as_str()
         ),
-        (CHAT, "general", "m-1"),
+        (CHAT, MESSAGE, "general", "m-1"),
         "the answer goes to the message, in its conversation"
+    );
+    assert_eq!(
+        place.inputs(),
+        json!({"app": CHAT, "kind": MESSAGE, "resource": "m-1"}),
+        "every device that saw the change names the same turn"
     );
     assert_eq!(
         triggered::asker(&event).as_deref(),
@@ -774,21 +985,21 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &scout,
         vec![],
-        Some(rich("Scout here: done", true)),
+        body("Scout here: done", true),
     )
     .await;
     let now = fired(&mut runner).await;
     assert!(now.is_empty(), "the agent's answer fires nothing: {now:?}");
 
-    // In its direct conversation, a member's message asks it without naming it; its reply there
-    // asks nothing.
+    // In its direct conversation — it is one of the conversation's people — a member's message
+    // asks it without naming it; its reply there asks nothing.
     put(
         MESSAGE,
         "d-1",
         Some("with-scout"),
         &person,
         vec![],
-        Some(rich("Can you help?", false)),
+        body("Can you help?", false),
     )
     .await;
     let firings = fired(&mut runner).await;
@@ -799,13 +1010,46 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("with-scout"),
         &scout,
         vec![],
-        Some(rich("Sure.", false)),
+        body("Sure.", false),
     )
     .await;
     let now = fired(&mut runner).await;
     assert!(
         now.is_empty(),
         "its reply in the direct conversation fires nothing: {now:?}"
+    );
+
+    // A thread in its direct conversation is nested in the conversation: a reply there, naming
+    // nobody, asks it too, and the answer is sent into the thread.
+    put(
+        "tl.so.tilo.lang.chat.Thread",
+        "thread-1",
+        Some("with-scout"),
+        &person,
+        vec![("name", "Plans")],
+        Vec::new(),
+    )
+    .await;
+    let now = fired(&mut runner).await;
+    assert!(now.is_empty(), "opening a thread asks nothing: {now:?}");
+    put(
+        MESSAGE,
+        "d-3",
+        Some("thread-1"),
+        &person,
+        vec![],
+        body("In the thread?", false),
+    )
+    .await;
+    let firings = fired(&mut runner).await;
+    assert_eq!(firings.len(), 1, "{firings:?}");
+    let event: DocumentEvent =
+        serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
+    let place = Where::of(&event).unwrap();
+    assert_eq!(
+        (place.record.as_str(), place.item.as_str()),
+        ("thread-1", "d-3"),
+        "a reply in a thread is a message in the thread"
     );
 
     // A message an outside author wrote, carried in by a provider, mentioning the agent: it
@@ -816,7 +1060,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &bridge,
         vec![],
-        Some(rich("Scout, a question from outside", true)),
+        body("Scout, a question from outside", true),
     )
     .await;
     let firings = fired(&mut runner).await;
@@ -833,7 +1077,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &person,
         vec![],
-        Some(rich("Lunch?", false)),
+        body("Lunch?", false),
     )
     .await;
     let now = fired(&mut runner).await;

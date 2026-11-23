@@ -98,9 +98,15 @@ pub struct Wrote {
     pub id: String,
     /// What it holds as the change left it: its indexed fields and its content, by name.
     pub holds: serde_json::Map<String, serde_json::Value>,
-    /// The resource it is nested in, when it is nested in one: its kind, id and indexed fields.
-    pub parent: Option<(String, String, serde_json::Map<String, serde_json::Value>)>,
+    /// The resources it is nested in, nearest first, up to the record that holds it: each with
+    /// its kind, id, indexed fields and the content it holds. Empty for a resource at its app's
+    /// top level.
+    pub parents: Vec<(String, String, serde_json::Map<String, serde_json::Value>)>,
 }
+
+/// The most resources [`Wrote::parents`] names above one: a chain deeper than this is one a
+/// write of it does not walk, so a cycle a damaged document holds never loops.
+const MOST_PARENTS: usize = 32;
 
 /// Indexed `fields` as JSON: a scalar as itself, a set as the list of its members.
 fn fields_json(fields: &BTreeMap<String, Cell>) -> serde_json::Map<String, serde_json::Value> {
@@ -1282,8 +1288,8 @@ impl Store {
     }
 
     /// One resource [`Self::wrote`] names: its indexed fields (`fields`, or as the index holds
-    /// them now), its `content` beside them, and the resource it is nested in with what that
-    /// holds.
+    /// them now), its `content` beside them, and the resources it is nested in, nearest first,
+    /// with what each holds.
     fn wrote_one(
         &self,
         kind: &str,
@@ -1303,20 +1309,31 @@ impl Store {
         if let serde_json::Value::Object(content) = content {
             holds.extend(content);
         }
-        let parent = parent.map(|parent| {
+        let mut parents: Vec<(String, String, serde_json::Map<String, serde_json::Value>)> =
+            Vec::new();
+        let mut nested = parent;
+        while let Some(parent) = nested {
+            if parents.len() >= MOST_PARENTS || parents.iter().any(|(_, seen, _)| *seen == parent) {
+                break;
+            }
             let kind = self.index.kind_anywhere(&parent).unwrap_or_default();
-            let fields = self
-                .index
-                .get(&kind, &parent)
+            let held = self.index.get(&kind, &parent);
+            let mut fields = held
                 .map(|held| fields_json(&held.fields))
                 .unwrap_or_default();
-            (kind, parent, fields)
-        });
+            // What it says when a trigger reads a field of it a nested item is found by (a
+            // conversation's people), as well as what the index holds of it.
+            if let Some(serde_json::Value::Object(content)) = self.content_json(&kind, &parent) {
+                fields.extend(content);
+            }
+            nested = held.and_then(|held| held.parent.clone());
+            parents.push((kind, parent, fields));
+        }
         Wrote {
             kind: kind.to_owned(),
             id: id.to_owned(),
             holds,
-            parent,
+            parents,
         }
     }
 

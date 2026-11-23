@@ -1147,7 +1147,7 @@ fn broker_services(
         nearby,
         file_clipboard,
         item_lending,
-        fanout: _,
+        fanout,
     } = hosted;
     // What each window this session runs shows, kept with its launches: read
     // by the service a window's app speaks on, and by the session's own passes.
@@ -1233,6 +1233,7 @@ fn broker_services(
     .register(&providers);
     std::sync::Arc::new(tilo_workspace_service::agents::triggered::Answers::new(
         service.clone(),
+        std::sync::Arc::clone(&fanout),
     ))
     .register(&providers);
     if let Some(programs) = task_programs {

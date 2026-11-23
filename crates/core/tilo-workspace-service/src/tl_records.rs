@@ -817,6 +817,7 @@ impl Opened {
                 DocumentEvent {
                     workspace: workspace.to_owned(),
                     record: record.to_owned(),
+                    app: self.app.clone(),
                     did: tilo_actions::entry::Did::verb(
                         tilo_actions::ActionKey::new(&self.app, &kind, &name),
                         [],

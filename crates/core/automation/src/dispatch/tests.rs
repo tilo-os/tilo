@@ -40,6 +40,7 @@ fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> DocumentEvent 
     DocumentEvent {
         workspace: "ws-1".into(),
         record: "rec-1".into(),
+        app: "so.tilo.chat".into(),
         kind: "chat.workspace".into(),
         change: change.into(),
         actor,

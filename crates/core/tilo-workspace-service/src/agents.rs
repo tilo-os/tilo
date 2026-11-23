@@ -805,6 +805,7 @@ struct EngineKeys {
 struct Answer {
     workspace: String,
     agent: String,
+    place: triggered::Where,
     event: tilo_automation::dispatch::DocumentEvent,
     saver: String,
     /// The `#answer` invocation, and the stop its cancel sets.
@@ -850,6 +851,7 @@ impl crate::work::AgentEngine for EngineKeys {
         &self,
         workspace: String,
         agent: String,
+        place: triggered::Where,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
         invocation: (InvocationId, Arc<AtomicBool>),
@@ -858,6 +860,7 @@ impl crate::work::AgentEngine for EngineKeys {
         let asked = Answer {
             workspace,
             agent,
+            place,
             event,
             saver,
             invocation,
@@ -1099,12 +1102,12 @@ impl ServerAgents {
         loop {
             tokio::select! {
                 answer = asked.recv() => {
-                    let Some(Answer { workspace, agent, event, saver, invocation, started }) = answer else {
+                    let Some(Answer { workspace, agent, place, event, saver, invocation, started }) = answer else {
                         return;
                     };
                     let agents = self.clone();
                     tokio::spawn(async move {
-                        let taken = Box::pin(agents.triggered(&workspace, &agent, event, saver, invocation)).await;
+                        let taken = Box::pin(agents.triggered(&workspace, &agent, place, event, saver, invocation)).await;
                         started.complete(taken);
                     });
                 }
@@ -1222,12 +1225,11 @@ impl ServerAgents {
         &self,
         workspace: &str,
         agent: &str,
+        place: triggered::Where,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
         (invocation, stop): (InvocationId, Arc<AtomicBool>),
     ) -> Result<crate::work::Started, String> {
-        let place = triggered::Where::of(&event)
-            .ok_or("the change is no message or task an agent answers")?;
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
             .read::<WorkspaceAgents>(workspace, AGENTS_OWNER, &record)
@@ -1266,8 +1268,8 @@ impl ServerAgents {
         let turn = Turn {
             agent,
             person: person.clone(),
-            conversation: format!("{}/{}", place.app, place.record),
-            cause: event.change.clone(),
+            conversation: place.conversation(),
+            cause: place.change.clone(),
             asked,
             request,
             ask: Ask::Triggered(place.clone()),

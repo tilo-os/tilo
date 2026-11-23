@@ -2011,6 +2011,15 @@ impl Workspaces {
             .map_err(CollaborationError::new)
     }
 
+    /// Whether `workspace`'s store holds the resource `id` of `kind` now: false for a workspace
+    /// not kept here.
+    pub async fn store_holds(&self, workspace: &str, kind: &str, id: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        state.lock().await.holds_resource(kind, id)
+    }
+
     /// What the change `hash` of the resource store's document `doc` of `workspace` wrote: each
     /// resource, with what it holds as the change left it ([`tilo_resource_store::Store::wrote`]).
     /// None for a workspace not kept here.

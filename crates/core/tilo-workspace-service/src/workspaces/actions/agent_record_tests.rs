@@ -381,8 +381,10 @@ async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them
     );
     let place = |item: &str| triggered::Where {
         app: "so.tilo.lang.chat".to_owned(),
+        kind: triggered::MESSAGE.to_owned(),
         record: "general".to_owned(),
         item: item.to_owned(),
+        change: item.to_owned(),
     };
 
     // Paused, its trigger is still saved, and the turn that trigger starts is refused: the

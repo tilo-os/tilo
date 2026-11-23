@@ -325,8 +325,10 @@ mod tests {
             person: "ada".to_owned(),
             ask: Ask::Triggered(crate::agents::triggered::Where {
                 app: crate::agents::triggered::CHAT.to_owned(),
+                kind: crate::agents::triggered::MESSAGE.to_owned(),
                 record: "ada with scout".to_owned(),
                 item: message.to_owned(),
+                change: message.to_owned(),
             }),
             conversation: "ada with scout".to_owned(),
             cause: message.to_owned(),

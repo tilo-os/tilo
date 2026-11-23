@@ -157,6 +157,12 @@ impl Resources {
         }
     }
 
+    /// Whether the store holds the resource `id` of `kind`.
+    pub(super) fn holds(&self, kind: &str, id: &str) -> bool {
+        use tilo_lock::MutexRecover as _;
+        self.store.lock_recover().get(kind, id, &|_| true).is_some()
+    }
+
     /// The store, for the tests of a device's own writes to it.
     #[cfg(all(test, feature = "apps", feature = "agents"))]
     pub(super) fn store(&self) -> std::sync::MutexGuard<'_, Store> {
@@ -491,6 +497,12 @@ impl GovernedWorkspace {
     /// ([`is_store_document`]). `None` when the store placed none by that id.
     pub(super) fn store_document(&mut self, doc: &str) -> Option<Vec<u8>> {
         self.resources.document(doc)
+    }
+
+    /// Whether the workspace's store holds the resource `id` of `kind`: what a turn started on
+    /// a change reads of the item it was started on, which is gone once it is removed.
+    pub(super) fn holds_resource(&self, kind: &str, id: &str) -> bool {
+        self.resources.holds(kind, id)
     }
 
     /// What the change `hash` of the store's document `doc` wrote ([`Store::wrote`]).

@@ -747,19 +747,24 @@ pub trait AgentEngine: Send + Sync {
         Vec::new()
     }
 
-    /// Start `agent`'s turn in `workspace` on `event`, the change a trigger `saver` keeps fired
-    /// on, as the answer invocation `invocation`: whether this device took the turn, or why it
+    /// Start `agent`'s turn in `workspace` on `place`, the cause of the change a trigger `saver`
+    /// keeps fired on, with `event` what the change said, as the answer invocation `invocation`:
+    /// whether this device took the turn, or why it
     /// did not start, once the turn ended. The reply the turn writes names `invocation`, and
     /// the invocation's cancel sets `stop`, which ends the turn at its next step.
     fn answer(
         &self,
         workspace: String,
         agent: String,
+        place: crate::agents::triggered::Where,
         event: tilo_automation::dispatch::DocumentEvent,
         saver: String,
-        (invocation, stop): (tilo_actions::InvocationId, Arc<std::sync::atomic::AtomicBool>),
+        (invocation, stop): (
+            tilo_actions::InvocationId,
+            Arc<std::sync::atomic::AtomicBool>,
+        ),
     ) -> Pending<Result<Started, String>> {
-        let _ = (workspace, agent, event, saver, invocation, stop);
+        let _ = (workspace, agent, place, event, saver, invocation, stop);
         Pending::ready(Err(
             "this device's agent engine answers no trigger".to_owned()
         ))
