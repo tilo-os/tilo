@@ -300,7 +300,7 @@ fn param(param: &ParamSurface) -> ActionParam {
 /// The parameter type a surface field type is written as.
 fn param_type(ty: &FieldType) -> ParamType {
     match ty {
-        FieldType::Int => ParamType::Integer,
+        FieldType::Int | FieldType::Duration => ParamType::Integer,
         FieldType::Float => ParamType::Number,
         FieldType::Bool => ParamType::Boolean,
         FieldType::Time | FieldType::Date => ParamType::DateTime,
@@ -316,7 +316,85 @@ fn param_type(ty: &FieldType) -> ParamType {
         | FieldType::Union(_)
         | FieldType::Reactions
         | FieldType::Outbox(_)
-        | FieldType::Duration
         | FieldType::Any => ParamType::Text,
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "test assertions"
+)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tilo_actions::{ActionArgs, ActionKind};
+
+    #[test]
+    fn packaged_descriptor_binds_duration_surface_params_as_integer_seconds() {
+        let duration_schema =
+            json!({"type": "integer", "description": "Duration in whole seconds"});
+        let surface = Surface {
+            kind: "tl.so.tilo.test.Board".to_owned(),
+            label: "Board".to_owned(),
+            version: 1,
+            person: false,
+            verbs: vec![VerbSurface {
+                id: "defer".to_owned(),
+                name: "defer".to_owned(),
+                label: "Defer".to_owned(),
+                description: None,
+                kind: ActionKind::Undoable,
+                destructive: false,
+                incoming_message: false,
+                params: vec![
+                    ParamSurface {
+                        name: "span".to_owned(),
+                        required: true,
+                        schema: duration_schema.clone(),
+                        ty: FieldType::Duration,
+                        within: None,
+                    },
+                    ParamSurface {
+                        name: "extra".to_owned(),
+                        required: false,
+                        schema: duration_schema,
+                        ty: FieldType::Option(Box::new(FieldType::Duration)),
+                        within: None,
+                    },
+                ],
+                returns: None,
+                writes: vec![tilo_actions::surface::RESOURCE_UNIT.to_owned()],
+                field: None,
+            }],
+            fields: Vec::new(),
+            types: Vec::new(),
+            shows: Vec::new(),
+        };
+        let desc = descriptor(&surface, &surface.verbs[0]);
+        assert_eq!(desc.params[0].ty, ParamType::Integer);
+        assert_eq!(desc.params[1].ty, ParamType::Integer);
+
+        let bound = ActionArgs::bind_json(
+            &desc.params,
+            json!({"span": 5400, "extra": 900}).as_object().unwrap(),
+        )
+        .expect("whole seconds bind as integer arguments");
+        assert_eq!(bound.integer("span"), Some(5400));
+        assert_eq!(bound.integer("extra"), Some(900));
+
+        for wrong in [
+            json!({"span": true}),
+            json!({"span": "90m"}),
+            json!({"span": 1.5}),
+            json!({"span": 5400, "extra": {"some": 900}}),
+        ] {
+            assert!(
+                ActionArgs::bind_json(&desc.params, wrong.as_object().unwrap()).is_err(),
+                "wrong JSON type {wrong} must be refused"
+            );
+        }
     }
 }
