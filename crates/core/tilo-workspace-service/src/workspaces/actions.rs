@@ -1988,6 +1988,14 @@ impl Workspaces {
                 if operation == ADD_MEMBER && super::admitting::redeems(request) {
                     return self.admit_invoke(workspace_id, caller, request).await;
                 }
+                // Who keeps a workspace is every member's to read, from whichever workspace
+                // their session is in: a device of theirs asks it of another one they are in.
+                if operation == READ_COPIES
+                    && let Some(named) = WorkspaceId::parse(workspace)
+                    && named != workspace_id
+                {
+                    return self.read_copies_as_member(named, caller, certificate).await;
+                }
                 let asked = governance_request(request, workspace, operation);
                 if operation == tilo_server_protocol::workspaces::RUN_UNATTENDED {
                     self.unattended_invoke(workspace_id, caller, certificate, &asked)
@@ -3161,6 +3169,37 @@ impl Workspaces {
             .await;
         let named = self.content_named(workspace).await;
         json!({ "workspace": workspace, "lacking": lacking, "named": named })
+    }
+
+    /// [`Self::read_copies`] of `workspace`, asked from a session in another workspace by
+    /// `caller`, a device of one of its members speaking for themselves. Unknown to anyone else,
+    /// as the read is to a stranger in the workspace itself.
+    async fn read_copies_as_member(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+    ) -> Result<Value, ActionCallError> {
+        let certificate = certificate
+            .filter(|certificate| {
+                caller.acting().is_person()
+                    && certificate.capabilities.agent.is_none()
+                    && caller.device_public_key() == Some(&certificate.device_public_key)
+                    && caller.user_public_key() == Some(&certificate.user_public_key)
+            })
+            .ok_or(ActionCallError::UnknownAction)?;
+        let governed = self
+            .held(workspace)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let name = {
+            let governed = governed.lock().await;
+            if !governed.peer().is_member(&certificate.user_public_key) {
+                return Err(ActionCallError::UnknownAction);
+            }
+            governed.workspace().to_owned()
+        };
+        self.read_copies(&name).await
     }
 
     /// The devices keeping `workspace` ([`READ_COPIES`]): each one's device key, who it is of,
