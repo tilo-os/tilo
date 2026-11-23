@@ -21938,6 +21938,7 @@ dependencies = [
  "rcgen",
  "resvg",
  "rqrr",
+ "runtime-bundle",
  "runtime-collab",
  "runtime-portal",
  "rustix 1.1.6",

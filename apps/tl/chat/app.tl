@@ -662,14 +662,44 @@ action report_problem(all: Conversations, body: RichText) -> Message (
 
 /// Opens the direct message between the invoker and `who`, in the sidebar, or the one already
 /// open between the two of them: two people have one conversation, not a new empty one each
-/// time. With yourself it is your notes to self.
-/// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
-/// person has one conversation, not a new empty one each time.
+/// time. With yourself it is your notes to self. A person is someone of the workspace: one who
+/// is not in it is refused, since no one but its members reads what is written here.
 action message_person(all: Conversations, who: Actor) -> Direct (
     icon: .message_circle,
     label: "Message",
 ) {
+    require in_workspace(who, invoker) "{who.name()} is not in this workspace"
     let people = people_of(invoker, who)
+    if let d = direct_of(all, people) {
+        return d
+    }
+    // Named by its people, so two devices opening it apart, offline, open the same one.
+    let key = people.map(p -> p.id()).sort_by(x -> x).join(",")
+    let d = all.channels.insert(Direct(name: who.name(), people: people), key: "direct:{key}")
+    // Its fields written, so the resource holds the conversation from its first press: an item
+    // stored by its id alone is found only once it says something.
+    d.name = who.name()
+    d.people = people
+    d
+}
+
+/// Whether `who` may be written to here by `me`: an agent, `me`, or a person of the workspace.
+fn in_workspace(who: Actor, me: Actor) -> Bool {
+    who.kind() != .person or who == me or workspace.members.contains(who)
+}
+
+/// The direct conversation between the invoker and `who`, none while the two of them have none:
+/// what an agent, a script or another app reads to find it, opening and making nothing. With
+/// yourself it is your notes to self.
+action conversation_with(all: Conversations, who: Actor) -> Option<Direct> (
+    icon: .message_circle,
+    label: "Conversation with",
+) {
+    direct_of(all, people_of(invoker, who))
+}
+
+/// The direct conversation of `people`, each once, none while they have none.
+fn direct_of(all: Conversations, people: List<Actor>) -> Option<Direct> {
     for item in all.channels {
         match item {
             c: Category => {}
@@ -682,30 +712,52 @@ action message_person(all: Conversations, who: Actor) -> Direct (
             }
         }
     }
-    // Named by its people, so two devices opening it apart, offline, open the same one.
-    let key = people.map(p -> p.id()).sort_by(x -> x).join(",")
-    let d = all.channels.insert(Direct(name: who.name(), people: people), key: "direct:{key}")
-    // Its fields written, so the resource holds the conversation from its first press: an item
-    // stored by its id alone is found only once it says something.
-    d.name = who.name()
-    d.people = people
-    d
+    .none
+}
+
+/// How many messages of a direct conversation the person asking has not read: the number its row
+/// shows beside the other person, and what an agent or a script reads of it.
+action unread_count(d: Direct) -> Int (icon: .mail, label: "Unread") {
+    unread_of(d)
+}
+
+/// How many of `d`'s messages the person looking has not seen: those from the first they have
+/// not ([`first_unseen`]) to the last.
+fn unread_of(d: Direct) -> Int {
+    if let first = first_unseen(d) {
+        d.messages.len() - d.messages.filter(m -> made_before(m, first)).len()
+    } else { 0 }
+}
+
+/// Whether `x` was made before `y`.
+fn made_before(x: host.Resource, y: host.Resource) -> Bool {
+    if let made = created(x)?.at {
+        if let later = created(y)?.at { made < later } else { true }
+    } else { false }
 }
 
 /// Posts a message in a channel, a thread or a direct conversation as the invoker, answering
 /// another when `reply_to` names one. History and the catch-up say what a person did in its own
-/// words, counting the messages a step of them holds.
+/// words, counting the messages a step of them holds. A message in a direct conversation is news
+/// to the other people in it: each is told once, on every device of theirs, who wrote and what,
+/// and choosing the notice opens the conversation.
 action send(
     to: TextChannel | Thread | Direct,
     body: RichText,
     reply_to: Option<Message> = .none,
     attachments: List<File> = [],
-) -> Message (icon: .send, label: "Send", did: "wrote a message") {
+) -> Message uses notify (icon: .send, label: "Send", did: "wrote a message") {
     let m = Message(body: body, reply_to: reply_to)
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
-        d: Direct => d.messages.insert(m),
+        d: Direct => {
+            let sent = d.messages.insert(m)
+            for p in d.people.filter(p -> p != invoker and p.kind() == .person) {
+                notify(to: p, title: invoker.name(), body: body.text, opens: d)
+            }
+            sent
+        }
     }
     // The files go onto the message once it stands: a collection belongs to a resource, and a
     // message under construction is none yet.
@@ -719,7 +771,7 @@ action send(
 
 /// Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the
 /// one already open, else a new one in the sidebar. The message is sent as every message is.
-action write_to(all: Conversations, who: Actor, body: RichText) -> Message (
+action write_to(all: Conversations, who: Actor, body: RichText) -> Message uses notify (
     icon: .send,
     label: "Write to",
 ) {
@@ -1321,13 +1373,16 @@ view voice_summary(v: VoiceChannel) {
     )
 }
 
-/// A direct conversation as another app's page summarizes it: whose it is and the last thing
-/// said in it. The conversation with yourself is your notes, as the sidebar names it.
+/// A direct conversation as another app's page summarizes it: whose it is, the last thing said in
+/// it and how many of its messages the person looking has not read. The conversation with
+/// yourself is your notes, as the sidebar names it.
 view direct_summary(d: Direct) {
     let last = d.messages.last()
+    let unread = unread_of(d)
     row(
         if let other = other_in(d, workspace.me) { other.name() } else { "Notes to self" },
         secondary: if let m = last { m.body.excerpt } else { "" },
+        badge: if unread > 0 { "{unread}" } else { "" },
         icon: .message_circle,
     )
 }

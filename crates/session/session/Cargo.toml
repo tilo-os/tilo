@@ -464,8 +464,9 @@ tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 tilo-control = { path = "../control-cli" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# Chat's own writers, which post a message into a part as its window does: what the person's
-# mentions are tested against is what Chat writes, not a hand-made stand-in.
+# The runtimes a device runs tilolang apps' windows on, signed and installed as a device's own
+# store holds them: Chat's windows run on them as they do on a person's computer.
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
 # A Windows program that shows through X11, as a Proton program does: the stand-in draws its
 # window on the X11 display its keeper serves.
 x11rb = { version = "0.13", default-features = false }

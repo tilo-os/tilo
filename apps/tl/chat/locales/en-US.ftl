@@ -357,8 +357,17 @@ d-uhenzjex-body = Body
 
 d-3cetzzm3 = Message
     .doc = Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time.
+    .w-is-not-in-this-workspace = { $name } is not in this workspace
 
 d-3cetzzm3-who = Who
+
+d-rkqdq6oi = Conversation with
+    .doc = The direct conversation between the invoker and `who`, none while the two of them have none: what an agent, a script or another app reads to find it, opening and making nothing.
+
+d-rkqdq6oi-who = Who
+
+d-3vgu5d7q = Unread
+    .doc = How many messages of a direct conversation the person asking has not read: the number its row shows beside the other person, and what an agent or a script reads of it.
 
 # refined
 d-peb7lz2j = Send
@@ -514,6 +523,8 @@ d-umfqj3us = Correct skill~present
 d-3e27liaz = Keep example~present
 
 d-v6wnfixl = Report problem~present
+
+d-x32afsaz = Message person~present
 
 d-dgrvpxre = Send view~present
 

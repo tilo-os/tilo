@@ -1025,6 +1025,7 @@ impl Person {
             child: None,
             announced: None,
             session: None,
+            seeds: std::cell::Cell::new(false),
         }
     }
 }
@@ -1160,6 +1161,7 @@ impl Person {
                 child: None,
                 announced: None,
                 session: None,
+                seeds: std::cell::Cell::new(source.seeds.get()),
             },
             *branched,
         )
@@ -1253,6 +1255,9 @@ pub struct Device {
     /// The session program this device runs, when it is not this package's own test build
     /// ([`Self::run_session`]).
     session: Option<PathBuf>,
+    /// Whether its session serves the development session's tilolang apps it installed
+    /// ([`Self::install_dev_apps`]).
+    seeds: std::cell::Cell<bool>,
 }
 
 impl Device {
@@ -1447,6 +1452,15 @@ impl Device {
             .clone()
             .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
         let mut command = Command::new(&program);
+        if self.seeds.get() {
+            // It serves the development session's apps, and its launcher starts their windows on
+            // the runtimes this run signed ([`super::dev_apps::runtimes`]), as a developer's
+            // machine trusts its own builds.
+            command.arg("--seed-apps").env(
+                "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+                &super::dev_apps::runtimes().trusted,
+            );
+        }
         command
             .args([
                 "--backend",
@@ -1821,6 +1835,19 @@ impl Device {
         )
         .expect("the registry is a string");
         std::fs::write(&registry, rows).expect("the store's registry");
+    }
+
+    /// Install the tilolang apps a development session runs (Chat among them) in this device's
+    /// store, the packages this run built, and have its session serve them as a development
+    /// session does (`--seed-apps`): each app's records published from the session itself and
+    /// kept in the workspace it holds, so its actions, its notices and its records reach the
+    /// person's other devices and everyone else's the way any workspace record does. The runtimes
+    /// the apps name go into the device's own store of runtimes ([`super::dev_apps::runtimes`]),
+    /// so an app's window starts as it does on a person's computer.
+    pub fn install_dev_apps(&self) {
+        super::dev_apps::install(&self.store(), &self.home.path().join("state/tilolang"));
+        super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-runtime"));
+        self.seeds.set(true);
     }
 
     /// Install Passwords in this device's store, as a device with the app installed has it.

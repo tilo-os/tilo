@@ -361,3 +361,122 @@ fn copy_tree(from: &Path, to: &Path) {
         }
     }
 }
+
+/// The runtimes the tilolang apps of a build run on, as a person's device holds them: the
+/// tilolang runtime, whose host (`tilolang-process`) runs an app's code, and the Tilo runtime that
+/// host runs on, each a signed bundle in a directory named for its version under [`Self::bundles`].
+/// A device takes them into its own store of runtimes ([`install_runtimes`]).
+pub struct Runtimes {
+    /// The directory the bundles stand in, each in one named for its version.
+    pub bundles: PathBuf,
+    /// The list of publishers a device's launcher trusts, as a developer's machine names its own
+    /// (`TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`): the key the bundles are signed with.
+    pub trusted: PathBuf,
+}
+
+/// [`Runtimes`] made once for this test process, from the `tilolang-process` this run built (with
+/// `app-launch`, so it draws an app's windows as well as hosting its code) and the libraries it
+/// loads: the Tilo runtime is the loader and libraries the host needs, as the image's runtime
+/// carries them, and the tilolang runtime is the host alone, as `tilolang dev` bakes it.
+///
+/// # Panics
+/// The host was not built by the run, a library it loads cannot be found, or a bundle cannot be
+/// written.
+pub fn runtimes() -> &'static Runtimes {
+    static RUNTIMES: OnceLock<Runtimes> = OnceLock::new();
+    RUNTIMES.get_or_init(|| {
+        use tilo_test_env::SpawnUnderEnvLock as _;
+        let root = tempfile::Builder::new()
+            .prefix("tilo-runtimes-")
+            .tempdir_in(builds())
+            .expect("a directory for the runtimes")
+            .keep();
+        let bundles = root.join("bundles");
+        let identity = runtime_bundle::Identity::generate();
+        let key = root.join("publisher.json");
+        std::fs::write(&key, identity.to_json_bytes()).expect("the runtimes' publisher key");
+        let trusted = root.join("trusted-publishers.txt");
+        std::fs::write(&trusted, format!("{}\n", identity.public_key_hex()))
+            .expect("the publishers a device trusts");
+        // The runtime's one program: the host that runs an app's code for its workspace and, started
+        // by the launcher for an app's launch, draws the app's windows.
+        let programs = [tilo_test_env::sibling_binary(
+            "tilolang-process",
+            "tilolang-process",
+        )];
+        let version = |runtime: &'static str| {
+            runtime
+                .split_once('/')
+                .map(|(_, version)| version)
+                .unwrap_or_else(|| panic!("{runtime} names its version"))
+        };
+        let tilolang = version(package::DEFAULT_TILOLANG_RUNTIME);
+        runtime_bundle::build_binaries_bundle(
+            &bundles.join(tilolang),
+            tilolang,
+            None,
+            Some(&key),
+            &programs,
+            &[],
+        )
+        .expect("the tilolang runtime");
+        // The libraries the programs load, as the loader resolves them on this machine: what the
+        // Tilo runtime carries for them.
+        let mut libraries: Vec<PathBuf> = Vec::new();
+        for program in &programs {
+            let listed = std::process::Command::new("ldd")
+                .arg(program)
+                .output_locked()
+                .expect("ldd lists a program's libraries");
+            assert!(listed.status.success(), "ldd reads {}", program.display());
+            for line in String::from_utf8_lossy(&listed.stdout).lines() {
+                let path = line.split_once("=>").map_or(line, |(_, path)| path);
+                let Some(path) = path.trim().split(" (").next().map(str::trim) else {
+                    continue;
+                };
+                let path = PathBuf::from(path);
+                if path.is_absolute() && !libraries.contains(&path) {
+                    libraries.push(path);
+                }
+            }
+        }
+        let tilo = version(package::DEFAULT_TILO_RUNTIME);
+        runtime_bundle::build_bundle_with(
+            &bundles.join(tilo),
+            tilo,
+            &runtime_bundle::BuildOptions {
+                identity: Some(&key),
+                extra_libs: &libraries,
+                ..runtime_bundle::BuildOptions::default()
+            },
+        )
+        .expect("the Tilo runtime");
+        Runtimes { bundles, trusted }
+    })
+}
+
+/// Take the [`runtimes`] into the store of runtimes under `store` (a device's
+/// `$XDG_DATA_HOME/tilo-runtime`, where its launcher looks for the runtime an app names), each
+/// file linked rather than copied.
+///
+/// # Panics
+/// A bundle cannot be read or linked.
+pub fn install_runtimes(store: &Path) {
+    link_tree(&runtimes().bundles, store);
+}
+
+/// Link every file of the tree `from` into `to`, making its directories.
+fn link_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a directory of the runtimes");
+    for entry in std::fs::read_dir(from).expect("a runtime's directory reads") {
+        let entry = entry.expect("a runtime's entry reads");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("an entry's kind").is_dir() {
+            link_tree(&entry.path(), &target);
+        } else {
+            std::fs::hard_link(entry.path(), &target)
+                .or_else(|_| std::fs::copy(entry.path(), &target).map(drop))
+                .expect("a runtime's file");
+        }
+    }
+}

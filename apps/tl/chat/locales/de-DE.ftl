@@ -206,6 +206,8 @@ d-uhenzjex-body = Text
 
 d-v6wnfixl = Problem melden~present
 
+d-x32afsaz = Person anschreiben~present
+
 d-abono4ra-topic = Thema
 
 d-tkh5jonr = Personen der Direktnachrichten übernehmen
@@ -213,6 +215,7 @@ d-tkh5jonr = Personen der Direktnachrichten übernehmen
 
 d-3cetzzm3 = Nachricht
     .doc = Öffnet die Direktnachricht zwischen dem Aufrufer und `who` in der Seitenleiste, oder die schon offene zwischen den beiden: zwei Personen haben eine Unterhaltung, nicht jedes Mal eine neue leere.
+    .w-is-not-in-this-workspace = { $name } ist nicht in diesem Arbeitsbereich
 
 d-peb7lz2j = Senden
     .doc = Veröffentlicht eine Nachricht in einem Kanal, einem Thread oder einer Direktunterhaltung als der, der es aufträgt, und antwortet auf eine andere, wenn `reply_to` eine nennt.
@@ -339,6 +342,14 @@ d-26f7sh5k-name = Name
 d-abono4ra-name = Name
 
 d-3cetzzm3-who = Wer
+
+d-rkqdq6oi = Unterhaltung mit
+    .doc = Die Direktunterhaltung zwischen dem Aufrufer und `who`, keine, solange die beiden keine haben: was ein Agent, ein Skript oder eine andere App liest, um sie zu finden, ohne etwas zu öffnen oder anzulegen.
+
+d-rkqdq6oi-who = Wer
+
+d-3vgu5d7q = Ungelesen
+    .doc = Wie viele Nachrichten einer Direktunterhaltung die fragende Person nicht gelesen hat: die Zahl, die ihre Zeile neben der anderen Person zeigt, und was ein Agent oder ein Skript davon liest.
 
 d-peb7lz2j-to = An
 
