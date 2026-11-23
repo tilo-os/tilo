@@ -82,7 +82,7 @@ pub use errors::{Error, Result, WelcomeRefusal};
 pub use group::{KeyGroup, MemberAddition};
 #[cfg(not(target_arch = "wasm32"))]
 pub use peer::Files;
-pub use peer::{Access, GroupPeer, PeerEvent, PeerStates, Reconciled, backs};
+pub use peer::{Access, GroupPeer, PeerEvent, PeerStates, Reconciled, Signed, Staged, backs};
 pub use persistence::VaultKey;
 pub use released_text::{MAX_RELEASED_TEXT, ReleasedFor, open_released_text, seal_released_text};
 pub use seal_check::SealCheck;
