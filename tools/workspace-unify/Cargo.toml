@@ -150,7 +150,6 @@ doc = false
 "camera" = { path = "../../apps/camera", default-features = false, features = ["default", "live-capture", "native-capture"] }
 "camera-model" = { path = "../../apps/camera-model", default-features = false, features = [] }
 "camera-model-wasm" = { path = "../../apps/camera-model-wasm", default-features = false, features = [] }
-"canvas" = { path = "../../apps/canvas", default-features = false, features = ["samples"] }
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
@@ -2778,7 +2777,6 @@ doc = false
 "camera" = { path = "../../apps/camera", default-features = false, features = ["default", "live-capture", "native-capture"] }
 "camera-model" = { path = "../../apps/camera-model", default-features = false, features = [] }
 "camera-model-wasm" = { path = "../../apps/camera-model-wasm", default-features = false, features = [] }
-"canvas" = { path = "../../apps/canvas", default-features = false, features = ["samples"] }
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }

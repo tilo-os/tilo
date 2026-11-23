@@ -27,7 +27,6 @@ video-editor = ["decode", "gst"]
 # Typst from its engine library beside the runtime.
 typst-editor = ["runtime-engine"]
 # The painting engines from their engine library beside the runtime.
-canvas = ["runtime-engine"]
 # Account credentials, the IMAP and the WebDAV client from their engine library
 # beside the runtime.
 settings = ["runtime-engine"]

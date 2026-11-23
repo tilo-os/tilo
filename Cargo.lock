@@ -1871,37 +1871,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "canvas"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "canvas",
- "i_overlay",
- "image",
- "png",
- "rayon",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "tempfile",
- "tilo-app",
- "tilo-content",
- "tilo-files",
- "tilo-model-client",
- "tilo-paint-engine",
- "tilo-subject",
- "tilo-test-env",
- "tilo-wet-media",
- "tracing",
- "usvg",
- "uuid",
- "workspace-hack",
- "zip",
-]
-
-[[package]]
 name = "cap-fs-ext"
 version = "3.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16731,7 +16700,6 @@ dependencies = [
  "blake3",
  "bytes",
  "camera",
- "canvas",
  "chip-design",
  "clocks",
  "collab-types",
@@ -17600,6 +17568,7 @@ dependencies = [
  "tilo-subject",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-wake",
  "tilo-wet-media",
  "tracing",
  "usvg",
@@ -23073,6 +23042,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-app-window",
  "tilo-automerge-fork",
+ "tilo-canvas-engine",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-content",
@@ -27275,7 +27245,6 @@ dependencies = [
  "camera",
  "camera-model",
  "camera-model-wasm",
- "canvas",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",

@@ -7,7 +7,7 @@ It does what a model does through MCP: read the tool list and the app's
 root page, resolve the schemas it needs, then paint, look and correct.
 Arguments it would not know to tune are left at their defaults.
 
-  scripts/agent-loop/session.py start apps/canvas
+  scripts/agent-loop/session.py start apps/tl/calculator
   scripts/agent-loop/examples/evening.py            # prints what it cost
   scripts/agent-loop/session.py usage canvas --calls
   scripts/agent-loop/session.py stop canvas
@@ -33,7 +33,7 @@ class Agent:
     def __init__(self, out: pathlib.Path):
         self.session = loop.Session("canvas")
         if not self.session.state_file.exists():
-            sys.exit("no canvas session; start one: scripts/agent-loop/session.py start apps/canvas")
+            sys.exit("no canvas session; start one: scripts/agent-loop/session.py start apps/tl/calculator")
         before = set(loop.usage_logs(self.session))
         self.client = loop.McpClient(self.session)
         self.client.request("tools/list", {})

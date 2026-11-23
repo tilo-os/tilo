@@ -2705,18 +2705,18 @@ impl Checker<'_> {
     fn builtin_canvas(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
         let what = format!("`canvas.{}`", name.name);
-        let pictures = || Ty::List(Box::new(Ty::File));
+        let pictures = || Ty::List(Box::new(Ty::Text));
         let (imp, held, takes, wanted): (Imp, Ty, &str, Vec<Ty>) = match name.name.as_str() {
             "look" => (
                 Imp::CanvasLook,
                 result(Ty::File),
-                "the artwork as JSON, the look's fields as JSON, and its pictures",
+                "the artwork as JSON, the look's fields as JSON, and its pictures' addresses",
                 vec![Ty::Text, Ty::Text, pictures()],
             ),
             "export" => (
                 Imp::CanvasExport,
                 result(Ty::File),
-                "the artwork as JSON, the export's fields as JSON, and its pictures",
+                "the artwork as JSON, the export's fields as JSON, and its pictures' addresses",
                 vec![Ty::Text, Ty::Text, pictures()],
             ),
             "grade" => (
@@ -2746,7 +2746,7 @@ impl Checker<'_> {
             "save" => (
                 Imp::CanvasSave,
                 result(Ty::File),
-                "the artwork as JSON and the pictures it shows",
+                "the artwork as JSON and the addresses of the pictures it shows",
                 vec![Ty::Text, pictures()],
             ),
             "open" => (

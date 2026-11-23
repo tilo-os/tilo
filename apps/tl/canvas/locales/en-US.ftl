@@ -1,0 +1,11 @@
+canvas-app-title = Canvas
+canvas-brush-round = Round
+canvas-brush-pen = Ink pen
+canvas-brush-pencil = Pencil
+canvas-brush-marker = Marker
+canvas-brush-airbrush = Airbrush
+canvas-brush-charcoal = Charcoal
+canvas-brush-calligraphy = Calligraphy
+canvas-brush-eraser = Eraser
+canvas-brush-pixel = Pixel
+canvas-brush-pixel-eraser = Pixel eraser

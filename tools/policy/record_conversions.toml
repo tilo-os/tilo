@@ -4,6 +4,12 @@
 # person loses.
 #
 # [[change]]
+kind = "canvas.artwork"
+app = "canvas"
+change = "removed"
+lost = "The Rust Canvas app's artworks, which its own surface held. The tilolang Canvas keeps the same artwork records in the workspace; an artwork the old app saved opens from its .artwork file, and one it never saved is not carried."
+
+[[change]]
 # kind = "<the resource kind>"
 # app = "<the app whose surface changed>"
 # change = "moved" | "removed"

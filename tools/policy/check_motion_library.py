@@ -119,7 +119,6 @@ EXEMPT = {
     "crates/engines/video-render/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/vision/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/wet-media/": "paint, brush and media physics simulate the medium, not UI motion",
-    "apps/canvas/src/brushes.rs": "brush dynamics are part of the stroke the person paints",
     "crates/ui/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
     "crates/session/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",
     "crates/session/desktop/src/widgets/sizing.rs": "the stage blend eases a card's width, not a clock: it cross-fades two stages across a band so a resize through a breakpoint never jumps",

@@ -21,7 +21,6 @@ exclude = [
     "workspace-unify",
     "activity",
     "assistant",
-    "canvas",
     "code-editor",
     "db-client",
     "diffmerge",

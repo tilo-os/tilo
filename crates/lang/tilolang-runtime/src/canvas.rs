@@ -230,17 +230,32 @@ impl Core {
         }
     }
 
-    /// The files behind `h`, as `(address, bytes)`: each picture the artwork shows.
+    /// The pictures behind `h`, as `(address, bytes)`: each address the artwork's marks name,
+    /// read from the content store this device keeps files in.
     fn file_pairs(&self, h: i32) -> HResult<Vec<(String, Vec<u8>)>> {
-        let files = self.val_whole(h)?;
-        let Value::List(items) = files else {
-            return trap("a list of pictures was expected");
+        let listed = self.val_whole(h)?;
+        let Value::List(items) = listed else {
+            return trap("a list of picture addresses was expected");
         };
+        let blobs = self.blobs.borrow();
+        let host = blobs
+            .as_ref()
+            .ok_or_else(|| "this device keeps no pictures".to_owned())
+            .or_else(trap)?;
         items
             .iter()
-            .map(|item| match item {
-                Value::File(file) => Ok((file.url(), self.file_bytes(file).or_else(trap)?)),
-                other => trap(format!("expected a picture, got {}", other.kind_name())),
+            .map(|item| -> HResult<(String, Vec<u8>)> match item {
+                Value::Text(address) => {
+                    let bare = hash_of(address)
+                        .ok_or_else(|| format!("{address} names no picture"))
+                        .or_else(trap)?;
+                    let bytes = host
+                        .read(bare)
+                        .ok_or_else(|| format!("the picture {address} is not on this device"))
+                        .or_else(trap)?;
+                    Ok((address.clone(), bytes))
+                }
+                other => trap(format!("expected a picture address, got {}", other.kind_name())),
             })
             .collect()
     }
@@ -250,6 +265,15 @@ impl Core {
         let file = self.file_arg(h)?;
         self.file_bytes(&file).or_else(trap)
     }
+}
+
+/// The content reference an address names, in either form a picture is addressed by.
+fn hash_of(address: &str) -> Option<&str> {
+    let bare = address
+        .strip_prefix("tilo-blob://")
+        .or_else(|| address.strip_prefix("tilo.content:"))
+        .unwrap_or(address);
+    (!bare.is_empty() && !bare.contains('/')).then_some(bare)
 }
 
 /// The name and type of the picture an answer describes, from its info JSON: `format` is `png`,

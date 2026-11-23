@@ -30,6 +30,10 @@ mod e2e_apps;
 mod e2e_blocks;
 #[path = "e2e_calculator.rs"]
 mod e2e_calculator;
+#[path = "e2e_calculator.rs"]
+mod e2e_calculator;
+#[path = "e2e_canvas.rs"]
+mod e2e_canvas;
 #[path = "e2e_call_fn.rs"]
 mod e2e_call_fn;
 #[path = "e2e_cleanup.rs"]

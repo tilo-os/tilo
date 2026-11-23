@@ -506,7 +506,7 @@ packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
   "camera/live-capture", "disks/live", "video-editor/decode",
-  "video-editor/gst", "typst-editor/runtime-engine", "canvas/runtime-engine",
+  "video-editor/gst", "typst-editor/runtime-engine",
   "settings/runtime-engine",
   "model-providers/runtime-engine", "calendar/runtime-engine",
   "clocks/runtime-engine", "messages/runtime-engine",

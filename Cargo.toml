@@ -76,7 +76,6 @@ members = [
     "crates/engines/browser-continuity-core",
     "crates/engines/page-engine",
     "crates/integrations/tilo-messaging",
-    "apps/canvas",
     "crates/core/broker-core",
     "crates/core/workspace-keys",
     "crates/session/identity-authority",

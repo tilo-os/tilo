@@ -106,7 +106,7 @@ unify = "workspace-unify"
 # generated crate, checked by `workspace-unify-<arch>`), the idle packages (their own family) and
 # the two whose tests need a disk of their own (`imager-tests-<arch>`, VM steps).
 exclude = [
-    "app-catalogue", "app-cli", "canvas", "compat-service", "env-tools", "fs-native",
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
@@ -185,7 +185,7 @@ tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
-packages = ["canvas"]
+packages = []
 heavy = true
 on = ["dispatch", "idle"]
 

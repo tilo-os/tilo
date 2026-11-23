@@ -35,8 +35,8 @@ directory in $XDG_RUNTIME_DIR (sockets, the runtime profile). Your real home,
 settings, identity and workspaces are never read or written.
 
 Usage:
-  scripts/agent-loop/session.py start apps/canvas
-  scripts/agent-loop/session.py start apps/canvas --release
+  scripts/agent-loop/session.py start apps/tl/calculator
+  scripts/agent-loop/session.py start apps/tl/calculator --release
   scripts/agent-loop/session.py mcp canvas
   scripts/agent-loop/session.py stop canvas
 """
@@ -602,7 +602,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     begin = commands.add_parser("start", help="start an isolated session for an app")
-    begin.add_argument("app", help="the app directory, e.g. apps/canvas")
+    begin.add_argument("app", help="the app directory, e.g. apps/tl/calculator")
     begin.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the session")
     begin.add_argument("--foreground", action="store_true", help="stay attached; Ctrl+C stops the session")
     build = begin.add_mutually_exclusive_group()

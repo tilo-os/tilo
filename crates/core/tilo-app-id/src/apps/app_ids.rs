@@ -10,7 +10,6 @@ first_party_apps! {
     CALCULATOR => "so.tilo.calculator",
     CALENDAR => "so.tilo.calendar",
     CAMERA => "so.tilo.camera",
-    CANVAS => "so.tilo.canvas",
     CHAT => "so.tilo.chat",
     CHIP_DESIGN => "so.tilo.chip-design",
     CLOCKS => "so.tilo.clocks",

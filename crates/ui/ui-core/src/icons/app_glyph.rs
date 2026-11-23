@@ -42,7 +42,6 @@ fn named(name: &str) -> Option<Icon> {
         "tube" | "video" | "video-editor" => Icon::Film,
         "photos" => Icon::Image,
         "camera" => Icon::Camera,
-        "canvas" => Icon::PenTool,
         "weather" => Icon::Cloud,
         "maps" => Icon::MapPin,
         "feeds" => Icon::Rss,

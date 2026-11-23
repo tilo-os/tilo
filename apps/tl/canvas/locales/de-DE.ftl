@@ -1,0 +1,11 @@
+canvas-app-title = Canvas
+canvas-brush-round = Rund
+canvas-brush-pen = Tuschefeder
+canvas-brush-pencil = Bleistift
+canvas-brush-marker = Marker
+canvas-brush-airbrush = Spritzpistole
+canvas-brush-charcoal = Kohle
+canvas-brush-calligraphy = Kalligrafie
+canvas-brush-eraser = Radierer
+canvas-brush-pixel = Pixel
+canvas-brush-pixel-eraser = Pixelradierer
