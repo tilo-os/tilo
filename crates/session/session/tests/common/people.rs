@@ -377,7 +377,7 @@ impl Site {
     /// the generation its governance is at.
     pub fn runtime_summary(
         &self,
-    ) -> Result<tilo_server_session::workspaces::WorkspaceSummary, String> {
+    ) -> Result<tilo_server_protocol::workspaces::WorkspaceSummary, String> {
         self.runtime
             .block_on(self.workspaces.summary(&self.workspace))
             .map_err(|error| error.to_string())

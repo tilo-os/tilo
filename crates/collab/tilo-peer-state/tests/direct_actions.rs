@@ -95,6 +95,9 @@ struct Engine {
     replica: Replica,
     endpoint: Endpoint,
     router: Router,
+    /// The action service the router answers with, which the test reaches
+    /// devices through ([`ActionService::reach_device_at`]).
+    service: ActionService,
 }
 
 impl Engine {
@@ -108,13 +111,14 @@ impl Engine {
         let action_service = ActionService::with_bounds(key.clone(), dispatcher.clone(), bounds);
         action_service.hold(replica.clone());
         let router = Router::builder(endpoint.clone())
-            .accept(ACTIONS_ALPN, action_service)
+            .accept(ACTIONS_ALPN, action_service.clone())
             .spawn();
         Self {
             key,
             replica,
             endpoint,
             router,
+            service: action_service,
         }
     }
 
@@ -840,7 +844,7 @@ async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
     );
     assert!(dispatcher.callers().is_empty());
 
-    action_service.reach_device_at(b.1.device_public_key, apart.verifying_key().to_bytes());
+    action_service.keyed_apart(b.1.device_public_key, apart.verifying_key().to_bytes());
     let remote = b_action_service.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
     assert_eq!(queried(&remote, &caller).await, Ok(()));
     assert_eq!(
@@ -977,4 +981,549 @@ async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     engine.close().await;
     visitor_endpoint.close().await;
     another_endpoint.close().await;
+}
+
+/// A request one device signed for another, hand-written: what a device sends
+/// when it names a device that is not the one it is connected to.
+fn addressed_to(
+    key: &SigningKey,
+    source: [u8; 32],
+    target: [u8; 32],
+    message: RemoteActionMessage,
+) -> SignedDeviceAction {
+    SignedDeviceAction::sign(
+        &DeviceAction {
+            workspace: WORKSPACE.into(),
+            request_id: uuid::Uuid::new_v4(),
+            source,
+            target,
+            message,
+            placement: None,
+            agent: None,
+        },
+        now_ns(),
+        key,
+    )
+    .unwrap()
+}
+
+/// A link carries the requests of the device at its other end: the service
+/// serving one end answers what the other end's device asks, and answers it as
+/// that device.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_carries_the_requests_of_the_device_at_its_other_end() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    // A serves its action service on the link it holds; B asks over the other end.
+    let (a_end, b_end) =
+        tilo_peer_state::actions::testing::duplex(Some(b.1.device_public_key), None);
+    let service = ActionService::new(a.0.clone(), dispatcher.clone());
+    service.hold(Replica::new(workspace(WORKSPACE, &a, &roster)));
+    service.serve_link(a_end);
+    let asking_service = ActionService::new(b.0.clone(), Arc::new(TestProvider::new()));
+    let remote = asking_service.remote_over(b_end, a.1.device_public_key, WORKSPACE);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+
+    assert_eq!(queried(&remote, &caller).await, Ok(()));
+    assert_eq!(
+        dispatcher.callers()[0].device_public_key(),
+        Some(&b.1.device_public_key),
+        "the device at the other end of the link asks as itself"
+    );
+    assert!(matches!(
+        invoked(&remote, &caller, InvocationId::new()).await,
+        Ok(ReceiptStatus::Completed { .. })
+    ));
+    assert_eq!(dispatcher.asked().len(), 1);
+}
+
+/// A request addressed to another device this service holds a link to is passed
+/// on there as its signer wrote it: the device it names runs it as the device
+/// that signed it, and its answer is the asker's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_addressed_to_another_device_is_passed_on() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let c = device(&root, 4);
+    let roster = vec![a.1.clone(), b.1.clone(), c.1.clone()];
+    // A answers the requests its devices address to it; C is a page that holds
+    // a link to A and answers what reaches it there.
+    let a_dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        a_dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let c_dispatcher = Arc::new(TestProvider::new());
+    let c_service = ActionService::new(c.0.clone(), c_dispatcher.clone());
+    c_service.hold(Replica::new(workspace(WORKSPACE, &c, &roster)));
+    let (host_end, page_end) =
+        tilo_peer_state::actions::testing::duplex(Some(c.1.device_public_key), None);
+    c_service.serve_link(page_end);
+    engine
+        .service
+        .reach_device_at(c.1.device_public_key, host_end);
+
+    // B asks A for C's actions; A passes the request on to C.
+    let (b_endpoint, b_service) = asking(&b.0).await;
+    let asked = addressed_to(
+        &b.0,
+        b.1.device_public_key,
+        c.1.device_public_key,
+        catalogue(),
+    );
+    let answer = send(&b_endpoint, engine.addr(), &asked)
+        .await
+        .expect("a request a device this one reaches is answered");
+    assert!(
+        matches!(
+            answer,
+            RemoteActionMessage::CatalogueResponse { result: Ok(_), .. }
+        ),
+        "{answer:?}"
+    );
+    assert_eq!(
+        c_dispatcher.callers()[0].device_public_key(),
+        Some(&b.1.device_public_key),
+        "the device it names runs the request as the device that signed it"
+    );
+    assert!(
+        a_dispatcher.callers().is_empty(),
+        "the device it was passed through answers nothing itself"
+    );
+
+    // A device no link reaches is refused at once, never left waiting.
+    let unfound = device(&root, 5).1.device_public_key;
+    let refused = send(
+        &b_endpoint,
+        engine.addr(),
+        &addressed_to(&b.0, b.1.device_public_key, unfound, catalogue()),
+    )
+    .await
+    .expect("a request no link reaches is refused");
+    let RemoteActionMessage::CatalogueResponse {
+        result: Err(error), ..
+    } = refused
+    else {
+        panic!("a request no link reaches is refused, got {refused:?}");
+    };
+    assert_eq!(
+        refusal(&error),
+        "the request names another device",
+        "{error:?}"
+    );
+    drop(b_service);
+    engine.close().await;
+    b_endpoint.close().await;
+}
+
+/// What `remote` answered an invocation of `request` as `caller`.
+async fn invoke_as(
+    remote: &RemoteDevice,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<ReceiptStatus, ActionCallError> {
+    let answer = tokio::time::timeout(PATIENCE, ActionProvider::invoke(remote, caller, request))
+        .await
+        .expect("the device answers")
+        .expect("the asker is not dropped");
+    answer.map(|receipt| receipt.status)
+}
+
+/// `request` signed by `cert`'s key, as the caller sends it.
+fn signed_request(request: &InvokeRequest, cert: &DeviceCert, key: &SigningKey) -> InvokeRequest {
+    let mut request = request.clone();
+    request.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(
+            WORKSPACE,
+            &request,
+            cert,
+            key,
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap(),
+    ));
+    request
+}
+
+/// An invocation runs as the key that signed it: a request carrying another
+/// key's invocation is refused, one whose invocation was changed after signing
+/// is refused, the same id for another request is a conflict, and an invocation
+/// signed under a revoked or expired certificate runs nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_invocation_runs_as_the_key_that_signed_it() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let (b_endpoint, b_service) = asking(&b.0).await;
+    let remote = b_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+
+    // A signed invocation runs as its signer, and what it signed travels with it.
+    let asked = signed_request(&invoke(InvocationId::new()), &b.1, &b.0);
+    let ran = match invoke_as(&remote, &caller, asked.clone()).await {
+        Ok(ReceiptStatus::Completed { .. }) => dispatcher.asked().pop().unwrap(),
+        other => panic!("a signed invocation runs, got {other:?}"),
+    };
+    assert_eq!(ran.signed, asked.signed);
+    assert_eq!(
+        dispatcher.callers()[0],
+        Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key)
+            .in_workspace(WORKSPACE.to_owned()),
+        "the caller is the key that signed"
+    );
+
+    // A request whose invocation was changed after signing is refused, for its target, its
+    // argument, or the workspace it is sent to.
+    let mut retargeted = signed_request(&invoke(InvocationId::new()), &b.1, &b.0);
+    retargeted.target.address.action = "delete".into();
+    let mut reargued = signed_request(&invoke(InvocationId::new()), &b.1, &b.0);
+    reargued.argument = InvokeArgument::Text("Other".into());
+    for changed in [retargeted, reargued] {
+        let refused = invoke_as(&remote, &caller, changed)
+            .await
+            .expect_err("a changed invocation is refused");
+        assert!(
+            refusal(&refused).starts_with("invocation_signature_invalid"),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(dispatcher.asked().len(), 1, "nothing changed ran");
+
+    // Signed by another member's key and sent by this device: its answer would reach a device
+    // that never asked.
+    let others = signed_request(&invoke(InvocationId::new()), &a.1, &a.0);
+    let refused = invoke_as(&remote, &caller, others)
+        .await
+        .expect_err("an invocation another key signed is refused");
+    assert!(refusal(&refused).contains("another key"), "{refused:?}");
+
+    // Signed under a certificate that has expired since.
+    let mut expired = b.1.clone();
+    expired.expires_at_ns = Some(2);
+    tilo_user_identity::sign_device_cert(&mut expired, &root).unwrap();
+    let late = signed_request(&invoke(InvocationId::new()), &expired, &b.0);
+    let refused = invoke_as(&remote, &caller, late)
+        .await
+        .expect_err("an invocation under an expired certificate is refused");
+    assert!(
+        refusal(&refused).starts_with("invocation_signature_invalid"),
+        "{refused:?}"
+    );
+
+    // One invocation id names one request: signed again for the same request it is a retry,
+    // for another action it is a conflict, as the invocation log answers one.
+    assert!(matches!(
+        invoke_as(&remote, &caller, asked.clone()).await,
+        Ok(ReceiptStatus::Completed { .. })
+    ));
+    let mut again = asked.clone();
+    again.target.address.action = "delete".into();
+    let again = signed_request(&again, &b.1, &b.0);
+    assert_eq!(
+        invoke_as(&remote, &caller, again)
+            .await
+            .expect_err("another request under the same id is refused"),
+        ActionCallError::InvocationConflict
+    );
+
+    // Cancelling names an invocation the signer started, and reaches the provider.
+    assert_eq!(
+        tokio::time::timeout(
+            PATIENCE,
+            ActionProvider::cancel(&remote, &caller, &asked.invocation),
+        )
+        .await
+        .expect("the device answers")
+        .expect("the asker is not dropped"),
+        Ok(())
+    );
+
+    engine.close().await;
+    b_endpoint.close().await;
+}
+
+/// A key the workspace does not admit runs nothing, and a key its person revoked
+/// is refused from the moment the revocation is known.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_the_workspace_no_longer_admits_runs_nothing() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let outsider = device(&root, 9);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    // B is revoked in the workspace before anything asks.
+    let mut peer = workspace(WORKSPACE, &a, &roster);
+    let mut entry = RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: b.1.device_public_key,
+        revoked_at_ns: 1,
+        reason: RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut entry, &root).unwrap();
+    peer.governance_mut()
+        .publish_governed_revocations(std::slice::from_ref(&entry), &a.0, tilo_clock::wall())
+        .unwrap();
+    let engine = Engine::serving(
+        Replica::new(peer),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+
+    // A certified device the workspace's roster does not name.
+    let (outsider_endpoint, outsider_service) = asking(&outsider.0).await;
+    let outsider_key = outsider_service.remote(&outsider_endpoint, &engine.addr(), WORKSPACE);
+    let outsider_caller = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        outsider.1.device_public_key,
+    );
+    assert!(
+        queried(&outsider_key, &outsider_caller).await.is_err(),
+        "a device the roster does not name asks nothing"
+    );
+
+    // A revoked device: its signature verifies, and the workspace refuses it.
+    let (b_endpoint, b_service) = asking(&b.0).await;
+    let revoked = b_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+    let refused = query_error(&revoked, &caller).await;
+    assert!(refusal(&refused).contains("revoked"), "{refused:?}");
+    assert!(dispatcher.callers().is_empty(), "nothing ran");
+
+    engine.close().await;
+    outsider_endpoint.close().await;
+    b_endpoint.close().await;
+}
+
+/// What `remote` refused a catalogue query with, as `caller`.
+async fn query_error(remote: &RemoteDevice, caller: &Caller) -> ActionCallError {
+    tokio::time::timeout(
+        PATIENCE,
+        ActionProvider::query(remote, caller, CatalogueQuery::default()),
+    )
+    .await
+    .expect("the device answers")
+    .expect("the asker is not dropped")
+    .expect_err("the device refuses")
+}
+
+/// A request the provider abandons is refused with why, never left for its asker
+/// to wait on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_the_provider_abandons_is_refused() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    // A provider that drops the completer of every answer it is asked for.
+    let silent = Arc::new(TestProvider::new().answering(|_, _| {
+        tilo_actions::remote::pending::<
+            Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+        >()
+        .1
+    }));
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        silent,
+        Bounds::default(),
+    )
+    .await;
+    let (b_endpoint, b_service) = asking(&b.0).await;
+    let remote = b_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+    let refused = invoked(&remote, &caller, InvocationId::new())
+        .await
+        .expect_err("an abandoned request is refused");
+    assert!(
+        matches!(refused, ActionCallError::Unavailable { .. }),
+        "{refused:?}"
+    );
+    engine.close().await;
+    b_endpoint.close().await;
+}
+/// The host's entry, and nothing else, as a device with no certificate from it may ask: a
+/// provider that answers `workspace.entry` and refuses every other action.
+#[derive(Clone)]
+struct EntryOnly;
+
+impl ActionProvider for EntryOnly {
+    fn serves(&self, provider: &str) -> bool {
+        provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
+    }
+
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>>
+    {
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage::from_rows(
+            "0".into(),
+            Vec::new(),
+            &query,
+        )))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+    > {
+        if request.target.address.action != tilo_server_protocol::workspaces::ENTER_ENTRY {
+            // What a host without a certificate answers: nothing reached here is served, however
+            // it names one.
+            return tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownAction));
+        }
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({"entered": "admitted"})),
+                    resources: Vec::new(),
+                },
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+/// The invocation a device with no certificate asks `action` of `resource` under, in the scope a
+/// host admits it in.
+fn scoped(invocation: InvocationId, resource: &str, action: &str) -> InvokeRequest {
+    InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER.into(),
+            address: ActionAddress::new(resource.to_owned(), action.to_owned()),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_with_no_certificate_reaches_only_the_entry() {
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let host = device(&root, 6);
+    let asker = device(&root, 7);
+    let host_endpoint = localhost_endpoint(&host.0).await;
+    let service = ActionService::new(
+        host.0.clone(),
+        Arc::new(tilo_peer_state::actions::NoActions),
+    );
+    service.admit_uncertified(
+        tilo_server_protocol::workspaces::ENTRY_SCOPE,
+        Arc::new(EntryOnly),
+    );
+    let router = Router::builder(host_endpoint.clone())
+        .accept(ACTIONS_ALPN, service)
+        .spawn();
+    let host_addr = addr(&host_endpoint);
+    let asker_endpoint = localhost_endpoint(&asker.0).await;
+    let host_device = host.1.device_public_key;
+    let source = asker.1.device_public_key;
+    let signed = |invoke: InvokeRequest| {
+        SignedDeviceAction::sign(
+            &DeviceAction {
+                workspace: tilo_server_protocol::workspaces::ENTRY_SCOPE.to_owned(),
+                request_id: uuid::Uuid::new_v4(),
+                source,
+                target: host_device,
+                message: RemoteActionMessage::Invoke(invoke),
+                placement: None,
+                agent: None,
+            },
+            now_ns(),
+            &asker.0,
+        )
+        .unwrap()
+    };
+
+    // The entry is answered.
+    let entry = signed(scoped(
+        InvocationId::new(),
+        tilo_server_protocol::workspaces::HOST_WORKSPACES_RESOURCE,
+        tilo_server_protocol::workspaces::ENTER_ENTRY,
+    ));
+    let answer = send(&asker_endpoint, host_addr.clone(), &entry).await;
+    assert!(
+        matches!(
+            answer,
+            Some(RemoteActionMessage::Receipt(
+                tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Completed { .. },
+                    ..
+                }
+            ))
+        ),
+        "the entry is answered: {answer:?}"
+    );
+
+    // Nothing else is reachable in that scope, however it is named.
+    let other = signed(scoped(
+        InvocationId::new(),
+        tilo_server_protocol::workspaces::HOST_WORKSPACES_RESOURCE,
+        tilo_server_protocol::workspaces::ADMINISTER_WORKSPACES,
+    ));
+    let answer = send(&asker_endpoint, host_addr, &other).await;
+    assert!(
+        matches!(
+            answer,
+            Some(RemoteActionMessage::Receipt(
+                tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Rejected {
+                        error: ActionCallError::UnknownAction
+                    },
+                    ..
+                }
+            ))
+        ),
+        "a device with no certificate reaches no other action: {answer:?}"
+    );
+    router.shutdown().await.unwrap();
+    host_endpoint.close().await;
+    asker_endpoint.close().await;
 }

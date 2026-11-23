@@ -1,9 +1,11 @@
-//! Direct sync of one workspace replica between two of its devices over an
-//! iroh connection, with no workspace host in between.
+//! Direct sync of one workspace between two of its devices, with no
+//! workspace host in between, over whatever carries the link between them: a
+//! native device's iroh connection ([`iroh::endpoint::Connection`]) or a
+//! page's WebTransport session ([`tilo_server_client::link::Link`], both
+//! [`Transport`]).
 //!
-//! The connection's endpoint id is the remote device key, so the QUIC
-//! handshake already proves who sent every frame: a device that is not a
-//! certified, unrevoked device of the replica's roster is refused before a
+//! The transport proves the remote device key, so a device that is not a
+//! certified, unrevoked device of the workspace's members is refused before a
 //! frame is read, and everything it sends is admitted as its own live
 //! traffic through [`StatePeer::receive_from`], the same admission a workspace
 //! host's relayed delta takes.
@@ -19,34 +21,53 @@
 //! A frame can come ahead of what it builds on, or what it builds on can be
 //! lost: a workspace's changes reach a member both as the host forwards
 //! another member's frame and as the host publishes its own governance. A
-//! device whose replica then holds a change it cannot apply asks the device
+//! device that then has a change it cannot apply asks the device
 //! that sent it, over the same link, for the state that device holds
 //! ([`NeighbourMsg::SyncReq`]), and that device answers on that link alone
 //! with what a link starts with ([`DirectSync::catch_up`]): its certificate
-//! and, from a holder of the workspace of its owning person, its governance and
+//! and, from a device keeping the workspace for its person, its governance and
 //! a checkpoint of every record. What the waiting change builds on comes with
 //! it, wherever the change came from.
 //!
+//! A device that takes the workspace's records only as it opens them — a page,
+//! a browser environment — says so when it names the workspace
+//! ([`DirectSync::when_opened`]): it is replayed the records every device is
+//! sent and each chain's newest part, and the history of any other record once
+//! it opens it ([`DirectSync::open_record`]). A link from such a device carries
+//! only the frames such a device sends.
+//!
 //! A host of several workspaces answers them all on [`DIRECT_ALPN`] through
 //! one [`Serving`], which dispatches each connection to the workspace its
-//! first frame names.
+//! first frame names and admits the device at its other end before the link
+//! listens ([`Serving::admitting`]).
 //!
 //! The device a member dials answers each of the member's own writes it took
 //! in, or refused for good, on a unidirectional stream of its own opened after
 //! its frames' ([`Answered`]); the member lets an answered write go from its
 //! ownership, as it does what a server host answers.
 
-use crate::actions::now_ns;
-use crate::frames::{MAX_FRAME_BYTES, OUTGOING, REFUSED, bump, from_device};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::frames::Budget;
+use crate::frames::{
+    Cursor, ENDINGS, MAX_FRAME_BYTES, OUTGOING, REFUSED, advance, author_of, bump,
+    cursors as cursors_of, from_device,
+};
 use crate::join::WorkspaceId;
+use crate::peer_handle;
 pub use crate::replica::Replica;
-use crate::store::{self, Budget, Cursor, Frame, Store};
+use crate::retained::Frame;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::store::{Store, StoreError};
+use crate::transport::{StreamRecv, StreamSend, Transport};
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 use collab_types::signer::DeviceSigner;
-use iroh::endpoint::{Connection, RecvStream, SendStream};
+#[cfg(not(target_arch = "wasm32"))]
+use iroh::endpoint::Connection;
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::protocol::{AcceptError, ProtocolHandler};
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::{Endpoint, EndpointAddr};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::refusal::Refusal;
@@ -55,7 +76,7 @@ use web_time::SystemTime;
 
 /// ALPN of a direct replica link between two devices of one workspace, on which
 /// the dialled device answers the dialling one's writes ([`Answered`]).
-pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/3";
+pub use tilo_server_protocol::transport::DIRECT_ALPN;
 
 /// What the dialled device made of one of the dialling device's own writes,
 /// named by the hash of the write's frame as the writer keeps it held.
@@ -81,15 +102,24 @@ pub enum Kept {
 
 /// One frame of a direct link's control stream.
 ///
-/// A dialling device names its workspace first; the other device answers that
+/// A dialling device names its workspace first, and whether it takes the
+/// workspace's records only as it opens them; the other device answers that
 /// it is listening, then the dialling one asks for the retained history to
 /// continue from its own cursors, which the other device answers with the
-/// frames its store holds. The workspace's live messages travel on their own
-/// streams, one per direction.
+/// frames its store holds. A device that opens a record asks for it by its
+/// channel. The workspace's live messages travel on their own streams, one
+/// per direction.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum LinkFrame {
-    /// The workspace the dialling device wants, named before anything else.
-    Workspace(WorkspaceId),
+    /// The workspace the dialling device wants, named before anything else,
+    /// and whether it takes the workspace's records only once it opens them.
+    Workspace {
+        /// The workspace the dialling device wants.
+        id: WorkspaceId,
+        /// Whether the dialling device takes the records every device is not
+        /// replayed only once it opens them, as a page does.
+        opens: bool,
+    },
     /// The retained history the dialling device asks for, from its cursors.
     Cursors(Vec<Cursor>),
     /// Retained history after the asker's cursors, and whether more is left.
@@ -109,6 +139,16 @@ enum LinkFrame {
     /// [`Self::Workspace`]: the dialled device answers what its store keeps
     /// and sends nothing live ([`DirectSync::take_store`]).
     Take(WorkspaceId),
+    /// One record the dialling device opens, by its channel, from its
+    /// cursors: its history follows, and every write of it from then on.
+    Open {
+        /// The channel of the record, as [`neighbour_wire::app_document_group`]
+        /// names it; a chain's head (`neighbour_wire::chain_head`) names
+        /// whichever part is the chain's newest.
+        channel: [u8; 32],
+        /// Where the dialling device stands in what it was sent of the record.
+        cursors: Vec<Cursor>,
+    },
 }
 
 /// Ask the other device's store for the frames after `cursors`, round by round
@@ -128,7 +168,7 @@ async fn fetch_store(
             .iter()
             .map(|(_, message)| message.clone())
             .collect::<Vec<_>>();
-        store::advance(&mut cursors, &messages);
+        advance(&mut cursors, &messages);
         fetched.extend(frames);
         if !more {
             return Ok(fetched);
@@ -157,6 +197,7 @@ fn certified(peer: &StatePeer, device: [u8; 32]) -> Option<tilo_user_identity::D
 
 /// Where `store` stands on `workspace`: a cursor per author's line, at the
 /// latest frame it keeps there.
+#[cfg(not(target_arch = "wasm32"))]
 fn standing(store: &Store, workspace: WorkspaceId) -> Vec<Cursor> {
     store
         .stands(workspace)
@@ -229,6 +270,263 @@ impl LinkFrame {
     }
 }
 
+/// What one link may do beyond the workspace's own rules, as the host admits
+/// the device at its other end ([`Serving::admitting`]).
+///
+/// Nothing here wards a device off the workspace's admission: every frame a
+/// link brings is still admitted as its author's. A scope narrows what a link
+/// is sent and what it may pass on, for a device the workspace lets in but for
+/// less than a member device.
+/// A scope that names nothing admits nothing beyond the workspace's own
+/// admission: a host says what a link reaches, and says it fails closed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinkScope {
+    /// The one record channel the link's device reaches, when it reaches no
+    /// more: it is sent frames of that record and frames of no record, and
+    /// nothing of any other, and an open of another record is answered with
+    /// nothing.
+    pub reads: Option<[u8; 32]>,
+    /// Whether the link carries only frames its own device authored: a device
+    /// that may not pass another device's frame on, nor name another as the
+    /// source of one. Every link from a device that does not keep the
+    /// workspace carries its own device's frames alone, whatever the hook
+    /// says.
+    pub own_frames_only: bool,
+    /// Whether the link's device is admitted for the workspace's channel keys:
+    /// it joins each channel's group and may publish the commits that settle
+    /// it. A link without it may ask a channel to admit it
+    /// ([`NeighbourMsg::MlsAccessRequest`]) but may not publish a group's
+    /// commit, so a visitor's many links cannot churn the workspace's channels.
+    pub key_access: bool,
+}
+
+impl LinkScope {
+    /// The scope of a device a host admits to everything its membership
+    /// allows: every record, its own frames, and the workspace's channel keys.
+    /// A host with no admission hook admits its members' devices so.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admitting() -> Self {
+        Self {
+            reads: None,
+            own_frames_only: false,
+            key_access: true,
+        }
+    }
+}
+
+/// What a link may send and be sent, beyond the workspace's admission: a
+/// scope for what it is sent, and the checks on what it may send.
+#[derive(Clone, Copy, Debug)]
+struct LinkAdmit {
+    /// The scope of what the link is sent ([`LinkScope::reads`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    scope: LinkScope,
+    /// Whether the link carries only frames its own device authored: the
+    /// scope's own flag, or a device that does not keep the workspace.
+    own_frames_only: bool,
+    /// Whether the link may carry only the frames a device takes the
+    /// workspace's records with, and nothing a member device alone may send:
+    /// a link from a device that said it takes records only as it opens them.
+    records_only: bool,
+    /// Whether the link's device may publish a channel's commits
+    /// ([`LinkScope::key_access`]); asking a channel to admit it is allowed
+    /// either way.
+    key_access: bool,
+}
+
+impl LinkAdmit {
+    /// What a link from `remote` is limited to: the scope the host admitted it
+    /// with, and, for a device that does not keep the workspace, its own
+    /// frames alone.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn of(link: &DirectSync, remote: [u8; 32], scope: LinkScope, records_only: bool) -> Self {
+        Self {
+            scope,
+            own_frames_only: scope.own_frames_only || !link.keeps_workspace(remote),
+            records_only,
+            key_access: scope.key_access,
+        }
+    }
+
+    /// What the side that dialled holds its link to: nothing beyond the
+    /// workspace's admission, since it dialled the device it meant to reach.
+    fn dialling() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            scope: LinkScope::admitting(),
+            own_frames_only: false,
+            records_only: false,
+            key_access: true,
+        }
+    }
+
+    /// Whether a frame from the link's device may be admitted: its own
+    /// authorship ([`Self::own_frames_only`]), the frames a device that does
+    /// not keep the workspace may send at all ([`Self::records_only`]), and a
+    /// channel's commit only from a device admitted for its keys
+    /// ([`Self::key_access`]).
+    fn permits(&self, own: [u8; 32], remote: [u8; 32], authored: &Authored) -> bool {
+        if self.records_only && !records_frame(&authored.message) {
+            return false;
+        }
+        if !self.key_access && matches!(authored.message, NeighbourMsg::MlsGovernance { .. }) {
+            return false;
+        }
+        !self.own_frames_only || by_remote(&authored.message, authored.from, remote, own)
+    }
+}
+
+/// Whether `message` is one a device that takes the workspace's records only
+/// as it opens them sends: a record's write, a channel's governance, the
+/// workspace's own state, its identity, and what it asks for and answers about
+/// a record's content. Anything a member device alone sends — a shared
+/// screen's frames, remote input, a permission grant — is not.
+fn records_frame(message: &NeighbourMsg) -> bool {
+    matches!(
+        message,
+        NeighbourMsg::AppDocument { .. }
+            | NeighbourMsg::SyncResp { .. }
+            | NeighbourMsg::IdentityHello { .. }
+            | NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::DocumentContentWant { .. }
+            | NeighbourMsg::DocumentContentPiece { .. }
+            | NeighbourMsg::DocumentContentLacks { .. }
+            | NeighbourMsg::DocumentContentRefused { .. }
+    )
+}
+
+/// Whether `message`, which the link's stream says `from` wrote, is the frame
+/// of `remote`, the device the transport proved, and names no other device in
+/// the places a frame carries one: a write's signed author, a record's
+/// requester and responder, a channel frame's signer.
+fn by_remote(message: &NeighbourMsg, from: [u8; 32], remote: [u8; 32], own: [u8; 32]) -> bool {
+    if from != remote {
+        return false;
+    }
+    match message {
+        NeighbourMsg::AppDocument { peer, envelope, .. } => {
+            envelope.author.as_bytes() == &remote && *peer == peer_handle(&remote)
+        }
+        NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == remote,
+        NeighbourMsg::DocumentContentWant { requester, .. } => *requester == peer_handle(&remote),
+        NeighbourMsg::DocumentContentPiece {
+            responder,
+            requester,
+            ..
+        }
+        | NeighbourMsg::DocumentContentLacks {
+            responder,
+            requester,
+            ..
+        }
+        | NeighbourMsg::DocumentContentRefused {
+            responder,
+            requester,
+            ..
+        } => *responder == peer_handle(&remote) && *requester == peer_handle(&own),
+        NeighbourMsg::MlsGovernance { frame, .. } => frame.signed_by.as_bytes() == &remote,
+        NeighbourMsg::MlsAccessRequest { request, .. } => request.device.as_bytes() == &remote,
+        _ => true,
+    }
+}
+
+/// The records a link that takes them only as it opens them is replayed: every
+/// record every device is sent, and each chain's newest part. Read once per
+/// answer, from what this device holds ([`neighbour_wire::document_sync`]).
+#[cfg(not(target_arch = "wasm32"))]
+struct EagerRecords {
+    /// The newest part each chain this device holds has, by its app and base:
+    /// its number, and its channel.
+    newest: BTreeMap<(String, String), (u64, [u8; 32])>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl EagerRecords {
+    /// What `link` is replayed of the records its device does not open.
+    fn of(link: &DirectSync) -> Self {
+        let mut newest = BTreeMap::new();
+        for (app, record) in link.listing() {
+            let neighbour_wire::DocumentSync::Part { base, index } =
+                neighbour_wire::document_sync(&record)
+            else {
+                continue;
+            };
+            let channel = neighbour_wire::app_document_group(&app, &record);
+            let entry = newest
+                .entry((app, base.to_owned()))
+                .or_insert((index, channel));
+            if index >= entry.0 {
+                *entry = (index, channel);
+            }
+        }
+        Self { newest }
+    }
+
+    /// The channels a link replayed these records follows: each chain's newest
+    /// part, and the chain it belongs to, so a write to the part after reaches
+    /// it ([`opened_admits`]).
+    fn followed(&self) -> Vec<[u8; 32]> {
+        let mut channels = Vec::with_capacity(self.newest.len().saturating_mul(2));
+        for ((app, base), (_, part)) in &self.newest {
+            channels.push(*part);
+            channels.push(neighbour_wire::app_document_group(
+                app,
+                &neighbour_wire::chain_head(base),
+            ));
+        }
+        channels
+    }
+
+    /// Whether `message`, a frame of this device's history, is one the link is
+    /// replayed: a record every device is sent, or a chain's newest part.
+    /// Governance, identity and asks carry no record and are replayed.
+    fn admits(&self, message: &NeighbourMsg) -> bool {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            ..
+        } = message
+        else {
+            return true;
+        };
+        match neighbour_wire::document_sync(document_id) {
+            neighbour_wire::DocumentSync::Eager => true,
+            neighbour_wire::DocumentSync::Part { base, index } => self
+                .newest
+                .get(&(app_id.clone(), base.to_owned()))
+                .is_none_or(|(newest, _)| index >= *newest),
+            neighbour_wire::DocumentSync::OnDemand
+            | neighbour_wire::DocumentSync::Chunk { .. }
+            | neighbour_wire::DocumentSync::ChainHead { .. } => false,
+        }
+    }
+}
+/// The record a frame belongs to, as a link's device counts what it reaches:
+/// a record's write, its channel's governance. `None` for a frame of no record
+/// — the workspace's own document, an identity, an ask, and content, which is
+/// answered to the device that asked for it and reaches no other — which every
+/// link of the workspace carries.
+fn record_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
+    match message {
+        NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            ..
+        } => Some(neighbour_wire::app_document_group(app_id, document_id)),
+        NeighbourMsg::MlsGovernance { workspace, .. }
+        | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
+            match neighbour_wire::KeyScope::parse(workspace)? {
+                neighbour_wire::KeyScope::Document { app, document, .. } => {
+                    Some(neighbour_wire::app_document_group(&app, &document))
+                }
+                neighbour_wire::KeyScope::Workspace(_) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The message an authored frame `bytes` holds, with the device that wrote it, read as
 /// [`NeighbourMsg::decode`] reads a message.
 fn decode_authored(bytes: &[u8]) -> Result<([u8; 32], NeighbourMsg), postcard::Error> {
@@ -284,7 +582,7 @@ pub struct Reader {
     cursors: Vec<Cursor>,
     /// The frames the last catch-up handed, whose copy still in the channel
     /// is skipped.
-    caught: std::collections::BTreeSet<(crate::store::Lineage, u64)>,
+    caught: std::collections::BTreeSet<(crate::retained::Lineage, u64)>,
     pending: std::collections::VecDeque<Heard>,
     /// Whether this reader fell behind and has not caught up yet.
     behind: bool,
@@ -307,7 +605,7 @@ impl Reader {
                         if self.caught.remove(&(frame.lineage, frame.seq)) {
                             continue;
                         }
-                        store::advance(&mut self.cursors, std::slice::from_ref(&heard.message));
+                        advance(&mut self.cursors, std::slice::from_ref(&heard.message));
                     }
                     return Some(heard);
                 }
@@ -337,11 +635,11 @@ impl Reader {
         self.behind = false;
         self.caught.clear();
         for message in missed {
-            let Some(author) = store::author_of(&message) else {
+            let Some(author) = author_of(&message) else {
                 continue;
             };
             let identity = Frame::of(&message).map(|frame| (frame.lineage, frame.seq));
-            store::advance(&mut self.cursors, std::slice::from_ref(&message));
+            advance(&mut self.cursors, std::slice::from_ref(&message));
             if let Ok(identity) = identity {
                 self.caught.insert(identity);
             }
@@ -378,6 +676,7 @@ enum OnlyHere {
 
 /// Two devices of one workspace in one process, paired from the moment this
 /// was made ([`DirectSync::pairing`]): their link, ready to sync.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Pairing {
     member: DirectSync,
     holder: DirectSync,
@@ -385,6 +684,7 @@ pub struct Pairing {
     live_theirs: broadcast::Receiver<Authored>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Pairing {
     /// Sync the two devices until the process ends ([`DirectSync::pair`]).
     ///
@@ -432,10 +732,13 @@ impl Pairing {
 /// The streams of a dialled link after the other device admitted this one:
 /// what runs it, once its dialer has answered.
 pub struct Dialed {
-    connection: Connection,
+    transport: Arc<dyn Transport>,
     /// The device dialled: whose the frames are that the other end's history names no author
     /// for.
     device: [u8; 32],
+    /// Whether this device takes the workspace's records only as it opens
+    /// them ([`DirectSync::when_opened`]).
+    opens: bool,
     control: Control,
     /// Subscribed when the dial was answered: what this device sends from
     /// then on is the link's to carry, never lost between the dial and the
@@ -452,10 +755,17 @@ impl Dialed {
     /// the reason it gave ([`DirectSync::end`]).
     pub async fn run(self, link: &DirectSync) -> Result<(), Refusal> {
         let ran = link
-            .link(&self.connection, Some(self.device), self.control, self.live)
+            .link(
+                self.transport.as_ref(),
+                Some(self.device),
+                self.control,
+                self.live,
+                self.opens,
+                LinkAdmit::dialling(),
+            )
             .await
             .map_err(Refusal::Other);
-        refusal(&self.connection).map_or(ran, Err)
+        self.transport.close_reason().map_or(ran, Err)
     }
 }
 
@@ -463,7 +773,7 @@ impl Dialed {
 /// what writes them on the stream it opens for them: after its frames', so the
 /// dialling device takes the two in that order.
 async fn answering(
-    connection: &Connection,
+    transport: &dyn Transport,
     dialing: bool,
 ) -> Result<
     (
@@ -476,16 +786,13 @@ async fn answering(
     if dialing {
         return Ok((None, Box::pin(answer_all(None, answers))));
     }
-    let stream = connection
-        .open_uni()
-        .await
-        .map_err(|error| error.to_string())?;
+    let stream = transport.open_uni().await?;
     Ok((Some(answering), Box::pin(answer_all(Some(stream), answers))))
 }
 
 /// Write each of `answers` on `stream` as it comes; on no stream, wait for the link to end.
 async fn answer_all(
-    stream: Option<SendStream>,
+    stream: Option<StreamSend>,
     mut answers: tokio::sync::mpsc::UnboundedReceiver<Answered>,
 ) -> Result<(), String> {
     let Some(mut stream) = stream else {
@@ -498,22 +805,14 @@ async fn answer_all(
     Ok(())
 }
 
-/// Why the device on the other end of `connection` refused it, when it did.
-fn refusal(connection: &Connection) -> Option<Refusal> {
-    match connection.close_reason()? {
-        iroh::endpoint::ConnectionError::ApplicationClosed(close)
-            if close.error_code == REFUSED.into() =>
-        {
-            Some(match postcard::from_bytes(&close.reason) {
-                Ok(refusal) => refusal,
-                Err(error) => {
-                    tracing::warn!(%error, "a device's refusal did not decode; kept as its text");
-                    Refusal::Other(String::from_utf8_lossy(&close.reason).into_owned())
-                }
-            })
-        }
-        _ => None,
-    }
+/// The wall clock in nanoseconds since the Unix epoch: when a device's
+/// certificate expires, and a fresh value for a state request.
+fn now_ns() -> u64 {
+    tilo_clock::wall()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| u64::try_from(since.as_nanos()).ok())
+        .unwrap_or(u64::MAX)
 }
 
 #[derive(Clone)]
@@ -530,7 +829,9 @@ struct Inner {
     /// This device's ownership of its key, which signs what the link writes.
     signer: Arc<dyn DeviceSigner>,
     /// The sealed history this device keeps for the workspace, when it is a
-    /// store device.
+    /// store device. A page keeps none: it takes the records it opens from the
+    /// device it dialled ([`OtherStore::Dialled`]).
+    #[cfg(not(target_arch = "wasm32"))]
     store: Option<Arc<Store>>,
     outgoing: broadcast::Sender<Authored>,
     heard: broadcast::Sender<Heard>,
@@ -546,6 +847,13 @@ struct Inner {
     catch_up_written: watch::Sender<bool>,
     /// Why the workspace ended for good here, once it did ([`DirectSync::end`]).
     ended: watch::Sender<Option<Refusal>>,
+    /// The devices whose links this device ended, and why: a device that lost
+    /// its access is sent nothing and refused a new link until a host admits
+    /// it again ([`DirectSync::end_link`]).
+    ended_links: Arc<RwLock<BTreeMap<[u8; 32], Refusal>>>,
+    /// Told each link whose device's links this device ends, while it runs
+    /// ([`DirectSync::end_link`]).
+    endings: broadcast::Sender<([u8; 32], Refusal)>,
     /// Asks the link this device dialled to read the other device's retained
     /// history again ([`DirectSync::ask_replay`]).
     replay: Arc<tokio::sync::Notify>,
@@ -558,6 +866,13 @@ struct Inner {
     /// The other device's store, for a device that keeps none: where a reader
     /// that fell behind takes the frames it missed ([`Reader`]).
     other_store: Arc<std::sync::Mutex<Option<OtherStore>>>,
+    /// Whether this device takes the workspace's records only as it opens
+    /// them, and says so to the device it dials ([`DirectSync::when_opened`]):
+    /// a page reaches its workspace that way.
+    opens: bool,
+    /// The records this device asks the one it dialled to open
+    /// ([`DirectSync::open_record`]), while the link runs.
+    opening: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<RecordAsk>>>>,
     /// Told each record frame this device takes in and keeps, and each it
     /// carries, with its author: a session following the same record reads it
     /// from here ([`DirectSync::with_record_sink`]).
@@ -583,6 +898,7 @@ type Geneses =
 #[derive(Clone)]
 enum OtherStore {
     /// The device it pairs with in this process ([`DirectSync::pair`]).
+    #[cfg(not(target_arch = "wasm32"))]
     Paired(DirectSync),
     /// The device it dialled, asked over the link's control stream.
     Dialled(tokio::sync::mpsc::UnboundedSender<HistoryAsk>),
@@ -594,6 +910,14 @@ type HistoryAsk = (
     Vec<Cursor>,
     tokio::sync::oneshot::Sender<Result<Vec<NeighbourMsg>, String>>,
 );
+
+/// A round of frames each with its author, and whether more are left: what a
+/// device that opens a record is answered.
+#[cfg(not(target_arch = "wasm32"))]
+type Round = (Vec<([u8; 32], NeighbourMsg)>, bool);
+
+/// An ask for one record's frames, by its channel, and where the answer goes.
+type RecordAsk = ([u8; 32], tokio::sync::oneshot::Sender<Result<(), String>>);
 
 impl std::fmt::Debug for DirectSync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -622,6 +946,7 @@ impl DirectSync {
             replica,
             admission: None,
             signer: Arc::new(signer),
+            #[cfg(not(target_arch = "wasm32"))]
             store: None,
             outgoing: broadcast::channel(OUTGOING).0,
             heard: broadcast::channel(OUTGOING).0,
@@ -630,10 +955,14 @@ impl DirectSync {
             caught_up: watch::channel(false).0,
             catch_up_written: watch::channel(false).0,
             ended: watch::channel(None).0,
+            ended_links: Arc::default(),
+            endings: broadcast::channel(ENDINGS).0,
             replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
             geneses: Geneses::default(),
             other_store: Arc::default(),
+            opens: false,
+            opening: Arc::default(),
             record_sink: None,
             #[cfg(feature = "test-support")]
             lost_answers: Arc::default(),
@@ -646,6 +975,7 @@ impl DirectSync {
             replica: self.0.replica.clone(),
             admission: self.0.admission.clone(),
             signer: Arc::clone(&self.0.signer),
+            #[cfg(not(target_arch = "wasm32"))]
             store: self.0.store.clone(),
             outgoing: self.0.outgoing.clone(),
             heard: self.0.heard.clone(),
@@ -654,10 +984,14 @@ impl DirectSync {
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
             ended: self.0.ended.clone(),
+            ended_links: Arc::clone(&self.0.ended_links),
+            endings: self.0.endings.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
+            opens: self.0.opens,
+            opening: Arc::clone(&self.0.opening),
             record_sink: self.0.record_sink.clone(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::clone(&self.0.lost_answers),
@@ -668,11 +1002,59 @@ impl DirectSync {
     /// and hand them to the devices that ask: what a store device does with
     /// every link. Call it before cloning the link to its handlers.
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_store(&self, store: Arc<Store>) -> Self {
         Self(Arc::new(Inner {
             store: Some(store),
             ..self.copied()
         }))
+    }
+
+    /// Take the workspace's records only as this device opens them, and say
+    /// so to the device it dials: it is replayed the records every device is
+    /// sent and each chain's newest part, and every other record's history
+    /// only once this device opens it ([`Self::open_record`]). What a page
+    /// keeps no store to hold the workspace's records with does.
+    #[must_use]
+    pub fn when_opened(&self) -> Self {
+        Self(Arc::new(Inner {
+            opens: true,
+            ..self.copied()
+        }))
+    }
+
+    /// Ask the device this one dialled for the record on `channel`: what its
+    /// store keeps of the record reaches this device, and every write of it
+    /// from then on. A chain's head (`neighbour_wire::chain_head`) names
+    /// whichever part is the chain's newest.
+    ///
+    /// # Errors
+    ///
+    /// This device dialled no link, or the link ended before the record came.
+    pub async fn open_record(&self, channel: [u8; 32]) -> Result<(), String> {
+        let opening = self.0.opening.lock_recover().clone();
+        let Some(opening) = opening else {
+            return Err("this device dialled no link to open a record on".into());
+        };
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        opening
+            .send((channel, answer))
+            .map_err(|_| "the link ended".to_owned())?;
+        answered.await.map_err(|_| "the link ended".to_owned())?
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Whether the workspace names `device` among the devices keeping it: one
+    /// that holds its records and may pass another device's frames on, rather
+    /// than the device of a page or an environment that reaches one record.
+    fn keeps_workspace(&self, device: [u8; 32]) -> bool {
+        self.0
+            .replica
+            .lock()
+            .governance()
+            .keeping_devices()
+            .iter()
+            .any(|address| address.host.device_public_key == device)
     }
 
     /// Tell `sink` each record frame this link takes in and keeps, and each it
@@ -729,6 +1111,7 @@ impl DirectSync {
     /// The store this device keeps the workspace's history at, when it is a
     /// store device.
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn store(&self) -> Option<&Arc<Store>> {
         self.0.store.as_ref()
     }
@@ -742,23 +1125,25 @@ impl DirectSync {
     /// `publication_mut().publish_incremental`, keep the message it returns at
     /// this device's store, send it to every open link, and return it.
     ///
+    /// A write that also commits the workspace's own document — a checkpoint's
+    /// coverage, say — sends that change on the same links as the write did:
+    /// the workspace's changes are eager, and a device holding a frame until
+    /// its coverage comes would still wait for it if the coverage waited for
+    /// an ask.
+    ///
     /// # Errors
     /// `write` refused or its frame could not be kept.
     pub fn publish(
         &self,
         write: impl FnOnce(&mut StatePeer) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        // A write that also commits the workspace's own document — a
-        // checkpoint's coverage, say — sends that change on the same links as
-        // the write did: the workspace's changes are eager, and a device
-        // holding the write until its coverage comes would still wait for it
-        // if the coverage waited for an ask.
         let (message, workspace) = {
             let mut peer = self.0.replica.lock();
             let heads = peer.workspace_heads().unwrap_or_default();
             let message = write(&mut peer)?;
             (message, peer.workspace_changes_since(&heads))
         };
+        #[cfg(not(target_arch = "wasm32"))]
         self.keep(&message, false)
             .map_err(|error| error.to_string())?;
         self.0.changed.send_modify(bump);
@@ -850,6 +1235,7 @@ impl DirectSync {
     /// other device's, every frame not this device's own, as the other device
     /// sent them all here.
     async fn missed(&self, cursors: &[Cursor]) -> Result<Vec<NeighbourMsg>, String> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &self.0.store {
             let workspace = self.workspace()?;
             let mut cursors = cursors.to_vec();
@@ -858,7 +1244,7 @@ impl DirectSync {
                 let replay = store
                     .replay(workspace, &cursors, Budget::default())
                     .map_err(|error| error.to_string())?;
-                store::advance(&mut cursors, &replay.frames);
+                advance(&mut cursors, &replay.frames);
                 missed.extend(replay.frames.into_iter().filter(|message| {
                     Frame::of(message).is_ok_and(|frame| store.taken_from_link(workspace, &frame))
                 }));
@@ -870,12 +1256,13 @@ impl DirectSync {
         let other = self.0.other_store.lock_recover().clone();
         let frames = match other {
             None => return Err("neither end of the link keeps the workspace's history".into()),
+            #[cfg(not(target_arch = "wasm32"))]
             Some(OtherStore::Paired(host)) => {
                 let mut cursors = cursors.to_vec();
                 let mut frames = Vec::new();
                 loop {
                     let (round, more) = host.replay(&cursors)?;
-                    store::advance(&mut cursors, &round);
+                    advance(&mut cursors, &round);
                     frames.extend(round);
                     if !more {
                         break frames;
@@ -892,7 +1279,7 @@ impl DirectSync {
         let own = self.device();
         Ok(frames
             .into_iter()
-            .filter(|message| store::author_of(message).is_some_and(|author| author != own))
+            .filter(|message| author_of(message).is_some_and(|author| author != own))
             .collect())
     }
 
@@ -932,6 +1319,7 @@ impl DirectSync {
     ///
     /// The frame could not be kept.
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
         self.keep(&message, false)
             .map_err(|error| error.to_string())?;
         self.outgoing(Authored {
@@ -953,6 +1341,7 @@ impl DirectSync {
     ///
     /// The store could not keep it; nothing went out.
     pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> Result<bool, String> {
+        #[cfg(not(target_arch = "wasm32"))]
         if !self
             .keep(message, false)
             .map_err(|error| error.to_string())?
@@ -980,6 +1369,7 @@ impl DirectSync {
         if self.fans_out() {
             self.note_genesis(&authored);
         }
+        #[cfg(not(target_arch = "wasm32"))]
         self.keep_channel(&authored);
         // The host's sessions get the channel governance a link would, from the one
         // point it goes out on the links: a page that reaches its workspace only over
@@ -1004,6 +1394,7 @@ impl DirectSync {
     /// that links later joins each channel's group from
     /// ([`Store::keep_channel`]). Only the host keeps and hands it, so a
     /// member's older copy never stands in for the newest.
+    #[cfg(not(target_arch = "wasm32"))]
     fn keep_channel(&self, authored: &Authored) {
         if !self.fans_out() || !carried_governance(&authored.message) {
             return;
@@ -1085,6 +1476,7 @@ impl DirectSync {
     /// device is not in the workspace's roster. A holder that refuses this
     /// device while it dials gives the reason typed, so a workspace its owner
     /// deleted says so here and not only on a link that had come up.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn dial(
         &self,
         endpoint: &Endpoint,
@@ -1099,11 +1491,29 @@ impl DirectSync {
         Ok(dialed)
     }
 
+    /// Dial `device` over `transport`, a link this device already opened to it
+    /// — a page's WebTransport session — and answer its admission, as
+    /// [`Self::dial`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dial`].
+    pub async fn dial_over(
+        &self,
+        transport: Arc<dyn Transport>,
+        device: [u8; 32],
+    ) -> Result<Dialed, Refusal> {
+        let dialed = self.named_over(transport, device, false).await?;
+        self.certificate().map_err(Refusal::Other)?;
+        Ok(dialed)
+    }
+
     /// Dial `device` at `addr` from `endpoint` and answer its admission, as
     /// [`Self::dial`] does, whether or not the workspace as this device has
     /// it names it yet. A device that `takes` only the other's store says so
     /// ([`LinkFrame::Take`]), and the other admits it by what the workspace
     /// there names.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn reach(
         &self,
         endpoint: &Endpoint,
@@ -1116,16 +1526,26 @@ impl DirectSync {
             .connect(addr, DIRECT_ALPN)
             .await
             .map_err(|error| Refusal::Other(error.to_string()))?;
+        self.named_over(Arc::new(connection), device, takes).await
+    }
 
-        let (mut send, mut recv) = connection
-            .open_bi()
-            .await
-            .map_err(|error| Refusal::Other(error.to_string()))?;
+    /// Name this device's workspace on `transport` ([`LinkFrame::Workspace`])
+    /// and wait for the other device to say it listens.
+    async fn named_over(
+        &self,
+        transport: Arc<dyn Transport>,
+        device: [u8; 32],
+        takes: bool,
+    ) -> Result<Dialed, Refusal> {
+        let (mut send, mut recv) = transport.open_bi().await.map_err(Refusal::Other)?;
         let workspace = self.workspace().map_err(Refusal::Other)?;
         let named = if takes {
             LinkFrame::Take(workspace)
         } else {
-            LinkFrame::Workspace(workspace)
+            LinkFrame::Workspace {
+                id: workspace,
+                opens: self.0.opens,
+            }
         };
         write_link(&mut send, &named)
             .await
@@ -1144,14 +1564,15 @@ impl DirectSync {
             // workspace its owner deleted is one this device forgets rather
             // than dials again.
             Err(error) => {
-                return Err(refusal(&connection).unwrap_or(Refusal::Other(error)));
+                return Err(transport.close_reason().unwrap_or(Refusal::Other(error)));
             }
         }
         // Subscribed before the dial returns: the caller may send at once.
         let live = self.0.outgoing.subscribe();
         Ok(Dialed {
-            connection,
+            transport,
             device,
+            opens: self.0.opens,
             control: Control { send, recv },
             live,
         })
@@ -1162,6 +1583,7 @@ impl DirectSync {
     /// # Errors
     ///
     /// As [`Self::dial`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(
         &self,
         endpoint: &Endpoint,
@@ -1187,6 +1609,7 @@ impl DirectSync {
     ///
     /// This device keeps no store, the dial failed or was refused, the other
     /// device's history did not arrive whole, or a frame of it was not kept.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn take_store(
         &self,
         endpoint: &Endpoint,
@@ -1200,13 +1623,13 @@ impl DirectSync {
             .ok_or_else(|| Refusal::Other("this device keeps no store".into()))?;
         let workspace = self.workspace().map_err(Refusal::Other)?;
         let Dialed {
-            connection,
+            transport,
             mut control,
             ..
         } = self.reach(endpoint, addr, device, true).await?;
         let fetched = fetch_store(&mut control, standing(&store, workspace))
             .await
-            .map_err(|error| refusal(&connection).unwrap_or(Refusal::Other(error)))?;
+            .map_err(|error| transport.close_reason().unwrap_or(Refusal::Other(error)))?;
         let frames: Vec<Frame> = fetched
             .iter()
             .filter_map(|(_, message)| Frame::of(message).ok())
@@ -1220,7 +1643,7 @@ impl DirectSync {
                 .retain(workspace, frame)
                 .map_err(|error| Refusal::Other(format!("a frame was not kept: {error}")))?;
         }
-        connection.close(0_u32.into(), b"taken");
+        transport.close(0, b"taken");
         tracing::debug!(
             workspace = ?workspace,
             from = %short(&device),
@@ -1238,12 +1661,13 @@ impl DirectSync {
     /// # Errors
     ///
     /// A frame this device keeps could not be read back.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn lacked_by(&self, device: [u8; 32], cursors: &[Cursor]) -> Result<usize, String> {
         let Some(store) = &self.0.store else {
             return Ok(0);
         };
         let workspace = self.workspace()?;
-        let reaches = self.reach_of(device);
+        let reaches = self.reach_of(device, LinkScope::default());
         let mut after = cursors.to_vec();
         let mut lacked = 0_usize;
         loop {
@@ -1257,7 +1681,7 @@ impl DirectSync {
                     .filter(|message| reaches(message))
                     .count(),
             );
-            store::advance(&mut after, &replay.frames);
+            advance(&mut after, &replay.frames);
             if !replay.more || replay.frames.is_empty() {
                 return Ok(lacked);
             }
@@ -1273,6 +1697,7 @@ impl DirectSync {
     /// # Errors
     ///
     /// Either device is not in the workspace's roster.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn pair(member: &Self, holder: &Self) -> Result<(), String> {
         Self::pairing(member, holder).sync().await
     }
@@ -1282,6 +1707,7 @@ impl DirectSync {
     /// syncs reaches `holder` all the same, as a dialled link takes what its
     /// device publishes from the dial on.
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn pairing(member: &Self, holder: &Self) -> Pairing {
         Pairing {
             live_mine: member.0.outgoing.subscribe(),
@@ -1293,13 +1719,14 @@ impl DirectSync {
 
     /// Take in every frame `host` retains that this device's cursors do not
     /// cover, round by round.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn replay_from(&self, host: &Self) -> Result<(), String> {
         let mut cursors = self.cursors();
         loop {
             let (frames, more) = host.replay(&cursors)?;
             let mut authored = Vec::with_capacity(frames.len());
             for message in &frames {
-                let author = store::author_of(message)
+                let author = author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
                 authored.push((author, message.clone()));
             }
@@ -1313,7 +1740,7 @@ impl DirectSync {
                 )
                 .await;
             }
-            store::advance(&mut cursors, &frames);
+            advance(&mut cursors, &frames);
             if !more {
                 return Ok(());
             }
@@ -1322,6 +1749,7 @@ impl DirectSync {
 
     /// The frames `cursors` do not cover at this device's store, and whether
     /// more are left.
+    #[cfg(not(target_arch = "wasm32"))]
     fn replay(&self, cursors: &[Cursor]) -> Result<(Vec<NeighbourMsg>, bool), String> {
         let Some(store) = &self.0.store else {
             return Ok((Vec::new(), false));
@@ -1338,42 +1766,71 @@ impl DirectSync {
         self.0.signer.device_public_key()
     }
 
-    /// Serve the connection a device dialled this one: its first frame names
-    /// the workspace.
+    /// Serve the link a device dialled this one: its first frame names the
+    /// workspace.
     ///
     /// # Errors
     ///
     /// The device named no workspace, or one this replica is not.
-    pub async fn serve(&self, connection: Connection) -> Result<(), String> {
-        let (named, takes, send, recv) = dialed_workspace(&connection).await?;
-        if named != self.workspace()? {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn serve(&self, transport: &dyn Transport) -> Result<(), String> {
+        let dialed = dialed_workspace(transport).await?;
+        if dialed.workspace != self.workspace()? {
             return Err(refuse(
-                &connection,
+                transport,
                 &Refusal::Other("this device holds no such workspace".into()),
             ));
         }
-        if takes {
-            return self.give_store(&connection, Control { send, recv }).await;
-        }
-        let live = self.0.outgoing.subscribe();
-        self.link(&connection, None, Control { send, recv }, live)
+        self.serve_as(transport, dialed, LinkScope::admitting())
             .await
     }
 
-    /// Sync with the device on the other end of `connection` until the link
+    /// Serve the link `dialed` named, the host having admitted its device with
+    /// `scope` ([`Serving::admitting`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn serve_as(
+        &self,
+        transport: &dyn Transport,
+        dialed: DialedWorkspace,
+        scope: LinkScope,
+    ) -> Result<(), String> {
+        let DialedWorkspace {
+            takes,
+            opens,
+            control,
+            ..
+        } = dialed;
+        if let Some(refusal) = self.ended_link(transport.remote()) {
+            return Err(refuse(transport, &refusal));
+        }
+        if takes {
+            return self.give_store(transport, control, scope).await;
+        }
+        let live = self.0.outgoing.subscribe();
+        let admit = LinkAdmit::of(self, transport.remote(), scope, opens);
+        self.link(transport, None, control, live, opens, admit)
+            .await
+    }
+
+    /// Sync with the device on the other end of `transport` until the link
     /// ends, whichever side dialled: `dialled` names the device this side
-    /// dialled, and the side that accepted reads it off the connection.
+    /// dialled, and the side that accepted reads it off the transport.
     /// What a link starts by sending: the dialling device's catch-up, and the channels' governance
     /// a host hands with it from its store ([`Store::channels`]). The device that accepted the dial hands its replica's catch-up
     /// with the history the other one asks for ([`Self::answer_store`]), where it is judged as
     /// history: on the live stream, what it carries that was written more than the live window ago
     /// was refused as a late frame.
     async fn link_catch_up(&self, dialing: bool) -> Result<Vec<Authored>, String> {
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(unused_mut, reason = "a page keeps no store to open the link with")
+        )]
         let mut catch_up = if dialing {
             self.catch_up().await?
         } else {
             Vec::new()
         };
+        #[cfg(not(target_arch = "wasm32"))]
         if let (true, Some(store), Ok(workspace)) =
             (self.fans_out(), &self.0.store, self.workspace())
         {
@@ -1394,21 +1851,36 @@ impl DirectSync {
         Ok(catch_up)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a link's sending, receiving, answers and history run as one select over its streams"
+    )]
     async fn link(
         &self,
-        connection: &Connection,
+        transport: &dyn Transport,
         dialled: Option<[u8; 32]>,
         control: Control,
         live: broadcast::Receiver<Authored>,
+        opens: bool,
+        admit: LinkAdmit,
     ) -> Result<(), String> {
         let dialing = dialled.is_some();
-        let remote = dialled.unwrap_or_else(|| *connection.remote_id().as_bytes());
+        let remote = dialled.unwrap_or_else(|| transport.remote());
         let mut control = control;
+        // Subscribed before the ended devices are read: an ending sent
+        // between the two is seen by the channel or by the read, whichever.
+        let mut endings = self.0.endings.subscribe();
+        if let Some(refusal) = self.ended_link(remote) {
+            return Err(refuse(transport, &refusal));
+        }
+        // The records this link opened ([`LinkFrame::Open`]), for the frames
+        // it is sent from then on.
+        let opened = Arc::new(RwLock::new(BTreeSet::new()));
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
         if !dialing && let Err(reason) = self.admits(remote, false) {
-            return Err(refuse(connection, &self.refusal_to(remote, reason)));
+            return Err(refuse(transport, &Refusal::NotAMember(reason)));
         }
         if !dialing {
             // Subscribed by the caller already: the dialling device publishes
@@ -1423,28 +1895,34 @@ impl DirectSync {
             workspace = ?self.workspace().ok(),
             remote = %short(&remote),
             dialing,
+            opens,
             catch_up = catch_up.len(),
             "a direct link starts"
         );
-        let send = connection
-            .open_uni()
-            .await
-            .map_err(|error| error.to_string())?;
-        let (answering, answer_all) = answering(connection, dialing).await?;
+        let send = transport.open_uni().await?;
+        let (answering, answer_all) = answering(transport, dialing).await?;
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
         // The accepting device's live frames follow the first history it
         // answers, which carries the governance they are judged against.
         let (answered, first_answer) = watch::channel(dialing);
+        // A page keeps no store and answers no ask for history.
+        #[cfg(target_arch = "wasm32")]
+        drop(answered);
         let sending = send_authored(
             self,
             send,
             Sending {
                 remote,
                 dialing,
+                // A link takes the records its device opens only when that is
+                // the device on the other end: this side's own flag is what
+                // this side's catch-up already obeys.
+                opens: opens && !dialing,
                 catch_up,
                 first_answer,
+                opened: Arc::clone(&opened),
             },
             live,
             only_here,
@@ -1454,7 +1932,7 @@ impl DirectSync {
         // writes to a record apply in the order the author wrote them.
         let (history_in_hand, in_hand) = watch::channel(!dialing);
         let receiving = Box::pin(self.receive_all(
-            connection,
+            transport,
             remote,
             &own,
             in_hand,
@@ -1462,12 +1940,15 @@ impl DirectSync {
                 dialing,
                 sender: answering.as_ref(),
             },
+            admit,
         ));
         let history = async {
+            #[cfg(not(target_arch = "wasm32"))]
             if !dialing {
                 // The other device asks for the history as the link starts,
                 // and again whenever it wants what it let go.
-                self.answer_store(&mut control, remote, &answered).await?;
+                self.answer_store(&mut control, remote, &answered, admit.scope, opens, &opened)
+                    .await?;
                 self.0.caught_up.send_replace(true);
                 return std::future::pending().await;
             }
@@ -1483,9 +1964,13 @@ impl DirectSync {
             // lands here, the history is read again from where the replica
             // stands. A reader of this link that fell behind it asks the same
             // history for the frames it missed.
-            self.0.caught_up.send_replace(true);
+            // Installed before the link says it caught up: a caller that
+            // waits for that may open a record at once.
             let (asks, mut asked) = tokio::sync::mpsc::unbounded_channel();
             *self.0.other_store.lock_recover() = Some(OtherStore::Dialled(asks));
+            let (opening, mut opens) = tokio::sync::mpsc::unbounded_channel();
+            *self.0.opening.lock_recover() = Some(opening);
+            self.0.caught_up.send_replace(true);
             loop {
                 tokio::select! {
                     () = self.0.replay.notified() => self.ask_store(&mut control).await?,
@@ -1497,6 +1982,14 @@ impl DirectSync {
                             return Err(error);
                         }
                     }
+                    Some((channel, answer)) = opens.recv() => {
+                        let opened = self.open_record_here(&mut control, channel).await;
+                        let failed = opened.as_ref().err().cloned();
+                        let _ = answer.send(opened);
+                        if let Some(error) = failed {
+                            return Err(error);
+                        }
+                    }
                 }
             }
         };
@@ -1504,12 +1997,32 @@ impl DirectSync {
             let mut ended = self.0.ended.subscribe();
             ended.wait_for(Option::is_some).await.ok()?.clone()
         };
+        // This device's links to its own peer, ended alone ([`DirectSync::end_link`]):
+        // the workspace's other links keep running.
+        let ending = async {
+            loop {
+                match endings.recv().await {
+                    Ok((device, refusal)) if device == remote => return Some(refusal),
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // A missed ending is still in the state that keeps it.
+                        if let Some(refusal) = self.ended_link(remote) {
+                            return Some(refusal);
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return std::future::pending().await;
+                    }
+                }
+            }
+        };
         let ended = tokio::select! {
             result = receiving => result,
             result = sending => result,
             result = answer_all => result,
             result = history => result,
-            Some(reason) = ended => Err(refuse(connection, &reason)),
+            Some(reason) = ending => Err(refuse(transport, &reason)),
+            Some(reason) = ended => Err(refuse(transport, &reason)),
         };
         tracing::debug!(
             workspace = ?self.workspace().ok(),
@@ -1521,11 +2034,78 @@ impl DirectSync {
         ended
     }
 
+    /// Ask the device this one dialled for the record `channel`
+    /// ([`LinkFrame::Open`]) from where this device stands, taking each round
+    /// in as it comes.
+    async fn open_record_here(
+        &self,
+        control: &mut Control,
+        channel: [u8; 32],
+    ) -> Result<(), String> {
+        let mut cursors = self.cursors();
+        write_link(
+            &mut control.send,
+            &LinkFrame::Open {
+                channel,
+                cursors: cursors.clone(),
+            },
+        )
+        .await?;
+        loop {
+            let Some(LinkFrame::Frames { frames, more }) =
+                read_link(&mut control.recv, MAX_FRAME_BYTES).await?
+            else {
+                return Err("the device answered something else than retained frames".into());
+            };
+            let messages: Vec<NeighbourMsg> =
+                frames.iter().map(|(_, message)| message.clone()).collect();
+            advance(&mut cursors, &messages);
+            self.admit_history(frames).await;
+            if !more {
+                return Ok(());
+            }
+            write_link(
+                &mut control.send,
+                &LinkFrame::Open {
+                    channel,
+                    cursors: cursors.clone(),
+                },
+            )
+            .await?;
+        }
+    }
+
     /// The workspace ended for good on this device, for `reason`: every link of
     /// it closes, refused with that reason, which the device on the other end
     /// reads ([`Dialed::run`]).
     pub fn end(&self, refusal: Refusal) {
         self.0.ended.send_replace(Some(refusal));
+    }
+
+    /// End this device's links to `remote` alone, telling it `reason`: what a
+    /// host does to a device that lost its access, revoked or narrowed, while
+    /// the workspace's other links stay up and are sent what it writes. A link
+    /// `remote` starts afterwards is refused the same way, and its frames are
+    /// not sent, until a host admits it again ([`Self::reopen_link`]).
+    pub fn end_link(&self, remote: [u8; 32], refusal: Refusal) {
+        self.0
+            .ended_links
+            .write_recover()
+            .insert(remote, refusal.clone());
+        let _ = self.0.endings.send((remote, refusal));
+    }
+
+    /// Admit `remote`'s links again, as a host does when a device it ended the
+    /// links of is admitted once more ([`Self::end_link`]).
+    pub fn reopen_link(&self, remote: [u8; 32]) {
+        self.0.ended_links.write_recover().remove(&remote);
+    }
+
+    /// Why this device ended its links to `remote`, while it has them ended
+    /// ([`Self::end_link`]).
+    #[must_use]
+    pub fn ended_link(&self, remote: [u8; 32]) -> Option<Refusal> {
+        self.0.ended_links.read_recover().get(&remote).cloned()
     }
 
     /// Ask the other device for the history this device lacks, round by round
@@ -1550,7 +2130,7 @@ impl DirectSync {
                 .iter()
                 .map(|(_, message)| message.clone())
                 .collect::<Vec<_>>();
-            store::advance(&mut cursors, &messages);
+            advance(&mut cursors, &messages);
             taken = taken.saturating_add(frames.len());
             if more {
                 write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
@@ -1587,11 +2167,15 @@ impl DirectSync {
     /// ([`Self::catch_up`]): history, which the other device judges as such
     /// however old what it carries. `answered` is set once the first round is
     /// written.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn answer_store(
         &self,
         control: &mut Control,
         remote: [u8; 32],
         answered: &watch::Sender<bool>,
+        scope: LinkScope,
+        opens: bool,
+        opened: &RwLock<BTreeSet<[u8; 32]>>,
     ) -> Result<(), String> {
         // The history this answers is decided by the other device against the
         // governance it has not been sent yet: it arrives with the catch-up,
@@ -1604,25 +2188,61 @@ impl DirectSync {
                 return Ok(());
             }
         }
-        self.answer_asks(control, remote, Some(answered)).await
+        self.answer_asks(control, remote, Some(answered), scope, opens, opened)
+            .await
     }
 
-    /// Answer each ask of the device `remote` for the history after its
-    /// cursors on `control`, the state this device holds first, until it asks
-    /// no more. Each answer of a live link is told to `answered`.
+    /// Answer each ask of the device `remote` on `control` until it asks no
+    /// more: the history after its cursors with the state this device holds
+    /// first, or the history of one record it opens. Each answer of a live
+    /// link is told to `answered`. A link that takes records only as it opens
+    /// them (`opens`) is sent the records every device is replayed and each
+    /// chain's newest part, and the history of a record it opens
+    /// ([`LinkFrame::Open`]), which is added to `opened`.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn answer_asks(
         &self,
         control: &mut Control,
         remote: [u8; 32],
         answered: Option<&watch::Sender<bool>>,
+        scope: LinkScope,
+        opens: bool,
+        opened: &RwLock<BTreeSet<[u8; 32]>>,
     ) -> Result<(), String> {
         let mut opens_an_ask = true;
         // The state an ask opens with that earlier answers had not allocated.
         let mut state = std::collections::VecDeque::new();
         let own = self.device();
+        let reaches = self.reach_of(remote, scope);
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
-            let LinkFrame::Cursors(cursors) = frame else {
-                return Err("the device asked for something else than retained frames".into());
+            let cursors = match frame {
+                LinkFrame::Cursors(cursors) => cursors,
+                LinkFrame::Open { channel, cursors } => {
+                    // A record outside what the link's scope reaches is
+                    // answered as one this device keeps nothing of: the
+                    // device that asked is told nothing of it, and nothing of
+                    // it reaches the link from then on.
+                    let answer = self.openable(scope, channel);
+                    if let Some(answer) = answer {
+                        let mut opened = opened.write_recover();
+                        opened.insert(channel);
+                        opened.insert(answer);
+                    }
+                    let (frames, more) = match answer {
+                        Some(answer) => self.record_round(answer, &cursors, &reaches)?,
+                        None => (Vec::new(), false),
+                    };
+                    tracing::debug!(
+                        workspace = ?self.workspace().ok(),
+                        record = %short(&channel),
+                        frames = frames.len(),
+                        more,
+                        "a link's open of a record is answered"
+                    );
+                    write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
+                    continue;
+                }
+                _ => return Err("the device asked for something else than retained frames".into()),
             };
             if let Some(store) = &self.0.store {
                 // What the device asks from is what it holds: the store keeps
@@ -1631,13 +2251,26 @@ impl DirectSync {
                     .holds(self.workspace()?, remote, &cursors)
                     .map_err(|error| error.to_string())?;
             }
-            let reaches = self.reach_of(remote);
+            // The records a device that opens them is replayed, read once per
+            // answer: a chain's newest part is what this device holds now, and
+            // the link follows each chain it is replayed from then on.
+            let eager = opens.then(|| EagerRecords::of(self));
+            if let Some(eager) = &eager
+                && opens_an_ask
+            {
+                opened.write_recover().extend(eager.followed());
+            }
             if opens_an_ask {
                 state.extend(
                     self.answer_state_request()
                         .await
                         .into_iter()
                         .filter(|state| reaches(&state.message))
+                        .filter(|state| {
+                            eager
+                                .as_ref()
+                                .is_none_or(|eager| eager.admits(&state.message))
+                        })
                         .map(|state| (state.from, state.message)),
                 );
             }
@@ -1667,7 +2300,8 @@ impl DirectSync {
                 frames.extend(
                     kept.into_iter()
                         .filter(|message| reaches(message))
-                        .map(|message| (store::author_of(&message).unwrap_or(own), message)),
+                        .filter(|message| eager.as_ref().is_none_or(|eager| eager.admits(message)))
+                        .map(|message| (author_of(&message).unwrap_or(own), message)),
                 );
                 more
             } else {
@@ -1692,11 +2326,82 @@ impl DirectSync {
         Ok(())
     }
 
+    /// One round of the frames of `channel` this device's store keeps after
+    /// `cursors`, each with its author, and whether more are left: what a
+    /// device that opens the record is sent.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn record_round(
+        &self,
+        channel: [u8; 32],
+        cursors: &[Cursor],
+        reaches: &impl Fn(&NeighbourMsg) -> bool,
+    ) -> Result<Round, String> {
+        let Some(store) = &self.0.store else {
+            return Ok((Vec::new(), false));
+        };
+        let replay = store
+            .replay_record(self.workspace()?, channel, cursors, Budget::default())
+            .map_err(|error| error.to_string())?;
+        let own = self.device();
+        let frames = replay
+            .frames
+            .into_iter()
+            .filter(|message| reaches(message))
+            .map(|message| (author_of(&message).unwrap_or(own), message))
+            .collect();
+        Ok((frames, replay.more))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// The channel a record `channel` is opened as, for a link whose scope is
+    /// `scope`: the record itself, or the newest part of the chain whose head
+    /// it named. `None` for a record outside the scope, which the link is
+    /// answered nothing of.
+    fn openable(&self, scope: LinkScope, channel: [u8; 32]) -> Option<[u8; 32]> {
+        if scope.reads.is_some_and(|only| only != channel) {
+            return None;
+        }
+        Some(self.newest_part(channel).unwrap_or(channel))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// The channel of the newest part of the chain whose head `head` names,
+    /// when this device holds a part of it: a chain's head names whichever
+    /// part is its newest, and holds nothing of its own.
+    fn newest_part(&self, head: [u8; 32]) -> Option<[u8; 32]> {
+        let mut newest: Option<(u64, [u8; 32])> = None;
+        for (app, record) in self.listing() {
+            let neighbour_wire::DocumentSync::Part { base, index } =
+                neighbour_wire::document_sync(&record)
+            else {
+                continue;
+            };
+            if neighbour_wire::app_document_group(&app, &neighbour_wire::chain_head(base)) != head {
+                continue;
+            }
+            if newest.is_none_or(|(newest, _)| index > newest) {
+                newest = Some((index, neighbour_wire::app_document_group(&app, &record)));
+            }
+        }
+        newest.map(|(_, channel)| channel)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Every record this device holds, by its app and its record id.
+    fn listing(&self) -> Vec<(String, String)> {
+        self.read(|peer| {
+            peer.plaintext_routes()
+                .into_iter()
+                .chain(peer.sealed_routes())
+                .collect()
+        })
+    }
+
     /// What this device's replica holds, as the cursors it asks a store to
     /// continue from.
     #[must_use]
     pub fn cursors(&self) -> Vec<Cursor> {
-        self.read(store::cursors)
+        self.read(cursors_of)
     }
 
     /// Every frame of the record on `channel` this device's store keeps, in the
@@ -1707,6 +2412,7 @@ impl DirectSync {
     /// # Errors
     ///
     /// A kept frame could not be read back.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn kept_record(&self, channel: [u8; 32]) -> Result<Option<Vec<NeighbourMsg>>, String> {
         let Some(store) = &self.0.store else {
             return Ok(None);
@@ -1718,7 +2424,7 @@ impl DirectSync {
             let replay = store
                 .replay_record(workspace, channel, &cursors, Budget::default())
                 .map_err(|error| error.to_string())?;
-            store::advance(&mut cursors, &replay.frames);
+            advance(&mut cursors, &replay.frames);
             frames.extend(replay.frames);
             if !replay.more {
                 return Ok(Some(frames));
@@ -1730,7 +2436,7 @@ impl DirectSync {
     /// frame before its link sends it another: the record's readers name it,
     /// and the workspace's policy lets it read the record.
     pub fn reads_of(&self, device: [u8; 32]) -> impl Fn(&NeighbourMsg) -> bool + use<> {
-        self.reach_of(device)
+        self.reach_of(device, LinkScope::default())
     }
 
     /// Whether the workspace removed `device`'s person: it reads nothing the
@@ -1739,94 +2445,127 @@ impl DirectSync {
         self.0.replica.lock().governance().removed_device(device)
     }
 
-    /// What the recipient may read when each frame is sent.
-    fn reach_of(&self, device: [u8; 32]) -> impl Fn(&NeighbourMsg) -> bool + use<> {
+    /// What the recipient may read when each frame is sent, `scope` naming the
+    /// one record its device reaches when it reaches no more
+    /// ([`LinkScope::reads`]).
+    fn reach_of(
+        &self,
+        device: [u8; 32],
+        scope: LinkScope,
+    ) -> impl Fn(&NeighbourMsg) -> bool + use<> {
         let link = self.clone();
-        move |message| match message {
-            NeighbourMsg::AppDocument {
-                app_id,
-                document_id,
-                readers,
-                ..
-            } => {
-                let replica = link.0.replica.lock();
-                let named_matches = readers.as_deref().is_none_or(|readers| {
-                    let Some(collab_types::Readers::People(people)) =
-                        collab_types::Readers::parse(readers)
-                    else {
-                        return false;
-                    };
-                    replica.certificates().iter().any(|certificate| {
-                        certificate.device_public_key == device
-                            && people.contains(&certificate.user_public_key)
-                    })
-                });
-                // A holder of the workspace is sent what it holds: the
-                // workspace's policy answers a member's access, and a holder
-                // is no member, so what a member wrote never reached the
-                // holder it links to.
-                let holder = replica
-                    .governance()
-                    .keeping_devices()
-                    .iter()
-                    .any(|hint| hint.host.device_public_key == device);
-                named_matches
-                    && (holder
-                        || !replica.has_governance()
-                        || replica
-                            .check_document_read(device, app_id, document_id, tilo_clock::wall())
-                            .is_ok())
+        move |message| {
+            if let Some(only) = scope.reads
+                && let Some(record) = record_of(message)
+                && record != only
+            {
+                return false;
             }
-            NeighbourMsg::MlsGovernance { workspace, .. }
-            | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
-                match neighbour_wire::KeyScope::parse(workspace) {
-                    Some(neighbour_wire::KeyScope::Document {
-                        app,
-                        document,
-                        readers,
-                        ..
-                    }) => {
-                        let replica = link.0.replica.lock();
-                        let now = tilo_clock::wall();
-                        readers.as_deref().is_none_or(|readers| {
-                            let Some(collab_types::Readers::People(people)) =
-                                collab_types::Readers::parse(readers)
-                            else {
-                                return false;
-                            };
-                            replica.certificates().iter().any(|certificate| {
-                                certificate.device_public_key == device
-                                    && people.contains(&certificate.user_public_key)
-                            })
-                        }) && replica
-                            .check_document_read(device, &app, &document, now)
-                            .is_ok()
-                    }
-                    _ => true,
+            match message {
+                // What answers a device's ask is addressed to it in the
+                // handle the workspace knows it by: a piece of content goes
+                // to its requester's link alone, not to every member's. The
+                // ask itself reaches every other device, which may answer it.
+                NeighbourMsg::DocumentContentPiece { requester, .. }
+                | NeighbourMsg::DocumentContentLacks { requester, .. }
+                | NeighbourMsg::DocumentContentRefused { requester, .. } => {
+                    *requester == peer_handle(&device)
                 }
+                NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    readers,
+                    ..
+                } => {
+                    let replica = link.0.replica.lock();
+                    let named_matches = readers.as_deref().is_none_or(|readers| {
+                        let Some(collab_types::Readers::People(people)) =
+                            collab_types::Readers::parse(readers)
+                        else {
+                            return false;
+                        };
+                        replica.certificates().iter().any(|certificate| {
+                            certificate.device_public_key == device
+                                && people.contains(&certificate.user_public_key)
+                        })
+                    });
+                    // A device the workspace names among those keeping it is
+                    // sent what it keeps: the workspace's policy answers a
+                    // member's access, and such a device is no member, so what
+                    // a member wrote never reached the device it links to.
+                    let keeping = replica
+                        .governance()
+                        .keeping_devices()
+                        .iter()
+                        .any(|hint| hint.host.device_public_key == device);
+                    named_matches
+                        && (keeping
+                            || !replica.has_governance()
+                            || replica
+                                .check_document_read(
+                                    device,
+                                    app_id,
+                                    document_id,
+                                    tilo_clock::wall(),
+                                )
+                                .is_ok())
+                }
+                NeighbourMsg::MlsGovernance { workspace, .. }
+                | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
+                    match neighbour_wire::KeyScope::parse(workspace) {
+                        Some(neighbour_wire::KeyScope::Document {
+                            app,
+                            document,
+                            readers,
+                            ..
+                        }) => {
+                            let replica = link.0.replica.lock();
+                            let now = tilo_clock::wall();
+                            readers.as_deref().is_none_or(|readers| {
+                                let Some(collab_types::Readers::People(people)) =
+                                    collab_types::Readers::parse(readers)
+                                else {
+                                    return false;
+                                };
+                                replica.certificates().iter().any(|certificate| {
+                                    certificate.device_public_key == device
+                                        && people.contains(&certificate.user_public_key)
+                                })
+                            }) && replica
+                                .check_document_read(device, &app, &document, now)
+                                .is_ok()
+                        }
+                        _ => true,
+                    }
+                }
+                _ => true,
             }
-            _ => true,
         }
     }
 
-    /// Answer a device that takes this device's store over `connection`
+    /// Answer a device that takes this device's store over `transport`
     /// ([`Self::take_store`]) with what the store keeps that it may read,
     /// and nothing live. A device the workspace names among those keeping
     /// it is let take it ([`certified`]), dialling on the service key its
     /// signed address binds to it.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn give_store(
         &self,
-        connection: &Connection,
+        transport: &dyn Transport,
         mut control: Control,
+        scope: LinkScope,
     ) -> Result<(), String> {
-        let remote = self.device_at(*connection.remote_id().as_bytes());
+        let remote = self.device_at(transport.remote());
         if let Err(reason) = self.admits(remote, true) {
-            return Err(refuse(connection, &self.refusal_to(remote, reason)));
+            return Err(refuse(transport, &Refusal::NotAMember(reason)));
         }
         write_link(&mut control.send, &LinkFrame::Ready).await?;
-        self.answer_asks(&mut control, remote, None).await
+        let opened = RwLock::new(BTreeSet::new());
+        self.answer_asks(&mut control, remote, None, scope, false, &opened)
+            .await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// The device whose link dials this one from the endpoint `endpoint`: a
     /// device the workspace names among those keeping it may answer on a
     /// service key of its own, which its signed address binds to it; any
@@ -1880,38 +2619,6 @@ impl DirectSync {
             return Err("the device's certificate expired".into());
         }
         Ok(())
-    }
-
-    /// Why this device turned `device` away, `reason` being what
-    /// [`Self::admits`] said: a device that was retired is told so with the
-    /// root-signed entry that says it, which it keeps as an announced
-    /// revocation, so a server that was away learns to let go rather than only
-    /// that it is not admitted. A device lost, stolen or compromised is told
-    /// only that it was removed: the entry says why, and the reason is the
-    /// person's.
-    fn refusal_to(&self, device: [u8; 32], reason: String) -> Refusal {
-        self.revocation_of(device).map_or_else(
-            || Refusal::NotAMember(reason),
-            |entry| Refusal::Revoked(Box::new(entry)),
-        )
-    }
-
-    /// The root-signed entry that retires `device`, as the replica carries it:
-    /// the entry `device`'s roster certificate's root signed with
-    /// [`RevocationReason::Retired`] ([`Self::admits`]). `None` when the replica
-    /// carries none for it, or carries one for another reason
-    /// ([`Self::refusal_to`]).
-    fn revocation_of(&self, device: [u8; 32]) -> Option<tilo_user_identity::RevocationEntry> {
-        let replica = self.0.replica.lock();
-        let certificate = replica
-            .certificates()
-            .into_iter()
-            .find(|certificate| certificate.device_public_key == device)?;
-        replica.revocations().into_iter().find(|entry| {
-            (entry.user_public_key, entry.revoked_device_public_key)
-                == (certificate.user_public_key, device)
-                && entry.reason == tilo_user_identity::RevocationReason::Retired
-        })
     }
 
     /// Whether `device` may send `workspace`'s frames to this device: a
@@ -1997,16 +2704,14 @@ impl DirectSync {
     /// is read meanwhile, so the other device's writes never stall.
     async fn receive_all(
         &self,
-        connection: &Connection,
+        transport: &dyn Transport,
         remote: [u8; 32],
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
         history: watch::Receiver<bool>,
         answering: Answering<'_>,
+        admit: LinkAdmit,
     ) -> Result<(), String> {
-        let mut recv = connection
-            .accept_uni()
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut recv = transport.accept_uni().await?;
         // Frames are taken off the stream as they are admitted; only the
         // app writes held for the history pile up while it is read.
         let (read, frames) = tokio::sync::mpsc::channel(1);
@@ -2018,7 +2723,7 @@ impl DirectSync {
             }
             Ok::<(), String>(())
         };
-        let admitting = self.admit_in_order(remote, link, answering.sender, frames, history);
+        let admitting = self.admit_in_order(remote, link, answering.sender, frames, history, admit);
         let received = async {
             tokio::try_join!(reading, async {
                 admitting.await;
@@ -2028,20 +2733,17 @@ impl DirectSync {
         };
         tokio::select! {
             result = received => result,
-            result = Box::pin(self.take_answers(connection, answering.dialing)) => result,
+            result = Box::pin(self.take_answers(transport, answering.dialing)) => result,
         }
     }
 
     /// Take what the device this one dialled answers of its writes, on the
     /// stream it opens after its frames'.
-    async fn take_answers(&self, connection: &Connection, dialing: bool) -> Result<(), String> {
+    async fn take_answers(&self, transport: &dyn Transport, dialing: bool) -> Result<(), String> {
         if !dialing {
             return std::future::pending().await;
         }
-        let mut recv = connection
-            .accept_uni()
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut recv = transport.accept_uni().await?;
         while let Some(bytes) = crate::frames::read_frame(&mut recv, MAX_FRAME_BYTES).await? {
             let answered: Answered =
                 postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
@@ -2073,6 +2775,7 @@ impl DirectSync {
         answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         mut frames: tokio::sync::mpsc::Receiver<Authored>,
         mut history: watch::Receiver<bool>,
+        admit: LinkAdmit,
     ) {
         let mut waiting = Vec::new();
         loop {
@@ -2087,7 +2790,8 @@ impl DirectSync {
             let in_hand = *history.borrow();
             if in_hand {
                 for authored in std::mem::take(&mut waiting) {
-                    self.receive_live(remote, link, answering, authored).await;
+                    self.receive_live(remote, link, answering, authored, admit)
+                        .await;
                 }
             }
             let Some(authored) = next else {
@@ -2097,7 +2801,8 @@ impl DirectSync {
                 waiting.push(authored);
                 continue;
             }
-            self.receive_live(remote, link, answering, authored).await;
+            self.receive_live(remote, link, answering, authored, admit)
+                .await;
         }
     }
 
@@ -2179,7 +2884,22 @@ impl DirectSync {
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
         answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         authored: Authored,
+        admit: LinkAdmit,
     ) {
+        // What a link from a device that does not keep the workspace carries:
+        // its own frames, and none but those a device that opens the records
+        // it reads takes. A frame it may not send is that frame's refusal,
+        // never the link's, as a frame the workspace refuses is.
+        if !admit.permits(self.device(), remote, &authored) {
+            tracing::warn!(
+                workspace = ?self.workspace().ok(),
+                remote = %short(&remote),
+                from = %short(&authored.from),
+                kind = authored.message.kind(),
+                "a link sent a frame its device may not send; it is refused"
+            );
+            return;
+        }
         // An ask another device made reached this one only because a
         // host forwarded it, and is not this device's to answer.
         if matches!(authored.message, NeighbourMsg::SyncReq { .. }) {
@@ -2229,7 +2949,7 @@ impl DirectSync {
         retained: bool,
         history: bool,
     ) -> (bool, Option<Kept>) {
-        let author = store::author_of(&message).unwrap_or(claimed);
+        let author = author_of(&message).unwrap_or(claimed);
         if carried_governance(&message) {
             if self.fans_out() && !retained {
                 self.answer_request(&message);
@@ -2261,7 +2981,7 @@ impl DirectSync {
         let mut lacks_history = false;
         let mut batch = Vec::with_capacity(frames.len());
         for (claimed, message) in frames {
-            let author = store::author_of(&message).unwrap_or(claimed);
+            let author = author_of(&message).unwrap_or(claimed);
             if carried_governance(&message) {
                 lacks_history |= self
                     .admit_batch(admission, std::mem::take(&mut batch))
@@ -2340,13 +3060,20 @@ impl DirectSync {
             .report
             .as_ref()
             .is_ok_and(|report| report.lacks_history);
-        heard.fresh = match self.keep(&heard.message, true) {
-            Ok(fresh) => fresh,
-            Err(error) => {
-                tracing::warn!(%error, "a link's frame was not kept at the store");
-                return (true, None);
-            }
-        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            heard.fresh = match self.keep(&heard.message, true) {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    tracing::warn!(%error, "a link's frame was not kept at the store");
+                    return (true, None);
+                }
+            };
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            heard.fresh = true;
+        }
         let kept = match &heard.report {
             Ok(report) if !report.lacks_history => Some(Kept::Durable),
             Ok(_) => None,
@@ -2587,7 +3314,8 @@ impl DirectSync {
     /// Keep `message` at this device's store when it is a sealed document
     /// frame, the only history a store holds, as one a link brought when
     /// `from_link`. Returns `Ok(false)` for a frame the store already held.
-    fn keep(&self, message: &NeighbourMsg, from_link: bool) -> Result<bool, store::StoreError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep(&self, message: &NeighbourMsg, from_link: bool) -> Result<bool, StoreError> {
         let Some(store) = &self.0.store else {
             return Ok(true);
         };
@@ -2602,7 +3330,12 @@ impl DirectSync {
         } else {
             store.retain(workspace, &frame)
         };
-        retained.map(|retained| matches!(retained, store::Retained::New | store::Retained::Beside))
+        retained.map(|retained| {
+            matches!(
+                retained,
+                crate::store::Retained::New | crate::store::Retained::Beside
+            )
+        })
     }
 
     fn workspace(&self) -> Result<WorkspaceId, String> {
@@ -2634,46 +3367,60 @@ struct Answering<'a> {
 /// The control stream of one link: what a device asks the other for, and what
 /// it answers with.
 struct Control {
-    send: SendStream,
-    recv: RecvStream,
+    send: StreamSend,
+    recv: StreamRecv,
 }
 
-/// Read the workspace a dialling device names first, off its control stream,
-/// and whether it only takes this device's store ([`LinkFrame::Take`]).
-async fn dialed_workspace(
-    connection: &Connection,
-) -> Result<(WorkspaceId, bool, SendStream, RecvStream), String> {
-    let (send, mut recv) = connection
-        .accept_bi()
-        .await
-        .map_err(|error| error.to_string())?;
-    let (named, takes) = match read_link(&mut recv, MAX_FRAME_BYTES).await? {
-        Some(LinkFrame::Workspace(named)) => (named, false),
-        Some(LinkFrame::Take(named)) => (named, true),
+#[cfg(not(target_arch = "wasm32"))]
+/// What a dialling device named first on the link it opened: the workspace,
+/// whether it takes the workspace's records only as it opens them, whether it
+/// only takes this device's store ([`LinkFrame::Take`])
+/// ([`DirectSync::take_store`]), and the control stream it asked on.
+struct DialedWorkspace {
+    workspace: WorkspaceId,
+    takes: bool,
+    opens: bool,
+    control: Control,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Read the workspace a dialling device names first, off its control stream.
+async fn dialed_workspace(transport: &dyn Transport) -> Result<DialedWorkspace, String> {
+    let (send, mut recv) = transport.accept_bi().await?;
+    let (workspace, takes, opens) = match read_link(&mut recv, MAX_FRAME_BYTES).await? {
+        Some(LinkFrame::Workspace { id, opens }) => (id, false, opens),
+        Some(LinkFrame::Take(id)) => (id, true, false),
         _ => {
             return Err(refuse(
-                connection,
+                transport,
                 &Refusal::Invalid("the device did not name its workspace".into()),
             ));
         }
     };
-    Ok((named, takes, send, recv))
+    Ok(DialedWorkspace {
+        workspace,
+        takes,
+        opens,
+        control: Control { send, recv },
+    })
 }
 
-/// Close `connection`, refused for `refusal`, which the device on the other
-/// end reads typed ([`refusal`]); its text, for this side's log.
-fn refuse(connection: &Connection, refusal: &Refusal) -> String {
+/// Close `transport`, refused for `refusal`, which the device on the other
+/// end reads typed ([`Transport::close_reason`]); its text, for this side's
+/// log.
+fn refuse(transport: &dyn Transport, refusal: &Refusal) -> String {
     let said = postcard::to_allocvec(refusal).unwrap_or_default();
-    connection.close(REFUSED.into(), &said);
+    transport.close(REFUSED, &said);
     refusal.to_string()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ProtocolHandler for DirectSync {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         // A connection this device accepts is a member's, so this device is
         // the workspace's host on it.
         self.host();
-        self.serve(connection)
+        self.serve(&connection)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
     }
@@ -2685,14 +3432,24 @@ impl ProtocolHandler for DirectSync {
 /// The dialling device names its workspace in the link's first frame; a
 /// workspace this host holds and does not serve yet is refused, one it does
 /// not hold at all is refused the same way, and one its owner deleted is
-/// refused as deleted.
+/// refused as deleted. The device at the other end is admitted for the
+/// workspace before the link listens, by the hook a host installs
+/// ([`Serving::admitting`]).
 #[derive(Clone, Default)]
 pub struct Serving {
     links: Arc<RwLock<BTreeMap<WorkspaceId, DirectSync>>>,
     /// The workspaces deleted here, refused as deleted to whoever names one
     /// ([`Self::delete`]).
     deleted: Arc<RwLock<std::collections::BTreeSet<WorkspaceId>>>,
+    /// What admits the device at the other end of a link to the workspace it
+    /// names, before the link listens ([`Self::admitting`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    admitting: Option<Arc<Admitting>>,
 }
+
+/// What [`Serving::admitting`] installs: the scope a device at `remote`
+/// reaches in `link`'s workspace, or why it is refused.
+pub type Admitting = dyn Fn([u8; 32], &DirectSync) -> Result<LinkScope, Refusal> + Send + Sync;
 
 impl std::fmt::Debug for Serving {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2707,6 +3464,20 @@ impl Serving {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Admit the device at the other end of every link by `hook`, before the
+    /// link listens: the host's one admission, which answers the scope the
+    /// device reaches ([`LinkScope`]) or the refusal the dialling device is
+    #[cfg(not(target_arch = "wasm32"))]
+    /// told. A host without one admits every certified device of the workspace
+    /// to everything it serves.
+    #[must_use]
+    pub fn admitting(self, hook: Arc<Admitting>) -> Self {
+        Self {
+            admitting: Some(hook),
+            ..self
+        }
     }
 
     /// Serve `link`'s workspace, replacing a link this host served before.
@@ -2750,34 +3521,46 @@ impl Serving {
     pub fn link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
         self.links.read_recover().get(&workspace).cloned()
     }
+
+    /// Serve one link a device dialled: the workspace it names, admitted by
+    /// [`Self::admitting`] before the link listens.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn serve_link(&self, transport: &dyn Transport) -> Result<(), String> {
+        let dialed = dialed_workspace(transport).await?;
+        if self.deleted(dialed.workspace) {
+            return Err(refuse(transport, &Refusal::WorkspaceDeleted));
+        }
+        let link = self.link(dialed.workspace).ok_or_else(|| {
+            refuse(
+                transport,
+                &Refusal::Other("this host holds no such workspace".into()),
+            )
+        })?;
+        let scope = match &self.admitting {
+            Some(hook) => hook(transport.remote(), &link).map_err(|refusal| {
+                tracing::info!(
+                    %refusal,
+                    remote = %short(&transport.remote()),
+                    "a host refused a link's device before it listened"
+                );
+                refuse(transport, &refusal)
+            })?,
+            None => LinkScope::admitting(),
+        };
+        link.serve_as(transport, dialed, scope).await
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ProtocolHandler for Serving {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let serve = async {
-            let (named, takes, send, recv) = dialed_workspace(&connection).await?;
-            if self.deleted(named) {
-                return Err(refuse(&connection, &Refusal::WorkspaceDeleted));
-            }
-            let link = self.link(named).ok_or_else(|| {
-                refuse(
-                    &connection,
-                    &Refusal::Other("this host holds no such workspace".into()),
-                )
-            })?;
-            if takes {
-                return link.give_store(&connection, Control { send, recv }).await;
-            }
-            let live = link.0.outgoing.subscribe();
-            link.link(&connection, None, Control { send, recv }, live)
-                .await
-        };
-        serve
+        self.serve_link(&connection)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Take every frame `live`, the links of `sender`, publishes into
 /// `device`'s workspace, in its author's name: what `device` wrote itself
 /// does not come back to it. A frame that leaves `device` waiting for
@@ -2850,11 +3633,54 @@ struct Sending {
     /// Whether this device dialled: the device that did asks the other one
     /// for its state over the link's control stream, with its history.
     dialing: bool,
+    /// Whether the device on the other end takes the workspace's records only
+    /// as it opens them: it is sent a write of a record it did not open only
+    /// when the record is one every device is sent.
+    opens: bool,
     /// What this stream opens with.
     catch_up: Vec<Authored>,
     /// Set once the first history this device answers is written: its live
     /// frames follow it.
     first_answer: watch::Receiver<bool>,
+    /// The records the device on the other end opened ([`LinkFrame::Open`]):
+    /// their writes reach it from then on.
+    opened: Arc<RwLock<BTreeSet<[u8; 32]>>>,
+}
+
+/// Whether `message`, a write this link would send, is one the device at its
+/// other end takes: a record it opened, a chain it follows, or one every
+/// device is sent. A link that is sent every record takes this one.
+fn opened_admits(message: &NeighbourMsg, opens: bool, opened: &RwLock<BTreeSet<[u8; 32]>>) -> bool {
+    if !opens {
+        return true;
+    }
+    let NeighbourMsg::AppDocument {
+        app_id,
+        document_id,
+        ..
+    } = message
+    else {
+        return true;
+    };
+    match neighbour_wire::document_sync(document_id) {
+        neighbour_wire::DocumentSync::Eager => true,
+        neighbour_wire::DocumentSync::Part { base, .. } => {
+            let opened = opened.read_recover();
+            opened.contains(&neighbour_wire::app_document_group(app_id, document_id))
+                || opened.contains(&neighbour_wire::app_document_group(
+                    app_id,
+                    &neighbour_wire::chain_head(base),
+                ))
+        }
+        // No document lives under a chain's head: it is a name a device opens
+        // the chain by, never a record with writes of its own.
+        neighbour_wire::DocumentSync::ChainHead { .. } => false,
+        neighbour_wire::DocumentSync::OnDemand | neighbour_wire::DocumentSync::Chunk { .. } => {
+            opened
+                .read_recover()
+                .contains(&neighbour_wire::app_document_group(app_id, document_id))
+        }
+    }
 }
 
 /// Write `sending`'s catch-up, then every frame published live, to `send`,
@@ -2863,7 +3689,7 @@ struct Sending {
 /// the last frame it is sent, and the link ends there.
 async fn send_authored(
     link: &DirectSync,
-    mut send: SendStream,
+    mut send: StreamSend,
     sending: Sending,
     mut live: broadcast::Receiver<Authored>,
     mut only_here: tokio::sync::mpsc::UnboundedReceiver<OnlyHere>,
@@ -2871,14 +3697,14 @@ async fn send_authored(
     let Sending {
         remote,
         dialing,
+        opens,
         catch_up,
         mut first_answer,
+        opened,
     } = sending;
-    let reaches = link.reach_of(remote);
-    for authored in catch_up
-        .iter()
-        .filter(|authored| reaches(&authored.message))
-    {
+    let reaches = link.reach_of(remote, LinkScope::default());
+    let takes = |message: &NeighbourMsg| reaches(message) && opened_admits(message, opens, &opened);
+    for authored in catch_up.iter().filter(|authored| takes(&authored.message)) {
         write_authored(&mut send, authored).await?;
     }
     link.0.catch_up_written.send_replace(true);
@@ -2909,7 +3735,7 @@ async fn send_authored(
                 }
                 if waiting.contains(&OnlyHere::Answer) {
                     for state in link.answer_state_request().await {
-                        if reaches(&state.message) {
+                        if takes(&state.message) {
                             write_authored(&mut send, &state).await?;
                         }
                     }
@@ -2919,7 +3745,7 @@ async fn send_authored(
             next = live.recv() => next,
         };
         match next {
-            Ok(authored) if already_theirs(&authored, remote) || !reaches(&authored.message) => {}
+            Ok(authored) if already_theirs(&authored, remote) || !takes(&authored.message) => {}
             Ok(authored) => {
                 // The governance that removes the device is the last frame it
                 // is sent, whichever path told this device of the removal.
@@ -2942,7 +3768,7 @@ async fn send_authored(
 
 /// Write `authored` as this link's next record: the device that authored it,
 /// then its frame.
-async fn write_authored(send: &mut SendStream, authored: &Authored) -> Result<(), String> {
+async fn write_authored(send: &mut StreamSend, authored: &Authored) -> Result<(), String> {
     let bytes = postcard::to_allocvec(&(authored.from, &authored.message))
         .map_err(|error| error.to_string())?;
     if bytes.len() > MAX_FRAME_BYTES {
@@ -2953,7 +3779,7 @@ async fn write_authored(send: &mut SendStream, authored: &Authored) -> Result<()
 
 /// The next frame this link brought, with its author, or `None` once the
 /// other side finished its stream.
-async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String> {
+async fn read_authored(recv: &mut StreamRecv) -> Result<Option<Authored>, String> {
     match crate::frames::read_frame(recv, MAX_FRAME_BYTES).await? {
         Some(bytes) => decode_authored(&bytes)
             .map(|(from, message)| {
@@ -3101,43 +3927,6 @@ mod tests {
         );
     }
 
-    /// A device whose key its person's root retired is told so with the entry
-    /// the root signed, which it keeps as an announced revocation and so lets a
-    /// server that was away retire itself. A key lost, stolen or compromised is
-    /// told only that it is not a member: the entry names why, and the reason
-    /// is the person's.
-    #[test]
-    fn a_retired_device_is_told_the_entry_that_retired_it() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let roster = [device(&root, 2), device(&root, 3)];
-        let member = roster[1].1.clone();
-        for (reason, told) in [
-            (RevocationReason::Retired, true),
-            (RevocationReason::Lost, false),
-            (RevocationReason::Stolen, false),
-            (RevocationReason::Compromised, false),
-        ] {
-            let mut entry = revocation(&root, member.device_public_key);
-            entry.reason = reason;
-            entry.signature = [0; 64];
-            sign_revocation_entry(&mut entry, &root).unwrap();
-            let mut theirs = RevocationList::new();
-            theirs.insert(entry.clone()).unwrap();
-            let sync = link(&roster, theirs, Vec::new());
-            let Err(said) = sync.admits(member.device_public_key, false) else {
-                panic!("a revoked device is refused");
-            };
-            assert_eq!(said, "the device is revoked");
-            match (told, sync.refusal_to(member.device_public_key, said)) {
-                (true, Refusal::Revoked(entry)) => {
-                    assert_eq!(entry.reason, RevocationReason::Retired);
-                }
-                (false, Refusal::NotAMember(said)) => assert_eq!(said, "the device is revoked"),
-                (_, other) => panic!("{reason:?} is told {other:?}"),
-            }
-        }
-    }
-
     /// A write the other device sent live while this one still reads the
     /// history written before it waits for that history: the author's writes
     /// to a record apply in the order the author wrote them, even where the
@@ -3152,7 +3941,7 @@ mod tests {
         let roster = [device(&root, 2), device(&root, 3)];
         let mut record = AutoCommit::new();
         record.put(ROOT, "start", "here").unwrap();
-        record.commit_edit("fixture", "start", &root.verifying_key().to_bytes());
+        record.commit_edit("fixture", "start");
         let host = link(
             &roster,
             RevocationList::new(),
@@ -3183,7 +3972,7 @@ mod tests {
                 .with_actor(automerge::ActorId::from(vec![actor; 16]));
             let heads = edit.get_heads();
             edit.put(ROOT, field, "written").unwrap();
-            edit.commit_edit("fixture", field, &root.verifying_key().to_bytes());
+            edit.commit_edit("fixture", field);
             edit.save_after(&heads)
         };
         let (first, second) = (edit("first", 4), edit("second", 5));
@@ -3221,7 +4010,14 @@ mod tests {
             drop(live);
         };
         tokio::join!(
-            member.admit_in_order(host.device(), &asks, None, frames, history),
+            member.admit_in_order(
+                host.device(),
+                &asks,
+                None,
+                frames,
+                history,
+                LinkAdmit::dialling(),
+            ),
             reading_history
         );
 

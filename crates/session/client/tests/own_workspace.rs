@@ -145,7 +145,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // them. A workspace the answering host keeps itself names no other host.
     let listed = device
         .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -179,7 +179,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     );
     let listed_by_api = api
         .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -253,7 +253,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     assert_eq!(first.0.name, "Twice");
     let named_twice = device
         .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await

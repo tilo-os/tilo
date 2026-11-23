@@ -341,7 +341,7 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     // The person's workspaces, as the host lists them to a key of theirs.
     let listed = key
         .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await
@@ -418,8 +418,8 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
     // The device's host said so itself, and why: a session that never reached
     // it, or an answer that never came, is no refusal of this key.
     assert_eq!(
-        tilo_server_session::workspaces::Refusal::from_reason(&refused.message),
-        Some(tilo_server_session::workspaces::Refusal::NotYourOwn),
+        tilo_server_protocol::workspaces::AdminRefusal::from_reason(&refused.message),
+        Some(tilo_server_protocol::workspaces::AdminRefusal::NotYourOwn),
         "{refused:?}"
     );
     assert!(

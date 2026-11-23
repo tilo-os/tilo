@@ -201,6 +201,10 @@ pub struct OnDevice {
 #[derive(Clone)]
 pub(crate) struct WebContext {
     pub(crate) server: ServerProtocol,
+    /// Where pages reach this host over WebTransport, once it serves browsers: what
+    /// [`Server::web_link`] answers, and what a test that stands in for a page dials.
+    #[cfg(feature = "web")]
+    pub(crate) link: Arc<std::sync::OnceLock<tilo_server_protocol::web::WebLink>>,
     #[cfg(feature = "web")]
     pub(crate) certification: crate::certification::CertificationProtocol,
     /// The device of the session beside this node, once named.
@@ -215,6 +219,14 @@ impl Server {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
+    }
+
+    /// Where pages reach this host over WebTransport, once it serves browsers
+    /// ([`Self::serve_web`]): its endpoint and the listener pages dial.
+    #[cfg(feature = "web")]
+    #[must_use]
+    pub fn web_link(&self) -> Option<tilo_server_protocol::web::WebLink> {
+        self.web.link.get().cloned()
     }
 
     /// This host's channel to the person's approving devices: where a
@@ -659,6 +671,8 @@ impl Server {
         let web = Box::new(WebContext {
             server: handler.clone(),
             #[cfg(feature = "web")]
+            link: Arc::default(),
+            #[cfg(feature = "web")]
             certification: certification.clone(),
             node_session: Arc::default(),
             #[cfg(feature = "agents")]
@@ -940,20 +954,21 @@ impl Server {
         self.endpoint.bound_sockets()
     }
 
-    /// Where the app action server hands a frame to a device of one of its workspaces after
+    /// Where the app action server hands a request to a device of one of its workspaces after
     /// answering its caller itself (a page action the person allowed, running
-    /// on the window that refused it): this host's own delivery, stamped as
-    /// every frame it forwards is.
+    /// on the window that refused it): this host's own delivery, through the
+    /// action service, over the link the device holds open to this host.
     ///
     /// # Panics
     ///
     /// Outside a runtime, where there is nothing to deliver on.
     #[must_use]
     pub fn hand(&self) -> crate::app_serving::Hand {
-        crate::app_serving::Hand::new(
-            self.sessions.workspaces.clone(),
-            tokio::runtime::Handle::current(),
-        )
+        match self.workspaces.as_ref() {
+            Some(workspaces) => workspaces.hand(),
+            // A host that serves no workspace of its own hands nothing on.
+            None => crate::app_serving::Hand::none(),
+        }
     }
 
     /// The workspaces this server governs, when it hosts the workspace authority.

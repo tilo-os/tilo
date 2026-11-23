@@ -1,577 +1,257 @@
-//! Remote-action envelopes: the server routes a frame to the one addressed
-//! device, stamps the authenticated sender, never stores it, and answers
-//! frames addressed to itself only through a supplied app action server.
-
+//! A device's actions reach its host over the action service, and nowhere else: the host
+//! answers them through the app action server it serves, as the caller its signature and
+//! certificate name, refuses a device the workspace does not admit, and passes a request
+//! addressed to another device on to that device alone.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_peer_state::join::Role;
-use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_server::workspaces::RemoveMemberRequest;
-use tilo_server::{ActionProviderServer, Envelope, ServerClient, WorkspaceId};
-use tilo_server_protocol::delegation::{DelegateScope, Delegation};
-use tilo_server_protocol::refusal::Refusal;
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
+use tilo_peer_state::direct::Replica;
+use tilo_server::{ActionProviderServer, WorkspaceId};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use crate::common::{
-    TestDevice, TestUser, client_endpoint, invitation, redeem, spawn_server,
-    spawn_server_admitting, spawn_server_admitting_with, spawn_server_serving_apps,
-};
+use crate::common::{TestDevice, TestUser, device_endpoint, spawn_server_serving_apps};
 
 const WS: WorkspaceId = WorkspaceId::from_u128(11);
 
-async fn subscribed(
-    addr: iroh_base::EndpointAddr,
-    user: &TestUser,
+/// A device asking its host's actions at `addr` as itself: an endpoint keyed by its own
+/// device key, and the action service that signs what it asks.
+async fn asking(
     device: &TestDevice,
-) -> ServerClient {
-    subscribed_in(addr, user, device, WS).await
-}
-
-async fn subscribed_in(
     addr: iroh_base::EndpointAddr,
-    user: &TestUser,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> ServerClient {
-    let (client, ready) = subscribe(addr, user, device, workspace_id).await;
-    assert!(
-        matches!(ready, Some(Envelope::Ready { .. })),
-        "got {ready:?}"
-    );
-    client
+    served_by: [u8; 32],
+) -> (iroh::Endpoint, RemoteDevice, Arc<ActionService>) {
+    let endpoint = device_endpoint(device).await;
+    let actions = Arc::new(ActionService::new(device.sk.clone(), Arc::new(NoActions)));
+    // A Tilo server's action service signs as its own workspace service, which
+    // its endpoint is keyed apart from.
+    actions.keyed_apart(served_by, *addr.id.as_bytes());
+    let remote = actions.remote(&endpoint, &addr, &WS.to_string());
+    (endpoint, remote, actions)
 }
 
-/// Connect as `device`, subscribe to `workspace_id`, and return the server's
-/// answer to the subscription: a held workspace sends its state first.
-async fn subscribe(
-    addr: iroh_base::EndpointAddr,
-    user: &TestUser,
-    device: &TestDevice,
-    workspace_id: WorkspaceId,
-) -> (ServerClient, Option<Envelope>) {
-    let client = ServerClient::connect(
-        client_endpoint().await,
-        addr,
-        user.user_pk,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("connect");
-    client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    let ready = tilo_test_env::within("ready timeout", async {
-        loop {
-            match client.recv().await {
-                Some(answer @ (Envelope::Ready { .. } | Envelope::NotAuthorised { .. })) => {
-                    break Some(answer);
-                }
-                Some(_) => {}
-                None => break None,
-            }
-        }
-    })
-    .await;
-    (client, ready)
-}
-
-fn frame(message: RemoteActionMessage) -> Vec<u8> {
-    RemoteActionFrame::new(message).encode().unwrap()
-}
-
-fn directed(to: [u8; 32], frame: Vec<u8>) -> Envelope {
-    Envelope::RemoteAction {
-        workspace_id: WS,
-        version: REMOTE_ACTION_ENVELOPE_VERSION,
-        to_device_public_key: to,
-        // A sender cannot choose who it claims to be.
-        from_device_public_key: [0xEE; 32],
-        from_user_public_key: [0xEE; 32],
-        frame,
-    }
-}
-
-async fn next(client: &ServerClient, who: &str) -> Envelope {
-    loop {
-        let envelope = tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
-            .await
-            .unwrap_or_else(|_| panic!("{who} timed out"))
-            .unwrap_or_else(|| panic!("{who} connection closed"));
-        // A member's session also carries their workspace listing, and the
-        // workspace's own changes, which are no answer to a frame.
-        if !matches!(
-            envelope,
-            Envelope::PersonalList { .. }
-                | Envelope::Delta { .. }
-                | Envelope::Ready { .. }
-                | Envelope::WorkspaceBootstrap { .. }
-        ) {
-            return envelope;
-        }
-    }
-}
-
-fn invoke(invocation: InvocationId) -> RemoteActionMessage {
-    RemoteActionMessage::Invoke(InvokeRequest {
+fn invoke(invocation: InvocationId) -> InvokeRequest {
+    InvokeRequest {
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: "app".into(),
             address: ActionAddress::new("note:1", "archive"),
         },
-        argument: InvokeArgument::None,
+        argument: tilo_actions::remote::InvokeArgument::None,
         context: None,
         confirmation: None,
         revision: None,
         wait_ms: None,
         appearance: None,
         signed: None,
-    })
+    }
 }
 
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
+    reason = "one host's whole action service, its calls and their answers"
 )]
-async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
-    // Phase `the_server_routes_a_stamped_frame_to_the_addressed_device_only`.
-    {
-        let user = TestUser::fresh("Alice");
-        let host = user.enrol("home", DeviceCapabilities::member());
-        let a = user.enrol("laptop", DeviceCapabilities::primary());
-        let b = user.enrol("desktop", DeviceCapabilities::member());
-        let c = user.enrol("phone", DeviceCapabilities::member());
-        let members = [&a.cert, &b.cert, &c.cert];
-        let server = Box::pin(spawn_server(&user, host, &[WS], &members)).await;
-        let addr = server.server.node_addr();
-        let a_client = subscribed(addr.clone(), &user, &a).await;
-        let b_client = subscribed(addr.clone(), &user, &b).await;
-        let c_client = subscribed(addr, &user, &c).await;
-
-        // Signed by A as its session signs it, so what B reads is A's frame byte for byte.
-        let mut asked = invoke(InvocationId::new());
-        tilo_server_protocol::invocation::sign_message_now(
-            &WS.to_string(),
-            &mut asked,
-            &a.cert,
-            &a.sk,
-            tilo_clock::unix_now_ns(),
-        )
-        .unwrap();
-        let request = frame(asked);
-        a_client
-            .send(directed(b.device_pubkey(), request.clone()))
-            .unwrap();
-        match next(&b_client, "B").await {
-            Envelope::RemoteAction {
-                to_device_public_key,
-                from_device_public_key,
-                from_user_public_key,
-                frame,
-                ..
-            } => {
-                assert_eq!(to_device_public_key, b.device_pubkey());
-                assert_eq!(from_device_public_key, a.device_pubkey());
-                assert_eq!(from_user_public_key, user.user_pk);
-                assert_eq!(frame, request, "the server forwards the frame untouched");
-            }
-            other => panic!("B expected a remote action, got {other:?}"),
-        }
-        assert!(
-            crate::common::quiet(&c_client, Duration::from_millis(300)).await,
-            "a directed frame reaches no other device"
-        );
-    }
-    // Phase `undeliverable_frames_are_answered_not_stored`.
-    {
-        let user = TestUser::fresh("Alice");
-        let host = user.enrol("home", DeviceCapabilities::member());
-        let host_key = host.device_pubkey();
-        let a = user.enrol("laptop", DeviceCapabilities::primary());
-        let b = user.enrol("desktop", DeviceCapabilities::member());
-        let server = Box::pin(spawn_server(&user, host, &[WS], &[&a.cert, &b.cert])).await;
-        let addr = server.server.node_addr();
-        let a_client = subscribed(addr.clone(), &user, &a).await;
-
-        // B is a member but offline: nothing is queued for it.
-        a_client
-            .send(directed(
-                b.device_pubkey(),
-                frame(invoke(InvocationId::new())),
-            ))
-            .unwrap();
-        assert!(matches!(
-            next(&a_client, "A").await,
-            Envelope::RemoteActionUndeliverable { to_device_public_key, .. }
-                if to_device_public_key == b.device_pubkey()
-        ));
-        let b_client = subscribed(addr, &user, &b).await;
-        assert!(
-            crate::common::quiet(&b_client, Duration::from_millis(300)).await,
-            "remote actions are never replayed late"
-        );
-
-        a_client
-            .send(directed(host_key, frame(invoke(InvocationId::new()))))
-            .unwrap();
-        assert!(matches!(
-            next(&a_client, "A").await,
-            Envelope::RemoteActionUndeliverable { refusal: Refusal::Other(reason), .. } if reason.contains("does not serve apps")
-        ));
-        assert!(!server.server.handle().advertised_services().app_serving);
-
-        // An envelope version this server does not know is refused, not guessed.
-        let Envelope::RemoteAction {
-            workspace_id,
-            to_device_public_key,
-            from_device_public_key,
-            from_user_public_key,
-            frame,
-            ..
-        } = directed(b.device_pubkey(), frame(invoke(InvocationId::new())))
-        else {
-            unreachable!();
-        };
-        a_client
-            .send(Envelope::RemoteAction {
-                workspace_id,
-                version: REMOTE_ACTION_ENVELOPE_VERSION + 1,
-                to_device_public_key,
-                from_device_public_key,
-                from_user_public_key,
-                frame,
-            })
-            .unwrap();
-        assert!(matches!(
-            next(&a_client, "A").await,
-            Envelope::RemoteActionUndeliverable { refusal: Refusal::Invalid(reason), .. } if reason.contains("version")
-        ));
-    }
-    // Phase `an_app_serving_host_answers_frames_addressed_to_itself`.
-    {
-        let user = TestUser::fresh("Alice");
-        let host = user.enrol("home", DeviceCapabilities::member());
-        let host_key = host.device_pubkey();
-        let a = user.enrol("laptop", DeviceCapabilities::primary());
-        let actions = Arc::new(RecordingHost::default());
-        let server = Box::pin(spawn_server_serving_apps(
-            &user,
-            host,
-            &[WS],
-            &[&a.cert],
-            Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
-        ))
-        .await;
-        assert!(server.server.handle().advertised_services().app_serving);
-        let a_client = subscribed(server.server.node_addr(), &user, &a).await;
-
-        let id = InvocationId::new();
-        a_client
-            .send(directed(host_key, frame(invoke(id))))
-            .unwrap();
-        let Envelope::RemoteAction {
-            to_device_public_key,
-            from_device_public_key,
-            frame: reply,
-            ..
-        } = next(&a_client, "A").await
-        else {
-            panic!("the host answers with a remote action frame");
-        };
-        assert_eq!(to_device_public_key, a.device_pubkey());
-        assert_eq!(from_device_public_key, host_key);
-        let RemoteActionMessage::Receipt(receipt) =
-            RemoteActionFrame::decode(&reply).unwrap().message
-        else {
-            panic!("an invoke is answered with a receipt");
-        };
-        assert_eq!(receipt.invocation, id);
-        assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
-        assert_eq!(
-            *actions.callers.lock().unwrap(),
-            [Caller::authenticated(user.user_pk, a.device_pubkey())],
-            "the app action server sees the actor the server authenticated, not the claimed sender"
-        );
-    }
-}
-
-/// How the server answered a frame it must refuse: its typed refusal, or `None` when the access audit closed the session first —
-/// either way nothing was served. A served frame fails the test.
-async fn refusal(client: &ServerClient, who: &str) -> Option<Refusal> {
-    loop {
-        match tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
-            .await
-            .unwrap_or_else(|_| panic!("{who} timed out"))
-        {
-            None => return None,
-            Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => return Some(refusal),
-            // A member's session also carries their workspace listing.
-            Some(Envelope::NotAuthorised { .. } | Envelope::PersonalList { .. }) => {}
-            Some(other) => panic!("{who} expected a refusal, got {other:?}"),
-        }
-    }
-}
-
-#[tokio::test]
-async fn removed_member_session_ends_without_serving_an_action() {
+async fn the_host_answers_its_devices_and_refuses_the_rest() {
     let user = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
-    let host = user.enrol("home", DeviceCapabilities::member());
-    let host_key = host.device_pubkey();
-    let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let b = bob.enrol("desktop", DeviceCapabilities::member());
-    let actions = Arc::new(RecordingHost::default());
-    let server = Box::pin(spawn_server_admitting_with(
-        &user,
-        &host,
-        &[&bob],
-        &[WS],
-        &[&a.cert],
-        Some(
-            Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions))))
-                as Arc<dyn tilo_server::AppActionServer>,
-        ),
-    ))
-    .await;
-    let workspaces = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces");
-    let issued = invitation(workspaces, &host, &WS.to_string(), Role::Editor, &b).await;
-    redeem(&b, &issued).await.unwrap();
-    let addr = server.server.node_addr();
-    let _a_client = subscribed(addr.clone(), &user, &a).await;
-    let b_client = subscribed(addr, &user, &b).await;
-
-    workspaces
-        .remove_member(
-            &WS.to_string(),
-            &host.cert,
-            RemoveMemberRequest {
-                request_id: [0x5B; 32],
-                user_public_key: bob.user_pk,
-            },
-        )
-        .await
-        .unwrap();
-
-    // Removing B wakes the access audit, which ends B's session. Wait for
-    // that end rather than racing a send against it; the refusal of a frame
-    // that arrives before the audit is covered at the handler by
-    // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
-    while tilo_test_env::within("removed member's session to end", b_client.recv())
-        .await
-        .is_some()
-    {}
-    tilo_test_env::within(
-        "removed member's outbound to close",
-        b_client.outbound.closed(),
-    )
-    .await;
-    assert!(
-        b_client
-            .send(directed(host_key, frame(invoke(InvocationId::new()))))
-            .is_err(),
-        "an ended session queues no action"
-    );
-    assert!(
-        actions.callers.lock().unwrap().is_empty(),
-        "a removed member never reaches the app action server"
-    );
-}
-
-#[tokio::test]
-async fn remote_action_to_removed_target_is_refused() {
-    let user = TestUser::fresh("Alice");
-    let bob = TestUser::fresh("Bob");
     let host = user.enrol("home", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let c = bob.enrol("phone", DeviceCapabilities::member());
-    let server = Box::pin(spawn_server_admitting(
-        &user,
-        &host,
-        &[&bob],
-        &[WS],
-        &[&a.cert],
-    ))
-    .await;
-    let workspaces = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces");
-    let issued = invitation(workspaces, &host, &WS.to_string(), Role::Editor, &c).await;
-    redeem(&c, &issued).await.unwrap();
-    let addr = server.server.node_addr();
-    let a_client = subscribed(addr.clone(), &user, &a).await;
-    let c_client = subscribed(addr, &user, &c).await;
-
-    workspaces
-        .remove_member(
-            &WS.to_string(),
-            &host.cert,
-            RemoveMemberRequest {
-                request_id: [0x5C; 32],
-                user_public_key: bob.user_pk,
-            },
-        )
-        .await
-        .unwrap();
-
-    a_client
-        .send(directed(
-            c.device_pubkey(),
-            frame(invoke(InvocationId::new())),
-        ))
-        .unwrap();
-    match next(&a_client, "A").await {
-        Envelope::RemoteActionUndeliverable {
-            to_device_public_key,
-            refusal,
-            ..
-        } => {
-            assert_eq!(to_device_public_key, c.device_pubkey());
-            assert!(matches!(refusal, Refusal::NotAMember(_)), "{refusal}");
-        }
-        other => panic!("A expected a refusal, got {other:?}"),
-    }
-    let deadline = tokio::time::Instant::now()
-        .checked_add(Duration::from_millis(300))
-        .unwrap();
-    while let Ok(Some(envelope)) = tokio::time::timeout_at(deadline, c_client.recv()).await {
-        assert!(
-            !matches!(envelope, Envelope::RemoteAction { .. }),
-            "a removed device receives no remote action"
-        );
-    }
-}
-
-#[tokio::test]
-async fn expired_agent_delegation_cannot_invoke_host() {
-    let user = TestUser::fresh("Alice");
-    let host = user.enrol("home", DeviceCapabilities::member());
-    let host_key = host.device_pubkey();
-    let agent = user.enrol("agent", DeviceCapabilities::member());
-    let workspace = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";
-    let ws = tilo_server::WorkspaceId::parse(workspace).unwrap();
+    let stranger = user.enrol("phone", DeviceCapabilities::member());
     let actions = Arc::new(RecordingHost::default());
     let server = Box::pin(spawn_server_serving_apps(
         &user,
         host,
-        &[ws],
-        &[&agent.cert],
+        &[WS],
+        &[&a.cert],
         Arc::new(ActionProviderServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
-    let to_host = |frame| Envelope::RemoteAction {
-        workspace_id: ws,
-        version: REMOTE_ACTION_ENVELOPE_VERSION,
-        to_device_public_key: host_key,
-        from_device_public_key: [0xEE; 32],
-        from_user_public_key: [0xEE; 32],
-        frame,
-    };
-    // The agent by the name its delegation gives it.
-    let delegated =
-        [Caller::delegated_agent("helper", user.user_pk, agent.device_pubkey()).named("Helper")];
+    let service_device = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .action_service()
+        .device();
+    let (a_endpoint, remote, _a_actions) =
+        asking(&a, server.server.node_addr(), service_device).await;
+    let caller = Caller::authenticated(user.user_pk, a.device_pubkey());
 
-    // Delegate the subscribed device briefly; until expiry it acts as the
-    // agent. The live half only proves something if its answer came back
-    // before the delegation ran out: a runner that stalls past a short
-    // lifetime may rightly refuse it. Then the delegation is issued again,
-    // living twice as long, on a fresh session (the expired one may already
-    // be cut off by the access audit, and subscribing under it is refused).
-    let mut lifetime = Duration::from_millis(500);
-    let (client, expires, admitted) = loop {
-        let issued = tilo_clock::try_unix_now_ns().unwrap();
-        let expires = issued
-            .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
-            .unwrap();
-        let delegation = Delegation::sign(
-            &user.user_sk,
-            agent.device_pubkey(),
-            tilo_server_protocol::delegation::Delegate::Agent {
-                agent_id: "helper".into(),
-            },
-            "Helper",
-            [0x7c, 0x3a, 0xed],
-            DelegateScope {
-                workspaces: vec![WorkspaceId::parse(workspace).unwrap()],
-                apps: Vec::new(),
-            },
-            issued,
-            expires,
-        )
-        .unwrap();
-        server
-            .server
-            .register_agent(&agent.cert, delegation)
-            .await
-            .unwrap();
-        actions.callers.lock().unwrap().clear();
-        let (client, ready) = subscribe(server.server.node_addr(), &user, &agent, ws).await;
-        let answer = if matches!(ready, Some(Envelope::Ready { .. })) {
-            client
-                .send(to_host(frame(invoke(InvocationId::new()))))
-                .unwrap();
-            Some(next(&client, "agent").await)
-        } else {
-            None
-        };
-        if tilo_clock::try_unix_now_ns().unwrap() < expires {
-            assert!(
-                matches!(answer, Some(Envelope::RemoteAction { .. })),
-                "a live delegation subscribes ({ready:?}) and reaches the host, got {answer:?}"
-            );
-            // The host names the run of every connection it admits, so the
-            // caller it saw is the delegated agent with the execution it
-            // minted for this connection: everything else is the client's
-            // word and must be the delegation's.
-            let seen = actions.callers.lock().unwrap().clone();
-            let [seen] = seen.as_slice() else {
-                panic!("one caller reached the host: {seen:?}")
-            };
-            let lease = seen
-                .execution_lease()
-                .expect("the host names the run of the connection it admitted");
-            assert_eq!(*seen, delegated[0].clone().in_execution(lease));
-            break (client, expires, seen.clone());
-        }
-        assert!(
-            lifetime < tilo_test_env::hang_bound(),
-            "no delegation lifetime up to {lifetime:?} outlived one round trip"
-        );
-        lifetime = lifetime.saturating_mul(2);
-    };
-
-    // Just past expiry. An access audit may already have ended the session
-    // (one is due at the expiry, and a connection's first comes a second
-    // after it connected), and then the frame is never sent.
-    let remaining = expires.saturating_sub(tilo_clock::try_unix_now_ns().unwrap());
-    tokio::time::sleep(Duration::from_nanos(remaining).saturating_add(Duration::from_millis(20)))
-        .await;
-    let _ = client.send(to_host(frame(invoke(InvocationId::new()))));
-    let refused = refusal(&client, "agent").await;
-    assert!(
-        matches!(refused, None | Some(Refusal::NotAMember(_))),
-        "got {refused:?}"
-    );
+    // The host answers the catalogue and the invocation through the app action server it
+    // serves, as the caller the request's own signature and certificate name.
+    let page = tilo_test_env::within(
+        "the host answers a catalogue query",
+        ActionProvider::query(&remote, &caller, CatalogueQuery::default()),
+    )
+    .await
+    .expect("the host answers");
+    assert!(page.is_ok(), "the host answers the catalogue: {page:?}");
+    let id = InvocationId::new();
+    let receipt = tilo_test_env::within(
+        "the host answers an invocation",
+        ActionProvider::invoke(&remote, &caller, invoke(id)),
+    )
+    .await
+    .expect("the host answers")
+    .expect("the invocation runs");
+    assert_eq!(receipt.invocation, id);
+    assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
     assert_eq!(
         *actions.callers.lock().unwrap(),
-        [admitted],
-        "an expired delegation never reaches the app action server"
+        [Caller::authenticated(user.user_pk, a.device_pubkey()).in_workspace(WS.to_string())],
+        "the app action server sees the device that asked, nobody else"
     );
+
+    // A device the workspace's roster does not name asks nothing, and runs nothing.
+    let (stranger_endpoint, stranger_remote, _stranger_actions) =
+        asking(&stranger, server.server.node_addr(), service_device).await;
+    let nobody = Caller::authenticated(user.user_pk, stranger.device_pubkey());
+    let refused = tilo_test_env::within(
+        "the host refuses a device it does not admit",
+        ActionProvider::query(&stranger_remote, &nobody, CatalogueQuery::default()),
+    )
+    .await
+    .expect("the host answers")
+    .expect_err("a device off the roster asks nothing");
+    assert!(
+        matches!(
+            refused,
+            ActionCallError::NotPermitted | ActionCallError::Refused { .. }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        actions.callers.lock().unwrap().len(),
+        1,
+        "a device off the roster never reaches the app action server"
+    );
+
+    drop((a_endpoint, stranger_endpoint));
+    drop(server);
+}
+
+/// A request addressed to another device the host holds a link to is passed on to that
+/// device alone, and runs there as the device that signed it.
+#[tokio::test]
+async fn a_request_addressed_to_another_device_is_passed_on() {
+    let user = TestUser::fresh("Alice");
+    let host = user.enrol("home", DeviceCapabilities::member());
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let page = user.enrol("browser", DeviceCapabilities::member());
+    // What the page holds of the workspace, made before its host is handed to the server.
+    let page_workspace = Replica::new(workspace_of(
+        WS,
+        &host,
+        &[a.cert.clone(), page.cert.clone()],
+    ));
+    let server = Box::pin(spawn_server_serving_apps(
+        &user,
+        host,
+        &[WS],
+        &[&a.cert, &page.cert],
+        Arc::new(ActionProviderServer::new(SharedHost(Arc::default()))),
+    ))
+    .await;
+    // The page holds a link to the host and answers its own actions on it.
+    let held = Arc::new(RecordingHost::default());
+    let page_actions = ActionService::new(page.sk.clone(), Arc::new(SharedHost(Arc::clone(&held))));
+    page_actions.hold(page_workspace);
+    let (host_end, page_end) =
+        tilo_peer_state::actions::testing::duplex(Some(page.device_pubkey()), None);
+    page_actions.serve_link(page_end);
+    server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .action_service()
+        .reach_device_at(page.device_pubkey(), host_end);
+
+    // A asks its host for the page's actions: the host passes the request on to the page, which
+    // answers it as A.
+    let service_device = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .action_service()
+        .device();
+    let (a_endpoint, _remote, a_actions) =
+        asking(&a, server.server.node_addr(), service_device).await;
+    let caller = Caller::authenticated(user.user_pk, a.device_pubkey());
+    let through = a_actions.through(
+        &a_endpoint,
+        &server.server.node_addr(),
+        &WS.to_string(),
+        page.device_pubkey(),
+    );
+    let id = InvocationId::new();
+    let receipt = tilo_test_env::within(
+        "the host passes the request on",
+        ActionProvider::invoke(&through, &caller, invoke(id)),
+    )
+    .await
+    .expect("the page answers")
+    .expect("the page runs the invocation");
+    assert_eq!(receipt.invocation, id);
+    assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    assert_eq!(
+        *held.callers.lock().unwrap(),
+        [Caller::authenticated(user.user_pk, a.device_pubkey()).in_workspace(WS.to_string())],
+        "the page runs the request as the device that signed it"
+    );
+
+    drop(a_endpoint);
+    drop(server);
+}
+
+/// The workspace `id`, made by `host` with `roster` in it: what a page holds of the
+/// workspaces it takes part in, without a store.
+fn workspace_of(
+    id: WorkspaceId,
+    host: &TestDevice,
+    roster: &[DeviceCert],
+) -> tilo_peer_state::StatePeer {
+    let now = tilo_clock::wall();
+    let mut roster = roster.to_vec();
+    // The device that founded the workspace holds it among its roster.
+    if !roster
+        .iter()
+        .any(|cert| cert.device_public_key == host.cert.device_public_key)
+    {
+        roster.push(host.cert.clone());
+    }
+    let mut peer = tilo_peer_state::StatePeer::new(
+        &id.to_string(),
+        host.cert.clone(),
+        roster.clone(),
+        tilo_user_identity::RevocationList::new(),
+        now,
+    )
+    .expect("the workspace opens");
+    peer.select_exact_admissions()
+        .expect("its admissions stand");
+    peer.install_seed(
+        tilo_peer_state::SeedState {
+            workspace_changes: tilo_peer_state::seed_workspace(
+                &id.to_string(),
+                &host.cert,
+                &roster,
+            )
+            .expect("the workspace seeds"),
+            documents: Vec::new(),
+        },
+        &host.sk,
+        now,
+    )
+    .expect("the seed lands");
+    peer
 }
 
 /// Records which callers reached it; runs every admitted invocation to

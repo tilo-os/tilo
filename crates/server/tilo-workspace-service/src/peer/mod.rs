@@ -11,7 +11,6 @@
 mod access;
 mod access_audit;
 mod actions;
-mod admin;
 mod agent_session;
 mod delivery;
 mod dispatch;
@@ -29,7 +28,6 @@ use access::{
     unavailable_target,
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
-use admin::handle_workspaces;
 use agent_session::handle_agent_session;
 use dispatch::handle_envelope;
 pub use fetch::FetchGrants;

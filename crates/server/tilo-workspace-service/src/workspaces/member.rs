@@ -1524,8 +1524,10 @@ impl Workspaces {
             .ok_or_else(|| "the workspace is not held here as a member copy".to_owned())
     }
 
-    /// The link of `workspace`'s member copy, while it is up.
-    pub(crate) fn member_link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
+    /// The link of `workspace`'s member copy, while it is up: what a session of this device
+    /// reads and writes the workspace through instead of dialling a link of its own.
+    #[must_use]
+    pub fn member_link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
         self.inner
             .member
             .links

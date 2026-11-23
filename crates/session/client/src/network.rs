@@ -375,7 +375,7 @@ pub enum Event {
     /// The person's workspace list, as their host keeps it now: sent whenever
     /// a workspace of theirs is made, joined, renamed, left or deleted, so no
     /// device has to ask the host again.
-    Personal(Box<tilo_server_session::workspaces::PersonalList>),
+    Personal(Box<tilo_server_protocol::workspaces::PersonalList>),
 }
 
 /// How the peer network numbers one workspace's topic.

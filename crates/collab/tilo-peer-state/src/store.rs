@@ -58,42 +58,10 @@ pub enum Appetite {
     },
 }
 
-/// Where a subscriber stands on one lineage: it holds every frame up to
-/// `after_seq` and asks for the ones after it. A subscriber that holds none
-/// of a lineage names no cursor for it, and is sent the lineage from its
-/// first frame, a checkpoint at sequence number 0 included.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub struct Cursor {
-    /// The lineage it resumes.
-    pub lineage: Lineage,
-    /// The last sequence number it holds.
-    pub after_seq: u64,
-}
-
-/// Where a store has nothing: the earliest frame it still holds on a
-/// lineage. A subscriber whose cursor is further back has a gap there and
-/// asks another device of the workspace for what the store retired.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Floor {
-    /// The lineage the store is short on.
-    pub lineage: Lineage,
-    /// The earliest frame it holds there.
-    pub earliest_seq: u64,
-}
-
-/// What one replay round carries.
-#[derive(Clone, Debug, Default)]
-pub struct Replay {
-    /// The frames after the subscriber's cursors, in storage order.
-    pub frames: Vec<NeighbourMsg>,
-    /// Lineages the store cannot continue from the cursors it was given.
-    pub floors: Vec<Floor>,
-    /// Whether the round stopped at its budget with frames left; ask again
-    /// from the cursors these frames advance.
-    pub more: bool,
-}
+// The vocabulary a replay speaks — where a device stands, what one round may
+// carry, what it answers — is the link's, which a page that keeps no store
+// speaks too.
+pub use crate::frames::{Budget, Cursor, Floor, Replay, advance, author_of, cursors, sealed};
 
 /// What retaining a frame did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,24 +76,6 @@ pub enum Retained {
     /// The store held another frame at its author's sequence number on its
     /// lineage, with other bytes: it now holds both, and serves both.
     Beside,
-}
-
-/// How much one replay round may carry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Budget {
-    /// The most frames in one round.
-    pub max_frames: usize,
-    /// The most frame bytes in one round.
-    pub max_bytes: u64,
-}
-
-impl Default for Budget {
-    fn default() -> Self {
-        Self {
-            max_frames: 256,
-            max_bytes: 8 * 1024 * 1024,
-        }
-    }
 }
 
 /// Errors from a store's files.
@@ -1706,39 +1656,6 @@ impl Reading {
     }
 }
 
-/// Where `peer`'s replica stands, one cursor per author line of its sealed
-/// history: what it asks a store to continue from.
-#[must_use]
-pub fn cursors(peer: &crate::StatePeer) -> Vec<Cursor> {
-    peer.replay_floors()
-        .into_iter()
-        .map(|(app, record, author, seq)| Cursor {
-            lineage: Lineage::of(&app, &record, author),
-            after_seq: seq,
-        })
-        .collect()
-}
-
-/// Where `cursors` stand after `frames`: one cursor per lineage they belong
-/// to, at the last sequence number it carried.
-pub fn advance(cursors: &mut Vec<Cursor>, frames: &[NeighbourMsg]) {
-    for frame in frames {
-        let Ok(frame) = Frame::of(frame) else {
-            continue;
-        };
-        match cursors
-            .iter_mut()
-            .find(|cursor| cursor.lineage == frame.lineage)
-        {
-            Some(cursor) => cursor.after_seq = cursor.after_seq.max(frame.seq),
-            None => cursors.push(Cursor {
-                lineage: frame.lineage,
-                after_seq: frame.seq,
-            }),
-        }
-    }
-}
-
 /// The floors of `replay` that a device with `cursors` cannot bridge: the
 /// store has no frame the cursor leads into, so another device of the
 /// workspace has to answer for the gap.
@@ -1758,28 +1675,6 @@ pub fn gaps(cursors: &[Cursor], replay: &Replay) -> Vec<Floor> {
         })
         .copied()
         .collect()
-}
-
-/// Whether `message` is a sealed document frame: the only history a store
-/// keeps, since it never holds a workspace's keys.
-#[must_use]
-pub fn sealed(message: &NeighbourMsg) -> bool {
-    match message {
-        NeighbourMsg::AppDocument { envelope, .. } => envelope.encryption.is_some(),
-        _ => false,
-    }
-}
-
-/// The device `message` names as its own, when it names one: a frame a
-/// workspace's host forwards says whose it is by its own signature, whatever
-/// link carried it.
-#[must_use]
-pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
-    match message {
-        NeighbourMsg::AppDocument { envelope, .. } => Some(*envelope.author.as_bytes()),
-        NeighbourMsg::IdentityHello { cert, .. } => Some(cert.device_public_key),
-        _ => None,
-    }
 }
 
 const WORKSPACES: &str = "workspaces";

@@ -249,6 +249,15 @@ pub const LINK_LIVE_SESSION_PATH: &str = "/peer/v1/link/live-session";
 /// which device opened the session (the handshake of `crate::auth`), then
 /// carries the pages it asks for and what its person does on them.
 pub const LINK_PAGE_PATH: &str = "/peer/v1/link/page";
+/// A device's link to another device of its workspace over WebTransport: the
+/// first stream proves which device opened the session (the handshake of
+/// `crate::auth`), then the link's own streams carry what the same link
+/// carries on [`crate::transport::DIRECT_ALPN`].
+pub const LINK_RECORDS_PATH: &str = "/peer/v1/link/records";
+/// One device asking another of its workspace to run an action, over
+/// WebTransport: the first stream proves the asking device, then the actions
+/// protocol's own streams follow, as on [`crate::transport::ACTIONS_ALPN`].
+pub const LINK_ACTIONS_PATH: &str = "/peer/v1/link/actions";
 
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member

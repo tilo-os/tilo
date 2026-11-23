@@ -694,13 +694,13 @@ mod tests {
         workspace: &str,
         role: &str,
         made_at_ms: i64,
-    ) -> tilo_server_session::workspaces::PersonalWorkspace {
-        tilo_server_session::workspaces::PersonalWorkspace {
+    ) -> tilo_server_protocol::workspaces::PersonalWorkspace {
+        tilo_server_protocol::workspaces::PersonalWorkspace {
             workspace: workspace.into(),
             name: workspace.to_uppercase(),
             host: None,
             role: Some(role.into()),
-            labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
+            labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             made_at_ms: Some(made_at_ms),
             unattended: false,
             enter_at: None,

@@ -5,8 +5,7 @@
 //! joins the relay that serves its host as its own device — never as a device
 //! that bridges anything — seals its tracks under the workspace scope's
 //! channel content keys ([`route`]) and opens only what the devices its
-//! governance admits published ([`crate::replica`]'s
-//! key holders). The carrier is the one every device dials: a direct iroh
+//! governance admits published (its key holders). The carrier is the one every device dials: a direct iroh
 //! session to the device that serves the workspace ([`tilo_live::native`]),
 //! its grant this device's certificate and its signed statement that the
 //! page's endpoint speaks for it. This module is the session's bookkeeping
@@ -30,8 +29,9 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::Carrier;
 use tilo_server_client::link::{Dialer, Purpose};
 
-use super::{Command, DeviceSigner, Task};
+use super::{Command, Task};
 use key_group::ContentKeys;
+use tilo_server_client::DeviceSigner;
 use tilo_server_protocol::WorkspaceId;
 
 /// The message a page shows in its members' place when its live session cannot
@@ -551,7 +551,7 @@ impl Task {
             .filter(|workspace_id| self.workspaces.contains(workspace_id))
             .collect();
         for workspace_id in due {
-            let Some((workspace, _)) = self.replicas.members(workspace_id) else {
+            let Some((workspace, _)) = self.members(workspace_id) else {
                 self.live_sessions
                     .note_unasked(workspace_id, "This page holds none of its workspace yet.");
                 continue;
@@ -567,16 +567,15 @@ impl Task {
                 );
                 continue;
             };
-            let Some(key_holders) = self.replicas.key_holders(&route) else {
+            let Some(key_holders) = self.key_holders(&route) else {
                 self.live_sessions.note_unasked(
                     workspace_id,
                     "Its workspace's governance names none of its devices here yet.",
                 );
                 continue;
             };
-            let call_rules = self.replicas.call_rules(workspace_id).unwrap_or_default();
+            let call_rules = self.call_rules(workspace_id).unwrap_or_default();
             let call_persons: BTreeMap<[u8; 32], String> = self
-                .replicas
                 .member_devices(workspace_id)
                 .unwrap_or_default()
                 .into_iter()
@@ -629,7 +628,7 @@ impl Task {
             // The workspace's own governance names where its host listens; a
             // host that has not named itself yet is dialled where the session
             // reached it.
-            let host = self.replicas.host(workspace_id).map_or_else(
+            let host = self.host(workspace_id).map_or_else(
                 || self.config.host.clone(),
                 |named| named.over(self.config.host.carrier()),
             );

@@ -16,19 +16,25 @@
 //!
 //! Over iroh the endpoint's TLS says who the device is; over WebTransport the
 //! device proves it with the server handshake on the link's first stream,
-//! where a conversation needs to know (the session's own, and the live session's).
-//! Either way the bytes above a link are the same.
+//! where a conversation needs to know (the session's own, the live session's,
+//! the link a workspace's records travel on). Either way the bytes above a
+//! link are the same.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use tilo_server_protocol::web::{
-    LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_SESSION_PATH, WebLink,
+    LINK_ACTIONS_PATH, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH,
+    LINK_SESSION_PATH, WebLink,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::LinkError;
 use crate::host::{Carrier, ServerAddress};
+
+/// The most bytes a handshake's frames may declare: a certificate, a nonce and a signature fit
+/// many times over.
+const MAX_HANDSHAKE_BYTES: usize = 64 * 1024;
 
 /// How long a dial waits for a connection before it is retried.
 ///
@@ -49,6 +55,11 @@ pub enum Purpose {
     Certify,
     /// A workspace's live session.
     LiveSession,
+    /// A workspace's records and governance: the streams of the link two
+    /// devices of one workspace sync over (`DIRECT_ALPN`).
+    Records,
+    /// Actions one device asks another of its workspace to run.
+    Actions,
 }
 
 impl Purpose {
@@ -59,6 +70,8 @@ impl Purpose {
             Self::Session => LINK_SESSION_PATH,
             Self::Certify => LINK_CERTIFY_PATH,
             Self::LiveSession => LINK_LIVE_SESSION_PATH,
+            Self::Records => LINK_RECORDS_PATH,
+            Self::Actions => LINK_ACTIONS_PATH,
         }
     }
 
@@ -69,6 +82,8 @@ impl Purpose {
             Self::Session => Some(tilo_server_protocol::transport::ALPN),
             Self::Certify => Some(tilo_server_protocol::certify::CERTIFY_ALPN),
             Self::LiveSession => None,
+            Self::Records => Some(tilo_server_protocol::transport::DIRECT_ALPN),
+            Self::Actions => Some(tilo_server_protocol::transport::ACTIONS_ALPN),
         }
     }
 }
@@ -277,6 +292,10 @@ pub struct Link {
     /// What an entry on it is bound to, once read ([`Link::binding`]): a
     /// server offers it once per link.
     binding: std::sync::Arc<tokio::sync::OnceCell<[u8; 32]>>,
+    /// The device at the other end, when the link names it: a WebTransport
+    /// session names none until the handshake says which device proved itself
+    /// on it ([`Link::web_as`]).
+    device: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -290,6 +309,7 @@ impl Link {
         Self {
             inner,
             binding: std::sync::Arc::default(),
+            device: None,
         }
     }
 
@@ -300,10 +320,73 @@ impl Link {
         Self::of(Inner::Web(Box::new(session)))
     }
 
+    /// [`Self::web`], for a link whose other end is `device`: the device a
+    /// session's handshake proved, or the one a page dialled. A WebTransport
+    /// session itself names no device.
+    #[must_use]
+    pub fn web_as(session: tilo_net::webtransport::Session, device: [u8; 32]) -> Self {
+        Self {
+            device: Some(device),
+            ..Self::of(Inner::Web(Box::new(session)))
+        }
+    }
+
     /// A link over an iroh connection already open.
     #[must_use]
     pub fn iroh(connection: iroh::endpoint::Connection) -> Self {
         Self::of(Inner::Iroh(connection))
+    }
+
+    /// The device at the other end, when the link names it: the endpoint a
+    /// connection proved, or the device a session proved itself as.
+    #[must_use]
+    pub fn remote(&self) -> Option<[u8; 32]> {
+        match &self.inner {
+            Inner::Iroh(connection) => Some(*connection.remote_id().as_bytes()),
+            Inner::Web(_) => self.device,
+        }
+    }
+
+    /// Open a unidirectional stream, for what the other end only reads.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::Unavailable`] when the link is gone.
+    pub async fn open_uni(&self) -> Result<LinkSend, LinkError> {
+        let gone = |error: String| LinkError::Unavailable(error);
+        match &self.inner {
+            Inner::Iroh(connection) => connection
+                .open_uni()
+                .await
+                .map(LinkSend::Iroh)
+                .map_err(|error| gone(error.to_string())),
+            Inner::Web(session) => session
+                .open_uni()
+                .await
+                .map(LinkSend::Web)
+                .map_err(|error| gone(error.to_string())),
+        }
+    }
+
+    /// Accept the next unidirectional stream the other end opens.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::Unavailable`] when the link is gone.
+    pub async fn accept_uni(&self) -> Result<LinkRecv, LinkError> {
+        let gone = |error: String| LinkError::Unavailable(error);
+        match &self.inner {
+            Inner::Iroh(connection) => connection
+                .accept_uni()
+                .await
+                .map(LinkRecv::Iroh)
+                .map_err(|error| gone(error.to_string())),
+            Inner::Web(session) => session
+                .accept_uni()
+                .await
+                .map(LinkRecv::Web)
+                .map_err(|error| gone(error.to_string())),
+        }
     }
 
     /// Open a bidirectional stream.
@@ -407,11 +490,91 @@ impl Link {
         }
     }
 
+    /// Prove this device to the host on the link's first stream, as the member proof a page's
+    /// WebTransport session carries: the session handshake, for a device whose transport does
+    /// not name it — an endpoint keyed by something other than the device key, as a page's is.
+    /// The host answers as `server`, the certificate it was pinned by, and the device proved here
+    /// is the one the host admits on the link from then on.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device ([`LinkError::Refused`]), answered as a server other than the
+    /// one pinned ([`LinkError::ServerChanged`]), or the link ended before it answered
+    /// ([`LinkError::Unavailable`]).
+    pub async fn prove_member(
+        &self,
+        cert: &tilo_user_identity::DeviceCert,
+        signer: &dyn crate::signer::DeviceSigner,
+        server: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), LinkError> {
+        use tilo_server_protocol::auth::{self, Hello, HelloAck, HelloRefused};
+
+        let (mut send, mut recv) = self.open_bi().await?;
+        let client_nonce: [u8; 32] = rand::random();
+        let hello = Hello::new(cert.clone(), client_nonce);
+        let hello = postcard::to_allocvec(&hello)
+            .map_err(|error| LinkError::Malformed(error.to_string()))?;
+        crate::frame::write_frame(&mut send, &hello)
+            .await
+            .map_err(|error| LinkError::Unavailable(error.to_string()))?;
+        let answer = crate::frame::read_answer(&mut recv, MAX_HANDSHAKE_BYTES)
+            .await
+            .map_err(|error| LinkError::Unavailable(error.to_string()))?;
+        let now = tilo_clock::unix_now_ns();
+        let revocations = tilo_user_identity::RevocationList::new();
+        let ack: HelloAck = match answer {
+            Some(crate::frame::Answer::Frame(bytes)) => auth::decode_handshake(&bytes)
+                .map_err(|error| LinkError::Malformed(error.to_string()))?,
+            Some(crate::frame::Answer::Refusal(bytes)) => {
+                let refused: HelloRefused = auth::decode_handshake(&bytes)
+                    .map_err(|error| LinkError::Malformed(error.to_string()))?;
+                // A refusal is believed where its server's ack would be: it is the pinned host's,
+                // signing this hello.
+                return Err(
+                    match auth::verify_pinned_host_ack(&refused, &revocations, now, &client_nonce) {
+                        Ok(peer) if peer.device_public_key == server.device_public_key => {
+                            LinkError::Refused(refused.refusal.code().to_owned())
+                        }
+                        Ok(_) => LinkError::ServerChanged,
+                        Err(_) => {
+                            LinkError::Malformed("a refusal that proves no pinned host".into())
+                        }
+                    },
+                );
+            }
+            None => return Err(LinkError::Unavailable("the host answered nothing".into())),
+        };
+        // The same proof a session's handshake takes of its server: the pinned host's device, its
+        // certificate and its signature over this hello.
+        let peer = auth::verify_pinned_host_ack(&ack, &revocations, now, &client_nonce)
+            .map_err(|error| LinkError::Malformed(error.to_string()))?;
+        if peer.device_public_key != server.device_public_key {
+            return Err(LinkError::ServerChanged);
+        }
+        let ack2 = crate::signer::signed_ack2(signer, &ack.server_nonce)
+            .await
+            .map_err(LinkError::Sign)?;
+        let ack2 = postcard::to_allocvec(&ack2)
+            .map_err(|error| LinkError::Malformed(error.to_string()))?;
+        crate::frame::write_frame(&mut send, &ack2)
+            .await
+            .map_err(|error| LinkError::Unavailable(error.to_string()))?;
+        send.finish();
+        Ok(())
+    }
+
     /// Close the link at once, telling the server `reason`.
     pub fn close(&self, reason: &str) {
+        self.close_with(0, reason);
+    }
+
+    /// Close the link at once with `code` and `reason`: a link that ends as a
+    /// refusal closes with the code its protocol names, its reason the typed
+    /// refusal the other end reads.
+    pub fn close_with(&self, code: u32, reason: &str) {
         match &self.inner {
-            Inner::Iroh(connection) => connection.close(0u32.into(), reason.as_bytes()),
-            Inner::Web(session) => session.close(0, reason),
+            Inner::Iroh(connection) => connection.close(code.into(), reason.as_bytes()),
+            Inner::Web(session) => session.close(code, reason),
         }
     }
 

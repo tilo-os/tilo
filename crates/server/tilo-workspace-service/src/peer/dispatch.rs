@@ -5,7 +5,7 @@ use super::{
     AuthenticatedPeer, Envelope, PeerError, RemoteActionRoute, SessionCtx, handle_agent_session,
     handle_content_want, handle_host_action, handle_host_said, handle_live_join,
     handle_open_document, handle_presence, handle_remote_action, handle_subscribe,
-    handle_unsubscribe, handle_workspaces, route_document_content,
+    handle_unsubscribe, route_document_content,
 };
 use tilo_server_protocol::WorkspaceId;
 
@@ -195,9 +195,6 @@ pub(super) async fn handle_envelope(
             Ok(None)
         }
         Envelope::HostAction { frame } => Ok(handle_host_action(peer, session, &frame)),
-        Envelope::WorkspacesRequest { request_id, frame } => {
-            Box::pin(handle_workspaces(peer, session, request_id, &frame)).await
-        }
         Envelope::AgentSession { request_id, label } => {
             Ok(Some(handle_agent_session(
                 peer, session, subscribed, request_id, &label,
@@ -224,7 +221,6 @@ pub(super) async fn handle_envelope(
         | Envelope::Position { .. }
         | Envelope::DocumentOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
-        | Envelope::WorkspacesReply { .. }
         | Envelope::AgentSessionAnswer { .. }
         | Envelope::AgentSessionStopped
         // Only the host answers an entry, once, before the session.

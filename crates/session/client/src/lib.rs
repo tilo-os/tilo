@@ -5,11 +5,12 @@
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 //!
 //! A page, an agent or a program is a device of its person through the server transport the client
-//! carries itself: [`start_session`] keeps one certified server session to the person's host, held
-//! through a [`Link`], and [`device::Device`] is the one entry a program takes it by. It carries
-//! signed document envelopes ([`document`]) as acknowledged commits from a persisted outbox
-//! replayed after every reconnect, each joined workspace's governance in its replica, the live
-//! peer network's presence and previews, and calls ([`voice`]).
+//! carries itself: [`start_session`] keeps a certified link to the person's host for each of its
+//! workspaces, held through a [`Link`], and [`device::Device`] is the one entry a program takes
+//! it by. Each workspace's records, governance and channels travel that link
+//! ([`tilo_peer_state::direct::DirectSync`]), a device's writes are kept in its own ownership
+//! until the host answers them, and the live peer network's presence, previews and calls travel
+//! the live session.
 
 #![cfg_attr(
     all(target_arch = "wasm32", target_os = "unknown"),
@@ -41,7 +42,6 @@ pub mod narration;
 pub mod network;
 pub mod personal;
 pub mod presence;
-mod replica;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;
 pub mod session;
@@ -68,7 +68,7 @@ pub use personal::PersonalWorkspaces;
 pub use presence::OwnPresence;
 pub use saying::saying;
 #[cfg(not(target_arch = "wasm32"))]
-pub use session::{Lent, start_session_lent};
+pub use session::{Lent, MemberLinks, start_session_lent};
 pub use session::{PeerConfig, SessionMemberServer, member_server, start_session};
 pub use states::{SyncState, WorkspaceState};
 pub use tilo_live::presence::Call as InCall;

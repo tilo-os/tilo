@@ -288,8 +288,6 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         // scope is one workspace's opaque trust, not a session on the host.
         Envelope::PeerServerHello { .. }
         | Envelope::HostAction { .. }
-        | Envelope::WorkspacesRequest { .. }
-        | Envelope::WorkspacesReply { .. }
         | Envelope::AgentSession { .. }
         | Envelope::AgentSessionAnswer { .. }
         | Envelope::AgentSessionStopped

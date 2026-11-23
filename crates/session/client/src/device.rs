@@ -14,7 +14,7 @@ use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::login::{Entry, SignIn};
 use tilo_server_client::{CertifyError, DeviceSigner, LinkError};
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
     KEEP_PERSONAL, LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
 };
@@ -274,11 +274,36 @@ impl Device {
 
     /// Join `workspace` (its UUID) and wait for its host to say this device is in: its id here.
     ///
+    /// The join is the host's own entry, asked on this device's link: it admits the device and
+    /// answers the membership it holds and the address its host holds the workspace at, which
+    /// [`Self::hosts`] hands this device's workspace service so the workspace's records reach
+    /// it. Only then does the session take part in the workspace's link, whose host admits the
+    /// device the entry just let in.
+    ///
     /// # Errors
-    /// It is no workspace UUID, the session is closed, or its host did not admit this device.
+    /// It is no workspace UUID, the session is closed, its host did not enter this device, or
+    /// the device was not admitted to the workspace's link.
     pub async fn join(&self, workspace: &str) -> Result<WorkspaceId, CertifyError> {
         let id = WorkspaceId::parse(workspace)
             .ok_or_else(|| CertifyError::Request(format!("{workspace} names no workspace")))?;
+        // A workspace this session is in already was entered, and its host's answer kept with
+        // it: the link it takes part in is all that is left to join.
+        if self.peer.status().workspaces.get(&id) != Some(&true) {
+            let entering = tilo_server_protocol::entering::Entering {
+                workspace: workspace.to_owned(),
+                name: String::new(),
+                request_id: rand::random(),
+                through: tilo_server_protocol::entering::Through::Entry,
+            };
+            let entered = self.enter_once(entering).await?;
+            let admission = admission(entered).map_err(|refusal| {
+                CertifyError::Denied(format!(
+                    "The workspace did not let this device in: {}",
+                    refusal.reason()
+                ))
+            })?;
+            self.keep_host(&admission);
+        }
         self.peer
             .send(Cmd::Join(id))
             .map_err(|closed| CertifyError::Request(closed.to_string()))?;

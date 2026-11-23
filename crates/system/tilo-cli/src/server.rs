@@ -15,19 +15,16 @@ use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
 use tilo_actions::remote::machines;
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_control::front::{self, Spelling};
 use tilo_device_identity::persist;
-use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::servers::{PersonServer, RecoveryKey, person_workspace_id};
 use tilo_server_protocol::transport::{
-    Envelope, Opening, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer, ServerOperation,
-    ServerOperationResult, ServerStatus, UnlockMethod,
+    Opening, ServerAnswer, ServerOperation, ServerOperationResult, ServerStatus, UnlockMethod,
 };
-use tilo_user_identity::RevocationList;
 
 use crate::identity;
 
@@ -420,8 +417,6 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
     let user = persist::read_public_key(&paths.user_pubkey)
         .context("this computer holds no identity; start `tilo login` first")?;
     let signing_key = persist::load_device_key(&paths)?;
-    let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
-        .or_else(|_| persist::read_device_cert(&paths.device_cert))?;
     let found = find(&servers()?, server)?;
     let expected = key_of(&found.device)
         .with_context(|| format!("{} is not a server device key", found.device))?;
@@ -432,7 +427,6 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
         )
     })?;
     let admin = person_workspace_id(&user);
-    let workspace_id = WorkspaceId::parse(&admin).context("the Servers workspace is not an id")?;
     let mut argument = serde_json::Map::new();
     argument.insert("server".into(), hex::encode(expected).into());
     if !operation.service().is_empty() {
@@ -441,7 +435,7 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
     if operation.lines() > 0 {
         argument.insert("lines".into(), operation.lines().into());
     }
-    let message = RemoteActionMessage::Invoke(InvokeRequest {
+    let request = InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
@@ -458,58 +452,42 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
         wait_ms: None,
         appearance: None,
         signed: None,
-    });
-    let frame = RemoteActionFrame::new(message).encode()?;
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        let dialer = tilo_server_client::host::ServerAddress::at(addr.clone());
-        let endpoint = dialer
-            .bind(None)
+        // The device asks as itself, at an endpoint keyed by its own key: the server admits a
+        // request by the signature of the device the transport proves, and the two are one.
+        let endpoint = tilo_server_client::host::ServerAddress::at(addr.clone())
+            .bind(Some(signing_key.to_bytes()))
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let client = tilo_server_session::client::ServerClient::connect_to_pinned_host(
-            endpoint.clone(),
-            addr,
-            cert,
-            signing_key,
-            RevocationList::new(),
+        let actions = tilo_peer_state::actions::ActionService::new(
+            signing_key.clone(),
+            std::sync::Arc::new(tilo_peer_state::actions::NoActions),
+        );
+        // A server's action service signs as its own workspace service, which its
+        // endpoint is keyed apart from.
+        actions.keyed_apart(expected, *addr.id.as_bytes());
+        let remote = actions.remote(&endpoint, &addr, &admin);
+        let caller = tilo_actions::remote::Caller::authenticated(
+            user,
+            signing_key.verifying_key().to_bytes(),
+        );
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            tilo_actions::remote::ActionProvider::invoke(&remote, &caller, request),
         )
         .await
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        client
-            .send(Envelope::RemoteAction {
-                workspace_id,
-                version: REMOTE_ACTION_ENVELOPE_VERSION,
-                to_device_public_key: expected,
-                from_device_public_key: [0; 32],
-                from_user_public_key: [0; 32],
-                frame,
-            })
-            .map_err(|_| anyhow::anyhow!("the session closed before the server was asked"))?;
-        let answer = tokio::time::timeout(std::time::Duration::from_secs(120), async {
-            loop {
-                match client.recv().await {
-                    Some(Envelope::RemoteAction { frame, .. }) => {
-                        let message = RemoteActionFrame::decode(&frame)
-                            .map_err(|error| anyhow::anyhow!("{error}"))?
-                            .message;
-                        return answer_of(message);
-                    }
-                    Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => {
-                        return Err(anyhow::anyhow!("the server did not take it: {refusal}"));
-                    }
-                    None => return Err(anyhow::anyhow!("the session closed")),
-                    Some(_) => {}
-                }
-            }
-        })
-        .await
         .map_err(|_| anyhow::anyhow!("the server did not answer"))?;
-        client.close().await;
+        let result = match answer {
+            None => Err(anyhow::anyhow!("the server closed before it answered")),
+            Some(Ok(receipt)) => answer_of(RemoteActionMessage::Receipt(receipt)),
+            Some(Err(error)) => Err(anyhow::anyhow!("{error}")),
+        };
         endpoint.close().await;
-        answer
+        result
     })?;
     Ok(result)
 }

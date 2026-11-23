@@ -11,7 +11,6 @@
 //! own locks; workspace I/O already runs on the blocking pool.
 
 mod content;
-pub(crate) mod control;
 mod fetch;
 pub mod install;
 mod link;
@@ -19,6 +18,8 @@ pub(crate) mod live;
 mod page;
 mod page_errors;
 mod profiles;
+// The question sheet a page draws over its app: the same words a native
+// session's sheet asks it.
 #[cfg(feature = "agents")]
 pub(crate) mod question_sheet;
 mod stand_in;
@@ -155,46 +156,11 @@ pub struct WebHandle {
     pub plain_origin: Option<String>,
     /// Who this host is and where its endpoint is dialled, as `/host` answers it.
     server_info: ServerInfo,
-    tasks: Arc<WebTasks>,
-    /// The live session: the one account of who is here.
-    presence: Arc<live::Authority>,
-}
-
-/// What a listener runs, shared with whoever stops it before the handle is
-/// dropped: the device's `web.serve` setting stops it at once.
-pub(crate) struct WebTasks {
-    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
-    stopped: std::sync::atomic::AtomicBool,
-}
-
-impl WebTasks {
-    /// Stop serving: every task is aborted and the browser locators name no origin of
-    /// this listener any more. Stopping twice does nothing the second time.
-    fn stop(&self) {
-        if self.stopped.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        if let Ok(mut published) = self.locator_origin.write()
-            && self.published_origin.as_ref().is_some_and(|ours| {
-                published
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(ours, current))
-            })
-        {
-            *published = None;
-        }
-        let tasks = std::mem::take(
-            &mut *self
-                .tasks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for task in tasks {
-            task.abort();
-        }
-    }
+    /// The live session: the one account of who is here.
+    presence: Arc<live::Authority>,
 }
 
 impl WebHandle {
@@ -216,16 +182,22 @@ impl WebHandle {
             .map(|(user, devices)| (user, devices.len()))
             .collect()
     }
-
-    /// What this listener runs, which stops it early.
-    pub(crate) fn tasks(&self) -> Arc<WebTasks> {
-        Arc::clone(&self.tasks)
-    }
 }
 
 impl Drop for WebHandle {
     fn drop(&mut self) {
-        self.tasks.stop();
+        if let Ok(mut published) = self.locator_origin.write()
+            && self.published_origin.as_ref().is_some_and(|ours| {
+                published
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(ours, current))
+            })
+        {
+            *published = None;
+        }
+        for task in &self.tasks {
+            task.abort();
+        }
     }
 }
 
@@ -487,6 +459,18 @@ fn browser_locator_origin(
 
 impl Server {
     /// Make `origin` the one browser locators name, and return it shared.
+    fn publish_browser_origin(
+        &self,
+        origin: Option<String>,
+    ) -> Result<Option<Arc<String>>, ServerError> {
+        let published = origin.map(Arc::new);
+        self.browser_origin
+            .write()
+            .map_err(|_| ServerError::Iroh("web listener: browser locator lock poisoned".into()))?
+            .clone_from(&published);
+        Ok(published)
+    }
+
     /// Serve browsers: HTTPS on `config.listen`.
     ///
     /// # Errors
@@ -508,248 +492,147 @@ impl Server {
     ///
     /// As [`Self::serve_web`], and when one of `also` is no origin a server
     /// is published at, or stands beside no published origin.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one bring-up of every browser-facing part, each started where it reads"
+    )]
     pub async fn serve_web_also_at(
         &self,
         config: WebConfig,
         also: Vec<String>,
     ) -> Result<WebHandle, ServerError> {
-        let parts = self.web_parts(config, also);
-        let handle = serve_parts(parts.clone()).await?;
-        self.web_ui.started(parts, &handle);
-        Ok(handle)
-    }
-
-    /// Serve browsers as [`Self::serve_web`] does, unless the device's own setting says
-    /// it serves none: its person turned its web UI off, and the listener is then only
-    /// remembered, so that turning it on serves it. `None` when it serves none.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::serve_web`].
-    pub async fn serve_web_if_wanted(
-        &self,
-        config: WebConfig,
-    ) -> Result<Option<WebHandle>, ServerError> {
-        // Its entry among its person's servers says whether it serves one: read before
-        // binding, so a server its person turned off opens no port at all.
-        if let Some(workspaces) = self.workspaces() {
-            let cert = workspaces.serving_certificate().clone();
-            if let Ok(servers) = crate::servers::read(workspaces).await
-                && let Some(entry) = servers.active(&cert.device_public_key)
-            {
-                self.web_ui
-                    .set_wanted(entry.web != crate::servers::WEB_SERVED[1]);
+        let failed = |message: String| ServerError::Iroh(format!("web listener: {message}"));
+        checked_origins(&config, &also).map_err(failed)?;
+        if !also.is_empty() {
+            tracing::info!(origins = ?also, "this server is also reached under these origins");
+        }
+        let identity = tls::Identity::load(&config.tls).map_err(failed)?;
+        let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
+        let addr = tcp
+            .local_addr()
+            .map_err(|error| failed(error.to_string()))?;
+        let public_origin = match config.public_origin.clone() {
+            Some(origin) => Some(origin),
+            None => browser_locator_origin(&config.tls, addr)?,
+        };
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
+        let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
+        let context = self.web_context().clone();
+        let Some(live) = self.live_origin.as_ref() else {
+            return Err(failed("the server runs no live session".into()));
+        };
+        let server_cert = context.server.identity.cert.clone();
+        // Where a page dials this host: its endpoint's key and addresses, and
+        // the relay it is reached through — which the endpoint names from the
+        // moment this host serves anything ([`Server::start`] waits for it), as
+        // a page has no UDP socket and its own endpoint carries no packet
+        // without one.
+        // `/host` answers the endpoint's address as it is when asked
+        // ([`Web::current_host_info`]); this is where it starts.
+        let endpoint_addr = self.node_addr();
+        let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
+        let (link_listener, web_link) =
+            bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
+        // Where pages reach this host, for whoever holds the server and not this handle: a
+        // page dials it as the one its host published.
+        let _ = context.link.set(web_link.clone());
+        let server_info = ServerInfo {
+            server_cert,
+            address: Some(ServerAddress {
+                endpoint_addr,
+                relay_url,
+                web: Some(web_link.clone()),
+            }),
+            origin: public_origin.clone(),
+        };
+        // What a site hands its page about this host, kept in its state (`web-host.json`).
+        tilo_files::native::atomic::write_with_mode(
+            &self.state_root().join("web-host.json"),
+            &server_info
+                .web_host_json()
+                .map_err(|error| failed(format!("name this host: {error}")))?,
+            0o644,
+        )
+        .map_err(|error| failed(format!("keep this host's name: {error}")))?;
+        let web = Arc::new(Web {
+            context: context.clone(),
+            server_info: server_info.clone(),
+            endpoint: Some(self.endpoint()),
+            allowed_origins: config.allowed_origins,
+            workspaces: self.workspaces().cloned(),
+            profiles: Arc::new(profiles::Profiles::new(self.state_root().join("profiles"))),
+            fetch: fetch.proxy,
+            grants: Arc::default(),
+            content_links: self.content_links(),
+            presence: live.authority(),
+            page_errors: page_errors::PageErrors::default(),
+            site: config.site.as_deref().and_then(Site::new),
+            tickets: tickets::Tickets::new(context.certification.clone()),
+            wait_list: config.wait_list.clone(),
+        });
+        // The name each person gives themselves is kept with their profile, which the workspaces
+        // here name them by.
+        if let Some(workspaces) = &web.workspaces {
+            workspaces.person_names(web.profiles.clone());
+            // The short links of the invitations the workspaces issue name
+            // this host, which answers a page for the invitation a link names
+            // (`OPEN_INVITATION_PATH`): the link a member hands over and the
+            // one the mail to an address carries are the same.
+            if let Some(origin) = &public_origin {
+                let _ = workspaces.invitations_at(origin);
             }
         }
-        let parts = self.web_parts(config, Vec::new());
-        if !self.web_ui.wanted() {
-            self.web_ui.ready(parts);
-            return Ok(None);
+        web.serve_tab_requests();
+        web.serve_tickets();
+        web.serve_pushes(
+            self.state_root(),
+            config.site.as_deref(),
+            public_origin.as_deref(),
+            addr,
+        );
+        // A page's fetch proxy token is minted on the session it fetched from.
+        if web.fetch.is_some() {
+            let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
+            let _ = context.server.fetch.set(grants);
         }
-        let handle = serve_parts(parts.clone()).await?;
-        self.web_ui.started(parts, &handle);
-        Ok(Some(handle))
-    }
-
-    /// What a browser listener is served from, as the device's web UI setting serves it
-    /// again after it stopped.
-    fn web_parts(&self, config: WebConfig, also: Vec<String>) -> WebParts {
-        WebParts {
-            context: self.web_context().clone(),
-            live: self
-                .live_origin
-                .as_ref()
-                .map(crate::web::live::LiveOrigin::served),
-            endpoint: self.endpoint(),
-            node_addr: self.node_addr(),
-            state_root: self.state_root().to_path_buf(),
-            workspaces: self.workspaces().cloned(),
-            content_links: self.content_links(),
-            browser_origin: Arc::clone(&self.browser_origin),
-            config,
-            also,
+        let mut tasks = Vec::new();
+        tasks.extend(fetch.metrics);
+        let mut plain_origin = None;
+        if let Some(plain) = config.plain_listen {
+            let plain = tokio::net::TcpListener::bind(plain)
+                .await
+                .map_err(|error| failed(error.to_string()))?;
+            let port = plain
+                .local_addr()
+                .map_err(|error| failed(error.to_string()))?
+                .port();
+            plain_origin = Some(format!("http://localhost:{port}"));
+            tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
         }
-    }
-}
-
-/// What a browser listener is served from, kept so the device can serve it again after its
-/// person stopped it.
-#[derive(Clone)]
-pub(crate) struct WebParts {
-    context: WebContext,
-    /// The live origin this server runs, when it runs one.
-    live: Option<live::Served>,
-    endpoint: iroh::Endpoint,
-    node_addr: iroh::EndpointAddr,
-    state_root: std::path::PathBuf,
-    workspaces: Option<crate::workspaces::Workspaces>,
-    content_links: Arc<crate::content_links::ContentLinks>,
-    browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    config: WebConfig,
-    also: Vec<String>,
-}
-
-/// Serve a browser listener from `parts`: the same bring-up whoever started it, the
-/// embedder's [`Server::serve_web`] or the device's web UI setting serving it again.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bring-up of every browser-facing part, each started where it reads"
-)]
-async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
-    let WebParts {
-        context,
-        live,
-        endpoint,
-        node_addr,
-        state_root,
-        workspaces,
-        content_links,
-        browser_origin,
-        config,
-        also,
-    } = parts;
-    let failed = |message: String| ServerError::Iroh(format!("web listener: {message}"));
-    checked_origins(&config, &also).map_err(failed)?;
-    if !also.is_empty() {
-        tracing::info!(origins = ?also, "this server is also reached under these origins");
-    }
-    let identity = tls::Identity::load(&config.tls).map_err(failed)?;
-    let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
-    let addr = tcp
-        .local_addr()
-        .map_err(|error| failed(error.to_string()))?;
-    let public_origin = match config.public_origin.clone() {
-        Some(origin) => Some(origin),
-        None => browser_locator_origin(&config.tls, addr)?,
-    };
-    let acceptor =
-        tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
-    let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
-    let Some(live) = live else {
-        return Err(failed("the server runs no live session".into()));
-    };
-    let server_cert = context.server.identity.cert.clone();
-    // Where a page dials this host: its endpoint's key and addresses, and
-    // the relay it is reached through — which the endpoint names from the
-    // moment this host serves anything ([`Server::start`] waits for it), as
-    // a page has no UDP socket and its own endpoint carries no packet
-    // without one.
-    // `/host` answers the endpoint's address as it is when asked
-    // ([`Web::current_host_info`]); this is where it starts.
-    let relay_url = node_addr.relay_urls().next().map(ToString::to_string);
-    let (link_listener, web_link) =
-        bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
-    let server_info = ServerInfo {
-        server_cert,
-        address: Some(ServerAddress {
-            endpoint_addr: node_addr,
-            relay_url,
-            web: Some(web_link.clone()),
-        }),
-        origin: public_origin.clone(),
-    };
-    // What a site hands its page about this host, kept in its state (`web-host.json`).
-    tilo_files::native::atomic::write_with_mode(
-        &state_root.join("web-host.json"),
-        &server_info
-            .web_host_json()
-            .map_err(|error| failed(format!("name this host: {error}")))?,
-        0o644,
-    )
-    .map_err(|error| failed(format!("keep this host's name: {error}")))?;
-    let web = Arc::new(Web {
-        context: context.clone(),
-        server_info: server_info.clone(),
-        endpoint: Some(endpoint),
-        allowed_origins: config.allowed_origins.clone(),
-        workspaces: workspaces.clone(),
-        profiles: Arc::new(profiles::Profiles::new(state_root.join("profiles"))),
-        fetch: fetch.proxy,
-        grants: Arc::default(),
-        content_links,
-        presence: live.authority(),
-        page_errors: page_errors::PageErrors::default(),
-        site: config.site.as_deref().and_then(Site::new),
-        tickets: tickets::Tickets::new(context.certification.clone()),
-        wait_list: config.wait_list.clone(),
-    });
-    // The name each person gives themselves is kept with their profile, which the workspaces
-    // here name them by.
-    if let Some(workspaces) = &web.workspaces {
-        workspaces.person_names(web.profiles.clone());
-        // The short links of the invitations the workspaces issue name
-        // this host, which answers a page for the invitation a link names
-        // (`OPEN_INVITATION_PATH`): the link a member hands over and the
-        // one the mail to an address carries are the same.
-        if let Some(origin) = &public_origin {
-            let _ = workspaces.invitations_at(origin);
-        }
-    }
-    web.serve_tab_requests();
-    web.serve_tickets();
-    web.serve_pushes(
-        &state_root,
-        config.site.as_deref(),
-        public_origin.as_deref(),
-        addr,
-    );
-    // A page's fetch proxy token is minted on the session it fetched from.
-    if web.fetch.is_some() {
-        let grants: Arc<dyn crate::peer::FetchGrants> = web.grants.clone();
-        let _ = context.server.fetch.set(grants);
-    }
-    let mut tasks = Vec::new();
-    tasks.extend(fetch.metrics);
-    let mut plain_origin = None;
-    if let Some(plain) = config.plain_listen {
-        let plain = tokio::net::TcpListener::bind(plain)
-            .await
-            .map_err(|error| failed(error.to_string()))?;
-        let port = plain
-            .local_addr()
-            .map_err(|error| failed(error.to_string()))?
-            .port();
-        plain_origin = Some(format!("http://localhost:{port}"));
-        tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
-    }
-    tasks.push(tokio::spawn(link::serve(
-        link_listener,
-        link::Serving {
-            server: context.server.clone(),
-            certification: context.certification.clone(),
-            live_origin: live.relay(),
-        },
-    )));
-    tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
-    let published_origin = publish_browser_origin(&browser_origin, public_origin.clone())?;
-    Ok(WebHandle {
-        addr,
-        origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
-        certificate_sha256: identity.fingerprint,
-        link: web_link,
-        plain_origin,
-        server_info,
-        tasks: Arc::new(WebTasks {
-            tasks: std::sync::Mutex::new(tasks),
-            locator_origin: browser_origin,
+        tasks.push(tokio::spawn(link::serve(
+            link_listener,
+            link::Serving {
+                server: context.server.clone(),
+                certification: context.certification.clone(),
+                live_origin: live.origin(),
+            },
+        )));
+        tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
+        let published_origin = self.publish_browser_origin(public_origin.clone())?;
+        Ok(WebHandle {
+            addr,
+            origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
+            certificate_sha256: identity.fingerprint,
+            link: web_link,
+            plain_origin,
+            server_info,
+            tasks,
+            locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
-            stopped: std::sync::atomic::AtomicBool::new(false),
-        }),
-        presence: live.authority(),
-    })
-}
-
-/// Make `origin` the one browser locators name, and return it shared.
-fn publish_browser_origin(
-    browser_origin: &std::sync::RwLock<Option<Arc<String>>>,
-    origin: Option<String>,
-) -> Result<Option<Arc<String>>, ServerError> {
-    let published = origin.map(Arc::new);
-    browser_origin
-        .write()
-        .map_err(|_| ServerError::Iroh("web listener: browser locator lock poisoned".into()))?
-        .clone_from(&published);
-    Ok(published)
+            presence: live.authority(),
+        })
+    }
 }
 
 impl Server {}

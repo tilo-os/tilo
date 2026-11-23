@@ -170,7 +170,7 @@ fn hold_workspace(state: &Path, keys: &Keys, selected: &accounts::Account) {
                 .issue(
                     WORKSPACE,
                     &keys.cert,
-                    tilo_server_session::workspaces::IssueInvitationRequest {
+                    tilo_server_protocol::workspaces::IssueInvitationRequest {
                         request_id,
                         role: tilo_workspace_join::Role::Editor,
                         recipient_user_public_key: Some(keys.phone_cert.user_public_key),

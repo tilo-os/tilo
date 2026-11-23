@@ -1795,7 +1795,7 @@ impl HostedBrowsers {
         };
         authority
             .environments
-            .place(device.device_public_key, scope, until_ns)
+            .place_certified(device, scope, until_ns)
     }
 
     /// Forget a device that never left this host: one whose session could not

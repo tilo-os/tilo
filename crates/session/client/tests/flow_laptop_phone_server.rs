@@ -3,8 +3,7 @@
 //!
 //! The server is a real Tilo host on this machine's loopback and every device reaches it
 //! directly; each test is one step of the flow, and a step the system does not do yet fails on
-//! the assertion that names what is missing. Every device managing every other is the devices'
-//! daemons' own step, so it runs where they do (tilo-runtime's `flow_laptop_phone_server`).
+//! the assertion that names what is missing.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,9 +23,9 @@ use serde_json::json;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_session::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalDevice,
-    PersonalList, PersonalWorkspace, WorkspaceLabels,
+use tilo_server_protocol::workspaces::{
+    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PERSONAL_DEVICE_NAME,
+    PersonalDevice, PersonalList, PersonalWorkspace, WorkspaceLabels,
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -602,6 +601,74 @@ async fn flow_brothers_device_syncs_only_files() {
          `{workspace}/files/**` (workspace/<id>/grants#set), so his phone holds the \
          workspace's file tree and opens no other app (the phones lane lands it): {shared:?}",
         workspace = f.work
+    );
+}
+
+/// Every device manages every other: from the phone, the laptop and the server are listed,
+/// renamed, updated and configured.
+///
+/// A device of the person's manages another's name; its update and settings are the server's
+/// alone (the owner of the identity lane takes the rest).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flow_every_device_manages_every_other() {
+    let f = rig().await;
+    let phone = f.client(&f.phone_session, &f.phone, "android-phone");
+    let laptop_key = flow::key_of(&f.laptop.cert);
+
+    // The phone lists the laptop and the server and renames them.
+    phone
+        .keep_personal(&personal(&f))
+        .await
+        .expect("the phone keeps the person's list");
+    for (key, name) in [
+        (laptop_key.as_str(), "Ada's laptop"),
+        (
+            flow::key_of(&f.server_device.cert).as_str(),
+            "Hallway server",
+        ),
+    ] {
+        flow::ask(
+            &phone,
+            f.work_id(),
+            HOST_ACTIONS_PROVIDER,
+            HOST_WORKSPACES_RESOURCE,
+            PERSONAL_DEVICE_NAME,
+            json!({"device": key, "name": name}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the phone names the device {key}: {error:?}"));
+    }
+    let listed = phone
+        .personal_list_in(f.work_id(), &WorkspaceLabels::new(), None)
+        .await
+        .expect("the list answers");
+    let named = listed
+        .devices
+        .iter()
+        .find(|listed| flow::key_of(&listed.cert) == laptop_key)
+        .and_then(|listed| listed.name.clone());
+    assert_eq!(
+        named.as_deref(),
+        Some("Ada's laptop"),
+        "the phone's name for the laptop is what every list shows"
+    );
+
+    // From the phone, the laptop is updated and its settings changed.
+    let managed = flow::ask(
+        &phone,
+        f.work_id(),
+        "so.tilo.devices",
+        "devices",
+        "update-device",
+        json!({"device": laptop_key, "update": "now"}),
+    )
+    .await;
+    let managed = managed.unwrap_or_else(|error| {
+        panic!("the phone updates the laptop as it would the server: {error:?}")
+    });
+    assert!(
+        managed.get("updating").is_some(),
+        "the phone's update of the laptop is carried out by the laptop: {managed}"
     );
 }
 

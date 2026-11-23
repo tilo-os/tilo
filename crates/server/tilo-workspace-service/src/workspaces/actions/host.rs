@@ -23,12 +23,13 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_server_session::workspaces::{
-    ActionInvitation, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE, CREATE_OWN_WORKSPACE,
-    CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE, ENTER_WORKSPACE,
-    EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
-    HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS, LIST_WORKSPACES,
-    PERSONAL_DEVICE_NAME, PersonalList, Refusal, StandingPage, UNHOST_WORKSPACE, WEB_SERVE,
-    WorkspaceLabels, WorkspaceListing, check_labels, labelled,
+    ActionInvitation, AdminRefusal, CATCH_UP_ABSENT, CATCH_UP_STANDING, CATCH_UP_WORKSPACE,
+    CREATE_OWN_WORKSPACE, CREATE_WORKSPACE, CaughtUpWorkspace, CreatedWorkspace, DELETE_WORKSPACE,
+    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
+    HOST_WORKSPACES_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
+    LIST_WORKSPACES, PERSONAL_DEVICE_NAME, PersonalList, StandingPage, UNHOST_WORKSPACE,
+    WorkspaceLabels, WorkspaceListing, administered_answer, administered_request, check_labels,
+    labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -61,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -294,16 +295,6 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
         },
         ServiceOperation::ListRecoveryKeys,
     ),
-    (
-        Verb {
-            id: WEB_SERVE,
-            label: "Serve this server's web UI",
-            check: WEB_SERVE,
-            kind: roles::GOVERNANCE_KIND,
-            params: web_serve_params,
-        },
-        ServiceOperation::ServeWeb,
-    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -348,14 +339,6 @@ fn admit_server_params() -> Vec<ActionParam> {
             "Where the server is dialled, as its endpoint advertises it (JSON).",
         ),
     ]
-}
-
-fn web_serve_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "serving",
-        ParamType::Boolean,
-        "Whether this server serves its own web UI.",
-    )]
 }
 
 fn plan_machine_params() -> Vec<ActionParam> {
@@ -756,6 +739,14 @@ impl Workspaces {
             .enter(workspace, device)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let own = IssueInvitationRequest {
+            request_id,
+            role: Role::Editor,
+            recipient_user_public_key: Some(device.user_public_key),
+            invitee_name: None,
+            expires_at_ns: expiry(now, seconds),
+            inviter_name: None,
+        };
         // The local device redeems in process. An invitation sent to
         // another device needs to wait for the host's reachable address.
         let address = match local_address {
@@ -763,57 +754,13 @@ impl Workspaces {
             None => self.invitation_addr().await,
         };
         let issued = self
-            .own_invitation(
-                workspace,
-                device,
-                (request_id, expiry(now, seconds)),
-                &address,
-            )
+            .issue_from(workspace, device, own, false, None, address)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         answer(&EnteredWorkspace {
             changed,
             invitation: ActionInvitation::of(&issued),
         })
-    }
-
-    /// Serve this device's own web UI as `serving` asks, and keep the choice in `device`'s
-    /// entry among its person's servers, which every device of theirs reads and which its
-    /// next start follows. A device with no entry there serves or stops all the same: the
-    /// choice is only kept where the document names it.
-    async fn serve_web_invoke(
-        &self,
-        device: &DeviceCert,
-        serving: bool,
-    ) -> Result<Value, ActionCallError> {
-        self.serve_web(serving).map_err(|error| refused(&error))?;
-        // Stopping aborts the listener's tasks; letting them run drops what answers on the
-        // address before this answers, so a page that asks now is not served.
-        tokio::task::yield_now().await;
-        let device_key = device.device_public_key;
-        let kept = crate::workspaces::servers::read(self)
-            .await
-            .is_ok_and(|servers| {
-                servers
-                    .servers
-                    .get(&crate::workspaces::servers::device_id(&device_key))
-                    .is_some()
-            });
-        if kept {
-            let served = if serving {
-                String::new()
-            } else {
-                crate::workspaces::servers::WEB_SERVED[1].to_owned()
-            };
-            crate::workspaces::servers::apply(
-                self,
-                crate::workspaces::servers::Servers::SET_WEB
-                    .with((crate::workspaces::servers::device_id(&device_key), served)),
-            )
-            .await
-            .map_err(|error| refused(&error))?;
-        }
-        Ok(serde_json::json!({ "serving": serving }))
     }
 
     /// Run the host operation `request` names for `caller` on `device`, the
@@ -897,14 +844,6 @@ impl Workspaces {
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
                 Box::pin(machine::admit_server(self, &args)).await
             }
-            ServiceOperation::ServeWeb => {
-                self.authorize(device, None, WorkspaceOp::Host(operation), now)
-                    .map_err(|error| refused(&error))?;
-                let serving = args
-                    .boolean("serving")?
-                    .ok_or_else(|| invalid("`serving` is required"))?;
-                self.serve_web_invoke(device, serving).await
-            }
             _ => Err(ActionCallError::UnknownAction),
         }
     }
@@ -924,6 +863,26 @@ impl Workspaces {
         }
         let caller = crate::service::local_caller(device);
         Box::pin(self.account_invoke(None, &caller, device, request, Some(address))).await
+    }
+
+    /// Answer the page's administration request the host action carries
+    /// ([`tilo_server_session::workspaces::ADMINISTER_WORKSPACES`]) as
+    /// `device`, the caller's own device: each request inside it is decided as
+    /// the workspace it names (or the host, where it names none) decides it,
+    /// exactly as the same request on a page's own session is.
+    ///
+    /// # Errors
+    /// The arguments name no request, or the reply does not encode.
+    pub(super) async fn administer_invoke(
+        &self,
+        caller: &Caller,
+        device: &DeviceCert,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        let args = Args::of(&request.argument)?;
+        let asked = administered_request(&args.0).map_err(invalid)?;
+        let reply = self.answer_administration(device, caller, asked).await;
+        administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
     }
 
     /// The operation `request` names, which `device` may carry out.
@@ -987,7 +946,7 @@ impl Workspaces {
                 let theirs =
                     person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
                 if !theirs || !self.lists_to(device, workspace) {
-                    return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
+                    return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
                 }
                 false
             }
@@ -1361,7 +1320,7 @@ impl Workspaces {
                         .is_some_and(|scope| scope.reaches(workspace))
                 }))
         {
-            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
+            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
         }
         // What could be made twice at once waits for the first: a workspace
         // the ask names (a retried create answers the one the first made),
@@ -1414,7 +1373,7 @@ impl Workspaces {
             // never made. The host makes a person's own workspace under an id
             // of its own choosing, so an id it does not know is never theirs,
             // and it is never read as some other workspace they have.
-            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
+            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
         } else if name.is_none()
             && let Some(first) = own.first_of(&person)
         {
@@ -1423,7 +1382,7 @@ impl Workspaces {
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?
         } else if !makes {
-            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
+            return Err(refused(&AdminRefusal::NotYourOwn.to_reason()));
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]):
             // there is no bound on how many a person keeps, and one they did
@@ -1467,7 +1426,7 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let workspace = match (name, workspace) {
             (None, Some(workspace)) if self.lists_to(device, workspace) => workspace,
-            _ => return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason())),
+            _ => return Err(refused(&AdminRefusal::NotYourOwn.to_reason())),
         };
         let summary = self
             .summary(workspace)

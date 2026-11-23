@@ -2,8 +2,20 @@
 //! workspace's across a restart of the server and of the member: the
 //! member's next windows build on them, and are taken in.
 
+#![expect(
+    clippy::similar_names,
+    reason = "each device in these tests is named for whose it is — the member's, the host's, the page's"
+)]
+
 use super::*;
+use crate::workspaces::fixtures::TestHost;
 use std::time::Duration;
+use tilo_server_client::LinkError;
+use tilo_server_client::link::{Dialer, Purpose};
+use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
+use tilo_user_identity::{
+    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry,
+};
 
 /// How long a link or the governor may take to do what a test waits for.
 const WAIT: Duration = Duration::from_secs(10);
@@ -142,6 +154,450 @@ async fn a_members_windows_the_link_admitted_outlive_a_restart() {
     );
     pairing.abort();
     drop(link);
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// Dial the host's link as the member whose device is `cert`/`key`, whose iroh endpoint speaks as
+/// `endpoint_key` — its device key, or a page's key of its own — proving the device on the link's
+/// first stream, and answer its admission. The dialer is the caller's to keep: its endpoint
+/// carries the link.
+async fn dialed(
+    server: &TestHost,
+    workspaces: &Workspaces,
+    workspace_id: WorkspaceId,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    host_cert: &DeviceCert,
+    endpoint_key: [u8; 32],
+) -> (
+    Arc<Dialer>,
+    tilo_peer_state::direct::DirectSync,
+    Result<tilo_peer_state::direct::Dialed, tilo_server_protocol::refusal::Refusal>,
+) {
+    let host = workspaces
+        .direct()
+        .link(workspace_id)
+        .expect("the server serves the workspace over a direct link");
+    let member = tilo_peer_state::direct::DirectSync::new(host.read(Clone::clone), key.clone());
+    let dialer = Arc::new(Dialer::new(
+        tilo_server_client::ServerAddress::at(server.node_addr()),
+        Some(endpoint_key),
+    ));
+    let refused = |error: LinkError| match error {
+        LinkError::Refused(reason) => tilo_server_protocol::refusal::Refusal::NotAMember(reason),
+        error => tilo_server_protocol::refusal::Refusal::Other(error.to_string()),
+    };
+    let link = match dialer.link(Purpose::Records).await {
+        Ok(link) => link,
+        Err(error) => return (dialer, member, Err(refused(error))),
+    };
+    if let Err(error) = link.prove_member(cert, key, host_cert).await {
+        return (dialer, member, Err(refused(error)));
+    }
+    let answered = member
+        .dial_over(Arc::new(link), workspaces.host_device())
+        .await;
+    (dialer, member, answered)
+}
+
+/// Dial the host's link as that member and run it: the dialer that carries it, and the task its
+/// link runs until it ends.
+async fn dialled_and_running(
+    server: &TestHost,
+    workspaces: &Workspaces,
+    workspace_id: WorkspaceId,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    host_cert: &DeviceCert,
+) -> (
+    Arc<Dialer>,
+    tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+) {
+    let endpoint_key = key.verifying_key().to_bytes();
+    let (dialer, link, dialed) = dialed(
+        server,
+        workspaces,
+        workspace_id,
+        cert,
+        key,
+        host_cert,
+        endpoint_key,
+    )
+    .await;
+    let dialed = dialed.expect("the host admits its member's device");
+    let mut caught_up = link.caught_up();
+    let running = tokio::spawn(async move { dialed.run(&link).await });
+    tokio::time::timeout(WAIT, caught_up.wait_for(|caught_up| *caught_up))
+        .await
+        .expect("the member catches up over the link it dialled")
+        .unwrap();
+    (dialer, running)
+}
+
+/// The host's runtime for `workspace_id`, where its list of the workspace's
+/// members and how it admits them are read and written.
+async fn runtime(
+    workspaces: &Workspaces,
+    workspace_id: WorkspaceId,
+) -> crate::workspace::SharedWorkspace {
+    workspaces
+        .inner
+        .host
+        .workspaces
+        .lock()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .expect("the host serves the workspace")
+}
+
+/// A member's device is admitted on the link it dials, and catches up from
+/// what the server keeps: the admission hook answers it from the workspace's
+/// replica before the link listens.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_members_device_is_admitted_on_the_link_it_dials() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let endpoint_key = member_key.verifying_key().to_bytes();
+    let (endpoint, link, dialed) = dialed(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &member,
+        &member_key,
+        &cert,
+        endpoint_key,
+    )
+    .await;
+    let dialed = match dialed {
+        Ok(dialed) => dialed,
+        Err(refusal) => panic!(
+            "the server admits a member's device ({}): {refusal}",
+            member.device_label
+        ),
+    };
+    let mut caught_up = link.caught_up();
+    let running = tokio::spawn(async move { dialed.run(&link).await });
+    tokio::time::timeout(WAIT, caught_up.wait_for(|caught_up| *caught_up))
+        .await
+        .expect("the member catches up over the link it dialled")
+        .unwrap();
+    running.abort();
+    endpoint.close().await;
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A page dials the records link with an endpoint key of its own, which is not its device key:
+/// the link proves its device on its first stream, and the workspace admits it as that device.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_page_keyed_by_another_endpoint_is_admitted_as_its_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    // The endpoint this page speaks as is no device's key.
+    let page = SigningKey::from_bytes(&[0x91; 32]);
+    let page_endpoint = page.verifying_key().to_bytes();
+    assert_ne!(page_endpoint, member.device_public_key);
+    let (dialer, link, dialed) = dialed(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &member,
+        &member_key,
+        &cert,
+        page_endpoint,
+    )
+    .await;
+    let dialed = match dialed {
+        Ok(dialed) => dialed,
+        Err(refusal) => panic!("the workspace admits the device the page proved: {refusal}"),
+    };
+    let mut caught_up = link.caught_up();
+    let running = tokio::spawn(async move { dialed.run(&link).await });
+    tokio::time::timeout(WAIT, caught_up.wait_for(|caught_up| *caught_up))
+        .await
+        .expect("the page catches up over the link it dialled")
+        .unwrap();
+    running.abort();
+    dialer.close().await;
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A revoked device's own links end, and are refused when it dials again,
+/// while another member's link to the same workspace stays up: the re-check
+/// ends the links of the device that lost its access alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let (revoked, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    let (kept, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 4).await;
+    let revoked_key = SigningKey::from_bytes(&[3; 32]);
+    let kept_key = SigningKey::from_bytes(&[4; 32]);
+    let (revoked_endpoint, revoked_link) = dialled_and_running(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &revoked,
+        &revoked_key,
+        &cert,
+    )
+    .await;
+    let (kept_endpoint, kept_link) = dialled_and_running(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &kept,
+        &kept_key,
+        &cert,
+    )
+    .await;
+    let host = workspaces
+        .direct()
+        .link(created.workspace_id)
+        .expect("the server serves the workspace over a direct link");
+
+    // The person revokes that device, as their root does, and the host is told
+    // what admission reads may have narrowed.
+    let mut entry = RevocationEntry {
+        user_public_key: revoked.user_public_key,
+        revoked_device_public_key: revoked.device_public_key,
+        revoked_at_ns: 1,
+        reason: RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut entry, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    workspaces
+        .inner
+        .host
+        .revocations
+        .write()
+        .unwrap()
+        .insert(entry)
+        .unwrap();
+    crate::authority_epoch::bump();
+
+    tilo_test_env::within("the revoked device's links to end", async {
+        while host.ended_link(revoked.device_public_key).is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        host.ended_link(kept.device_public_key).is_none(),
+        "another member's links stay up"
+    );
+    let ended = tokio::time::timeout(WAIT, revoked_link)
+        .await
+        .expect("the revoked device's link ends")
+        .expect("its task ends with it");
+    match ended {
+        Err(tilo_server_protocol::refusal::Refusal::NotAMember(reason)) => assert!(
+            reason.contains("revoked"),
+            "the refusal says the device was revoked: {reason}"
+        ),
+        Err(refusal) => panic!("a revoked device's link ends as no member: {refusal}"),
+        Ok(()) => panic!("a revoked device's link is ended, not left running"),
+    }
+    assert!(
+        !kept_link.is_finished(),
+        "the other member's link keeps running"
+    );
+
+    // Its dial again is refused before it listens.
+    let revoked_endpoint_key = revoked_key.verifying_key().to_bytes();
+    let (again, _link, dialled) = dialed(
+        &server,
+        &workspaces,
+        created.workspace_id,
+        &revoked,
+        &revoked_key,
+        &cert,
+        revoked_endpoint_key,
+    )
+    .await;
+    match dialled {
+        Err(tilo_server_protocol::refusal::Refusal::NotAMember(reason)) => assert!(
+            reason.contains("revoked"),
+            "the refusal says the device was revoked: {reason}"
+        ),
+        Err(refusal) => panic!("a revoked device is refused as no member: {refusal}"),
+        Ok(_) => panic!("a revoked device's link is refused before it listens"),
+    }
+    kept_link.abort();
+    again.close().await;
+    revoked_endpoint.close().await;
+    kept_endpoint.close().await;
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A member person's new device is enrolled by the link it first dials: the
+/// host's own list of the workspace's members has not got it, its governance
+/// has, and the link the device opens writes it into the list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_peoples_new_device_is_enrolled_on_its_first_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let (member, _salt) = admitted_member(&workspaces, &created.workspace, &key, &cert, 3).await;
+    // The host's list of the workspace's members lost the device — a host
+    // that kept it explicitly, restarted on what it wrote — while the
+    // workspace's governance still holds it.
+    {
+        let held = runtime(&workspaces, created.workspace_id).await;
+        let mut held = held.lock().await;
+        held.admission = crate::workspace_access::AdmissionMode::Explicit;
+        held.forget_device(&member.device_public_key).unwrap();
+        assert!(!held.membership.contains(&member.device_public_key));
+    }
+    let link = workspaces
+        .direct()
+        .link(created.workspace_id)
+        .expect("the server serves the workspace over a direct link");
+    let reached = workspaces
+        .admit_link(member.device_public_key, &link)
+        .expect("the workspace's governance admits its member's device");
+    assert_eq!(
+        reached.reads, None,
+        "a member's device reaches the whole workspace"
+    );
+    assert!(
+        reached.own_frames_only,
+        "a member's device is no keeping host"
+    );
+    tilo_test_env::within("the member's device to be enrolled", async {
+        loop {
+            let held = runtime(&workspaces, created.workspace_id).await;
+            if held
+                .lock()
+                .await
+                .membership
+                .contains(&member.device_public_key)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A hosted browser environment's device reaches its one record over the link
+/// it dials, and no other: the register's scope is the link's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hosted_environments_link_reads_its_one_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let (_browser_key, browser) = device_cert(
+        &SigningKey::from_bytes(&[1; 32]),
+        "browser",
+        DeviceCapabilities::member(),
+    );
+    let scope = crate::environment::EnvironmentScope::for_resource(
+        created.workspace_id,
+        "so.tilo.browser",
+        "record-1",
+    );
+    workspaces
+        .inner
+        .host
+        .environments
+        .place_certified(
+            &browser,
+            scope,
+            tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+        )
+        .unwrap();
+    let link = workspaces
+        .direct()
+        .link(created.workspace_id)
+        .expect("the server serves the workspace over a direct link");
+    let reached = workspaces
+        .admit_link(browser.device_public_key, &link)
+        .expect("the server admits the environment it placed");
+    assert_eq!(
+        reached.reads,
+        Some(scope.channel),
+        "the environment's device reads its own record and no other"
+    );
+    assert!(
+        reached.own_frames_only,
+        "an environment's device passes no other device's frames"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// An agent's device outside its delegation's workspaces is refused the
+/// workspace's link: the admission hook reads the server's live delegations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_outside_its_grant_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Team").await.unwrap();
+    let other = WorkspaceId::from_u128(u128::MAX - 7);
+    let (_agent_key, agent) = device_cert(
+        &SigningKey::from_bytes(&[1; 32]),
+        "agent",
+        DeviceCapabilities::member(),
+    );
+    admit_view_reader(&workspaces, &created.workspace, &key, &agent).await;
+    workspaces.inner.host.agents.write().unwrap().insert(
+        agent.device_public_key,
+        Some(Delegation {
+            user_public_key: agent.user_public_key,
+            device_public_key: agent.device_public_key,
+            delegate: Delegate::Agent {
+                agent_id: "agent".into(),
+            },
+            label: "Agent".into(),
+            color: [0; 3],
+            scope: DelegateScope {
+                workspaces: vec![other],
+                apps: Vec::new(),
+            },
+            issued_at_ns: 1,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
+            signature: [0; 64],
+        }),
+    );
+    let link = workspaces
+        .direct()
+        .link(created.workspace_id)
+        .expect("the server serves the workspace over a direct link");
+    match workspaces.admit_link(agent.device_public_key, &link) {
+        Err(tilo_server_protocol::refusal::Refusal::NotAMember(reason)) => assert!(
+            reason.contains("delegated"),
+            "the refusal says the agent is not delegated this workspace: {reason}"
+        ),
+        Err(refusal) => panic!("an agent outside its grant is refused as no member: {refusal}"),
+        Ok(_) => panic!("an agent outside its grant never links to the workspace"),
+    }
     drop(workspaces);
     server.shutdown().await;
 }

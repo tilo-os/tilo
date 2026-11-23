@@ -529,7 +529,7 @@ pub async fn log_in_at(
         })?;
         let listed = session
             .personal_list(
-                &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
                 None,
             )
             .await
@@ -562,10 +562,10 @@ pub async fn log_in_at(
 /// # Errors
 /// `asked` names none of them, or there are none.
 pub fn choose_workspace(
-    listed: &[tilo_server_session::workspaces::PersonalWorkspace],
+    listed: &[tilo_server_protocol::workspaces::PersonalWorkspace],
     asked: Option<&str>,
 ) -> Result<(String, String)> {
-    let pick = |found: &tilo_server_session::workspaces::PersonalWorkspace| {
+    let pick = |found: &tilo_server_protocol::workspaces::PersonalWorkspace| {
         (found.workspace.clone(), found.name.clone())
     };
     if let Some(asked) = asked.map(str::trim).filter(|asked| !asked.is_empty()) {
@@ -600,7 +600,7 @@ pub fn choose_workspace(
         .ok_or_else(|| anyhow!("You have no workspace there yet: make one in Tilo first."))
 }
 
-fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> String {
+fn names_of(listed: &[tilo_server_protocol::workspaces::PersonalWorkspace]) -> String {
     let names: Vec<_> = listed
         .iter()
         .map(|found| format!("\"{}\"", found.name))

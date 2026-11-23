@@ -155,7 +155,7 @@ mod copy {
 
         /// The refusal the host answers with; `why` stays with the host's log.
         pub(in crate::workspaces) fn refusal(&self) -> String {
-            tilo_server_session::workspaces::Refusal::BranchNotMade {
+            tilo_server_session::workspaces::AdminRefusal::BranchNotMade {
                 part: self.part.clone(),
             }
             .to_reason()

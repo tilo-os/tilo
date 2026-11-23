@@ -67,6 +67,7 @@ impl TestUser {
 }
 
 /// A "device" — signing key + signed cert.
+#[derive(Clone)]
 pub struct TestDevice {
     pub sk: SigningKey,
     pub cert: DeviceCert,

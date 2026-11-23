@@ -145,10 +145,12 @@ mod branching {
         };
         let refused = not.refusal();
         assert_eq!(
-            tilo_server_session::workspaces::Refusal::from_reason(&refused),
-            Some(tilo_server_session::workspaces::Refusal::BranchNotMade {
-                part: "its Linux machine".into(),
-            }),
+            tilo_server_session::workspaces::AdminRefusal::from_reason(&refused),
+            Some(
+                tilo_server_session::workspaces::AdminRefusal::BranchNotMade {
+                    part: "its Linux machine".into(),
+                }
+            ),
             "the refusal names the machine as what did not come: {refused}"
         );
         assert_eq!(

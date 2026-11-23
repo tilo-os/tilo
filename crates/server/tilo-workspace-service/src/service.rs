@@ -33,6 +33,7 @@ use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceRegistry, run_peer_until};
 use crate::policy::TrustPolicy;
 use crate::transport::{ALPN, MAX_FRAME_BYTES};
+use tilo_peer_state::transport::{StreamFuture, StreamRecv, StreamSend, Transport};
 use tilo_server_protocol::{WorkSetting, WorkspaceId};
 
 /// How much an in-process session buffers each way before its writer waits.
@@ -273,8 +274,16 @@ impl ServiceSessions {
         // have to rename: the endpoint names where it is reached first, when it
         // will at all.
         cfg.reaching.awaited(&endpoint).await;
+        let host_revocations = revocations.clone();
         let workspaces = Box::pin(crate::workspaces::Workspaces::open(
-            sessions.workspace_services(&cfg, &identity, endpoint, revocations, channels),
+            sessions.workspace_services(
+                &cfg,
+                &identity,
+                endpoint,
+                revocations,
+                channels,
+                sessions.handler.app_serving.clone(),
+            ),
             cfg.state_root.join("workspaces"),
             cfg.state_root.join("store"),
         ))
@@ -285,6 +294,22 @@ impl ServiceSessions {
             // Sessions ask its workspaces what a device may do; the lock is set
             // before the endpoint routes any session to the service.
             let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
+            // The host's own operations answer on its action service for the requests that name
+            // no workspace: a page's whole administration, asked by a device of its person.
+            if let Some(server) = own_server.clone() {
+                workspaces.action_service().admit_host_operations(Arc::new(
+                    crate::app_serving::HostOperations::new(server, Arc::clone(&host_revocations)),
+                ));
+            }
+            // A device without a certificate from this host enters through the entry action
+            // alone, in a scope of its own: nothing else is reachable there.
+            workspaces.action_service().admit_uncertified(
+                tilo_server_protocol::workspaces::ENTRY_SCOPE,
+                Arc::new(crate::app_serving::EntryOperations::new(
+                    workspaces.clone(),
+                    host_revocations,
+                )),
+            );
             #[cfg(all(
                 not(target_arch = "wasm32"),
                 any(feature = "agents", feature = "device-keys")
@@ -312,6 +337,7 @@ impl ServiceSessions {
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
         channels: Option<crate::workspaces::DeviceKeyGroups>,
+        apps: Option<Arc<dyn AppActionServer>>,
     ) -> crate::workspaces::WorkspaceServices {
         crate::workspaces::WorkspaceServices {
             channels,
@@ -337,6 +363,7 @@ impl ServiceSessions {
             })),
             member: cfg.member.clone(),
             surfaces: Arc::clone(&cfg.surfaces),
+            apps,
         }
     }
 
@@ -437,10 +464,14 @@ fn service_handlers(
             Arc::new(workspaces.action_service()) as Arc<dyn DynProtocolHandler>,
         ),
         // A member device of a workspace syncs with the service here, the same
-        // link a device runs for itself: the dial names its workspace first.
+        // link a device runs for itself: its first stream proves which device
+        // dialled it, then the dial names its workspace.
         (
             tilo_peer_state::direct::DIRECT_ALPN,
-            Arc::new(workspaces.direct()) as Arc<dyn DynProtocolHandler>,
+            Arc::new(WorkspaceLink {
+                serving: workspaces.direct(),
+                server: sessions.handler.clone(),
+            }) as Arc<dyn DynProtocolHandler>,
         ),
     ]
 }
@@ -460,6 +491,82 @@ pub fn workspaces_protocols(
             )
         })
         .collect()
+}
+
+/// A member device's link to its workspace over iroh: the first stream proves which device
+/// dialled it, the session handshake this service admits its members with, and the device proved
+/// is the one the workspace's admission decides on. A page dials with an endpoint key of its own,
+/// which is not its device key, and is admitted as the device it proved.
+#[derive(Clone, Debug)]
+struct WorkspaceLink {
+    /// The workspaces' links, serving the workspace the dial names.
+    serving: tilo_peer_state::direct::Serving,
+    /// The service, whose handshake proves the member device.
+    server: ServerProtocol,
+}
+
+impl ProtocolHandler for WorkspaceLink {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let served: Result<(), String> = async {
+            let (mut send, mut recv) = connection
+                .accept_bi()
+                .await
+                .map_err(|error| error.to_string())?;
+            let device = self
+                .server
+                .authenticate_member(&mut recv, &mut send)
+                .await
+                .map_err(|error| error.to_string())?;
+            // The rest of the link is the connection, its device the one it proved.
+            let proved = Proved {
+                connection,
+                device: device.device_public_key,
+            };
+            self.serving.serve_link(&proved).await
+        }
+        .await;
+        if let Err(error) = served {
+            tracing::debug!(%error, "a member's link to its workspace ended");
+        }
+        Ok(())
+    }
+}
+
+/// A link whose device is the one its first stream proved: an iroh endpoint's key is not always
+/// the device's, as a page's is not, so the transport's remote is the proved device.
+struct Proved {
+    connection: Connection,
+    device: [u8; 32],
+}
+
+impl Transport for Proved {
+    fn open_uni(&self) -> StreamFuture<'_, StreamSend> {
+        Transport::open_uni(&self.connection)
+    }
+
+    fn accept_uni(&self) -> StreamFuture<'_, StreamRecv> {
+        Transport::accept_uni(&self.connection)
+    }
+
+    fn open_bi(&self) -> StreamFuture<'_, (StreamSend, StreamRecv)> {
+        Transport::open_bi(&self.connection)
+    }
+
+    fn accept_bi(&self) -> StreamFuture<'_, (StreamSend, StreamRecv)> {
+        Transport::accept_bi(&self.connection)
+    }
+
+    fn remote(&self) -> [u8; 32] {
+        self.device
+    }
+
+    fn close(&self, code: u32, reason: &[u8]) {
+        Transport::close(&self.connection, code, reason);
+    }
+
+    fn close_reason(&self) -> Option<tilo_server_protocol::refusal::Refusal> {
+        Transport::close_reason(&self.connection)
+    }
 }
 
 /// A handler several routers share.
@@ -1266,6 +1373,23 @@ impl ServerProtocol {
     #[must_use]
     pub fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
         self.app_serving.as_deref()?.pages()
+    }
+
+    /// The direct links of the workspaces this server governs, when it governs
+    /// any: what a device's link to them is served by
+    /// ([`tilo_peer_state::direct::Serving::serve_link`]) over the browser's
+    /// transport as much as over iroh.
+    #[must_use]
+    pub fn direct(&self) -> Option<tilo_peer_state::direct::Serving> {
+        Some(self.admin.get()?.direct())
+    }
+
+    /// The action service this server's workspaces answer their devices'
+    /// requests on, when it governs any: what the same service serves on a
+    /// device's link ([`tilo_peer_state::actions::ACTIONS_ALPN`]).
+    #[must_use]
+    pub fn actions(&self) -> Option<tilo_peer_state::actions::ActionService> {
+        Some(self.admin.get()?.action_service())
     }
 
     /// Prove which member device opened a stream that does not say so itself

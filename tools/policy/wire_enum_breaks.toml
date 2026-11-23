@@ -9,12 +9,12 @@
 # reason = "why no stored or sent bytes depend on its variant positions"
 
 [[break]]
-file = "crates/ui/ui-core/src/floating_surface/wire.rs"
+file = "crates/sdk/ui-core/src/floating_surface/wire.rs"
 enum = "FloatingSurfaceClientMessage"
 reason = "an app and the session shell speak it as newline-delimited JSON over a local socket, never by position, and both ends are the same build: an app at another protocol number is answered with `VersionMismatch` and closed, so no bytes written before are read back"
 
 [[break]]
-file = "crates/ui/ui-core/src/floating_surface/wire.rs"
+file = "crates/sdk/ui-core/src/floating_surface/wire.rs"
 enum = "FloatingSurfaceHostMessage"
 reason = "the session shell's half of the same connection: newline-delimited JSON over a local socket, never by position, between ends of one protocol number, so no bytes written before are read back"
 
@@ -49,17 +49,17 @@ enum = "EditOpWire"
 reason = "reads one edit operation's JSON tag (`rename_all = kebab-case`, so a variant is named, not numbered) and is never written: edit ops travel and are stored through `EditOp`, whose own encoding does not go through this type"
 
 [[break]]
-file = "crates/sdk/tilo-document/src/action.rs"
+file = "crates/doc/tilo-document/src/action.rs"
 enum = "RichTextAction"
 reason = "a document action is written and read as JSON by name (`Action::encoded`, `serde_json::to_vec`), never by position, so a new variant in the middle adds a name and moves nothing that bytes point at"
 
 [[break]]
-file = "crates/ui/ui-core/src/a11y.rs"
+file = "crates/sdk/ui-core/src/a11y.rs"
 enum = "Role"
 reason = "write-only: an accessibility node's role goes out to AT-SPI and the screen reader as a JSON name, and nothing deserializes it back, so its place in the enum carries no bytes"
 
 [[break]]
-file = "crates/ui/ui-core/src/widget/layout_info.rs"
+file = "crates/sdk/ui-core/src/widget/layout_info.rs"
 enum = "LayoutInfo"
 reason = "a widget's resolved layout decisions reach the window's own inspection as newline-delimited JSON by name, read in the process that made them and never kept, so no stored bytes point at a variant position"
 
@@ -299,7 +299,7 @@ enum = "Scope"
 reason = "`Room` is renamed `Workspace` at the same index: the browser page writes the scope it hands `wayIn` and ships in the same bundle as the runtime that reads it, so no other build's bytes are read"
 
 [[break]]
-file = "crates/ui/tilo-render-protocol/src/patch.rs"
+file = "crates/platform/tilo-render-protocol/src/patch.rs"
 enum = "ToApp"
 reason = "a window and the instance it shows speak it over a live connection and keep none of it; the batch's version is bumped, so an end of the old version refuses the other's batches instead of reading them by the wrong position"
 
@@ -349,17 +349,17 @@ enum = "FieldType"
 reason = "renames the Principal variant to Actor: action schemas are published by the running app and read by the same build, never stored"
 
 [[break]]
-file = "crates/ui/tilo-render-protocol/src/patch.rs"
+file = "crates/platform/tilo-render-protocol/src/patch.rs"
 enum = "Value"
 reason = "renames the Principal variant to Actor: a view's patches go from a host to its window in one build and are never stored"
 
 [[break]]
-file = "crates/ui/ui-graph/src/component.rs"
+file = "crates/dev/ui-graph/src/component.rs"
 enum = "Type"
 reason = "renames the Principal variant to Actor: the component catalogue is generated from the tree and read by the same build"
 
 [[break]]
-file = "crates/ui/ui-graph/src/component.rs"
+file = "crates/dev/ui-graph/src/component.rs"
 enum = "Value"
 reason = "renames the Principal variant to Actor: the component catalogue is generated from the tree and read by the same build"
 [[break]]
@@ -448,7 +448,7 @@ enum = "Lifetime"
 reason = "drops the retired task lifetime that kept the later lifetimes at their places: stored formats change with the code, and grants an older build wrote no longer read"
 
 [[break]]
-file = "crates/sdk/model-client/src/lib.rs"
+file = "crates/agent/model-client/src/lib.rs"
 enum = "Request"
 reason = "the raw-body plan request had no caller left once every model turn went through the neutral complete request; a request is JSON (named by its verb) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so an app that still sent the verb is refused as an unknown request rather than misread"
 
@@ -532,7 +532,7 @@ file = "crates/server/tilo-server-protocol/src/live.rs"
 enum = "LiveKind"
 reason = "the presence kind goes with the frame it named; a sealed live frame lives only as long as the connection, and the peer protocol version is bumped to 57 with the removal"
 [[break]]
-file = "crates/sdk/model-client/src/lib.rs"
+file = "crates/agent/model-client/src/lib.rs"
 enum = "Request"
 reason = "the verbs that read and kept a provider key on this computer go: a computer keeps no key, its model is asked on the workspace's server. The gateway and its clients speak tagged JSON by verb name over a local socket, never by position, and nothing writes a request down"
 [[break]]
@@ -714,3 +714,8 @@ reason = "sent only from a supervisor to the app worker it starts from its own r
 file = "crates/lang/tilolang-runtime/src/run.rs"
 enum = "Pending"
 reason = "a run's journal waits on a call it made through the dispatch, a person's yes included, so a run no longer keeps a person's answer itself; a journal suspended on one before is not resumed"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "Envelope"
+reason = "the page's workspace administration request and its answer leave the session for the host's own action: `WorkspacesRequest` and `WorkspacesReply` are asked and answered as `workspace.administer`, one of the host's own operations on the actions transport, so no session frame carries them. Envelopes are live frames of a session and kept nowhere, and the peer protocol version is bumped from 65 to 66 with the removal and `previous-peer-frames.txt` moves to the version before it, so a device at another version admits nothing from this one"

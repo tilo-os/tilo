@@ -45,7 +45,9 @@ tilo_automerge_isolate::test_worker!();
 #[cfg(not(target_arch = "wasm32"))]
 pub mod actions;
 mod cached_document;
-#[cfg(not(target_arch = "wasm32"))]
+/// Two devices of one workspace syncing with no host between them, over
+/// whatever carries their link: a native device's iroh connection or a page's
+/// WebTransport session ([`transport::Transport`]).
 pub mod direct;
 pub mod document;
 pub mod document_frame;
@@ -60,13 +62,13 @@ mod postcard_sink;
 pub mod replica;
 /// A workspace's retained sealed history: the frames a store device keeps
 /// without a key to open them.
-#[cfg(not(target_arch = "wasm32"))]
 mod retained;
 /// What a device's own roles read and write its workspaces' documents through.
 mod shared;
 mod state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+pub mod transport;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;

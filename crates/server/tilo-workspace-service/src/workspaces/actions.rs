@@ -67,7 +67,9 @@ use tilo_actions::{
     InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
 use tilo_peer_state::join::Role;
-use tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER;
+use tilo_server_session::workspaces::{
+    ADMINISTER_WORKSPACES, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+};
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -1563,6 +1565,28 @@ impl Workspaces {
         }
     }
 
+    /// Answer one of the host's own operations `request` asks for, as the device `certificate`
+    /// certifies: a page's whole administration as one action
+    /// ([`Self::administer_invoke`]), else one of the operations the catalogue publishes
+    /// ([`Self::account_invoke`]).
+    async fn host_operation_invoke(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        let certificate = Self::host_actions_certificate(caller, certificate)?;
+        // A page's whole administration as one action of the host's own: its requests name no
+        // workspace, and each is decided as the workspace it names decides it.
+        if request.target.address.resource == HOST_WORKSPACES_RESOURCE
+            && request.target.address.action == ADMINISTER_WORKSPACES
+        {
+            return Box::pin(self.administer_invoke(caller, certificate, request)).await;
+        }
+        Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None)).await
+    }
+
     async fn invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -1602,8 +1626,7 @@ impl Workspaces {
                 }
             }
             (HOST_ACTIONS_PROVIDER, _) => {
-                let certificate = Self::host_actions_certificate(caller, certificate)?;
-                Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None))
+                Box::pin(self.host_operation_invoke(workspace_id, caller, certificate, request))
                     .await
             }
             (mcp_server::PROVIDER, _) => self.mcp_stop(caller, certificate, request),

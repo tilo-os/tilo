@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{person_models, person_vault};
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_session::workspaces::{
+use tilo_server_protocol::workspaces::{
     CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, PersonalDevice,
     PersonalList, PersonalWorkspace, WorkspaceLabels,
 };

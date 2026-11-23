@@ -31,6 +31,15 @@ pub const ALPN: &[u8] = b"tilo-server/1";
 /// the lower endpoint id dials it, the other only when it is not dialled;
 /// of two dialled at once, both keep the lower id's.
 pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/1";
+/// ALPN of a device's link to another device of its workspace, which carries
+/// the workspace's records, its governance and the content they refer to. A
+/// page reaches the same link over WebTransport (`crate::web::LINK_RECORDS_PATH`).
+/// `/4` is the first version: the link names its workspace and whether it
+/// takes the workspace's records only as it opens them.
+pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/4";
+/// ALPN of one device asking another of its workspace to list, call or watch
+/// an action, on a link of the device's own.
+pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";
 
 /// One thing the person who owns a server asks it to do from another of their
 /// devices. Each is an action on their Servers workspace, which the server the
@@ -642,28 +651,6 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// A device asks the host it is joined to what it may do there and for its
-    /// workspaces: the postcard-encoded [`WorkspacesRequest`], answered
-    /// through [`Self::WorkspacesReply`] with the asker's `request_id`. The
-    /// connection says who asks; the host checks that device's authority over
-    /// each request as it does every request.
-    ///
-    /// [`WorkspacesRequest`]: crate::workspaces::WorkspacesRequest
-    WorkspacesRequest {
-        request_id: u64,
-        #[serde(with = "serde_bytes")]
-        frame: Vec<u8>,
-    },
-
-    /// The host's answer to [`Self::WorkspacesRequest`] with the same
-    /// `request_id`: the postcard-encoded
-    /// [`WorkspacesReply`](crate::workspaces::WorkspacesReply).
-    WorkspacesReply {
-        request_id: u64,
-        #[serde(with = "serde_bytes")]
-        frame: Vec<u8>,
-    },
-
     /// The host's fetch proxy grant for this connection: the bearer token a
     /// page sends with every request it makes through its host
     /// ([`FETCH_PATH`], as `tilo_net::proxy` names it). Sent once, as the
@@ -805,8 +792,6 @@ impl Envelope {
             // spelling it was first written under.
             Self::WorkspaceBootstrap { .. } => "WorkspaceBootstrap",
             Self::DocumentContentWant { .. } => "DocumentContentWant",
-            Self::WorkspacesRequest { .. } => "WorkspacesRequest",
-            Self::WorkspacesReply { .. } => "WorkspacesReply",
             Self::FetchGrant { .. } => "FetchGrant",
             Self::AgentSession { .. } => "AgentSession",
             Self::AgentSessionAnswer { .. } => "AgentSessionAnswer",
@@ -858,8 +843,6 @@ impl Envelope {
             | Self::Pong
             | Self::PeerServerHello { .. }
             | Self::HostAction { .. }
-            | Self::WorkspacesRequest { .. }
-            | Self::WorkspacesReply { .. }
             | Self::AgentSession { .. }
             | Self::AgentSessionAnswer { .. }
             | Self::AgentSessionStopped

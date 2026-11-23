@@ -51,7 +51,7 @@ mod web_ui;
 pub use web_ui::WebUi;
 mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
-mod device_actions;
+pub(crate) mod device_actions;
 mod follow;
 mod founding;
 pub mod providers;
@@ -308,7 +308,7 @@ const RECEIPTS: &str = "joins";
 type Receipts = appended::Appended<tilo_peer_state::join_log::JoinCompletionRecord>;
 
 /// A workspace this server governs.
-struct GovernedWorkspace {
+pub(crate) struct GovernedWorkspace {
     record: WorkspaceDocumentEntry,
     peer: Replica,
     /// When the workspace was made, ms since the epoch: the time of the first
@@ -753,7 +753,7 @@ impl GovernedWorkspace {
     /// Commit `candidate`, a change built from `replica`, which the caller
     /// holds: a member's write taken into the replica meanwhile waits, so it is
     /// neither lost to the change nor leaves the change uncommittable.
-    pub(super) fn commit_held(
+    fn commit_held(
         &mut self,
         replica: &mut StatePeer,
         mut candidate: StatePeer,
@@ -967,6 +967,9 @@ pub(crate) struct WorkspaceServices {
     /// The app surfaces this device knows, which its workspaces' stores judge resource writes
     /// by ([`crate::service::ServiceConfig::surfaces`]).
     pub(crate) surfaces: Arc<collab_types::app_surface::Surfaces>,
+    /// The apps this host serves, when its embedder serves any: what its
+    /// devices reach on its action service ([`crate::app_serving::Served`]).
+    pub(crate) apps: Option<Arc<dyn crate::app_serving::AppActionServer>>,
 }
 
 impl WorkspaceServices {
@@ -1003,8 +1006,17 @@ struct WorkspacesInner {
     /// The direct links of the workspaces governed here, one per workspace,
     /// answering a device's dial by the workspace it names.
     direct: tilo_peer_state::direct::Serving,
+    /// The devices each workspace's link admitted, by workspace: what
+    /// [`Workspaces::watch_link_access`] re-checks when what admission reads
+    /// changes.
+    link_remotes: std::sync::Mutex<
+        std::collections::BTreeMap<WorkspaceId, std::collections::BTreeSet<[u8; 32]>>,
+    >,
     /// What the workspaces kept here hold, read and written in process.
     records: crate::workspace_documents::WorkspaceDocuments,
+    /// The apps this host serves, when its embedder serves any: what a request
+    /// handed to another device is reported to ([`crate::app_serving::Hand`]).
+    applications: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// The member copies this device holds ([`member`]).
     member: member::Members,
     /// The runs admitted to this service's workspaces, whose calls are
@@ -1364,8 +1376,17 @@ impl Workspaces {
             }
             _ => Arc::new(host.key.clone()),
         };
-        let (action_service, jobs) =
+        let (action_service, jobs, answers) =
             device_actions::action_service(Arc::clone(&workspaces), signer);
+        // The apps this host serves answer on the same action service its workspaces' devices
+        // reach it on, beside the work and governance it answers itself.
+        if let Some(apps) = host.apps.clone() {
+            answers.serve_apps(crate::app_serving::Served::new(
+                &apps,
+                Arc::clone(&workspaces),
+                &action_service,
+            ));
+        }
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         // What a host from before the device store kept in its own store of
@@ -1374,7 +1395,14 @@ impl Workspaces {
             crate::history_move::move_into_store(state_root, &store)?;
         }
         let store = Arc::new(store);
-        let direct = tilo_peer_state::direct::Serving::new();
+        // The host's links admit the device at their other end before they
+        // listen, by the one admission rule asked of the workspace's replica
+        // ([`Workspaces::admit_link`]); the slot holds these workspaces once
+        // they exist, the [`Serving`](tilo_peer_state::direct::Serving) being
+        // built before them.
+        let admitting = Arc::new(std::sync::OnceLock::new());
+        let direct =
+            tilo_peer_state::direct::Serving::new().admitting(Workspaces::admitting(&admitting));
         let records = crate::workspace_documents::WorkspaceDocuments::new(
             host.workspaces.clone(),
             Arc::clone(&store),
@@ -1401,12 +1429,14 @@ impl Workspaces {
                 mode: std::sync::RwLock::new(None),
                 store,
                 direct,
+                link_remotes: std::sync::Mutex::default(),
                 records,
                 member: member::Members::default(),
                 executions: Arc::new(run_admission::ExecutionPins::new()),
                 dir: dir.clone(),
                 action_service,
                 jobs,
+                applications: host.apps.clone(),
                 workspaces,
                 readings: readings::Readings::default(),
                 own_opened: reads::OwnOpened::default(),
@@ -1457,6 +1487,7 @@ impl Workspaces {
         if let Some(device) = this.inner.host.member.clone() {
             this.inner.member.set_device(device);
         }
+        let _ = admitting.set(this.downgrade());
         this.inner.jobs.claim_in(this.downgrade());
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
@@ -1476,6 +1507,9 @@ impl Workspaces {
         this.serve_kept_members().await;
         this.adopt_listings_file().await?;
         this.start_following();
+        // What its links admitted is re-checked whenever what admission reads
+        // narrows: a device that no longer reaches the workspace is let go.
+        this.watch_link_access();
         Ok(this)
     }
 
@@ -1781,6 +1815,13 @@ impl Workspaces {
         self.inner.action_service.clone()
     }
 
+    /// Where this host hands a request to a device of its workspaces, over the
+    /// link that device holds to it ([`crate::app_serving::Hand`]).
+    #[must_use]
+    pub fn hand(&self) -> crate::app_serving::Hand {
+        crate::app_serving::Hand::new(self.action_service(), self.inner.applications.clone())
+    }
+
     /// Run the turns of work this device takes for its workspaces' devices on
     /// `jobs` ([`crate::work`]): whether a turn is this device's is
     /// [`takes_turn`](crate::work::takes_turn)'s to say, live, each time.
@@ -1826,7 +1867,10 @@ impl Workspaces {
     /// service in the host's place hands these requests here.
     #[must_use]
     pub fn device_actions(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
-        Arc::new(device_actions::Answers(Arc::clone(&self.inner.jobs)))
+        Arc::new(device_actions::Answers {
+            work: Arc::clone(&self.inner.jobs),
+            apps: std::sync::OnceLock::new(),
+        })
     }
 
     /// Workspace UUIDs, each sent after a governance decision on that workspace was

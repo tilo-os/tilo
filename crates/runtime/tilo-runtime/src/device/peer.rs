@@ -694,7 +694,7 @@ mod folder_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
+    use tilo_server_protocol::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
 
     /// The server's list names each folder after its workspace.
     #[test]
@@ -709,7 +709,7 @@ mod tests {
                     hint: None,
                 }),
                 role: Some("owner".to_owned()),
-                labels: tilo_server_session::workspaces::WorkspaceLabels::default(),
+                labels: tilo_server_protocol::workspaces::WorkspaceLabels::default(),
                 unattended: false,
                 enter_at: None,
                 made_at_ms: None,

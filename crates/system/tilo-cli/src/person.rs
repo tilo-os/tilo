@@ -179,7 +179,7 @@ pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Valu
                 .map_err(|refusal| anyhow!("{refusal}"))?;
             let listed = device
                 .personal_list(
-                    &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                    &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
                     None,
                 )
                 .await

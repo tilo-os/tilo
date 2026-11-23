@@ -723,7 +723,7 @@ async fn a_person_the_server_does_not_know_is_told_so_and_what_to_do() {
         .expect("a server that keeps workspaces for people lets anyone's device connect");
     let refused = device
         .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await

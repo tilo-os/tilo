@@ -151,7 +151,7 @@ pub(crate) enum Reach {
 
 /// Why a workspace or the account did not answer.
 type Refusal = ServerError;
-type Labels = tilo_server_session::workspaces::WorkspaceLabels;
+type Labels = tilo_server_protocol::workspaces::WorkspaceLabels;
 
 /// One workspace's session, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
@@ -438,7 +438,7 @@ impl Session {
     async fn device_address(
         &self,
         workspace: &str,
-    ) -> Option<tilo_server_session::workspaces::KeepingDeviceAddress> {
+    ) -> Option<tilo_server_protocol::workspaces::KeepingDeviceAddress> {
         let address = self.workspace(workspace).await.ok()??.address?;
         // A listed address with a hint is a device's own, never the answering device's.
         address.address().ok()?;

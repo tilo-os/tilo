@@ -357,7 +357,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     );
     let listed = desk_session
         .personal_list(
-            &tilo_server_session::workspaces::WorkspaceLabels::new(),
+            &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
             None,
         )
         .await

@@ -1,9 +1,9 @@
-//! Actions between the devices of a workspace, over an iroh connection with
-//! no host, store or relay in between.
+//! Actions between the devices of a workspace, over a [`Transport`]: an iroh
+//! connection of its own, ALPN [`ACTIONS_ALPN`], or the link a page holds to
+//! its host ([`tilo_server_protocol::web::LINK_ACTIONS_PATH`]).
 //!
-//! A request is one signed [`SignedDeviceAction`] on a connection of its
-//! own, ALPN [`ACTIONS_ALPN`], and its answer is the [`RemoteActionMessage`]
-//! the device's one dispatcher
+//! A request is one signed [`SignedDeviceAction`] on a stream of its own, and
+//! its answer is the [`RemoteActionMessage`] the device's one dispatcher
 //! ([`ActionProvider`](tilo_actions::remote::ActionProvider): the broker, or a
 //! runtime's action host) gives, on the same bi-stream. The stream is the
 //! correlation: a request in, one answer out, then the stream finishes, so
@@ -14,17 +14,32 @@
 //! own-device actions span the person. The device answering checks, in this
 //! order, that
 //!
-//! 1. the connection id is the action's `source`, so a device may only ask
-//!    as itself;
+//! 1. the transport's device is the action's `source`, where the transport
+//!    names one, so a device may only ask as itself;
 //! 2. the signature is the source's ([`SignedDeviceAction::verify`]);
-//! 3. the addressed device is this one;
-//! 4. the request is fresh and not one already admitted
+//! 3. the invocation the request carries, if it carries one, is signed as
+//!    that same device ([`verify_invocation`]), is fresh, and its id names
+//!    no other request this device admitted within the window
+//!    (`InvocationReplay`: [`ActionCallError::InvocationConflict`]
+//!    otherwise);
+//! 4. the addressed device is this one — a request addressed to another
+//!    device this one holds a transport for is passed on there
+//!    ([`ActionService::reach_device_at`]);
+//! 5. the request is fresh and not one already admitted
 //!    ([`ActionReplayWindow`]);
-//! 5. this device holds the workspace it names;
-//! 6. the source is a device of that workspace's roster: certified,
+//! 6. this device holds the workspace it names;
+//! 7. the source is a device of that workspace's roster: certified,
 //!    unrevoked, unexpired, its person a member, its delegation live
 //!    ([`StatePeer::permissions`]); or a key the workspace holds no certificate
 //!    for at all, a visitor ([`Caller::visitor`]), which acts for nobody.
+//!
+//! A transport that names no device of its own (a page's session with its
+//! host, which proves the page to the host and the host to nobody) admits a
+//! request by what the request itself proves: its signature, and the
+//! invocation it carries. Such a transport carries another device's request
+//! only to the host whose session it is, which is the one its opener can
+//! reach, so a request passed on to a page runs as the device that signed it
+//! there, not as the host that carried it.
 //!
 //! A visitor (a page at a workspace's public entry, which made a key of its own
 //! and signs each call with it) is admitted only to what the workspace's grants
@@ -51,8 +66,9 @@
 //! reports the original invocation.
 
 use crate::direct::Replica;
+use crate::transport::{StreamRecv, StreamSend, Transport};
 use collab_types::signer::DeviceSigner;
-use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{
@@ -70,13 +86,20 @@ use tilo_actions::remote::{
     RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::invocation::InvocationReplay;
+use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
 mod visitors;
 pub use visitors::{VISITOR_CALLS_PER_DAY, VISITOR_CALLS_PER_TEN_MINUTES};
 
-/// ALPN of the device-to-device action service.
-pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";
+/// ALPN of the device-to-device action service, and of a page's session for
+/// it ([`tilo_server_protocol::web::LINK_ACTIONS_PATH`]).
+pub use tilo_server_protocol::transport::ACTIONS_ALPN;
+
+/// Where a page opens its session to ask its host's actions: the same
+/// streams [`ACTIONS_ALPN`] carries, over the browser's WebTransport.
+pub use tilo_server_protocol::web::LINK_ACTIONS_PATH;
 
 /// The largest frame either side writes.
 const MAX_FRAME_BYTES: usize = neighbour_wire::actions::MAX_ACTION_BYTES + 8 * 1024;
@@ -193,6 +216,19 @@ impl Workspaces for crate::owner::NativeWorkspaceOwner {
     }
 }
 
+/// A weak handle to an [`ActionService`], for a provider registered on it that
+/// also asks other devices through it: neither keeps the other alive.
+#[derive(Clone)]
+pub struct WeakActions(std::sync::Weak<Inner>);
+
+impl WeakActions {
+    /// The service, while it runs.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<ActionService> {
+        self.0.upgrade().map(ActionService)
+    }
+}
+
 /// A device that answers no app actions on its action service: one built to ask its
 /// workspaces' devices to take work, which serves the action service for the asks it
 /// makes. An app's action reaches a device through
@@ -265,9 +301,12 @@ struct Inner {
     /// Providers this device answers beside its dispatcher, each the actions of the provider it
     /// names ([`ActionService::add_provider`]).
     providers: Mutex<Vec<Arc<dyn ActionProvider + Send + Sync>>>,
-    /// The scope a device with no certificate yet may call, and what answers it there
+    /// The scopes a device with no certificate yet may call, and what answers each
     /// ([`ActionService::admit_uncertified`]).
-    uncertified: Mutex<Option<(String, Arc<dyn ActionProvider + Send + Sync>)>>,
+    uncertified: Mutex<HashMap<String, Arc<dyn ActionProvider + Send + Sync>>>,
+    /// What answers requests naming no workspace, the host's own operations
+    /// ([`ActionService::admit_host_operations`]).
+    host_operations: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
     replay: Mutex<ActionReplayWindow>,
     /// The calls visitors made, per client address ([`visitors`]).
     visitors: Mutex<visitors::VisitorWindows>,
@@ -276,8 +315,15 @@ struct Inner {
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
     /// Endpoints keyed apart from the device they answer for, by endpoint
-    /// id ([`ActionService::reach_device_at`]).
+    /// id ([`ActionService::keyed_apart`]).
     endpoints: Mutex<HashMap<[u8; 32], [u8; 32]>>,
+    /// The transports this device reaches other devices at, by device: the
+    /// links they hold open to it, which it opens a bi-stream on as it dials a
+    /// native device ([`ActionService::reach_device_at`]).
+    held: Mutex<HashMap<[u8; 32], Arc<dyn Transport>>>,
+    /// The invocation ids each workspace's requests admitted within their
+    /// freshness window, checked before anything is dispatched.
+    invocations: Mutex<HashMap<String, InvocationReplay>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -323,12 +369,15 @@ impl ActionService {
             dispatcher,
             providers: Mutex::default(),
             uncertified: Mutex::default(),
+            host_operations: Mutex::default(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
             content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds,
             callers: Mutex::default(),
             endpoints: Mutex::default(),
+            held: Mutex::default(),
+            invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
     }
@@ -352,22 +401,51 @@ impl ActionService {
             dispatcher,
             providers: Mutex::default(),
             uncertified: Mutex::default(),
+            host_operations: Mutex::default(),
             replay: Mutex::default(),
             visitors: Mutex::new(visitors::VisitorWindows::new(rand_key())),
             content_puts: tilo_actions::remote::HostedContentPuts::default(),
             bounds: Bounds::default(),
             callers: Mutex::default(),
             endpoints: Mutex::default(),
+            held: Mutex::default(),
+            invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
         }))
     }
 
-    /// Take a connection from the endpoint `endpoint` as one from the device
-    /// `device`, and address what this device asks there to `device`: a
-    /// device whose endpoint is keyed apart from its device key, as a Tilo
-    /// server's is, asks and answers at that endpoint as the device. Every
-    /// other endpoint is the device it is keyed by.
-    pub fn reach_device_at(&self, device: [u8; 32], endpoint: [u8; 32]) {
+    /// Record `transport`, the link the device `device` holds open to this
+    /// one, as the way to reach that device: a request addressed to it is
+    /// passed on there ([`Self::pass_on`]), and this device opens a bi-stream
+    /// on it as it would dial a native device ([`Self::remote_held`]).
+    pub fn reach_device_at(&self, device: [u8; 32], transport: Arc<dyn Transport>) {
+        self.0.held.lock_recover().insert(device, transport);
+    }
+
+    /// Forget the way to `device` recorded by [`Self::reach_device_at`], when
+    /// its link is the one that ended: a link this device kept before it is
+    /// left as it was.
+    pub fn forget_device(&self, device: [u8; 32], transport: &Arc<dyn Transport>) {
+        let mut held = self.0.held.lock_recover();
+        if held
+            .get(&device)
+            .is_some_and(|kept| Arc::ptr_eq(kept, transport))
+        {
+            held.remove(&device);
+        }
+    }
+
+    /// The link this device reaches `device` at, when it holds one.
+    #[must_use]
+    pub fn reach(&self, device: [u8; 32]) -> Option<Arc<dyn Transport>> {
+        self.0.held.lock_recover().get(&device).cloned()
+    }
+
+    /// A device whose endpoint is keyed apart from its device key, as a Tilo
+    /// server's is, asks and answers at that endpoint as the device
+    /// ([`Self::device_of`]). Every other endpoint is the device it is keyed
+    /// by.
+    pub fn keyed_apart(&self, device: [u8; 32], endpoint: [u8; 32]) {
         if device != endpoint {
             self.0.endpoints.lock_recover().insert(endpoint, device);
         }
@@ -383,6 +461,13 @@ impl ActionService {
             .get(&endpoint)
             .copied()
             .unwrap_or(endpoint)
+    }
+
+    /// A handle that does not keep this service alive
+    /// ([`WeakActions::upgrade`]): what a provider it answers through holds.
+    #[must_use]
+    pub fn weak(&self) -> WeakActions {
+        WeakActions(Arc::downgrade(&self.0))
     }
 
     /// This device's public key, as the other devices see it.
@@ -423,7 +508,18 @@ impl ActionService {
         scope: impl Into<String>,
         provider: Arc<dyn ActionProvider + Send + Sync>,
     ) {
-        *self.0.uncertified.lock_recover() = Some((scope.into(), provider));
+        self.0
+            .uncertified
+            .lock_recover()
+            .insert(scope.into(), provider);
+    }
+
+    /// Answer requests that name no workspace, the host's own operations, through `provider`: a
+    /// device of the host's person asks them, and proves who it is by the signed invocation it
+    /// carries, since no workspace's roster names it here. A link admits them before any
+    /// workspace is read, so a device that holds none yet still reaches the host that serves it.
+    pub fn admit_host_operations(&self, provider: Arc<dyn ActionProvider + Send + Sync>) {
+        *self.0.host_operations.lock_recover() = Some(provider);
     }
 
     /// Answer the actions published under the provider `provider` names
@@ -560,7 +656,7 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None))
     }
 
     /// [`Self::remote`] for a device this device places `workspace`'s work on: every request
@@ -575,7 +671,7 @@ impl ActionService {
         placement: &crate::join::TransportHint,
     ) -> RemoteDevice {
         let placement = postcard::to_allocvec(placement).ok();
-        RemoteDevice(self.device_at(endpoint, addr, workspace, placement))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, placement, None))
     }
 
     /// The connection to one device, opened on first use and kept while it
@@ -586,19 +682,67 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
         placement: Option<Vec<u8>>,
+        target: Option<[u8; 32]>,
     ) -> Arc<Device> {
+        let target = target.unwrap_or_else(|| self.device_of(*addr.id.as_bytes()));
         Arc::new(Device {
-            endpoint: endpoint.clone(),
-            addr: addr.clone(),
+            way: Way::Dial {
+                endpoint: endpoint.clone(),
+                addr: addr.clone(),
+            },
             workspace: workspace.to_owned(),
             placement,
-            target: self.device_of(*addr.id.as_bytes()),
+            target,
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
             next_correlation: AtomicU64::new(1),
             follow: Following::default(),
         })
+    }
+
+    /// [`Self::remote`] for a device this one reaches over `transport`, the
+    /// link it holds to it: a page's link to its host, or the link a device
+    /// dialled it over ([`Self::remote_held`]).
+    #[must_use]
+    pub fn remote_over(
+        &self,
+        transport: Arc<dyn Transport>,
+        device: [u8; 32],
+        workspace: &str,
+    ) -> RemoteDevice {
+        RemoteDevice(Arc::new(Device {
+            way: Way::Linked(transport),
+            workspace: workspace.to_owned(),
+            placement: None,
+            target: device,
+            key: Arc::clone(&self.0.device),
+            runtime: self.0.runtime.clone(),
+            connection: Mutex::new(None),
+            next_correlation: AtomicU64::new(1),
+            follow: Following::default(),
+        }))
+    }
+
+    /// [`Self::remote_held`] for `device`, over the link this device holds to
+    /// it ([`Self::reach_device_at`]); `None` where it holds none.
+    #[must_use]
+    pub fn remote_held(&self, device: [u8; 32], workspace: &str) -> Option<RemoteDevice> {
+        Some(self.remote_over(self.reach(device)?, device, workspace))
+    }
+
+    /// [`Self::remote`] for a request addressed to `target` through the device
+    /// at `addr`: a page asks its host for the actions of another device of its
+    /// workspace, which the host passes the request on to.
+    #[must_use]
+    pub fn through(
+        &self,
+        endpoint: &Endpoint,
+        addr: &EndpointAddr,
+        workspace: &str,
+        target: [u8; 32],
+    ) -> RemoteDevice {
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None, None, Some(target)))
     }
 
     /// The devices of `workspace` that may be asked to take work, other than this
@@ -627,36 +771,44 @@ impl ActionService {
     }
 
     /// Answer one request from the client address `client` (where the connection says it): what
-    /// the device's dispatcher made of it.
+    /// the device's dispatcher made of it, or what the device it was addressed to made of it
+    /// when this one passes it on.
     async fn answer(
         &self,
-        remote: [u8; 32],
+        remote: Option<[u8; 32]>,
         client: Option<std::net::IpAddr>,
         signed: SignedDeviceAction,
     ) -> Option<RemoteActionMessage> {
         let action = signed.action();
         let request = &action.message;
-        match self.authorize(remote, &signed).await {
-            Ok((caller, dispatcher)) => self.dispatch(&dispatcher, &caller, client, request).await,
+        match self.decide(remote, &signed).await {
+            Ok(Decided::Serve(admitted)) => {
+                self.dispatch(&admitted.dispatcher, &admitted.caller, client, request)
+                    .await
+            }
+            Ok(Decided::Passed(answer)) => Some(*answer),
             Err(error) => tilo_actions::remote::refuse(request, error),
         }
     }
 
-    /// The caller a verified request acts as and what answers it, or why it is refused.
-    async fn authorize(
+    /// What a request comes to here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the admit order reads best in one place, in the order it is decided"
+    )]
+    async fn decide(
         &self,
-        remote: [u8; 32],
+        remote: Option<[u8; 32]>,
         signed: &SignedDeviceAction,
-    ) -> Result<
-        (Caller, Arc<dyn ActionProvider + Send + Sync>),
-        tilo_actions::remote::ActionCallError,
-    > {
+    ) -> Result<Decided, tilo_actions::remote::ActionCallError> {
         use tilo_actions::remote::ActionCallError;
         let action = signed.action();
         let source = action.source;
-        // A device asks as itself and nobody else: the connection already
-        // says which device is there.
-        if remote != source {
+        // A device asks as itself and nobody else: the transport already says
+        // which device is there, where it says one at all.
+        if let Some(remote) = remote
+            && remote != source
+        {
             return Err(not_permitted(
                 source,
                 "it came over another device's connection",
@@ -665,23 +817,44 @@ impl ActionService {
         if signed.verify(&source).is_err() {
             return Err(not_permitted(source, "its signature does not verify"));
         }
-        if action.target != self.device() {
-            return Err(ActionCallError::Refused {
-                reason: "the request names another device".into(),
-            });
-        }
-        self.0
-            .replay
+        // A computer with no certificate yet is admitted to the one scope the device that
+        // certifies it serves, and holds no workspace to be read.
+        let uncertified = self
+            .0
+            .uncertified
             .lock_recover()
-            .admit(signed, now_ns())
-            .map_err(|error| ActionCallError::Refused {
-                reason: error.to_string(),
-            })?;
-        let uncertified = self.0.uncertified.lock_recover().clone();
-        if let Some((scope, provider)) = uncertified
-            && action.workspace == scope
-        {
-            return Ok((Caller::visitor(source), provider));
+            .get(&action.workspace)
+            .cloned();
+        if let Some(provider) = uncertified {
+            self.admit_replay(signed)?;
+            return Ok(Decided::Serve(Box::new(Admitted {
+                caller: Caller::visitor(source),
+                dispatcher: provider,
+            })));
+        }
+        // A request naming no workspace asks the host itself, which no workspace's roster
+        // decides: the provider it answers those through reads the signed invocation each one
+        // carries, so a device proves which of the host's person's it is.
+        if action.workspace.is_empty() {
+            if action.target != self.device() {
+                return Err(ActionCallError::Refused {
+                    reason: "the request names another device".into(),
+                });
+            }
+            let Some(provider) = self.0.host_operations.lock_recover().clone() else {
+                return Err(not_permitted(
+                    source,
+                    "this device serves no operations of its own",
+                ));
+            };
+            self.admit_replay(signed)?;
+            if let RemoteActionMessage::Invoke(request) = &action.message {
+                self.admit_invocation(&action.workspace, request)?;
+            }
+            return Ok(Decided::Serve(Box::new(Admitted {
+                caller: Caller::visitor(source),
+                dispatcher: provider,
+            })));
         }
         let now = tilo_clock::wall();
         // A placement that does not decode is no placement: the request is decided as any other.
@@ -691,25 +864,69 @@ impl ActionService {
                 postcard::from_bytes::<crate::join::TransportHint>(bytes).ok()
             )
         });
-        let (authority, certificate, opened) = self
+        // The invocation the request carries, when it carries one, is checked against the
+        // workspace's revocations and its own signature, here, before it names who asks.
+        let decided = self
             .read_workspace_for(
                 Some((source, placement.as_ref())),
                 &action.workspace,
-                |peer| {
-                    let authority = peer.permissions(source, now);
+                |peer| -> Result<(_, _, _, _), ActionCallError> {
+                    let revocations = revocations_of(peer);
+                    let mut acting = source;
+                    if let RemoteActionMessage::Invoke(request) = &action.message
+                        && request.signed.is_some()
+                    {
+                        let certificate = invocation_signer(
+                            &action.workspace,
+                            request,
+                            &revocations,
+                            now_ns(),
+                        )?;
+                        if certificate.device_public_key != source {
+                            // A transport that names no device of its own carries another
+                            // device's request to the one its opener reaches: the request runs
+                            // as the device that signed it there. One that names a device
+                            // carries only that device's own.
+                            if remote.is_some() {
+                                // The answer would reach a device that never asked.
+                                return Err(ActionCallError::Refused {
+                                    reason: "the invocation is signed by another key than the device asking"
+                                        .into(),
+                                });
+                            }
+                            acting = certificate.device_public_key;
+                        }
+                    }
+                    let authority = peer.permissions(acting, now);
                     let certificate = peer
                         .certificates()
                         .into_iter()
-                        .find(|certificate| certificate.device_public_key == source);
+                        .find(|certificate| certificate.device_public_key == acting);
                     let opened = certificate.is_none()
-                        && visitor_may(peer, &action.workspace, source, &action.message);
-                    (authority, certificate, opened)
+                        && visitor_may(peer, &action.workspace, acting, &action.message);
+                    Ok((acting, authority, certificate, opened))
                 },
             )
             .await
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
-            })?;
+            })??;
+        let (acting, authority, certificate, opened) = decided;
+        // A request addressed to another device this one reaches: pass it on there, which decides
+        // and answers it, and hand its answer back to the caller.
+        if action.target != self.device() {
+            let passed = self
+                .pass_on(signed)
+                .await
+                .ok_or_else(|| ActionCallError::Refused {
+                    reason: "the request names another device".into(),
+                })?;
+            return passed.map(|answer| Decided::Passed(Box::new(answer)));
+        }
+        self.admit_replay(signed)?;
+        if let RemoteActionMessage::Invoke(request) = &action.message {
+            self.admit_invocation(&action.workspace, request)?;
+        }
         // A key the workspace holds no certificate for is a visitor: it acts for nobody, and is
         // admitted only to what the workspace's grants to any key open, decided here, so no
         // dispatcher behind this one ever meets a caller off the roster it did not open to.
@@ -720,14 +937,14 @@ impl ActionService {
                     "a key the workspace holds no certificate for asks what it opens to no visitor",
                 ));
             }
-            return Ok((
-                Caller::visitor(source).in_workspace(action.workspace.clone()),
-                Arc::clone(&self.0.dispatcher),
-            ));
+            return Ok(Decided::Serve(Box::new(Admitted {
+                caller: Caller::visitor(acting).in_workspace(action.workspace.clone()),
+                dispatcher: Arc::clone(&self.0.dispatcher),
+            })));
         };
         let authority = authority.map_err(|error| {
             tracing::warn!(
-                device = %hex::encode(&source[..4]),
+                device = %hex::encode(&acting[..4]),
                 workspace = %action.workspace,
                 %error,
                 "a device's request is refused: the workspace gives it no authority"
@@ -735,19 +952,117 @@ impl ActionService {
             refusal_of(&error)
         })?;
         // The device is its own actor when its person delegated it: an
-        // agent is the agent, never the person.
+        // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
             Actor::Member(MemberId::Agent(agent)) => {
-                Caller::delegated_agent(agent.clone(), certificate.user_public_key, source)
+                Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting)
             }
-            _ => Caller::authenticated(certificate.user_public_key, source),
+            Actor::Member(MemberId::Bot(installation)) => {
+                Caller::bot(installation.clone(), certificate.user_public_key, acting)
+            }
+            _ => Caller::authenticated(certificate.user_public_key, acting),
         };
-        Ok((
-            caller
+        Ok(Decided::Serve(Box::new(Admitted {
+            caller: caller
                 .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.acting.foreign_device),
-            Arc::clone(&self.0.dispatcher),
-        ))
+            dispatcher: Arc::clone(&self.0.dispatcher),
+        })))
+    }
+
+    /// Take `signed` into the replay window this device keeps for its requests,
+    /// or say it is stale or a repeat.
+    fn admit_replay(
+        &self,
+        signed: &SignedDeviceAction,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        self.0
+            .replay
+            .lock_recover()
+            .admit(signed, now_ns())
+            .map_err(|error| tilo_actions::remote::ActionCallError::Refused {
+                reason: error.to_string(),
+            })
+    }
+
+    /// Pass `signed`, a request addressed to another device, on to that
+    /// device over the link this one holds to it
+    /// ([`Self::reach_device_at`]): its answer, or `None` where no link
+    /// reaches it.
+    ///
+    /// A request is passed on as it was signed, so the device that answers
+    /// runs it as the device that signed it, never as the one that carried
+    /// it. That is only sound over a link that names no device of its own —
+    /// a page's session with its host — where a request stands on what it
+    /// proves. A link that names a device carries only that device's own
+    /// requests.
+    async fn pass_on(
+        &self,
+        signed: &SignedDeviceAction,
+    ) -> Option<Result<RemoteActionMessage, tilo_actions::remote::ActionCallError>> {
+        let transport = self.reach(signed.action().target)?;
+        Some(self.relay(&transport, signed).await)
+    }
+
+    /// Write `signed` on a stream of `transport` and read back what the device
+    /// it reaches answered.
+    async fn relay(
+        &self,
+        transport: &Arc<dyn Transport>,
+        signed: &SignedDeviceAction,
+    ) -> Result<RemoteActionMessage, tilo_actions::remote::ActionCallError> {
+        let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed.clone())))
+            .map_err(|error| unavailable(&error.to_string()))?;
+        // A device that holds a link and does not listen on it answers nothing: the caller is
+        // told so when the deadline passes, never left waiting on the stream.
+        let answer = tokio::time::timeout(REPLY_DEADLINE, async {
+            let (mut send, mut recv) = transport
+                .open_bi()
+                .await
+                .map_err(|error| unavailable(&error))?;
+            write_frame(&mut send, &bytes)
+                .await
+                .map_err(|error| unavailable(&error))?;
+            tokio::io::AsyncWriteExt::shutdown(&mut send)
+                .await
+                .map_err(|error| unavailable(&error.to_string()))?;
+            read_frame(&mut recv)
+                .await
+                .map_err(|error| unavailable(&error))?
+                .ok_or_else(|| unavailable("the device closed without answering"))
+        })
+        .await
+        .map_err(|_| unavailable("the device did not answer"))??;
+        RemoteActionFrame::decode(&answer)
+            .map(|frame| frame.message)
+            .map_err(|error| unavailable(&error.to_string()))
+    }
+
+    /// Whether `signed`, a request carrying an invocation, names one this
+    /// device admitted within its freshness window for another request: a
+    /// conflict, answered as the invocation log answers one.
+    fn admit_invocation(
+        &self,
+        workspace: &str,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        let Some(signed) = &request.signed else {
+            return Ok(());
+        };
+        self.0
+            .invocations
+            .lock_recover()
+            .entry(workspace.to_owned())
+            .or_default()
+            .admit(signed, now_ns())
+            .map_err(|error| match error {
+                tilo_server_protocol::invocation::InvocationError::Replayed => {
+                    tilo_actions::remote::ActionCallError::InvocationConflict
+                }
+                other => tilo_actions::remote::ActionCallError::Refused {
+                    reason: format!("{}: {other}", other.code()),
+                },
+            })
     }
 
     /// Hand one verified request to `dispatcher` and answer it.
@@ -945,23 +1260,25 @@ impl ActionService {
         }
     }
 
-    /// Serve `connection` until it ends, answering each stream on its own.
-    async fn serve(&self, connection: Connection) -> Result<(), String> {
-        let remote = self.device_of(*connection.remote_id().as_bytes());
-        // The address the device reaches the caller at directly, when it does: a visitor's
-        // calls are counted by it.
-        let client = connection
-            .paths()
-            .iter()
-            .find_map(|path| match path.remote_addr() {
-                iroh::TransportAddr::Ip(address) => Some(address.ip()),
-                _ => None,
-            });
+    /// Serve `transport`, whatever carries it, until it ends, answering each
+    /// stream on its own: an iroh connection (the action service's own ALPN),
+    /// or a page's link to its host (the same service over WebTransport). The
+    /// device it proves at its other end asks as itself; one that proves none
+    /// — a page's session, whose host it dialled — is answered by what each
+    /// request's own signature says ([`Self::decide`]). `client` is the
+    /// address a visitor's calls are counted by, where the transport reaches
+    /// the caller at one directly.
+    pub async fn serve_transport(
+        &self,
+        transport: &dyn Transport,
+        client: Option<std::net::IpAddr>,
+    ) -> Result<(), String> {
+        let named = transport.remote();
+        let remote = (named != [0; 32]).then(|| self.device_of(named));
         loop {
-            let (send, recv) = match connection.accept_bi().await {
-                Ok(stream) => stream,
-                Err(iroh::endpoint::ConnectionError::ApplicationClosed(_)) => return Ok(()),
-                Err(error) => return Err(error.to_string()),
+            // The link ended, from either end.
+            let Ok((send, recv)) = transport.accept_bi().await else {
+                return Ok(());
             };
             let action_service = self.clone();
             self.0.runtime.spawn(async move {
@@ -975,16 +1292,71 @@ impl ActionService {
         }
     }
 
+    /// Serve one connection of the action service's own ALPN until it ends,
+    /// answering each stream on its own.
+    async fn serve(&self, connection: Connection) -> Result<(), String> {
+        // The address the device reaches the caller at directly, when it does: a visitor's
+        // calls are counted by it.
+        let client = connection
+            .paths()
+            .iter()
+            .find_map(|path| match path.remote_addr() {
+                iroh::TransportAddr::Ip(address) => Some(address.ip()),
+                _ => None,
+            });
+        // The connection a device opened to ask is a link both ways: the host asks it back
+        // over the same one, so a request addressed to that device is passed on there
+        // ([`Self::reach_device_at`]).
+        let transport: Arc<dyn Transport> = Arc::new(connection.clone());
+        let device = self.device_of(*connection.remote_id().as_bytes());
+        self.reach_device_at(device, Arc::clone(&transport));
+        let served = self.serve_transport(&connection, client).await;
+        self.forget_device(device, &transport);
+        served
+    }
+
+    /// Serve a link a device holds open to this one until it ends, answering
+    /// each stream it opens on its own: a page's session with its host
+    /// ([`LINK_ACTIONS_PATH`]), or any other [`Transport`] the two share.
+    ///
+    /// A link that names the device at its other end is recorded as the way
+    /// to reach it ([`Self::reach_device_at`]), so requests addressed to that
+    /// device are passed on there and this device asks it as it dials any
+    /// other. A link that names no device — a page's, whose host it dialled —
+    /// proves nothing of its opener, and the requests it carries stand on
+    /// their own signatures ([`Self::decide`]).
+    pub fn serve_link(&self, transport: Arc<dyn Transport>) {
+        let named = transport.remote();
+        let device = (named != [0; 32]).then(|| self.device_of(named));
+        if let Some(device) = device {
+            self.reach_device_at(device, Arc::clone(&transport));
+        }
+        let action_service = self.clone();
+        self.0.runtime.spawn(async move {
+            if let Err(error) = action_service
+                .serve_transport(transport.as_ref(), None)
+                .await
+            {
+                tracing::warn!(%error, "a link's action service ended in error");
+            }
+            if let Some(device) = device {
+                action_service.forget_device(device, &transport);
+            }
+        });
+    }
+
     /// Read one request from `recv`, answer it on `send`, and finish.
     async fn answer_stream(
         &self,
-        remote: [u8; 32],
+        remote: Option<[u8; 32]>,
         client: Option<std::net::IpAddr>,
-        mut send: SendStream,
-        mut recv: RecvStream,
+        mut send: StreamSend,
+        mut recv: StreamRecv,
     ) -> Result<(), String> {
         let Some(bytes) = read_frame(&mut recv).await? else {
-            return send.finish().map_err(|error| error.to_string());
+            return tokio::io::AsyncWriteExt::shutdown(&mut send)
+                .await
+                .map_err(|error| error.to_string());
         };
         let frame: ActionServiceFrame =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
@@ -995,8 +1367,25 @@ impl ActionService {
                 .map_err(|error| error.to_string())?;
             write_frame(&mut send, &bytes).await?;
         }
-        send.finish().map_err(|error| error.to_string())
+        tokio::io::AsyncWriteExt::shutdown(&mut send)
+            .await
+            .map_err(|error| error.to_string())
     }
+}
+
+/// What [`ActionService::decide`] came to.
+enum Decided {
+    /// This device answers the request, as [`Admitted::caller`].
+    Serve(Box<Admitted>),
+    /// The device it was addressed to answered it, and that answer is the
+    /// caller's.
+    Passed(Box<RemoteActionMessage>),
+}
+
+/// A request this device answers, and who asks it.
+struct Admitted {
+    caller: Caller,
+    dispatcher: Arc<dyn ActionProvider + Send + Sync>,
 }
 
 impl ProtocolHandler for ActionService {
@@ -1094,6 +1483,38 @@ fn not_permitted(source: [u8; 32], why: &str) -> tilo_actions::remote::ActionCal
     tilo_actions::remote::ActionCallError::NotPermitted
 }
 
+/// The revocations the workspace `peer` holds, as an invocation is checked
+/// against them.
+fn revocations_of(peer: &crate::StatePeer) -> RevocationList {
+    let mut revocations = RevocationList::new();
+    for entry in peer.revocations() {
+        // An entry this workspace cannot verify is one it does not keep.
+        let _ = revocations.insert(entry);
+    }
+    revocations
+}
+
+/// The certificate the invocation `request` carries is signed under, checked
+/// against `workspace`'s revocations as a host checks it before running what
+/// the invocation asks: the signature, that it is this workspace's and the
+/// request's own invocation, the argument against the signed hash, the chain,
+/// validity and revocation, and the signer's grant's reach.
+fn invocation_signer(
+    workspace: &str,
+    request: &tilo_actions::remote::InvokeRequest,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<tilo_user_identity::DeviceCert, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::ActionCallError;
+    use tilo_server_protocol::invocation::{InvocationError, verify_invocation};
+    verify_invocation(workspace, request, revocations, now_ns).map_err(|error| match error {
+        InvocationError::Revoked => ActionCallError::NotPermitted,
+        other => ActionCallError::Refused {
+            reason: format!("{}: {other}", other.code()),
+        },
+    })
+}
+
 /// Why the workspace's roster leaves a device without authority, as the
 /// refusal its caller reads.
 fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCallError {
@@ -1144,8 +1565,9 @@ async fn await_answer<T: Send + 'static>(
 pub struct RemoteDevice(Arc<Device>);
 
 struct Device {
-    endpoint: Endpoint,
-    addr: EndpointAddr,
+    /// How this device is reached: dialled at its address, or over the link it
+    /// holds open to this one ([`ActionService::remote_over`]).
+    way: Way,
     workspace: String,
     /// What every request carries of where this device serves the workspace, when it places the
     /// workspace's work on the device ([`ActionService::placing`]).
@@ -1153,10 +1575,23 @@ struct Device {
     target: [u8; 32],
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
-    /// The connection to this device, kept while it lasts: one per pair.
+    /// The connection to this device, kept while it lasts: one per pair, and
+    /// only for a device dialled.
     connection: Mutex<Option<Connection>>,
     next_correlation: AtomicU64,
     follow: Following,
+}
+
+/// How this device reaches the one its requests go to.
+enum Way {
+    /// Dialled at its own endpoint.
+    Dial {
+        endpoint: Endpoint,
+        addr: EndpointAddr,
+    },
+    /// Over the link it holds open to this device: a page's session with its
+    /// host, or the link a device dialled this one over.
+    Linked(Arc<dyn Transport>),
 }
 
 impl std::fmt::Debug for RemoteDevice {
@@ -1173,6 +1608,22 @@ impl RemoteDevice {
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.0.target
+    }
+
+    /// Send one message to the device and hand back its one answer, as the
+    /// provider's calls build it: what a page, or a host handing a request on,
+    /// asks with.
+    #[must_use]
+    pub fn ask_message(
+        &self,
+        message: RemoteActionMessage,
+    ) -> tilo_actions::remote::Pending<Option<RemoteActionMessage>> {
+        let (completer, result) = tilo_actions::remote::pending();
+        let device = Arc::clone(&self.0);
+        self.0.runtime.spawn(async move {
+            completer.complete(device.request(message).await.ok());
+        });
+        result
     }
 
     /// Send one message and hand back what `answer` makes of its reply.
@@ -1267,15 +1718,16 @@ impl Device {
         {
             return Ok(open.clone());
         }
-        let connection = tokio::time::timeout(
-            REPLY_DEADLINE,
-            self.endpoint.connect(self.addr.clone(), ACTIONS_ALPN),
-        )
-        .await
-        .map_err(|_| {
-            tilo_actions::remote::ActionCallError::unavailable("the device did not answer")
-        })?
-        .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))?;
+        let Way::Dial { endpoint, addr } = &self.way else {
+            return Err(unavailable(
+                "the device is reached over a link, not dialled",
+            ));
+        };
+        let connection =
+            tokio::time::timeout(REPLY_DEADLINE, endpoint.connect(addr.clone(), ACTIONS_ALPN))
+                .await
+                .map_err(|_| unavailable("the device did not answer"))?
+                .map_err(|error| unavailable(&error.to_string()))?;
         *self.connection.lock_recover() = Some(connection.clone());
         Ok(connection)
     }
@@ -1308,29 +1760,41 @@ impl Device {
     }
 
     /// Write `bytes` on a stream of this device's own, and read the one
-    /// answer back.
+    /// answer back: over the connection to its endpoint, or over the link it
+    /// holds open to this one.
     async fn exchange(
         &self,
         bytes: &[u8],
     ) -> Result<Vec<u8>, tilo_actions::remote::ActionCallError> {
-        let connection = self.connection().await?;
-        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| {
-            tilo_actions::remote::ActionCallError::unavailable(error.to_string())
-        })?;
+        let (mut send, mut recv): (StreamSend, StreamRecv) = match &self.way {
+            Way::Dial { .. } => {
+                let connection = self.connection().await?;
+                let (send, recv) = connection
+                    .open_bi()
+                    .await
+                    .map_err(|error| unavailable(&error.to_string()))?;
+                (Box::new(send), Box::new(recv))
+            }
+            Way::Linked(link) => link.open_bi().await.map_err(|error| unavailable(&error))?,
+        };
         write_frame(&mut send, bytes)
             .await
-            .map_err(tilo_actions::remote::ActionCallError::unavailable)?;
-        send.finish().map_err(|error| {
-            tilo_actions::remote::ActionCallError::unavailable(error.to_string())
-        })?;
-        read_frame(&mut recv)
+            .map_err(|error| unavailable(&error))?;
+        tokio::io::AsyncWriteExt::shutdown(&mut send)
             .await
-            .map_err(tilo_actions::remote::ActionCallError::unavailable)?
-            .ok_or_else(|| {
-                tilo_actions::remote::ActionCallError::unavailable(
-                    "the device closed without answering",
-                )
-            })
+            .map_err(|error| unavailable(&error.to_string()))?;
+        tokio::time::timeout(REPLY_DEADLINE, read_frame(&mut recv))
+            .await
+            .map_err(|_| unavailable("the device did not answer"))?
+            .map_err(|error| unavailable(&error))?
+            .ok_or_else(|| unavailable("the device closed without answering"))
+    }
+}
+
+/// What a peer did not answer, as the caller reads it.
+fn unavailable(reason: &str) -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unavailable {
+        reason: reason.to_owned(),
     }
 }
 
@@ -1613,15 +2077,157 @@ pub(crate) fn now_ns() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-async fn write_frame(send: &mut SendStream, bytes: &[u8]) -> Result<(), String> {
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    send: &mut W,
+    bytes: &[u8],
+) -> Result<(), String> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".into());
     }
     crate::frames::write_frame(send, bytes).await
 }
 
-async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>, String> {
+async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
+    recv: &mut R,
+) -> Result<Option<Vec<u8>>, String> {
     crate::frames::read_frame(recv, MAX_FRAME_BYTES).await
+}
+
+/// A link between two devices with no network between them, for tests of
+/// both ends of it: what a page's session with its host carries, and what a
+/// host opens a bi-stream on to reach the page.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    use super::{StreamRecv, StreamSend, Transport};
+    use crate::transport::StreamFuture;
+    use std::sync::Arc;
+    use tilo_server_protocol::refusal::Refusal;
+    use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
+
+    /// What one stream of the link carries at once.
+    const BUFFER: usize = 1 << 20;
+
+    /// Two ends of one link. Each is told which device the other end is,
+    /// where it proves one: `None` leaves that end a key no device holds, as
+    /// a page's session with its host has.
+    #[must_use]
+    pub fn duplex(
+        left_remote: Option<[u8; 32]>,
+        right_remote: Option<[u8; 32]>,
+    ) -> (Arc<dyn Transport>, Arc<dyn Transport>) {
+        let (to_left_bi, left_in_bi) = mpsc::channel(64);
+        let (to_right_bi, right_in_bi) = mpsc::channel(64);
+        let (to_left_uni, left_in_uni) = mpsc::channel(64);
+        let (to_right_uni, right_in_uni) = mpsc::channel(64);
+        let (closed, _) = watch::channel(false);
+        let left = Side {
+            remote: left_remote.unwrap_or([0; 32]),
+            to_peer_bi: to_right_bi,
+            to_peer_uni: to_right_uni,
+            in_bi: AsyncMutex::new(left_in_bi),
+            in_uni: AsyncMutex::new(left_in_uni),
+            closed: closed.clone(),
+        };
+        let right = Side {
+            remote: right_remote.unwrap_or([0; 32]),
+            to_peer_bi: to_left_bi,
+            to_peer_uni: to_left_uni,
+            in_bi: AsyncMutex::new(right_in_bi),
+            in_uni: AsyncMutex::new(right_in_uni),
+            closed,
+        };
+        (Arc::new(left), Arc::new(right))
+    }
+
+    struct Side {
+        remote: [u8; 32],
+        to_peer_bi: mpsc::Sender<(StreamSend, StreamRecv)>,
+        to_peer_uni: mpsc::Sender<StreamRecv>,
+        in_bi: AsyncMutex<mpsc::Receiver<(StreamSend, StreamRecv)>>,
+        in_uni: AsyncMutex<mpsc::Receiver<StreamRecv>>,
+        closed: watch::Sender<bool>,
+    }
+
+    impl Side {
+        fn gone(&self) -> bool {
+            *self.closed.borrow()
+        }
+    }
+
+    impl Transport for Side {
+        fn open_uni(&self) -> StreamFuture<'_, StreamSend> {
+            Box::pin(async move {
+                if self.gone() {
+                    return Err("the link closed".into());
+                }
+                let (mine, theirs) = tokio::io::duplex(BUFFER);
+                self.to_peer_uni
+                    .send(Box::new(theirs) as StreamRecv)
+                    .await
+                    .map_err(|_| "the link closed".to_string())?;
+                Ok(Box::new(mine) as StreamSend)
+            })
+        }
+
+        fn accept_uni(&self) -> StreamFuture<'_, StreamRecv> {
+            Box::pin(async move {
+                if self.gone() {
+                    return Err("the link closed".into());
+                }
+                self.in_uni
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or_else(|| "the link closed".to_string())
+            })
+        }
+
+        fn open_bi(&self) -> StreamFuture<'_, (StreamSend, StreamRecv)> {
+            Box::pin(async move {
+                if self.gone() {
+                    return Err("the link closed".into());
+                }
+                let (mine, theirs) = tokio::io::duplex(BUFFER);
+                let (mine_read, mine_write) = tokio::io::split(mine);
+                let (their_read, their_write) = tokio::io::split(theirs);
+                let theirs: (StreamSend, StreamRecv) =
+                    (Box::new(their_write), Box::new(their_read));
+                self.to_peer_bi
+                    .send(theirs)
+                    .await
+                    .map_err(|_| "the link closed".to_string())?;
+                let ours: (StreamSend, StreamRecv) = (Box::new(mine_write), Box::new(mine_read));
+                Ok(ours)
+            })
+        }
+
+        fn accept_bi(&self) -> StreamFuture<'_, (StreamSend, StreamRecv)> {
+            Box::pin(async move {
+                if self.gone() {
+                    return Err("the link closed".into());
+                }
+                self.in_bi
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or_else(|| "the link closed".to_string())
+            })
+        }
+
+        fn remote(&self) -> [u8; 32] {
+            self.remote
+        }
+
+        fn close(&self, _code: u32, _reason: &[u8]) {
+            self.closed.send_replace(true);
+        }
+
+        fn close_reason(&self) -> Option<Refusal> {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

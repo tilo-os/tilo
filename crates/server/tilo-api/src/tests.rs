@@ -1266,22 +1266,22 @@ async fn a_site_that_starts_after_the_api_is_seen_served_at_once() {
 /// could not take everything names the part that did not come.
 #[test]
 fn a_workspace_refusal_is_read_by_its_case() {
-    use tilo_server_session::workspaces::Refusal;
-    let refused = |refusal: Refusal| {
+    use tilo_server_protocol::workspaces::AdminRefusal;
+    let refused = |refusal: AdminRefusal| {
         let error = tilo_actions::remote::ActionCallError::Refused {
             reason: refusal.to_reason(),
         };
         server::ServerError::from(tilo_session_client::device::DeviceRefusal::of(&error))
     };
     assert_eq!(
-        refused(Refusal::NotYourOwn),
-        server::ServerError::RefusedWorkspace(Refusal::NotYourOwn)
+        refused(AdminRefusal::NotYourOwn),
+        server::ServerError::RefusedWorkspace(AdminRefusal::NotYourOwn)
     );
     let part = "the record plan of so.tilo.notes";
-    let not_made = refused(Refusal::BranchNotMade { part: part.into() });
+    let not_made = refused(AdminRefusal::BranchNotMade { part: part.into() });
     assert_eq!(
         not_made,
-        server::ServerError::RefusedWorkspace(Refusal::BranchNotMade { part: part.into() })
+        server::ServerError::RefusedWorkspace(AdminRefusal::BranchNotMade { part: part.into() })
     );
     let Some(account::Outcome::Failed { code, message, .. }) = account::not_branched(&not_made)
     else {

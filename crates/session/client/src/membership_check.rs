@@ -1,4 +1,9 @@
-//! What a session's peer keeps of a device's workspace between sessions.
+//! Whether this device still owns a workspace, as its host checks it.
+//!
+//! The owner of a workspace commits only what this device still owns: a device the
+//! workspace removed, or whose certificate ran out, finds out before it commits. Each host keeps
+//! its own proof of that — this desktop's signed ownership over the peer network, a page's
+//! over its own transport.
 //!
 //! A session's [`PeerStore`] is what a peer keeps between sessions. The device key itself never passes through here: it lives behind a
 //! [`DeviceSigner`](tilo_server_client::DeviceSigner) (a non-extractable
@@ -12,10 +17,25 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_user_identity::DeviceCert;
+
+/// The check a host makes before this device commits to a workspace it holds.
+pub trait MembershipCheck: collab_types::signer::MaybeSendSync {
+    /// Whether this device still owns `workspace` in `owner`.
+    ///
+    /// # Errors
+    /// Why this device may not commit to `workspace` now.
+    fn check(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        workspace: WorkspaceId,
+        identity: &DeviceIdentity,
+    ) -> Result<(), String>;
+}
 
 /// The durable part of a device's session.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,303 +409,237 @@ impl key_group::PeerStates for StoredKeys {
     }
 }
 
-/// One write in a device's ownership of a workspace, as it leaves for the workspace's host.
-pub struct Outgoing<'a> {
-    /// The ownership entry it is.
-    pub id: [u8; 32],
-    /// The signed frame, exactly as committed.
-    pub bytes: &'a [u8],
-    /// The record channel it writes.
-    pub channel: [u8; 32],
-    /// Whether it appends to the record or stands as its whole.
-    pub retention: neighbour_wire::Retention,
-}
+/// A page's or agent's proof that it still owns a workspace: its host session
+/// authenticated this device's certificate, and its host refuses a commit under any other. The
+/// replica commits only while the workspace is held under that certificate.
+pub(crate) struct SessionMembership;
 
-/// What a connection sent of one of this device's writes, kept until its host answers it: the
-/// route it was written to and the changes it carries, which its host's refusal names wherever
-/// ownership has moved the write since.
-#[derive(Clone, Debug)]
-pub struct SentWrite {
-    pub route: DocumentRoute,
-    pub changes: Vec<[u8; 32]>,
-}
-
-impl SentWrite {
-    /// What `bytes`, one write of this device's ownership, was written to, and the changes it
-    /// carries; `None` for bytes that name no document.
-    #[must_use]
-    pub fn of(bytes: &[u8]) -> Option<Self> {
-        let message = neighbour_wire::NeighbourMsg::decode(bytes).ok()?;
-        Some(Self {
-            route: DocumentRoute::of_message(&message)?,
-            changes: tilo_peer_state::document_frame::claimed_changes(bytes),
+impl MembershipCheck for SessionMembership {
+    fn check(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        workspace: WorkspaceId,
+        identity: &DeviceIdentity,
+    ) -> Result<(), String> {
+        owner.with_current(workspace, |view| {
+            if view.device() == &identity.device_cert {
+                Ok(())
+            } else {
+                Err("the workspace is held under another certificate of this device".to_owned())
+            }
         })
     }
 }
 
-/// What one connection to a workspace's host has sent of this device's ownership of it: each
-/// write leaves once per connection, oldest first, and stays held until the host's
-/// answer retires it. A new connection starts with a new one, and sends everything again.
-#[derive(Default)]
-pub struct Sending {
-    sent: std::collections::BTreeSet<[u8; 32]>,
-    /// What each write sent was written to, for its host's answer to name.
-    sent_writes: BTreeMap<[u8; 32], SentWrite>,
-    /// How many writes held the last pass held back: they may not leave now.
-    held: usize,
-    /// Writes the host was not ready for: each goes again once the host says the workspace is
-    /// ready ([`Self::ready`]).
-    awaiting_ready: std::collections::BTreeSet<[u8; 32]>,
+/// The record of a page's or an agent's workspaces, as its [`PeerStore`] keeps it: the
+/// owner's storage for the workspaces a session holds, so what it holds, and the writes it
+/// made there, survive a session started again over the same store.
+///
+/// What the owner decides is admitted into its replica by the link every workspace is synced
+/// over ([`tilo_peer_state::direct::DirectSync::owning`]), never by the session itself.
+struct WorkspaceStore {
+    store: Arc<dyn PeerStore>,
+    healthy: AtomicBool,
+    /// The runs of ownership this page keeps beside its record, by name: those the record it last
+    /// kept names, and those put since. A store without runs of its own reads them from here.
+    runs: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
+    /// The record kept as an index and per-workspace parts, so a publication
+    /// writes what it changed rather than the record. `None` when the store
+    /// keeps the record whole ([`PeerStore::keeps_workspaces_parts`]).
+    journaled: std::sync::Mutex<Option<tilo_peer_state::owner::Journaled>>,
+    /// Whether the store keeps the record of the workspaces it holds at all.
+    keeps: bool,
+    /// Whether the store keeps the record's parts at all.
+    parts: bool,
 }
 
-impl Sending {
-    /// Send each frame of `workspace`'s this device wrote and this connection has not sent,
-    /// through `send`, dropping it from the record once the transport took it by `sent`.
-    ///
-    /// Returns whether the transport took everything: `false` once `send` took no more.
-    ///
-    /// # Errors
-    /// The record cannot be written after a frame went.
-    pub fn drive(
-        &mut self,
-        owner: &NativeWorkspaceOwner,
-        workspace: WorkspaceId,
-        mut took: impl FnMut(&[u8]) -> Result<(), String>,
-        mut deliver: impl FnMut(Outgoing<'_>) -> bool,
-    ) -> Result<bool, String> {
-        let frames = owner.frames(workspace);
-        if frames.is_empty() {
-            self.held = 0;
-            self.sent.clear();
-            self.sent_writes.clear();
-            self.awaiting_ready.clear();
-            return Ok(true);
+/// The record's parts as the page's store keeps them
+/// ([`PeerStore::load_workspaces_part`] and its siblings).
+struct StoreParts(Arc<dyn PeerStore>);
+
+impl tilo_peer_state::owner::JournalParts for StoreParts {
+    fn read_part(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.load_workspaces_part(name))
+    }
+
+    fn write_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.0.save_workspaces_part(name, bytes)
+    }
+
+    fn append_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.0.append_workspaces_part(name, bytes)
+    }
+}
+
+impl WorkspaceStore {
+    fn new(store: Arc<dyn PeerStore>) -> Self {
+        let keeps = store.keeps_workspaces();
+        let parts = keeps && store.keeps_workspaces_parts();
+        Self {
+            store,
+            healthy: AtomicBool::new(true),
+            runs: std::sync::Mutex::default(),
+            journaled: std::sync::Mutex::default(),
+            keeps,
+            parts,
         }
-        let mut entries: Vec<([u8; 32], [u8; 32], neighbour_wire::Retention)> = Vec::new();
-        for bytes in &frames {
-            let Ok(message) = neighbour_wire::NeighbourMsg::decode(bytes) else {
-                continue;
-            };
-            let Some((channel, retention)) = neighbour_wire::retention(&message, false) else {
-                continue;
-            };
-            entries.push((*blake3::hash(bytes).as_bytes(), channel, retention));
+    }
+
+    fn parts(&self) -> StoreParts {
+        StoreParts(Arc::clone(&self.store))
+    }
+
+    /// The record this store kept, and the journaled form of it the next
+    /// publication writes in.
+    fn kept(&self) -> Option<tilo_peer_state::owner::NativeAuthorityStorage> {
+        if !self.keeps {
+            return None;
         }
-        self.held = 0;
-        let mut written = None;
-        let delivered = self.pass(
-            entries.iter().map(|(id, ..)| *id),
-            entries
-                .iter()
-                .zip(&frames)
-                .map(|((id, channel, retention), bytes)| Outgoing {
-                    id: *id,
-                    bytes,
-                    channel: *channel,
-                    retention: *retention,
-                }),
-            |write| {
-                let bytes = write.bytes;
-                if !deliver(write) {
-                    return false;
+        if self.parts {
+            match tilo_peer_state::owner::Journaled::open(&self.parts()) {
+                Ok(Some((journaled, record))) => {
+                    *self.journaled.lock_recover() = Some(journaled);
+                    return Some(record);
                 }
-                if let Err(error) = took(bytes) {
-                    written = Some(error);
+                Ok(None) => return None,
+                Err(error) => {
+                    tracing::warn!(%error, "the workspaces this device holds did not read");
+                    return None;
                 }
-                true
-            },
-        );
-        match written {
-            Some(error) => Err(error),
-            None => Ok(delivered),
-        }
-    }
-
-    /// How many writes held the last [`Self::drive`] held back: a sealed write past its
-    /// epoch waits for its renewal, and a write behind its record's compaction for the host's answer.
-    #[must_use]
-    pub fn held(&self) -> usize {
-        self.held
-    }
-
-    /// Send each of `writes` this connection has not sent; `queued` is every write still in
-    /// ownership, sendable now or not.
-    fn pass<'a>(
-        &mut self,
-        queued: impl Iterator<Item = [u8; 32]>,
-        writes: impl Iterator<Item = Outgoing<'a>>,
-        mut send: impl FnMut(Outgoing<'a>) -> bool,
-    ) -> bool {
-        let queued: std::collections::BTreeSet<_> = queued.collect();
-        self.sent.retain(|id| queued.contains(id));
-        self.sent_writes.retain(|id, _| queued.contains(id));
-        self.awaiting_ready.retain(|id| queued.contains(id));
-        for write in writes {
-            let id = write.id;
-            if self.sent.contains(&id) || self.awaiting_ready.contains(&id) {
-                continue;
-            }
-            let named = SentWrite::of(write.bytes);
-            if !send(write) {
-                return false;
-            }
-            self.sent.insert(id);
-            if let Some(named) = named {
-                self.sent_writes.insert(id, named);
             }
         }
-        true
+        self.store.load_workspaces().and_then(|bytes| {
+            serde_json::from_slice::<tilo_peer_state::owner::NativeAuthorityStorage>(&bytes).ok()
+        })
+    }
+}
+
+impl tilo_peer_state::owner::Store for WorkspaceStore {
+    fn healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
     }
 
-    /// Send write `id` again once the host says the workspace is ready, not before: the host
-    /// was not ready for it.
-    pub fn send_once_ready(&mut self, id: [u8; 32]) {
-        self.sent.remove(&id);
-        self.awaiting_ready.insert(id);
+    fn uncertain(&self, _workspace: WorkspaceId) -> bool {
+        !self.healthy()
     }
 
-    /// The host says the workspace is ready on this connection: every write it was not ready
-    /// for goes again on the next pass. Whether any was waiting.
-    pub fn ready(&mut self) -> bool {
-        let waited = !self.awaiting_ready.is_empty();
-        self.awaiting_ready.clear();
-        waited
+    fn shows(&self, _workspace: WorkspaceId) -> bool {
+        false
     }
 
-    /// The write this connection sent whose id begins with `prefix`, taken out of what it sent,
-    /// with what it was written to: the host answered it.
-    pub fn answered(&mut self, prefix: &[u8]) -> Option<([u8; 32], Option<SentWrite>)> {
-        let id = *self.sent.iter().find(|id| id.starts_with(prefix))?;
-        self.sent.remove(&id);
-        Some((id, self.sent_writes.remove(&id)))
+    fn put_ownership(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
+        let hash = *blake3::hash(bytes).as_bytes();
+        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
+        if self.store.keeps_workspaces() {
+            self.store.save_workspaces_run(&name, Some(bytes))?;
+        }
+        self.runs.lock_recover().insert(name, Some(bytes.to_vec()));
+        Ok(hash)
     }
+
+    fn read_ownership(&self, workspace: WorkspaceId, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        let name = tilo_peer_state::owner::ownership_run_name(workspace, hash);
+        let kept = self.runs.lock_recover().get(&name).cloned().flatten();
+        if let Some(bytes) = kept {
+            return Ok(bytes);
+        }
+        self.store
+            .load_workspaces_run(&name)
+            .ok_or_else(|| format!("the run of ownership {name} is not kept"))
+    }
+
+    fn publish(
+        &self,
+        next: &tilo_peer_state::owner::NativeAuthorityStorage,
+        change: tilo_peer_state::owner::Change,
+        install: &mut dyn FnMut(),
+    ) -> Result<(), String> {
+        let written = if !self.keeps {
+            Ok(())
+        } else if self.parts {
+            let parts = self.parts();
+            let mut journaled = self.journaled.lock_recover();
+            if journaled.is_none() {
+                *journaled = Some(tilo_peer_state::owner::Journaled::start(next));
+            }
+            match journaled.as_mut() {
+                Some(journaled) => journaled.publish(&parts, next, &change),
+                None => Ok(()),
+            }
+        } else {
+            serde_json::to_vec(next)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| self.store.save_workspaces(&bytes))
+        };
+        if let Err(error) = written {
+            self.healthy.store(false, Ordering::Release);
+            return Err(error);
+        }
+        install();
+        // A run the record no longer names moved to ownership's head.
+        let named: std::collections::BTreeSet<String> = next.ownership_runs().collect();
+        let gone: Vec<String> = {
+            let mut runs = self.runs.lock_recover();
+            let gone = runs
+                .keys()
+                .filter(|name| !named.contains(*name))
+                .cloned()
+                .collect();
+            runs.retain(|name, _| named.contains(name));
+            gone
+        };
+        for name in gone.into_iter().filter(|_| self.keeps) {
+            if let Err(error) = self.store.save_workspaces_run(&name, None) {
+                tracing::warn!(%error, "a run of ownership the record no longer names was kept");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The owner holding the workspaces `device`'s session keeps in `store`, as the store last kept
+/// them. A record that no longer restores is let go: the links bring its workspaces back.
+pub(crate) fn open_owner(device: &DeviceCert, store: Arc<dyn PeerStore>) -> NativeWorkspaceOwner {
+    let now = tilo_clock::wall();
+    let workspaces = Arc::new(WorkspaceStore::new(store));
+    let kept = workspaces.kept();
+    let runs = kept
+        .iter()
+        .flat_map(tilo_peer_state::owner::NativeAuthorityStorage::ownership_runs)
+        .map(|name| (name, None))
+        .collect();
+    *workspaces.runs.lock_recover() = runs;
+    let owner = kept
+        .and_then(|kept| NativeWorkspaceOwner::restore(workspaces.clone(), kept, now).ok())
+        .filter(|owner| {
+            owner.storage().held().all(|(workspace, _)| {
+                owner
+                    .with_current(workspace, |view| Ok(view.device() == device))
+                    .unwrap_or(false)
+            })
+        });
+    if let Some(owner) = &owner
+        && let Some(journaled) = workspaces.journaled.lock_recover().as_mut()
+    {
+        journaled.resume(owner);
+    }
+    owner.unwrap_or_else(|| NativeWorkspaceOwner::empty(workspaces))
+}
+
+/// The workspaces `owner` holds, as its session joined them.
+pub(crate) fn held_workspaces(
+    owner: &NativeWorkspaceOwner,
+) -> std::collections::BTreeSet<WorkspaceId> {
+    owner
+        .storage()
+        .held()
+        .map(|(workspace, _)| workspace)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn write(id: u8) -> Outgoing<'static> {
-        Outgoing {
-            id: [id; 32],
-            bytes: b"exact signed bytes",
-            channel: [2; 32],
-            retention: neighbour_wire::Retention::Delta,
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_connection_sends_what_is_in_ownership_once;
-
-        phase a_connection_sends_each_write_once_and_a_new_one_sends_it_again;
-        {
-            let mut sending = Sending::default();
-            let queued = || std::iter::once([1; 32]);
-            assert!(!sending.pass(queued(), std::iter::once(write(1)), |_| false));
-            let mut sent = 0;
-            for _ in 0..2 {
-                assert!(sending.pass(queued(), std::iter::once(write(1)), |taken| {
-                    assert_eq!(taken.bytes, b"exact signed bytes");
-                    sent += 1;
-                    true
-                }));
-            }
-            assert_eq!(
-                sent, 1,
-                "a write the transport took leaves once per connection"
-            );
-            assert!(
-                Sending::default().pass(queued(), std::iter::once(write(1)), |_| {
-                    sent += 1;
-                    true
-                })
-            );
-            assert_eq!(sent, 2, "the next connection sends it again");
-            sending.pass(std::iter::empty(), std::iter::empty(), |_| {
-                panic!("retired")
-            });
-            assert!(sending.sent.is_empty(), "what left ownership is forgotten");
-        }
-
-        phase a_write_held_back_while_in_ownership_is_not_sent_twice;
-        {
-            let mut sending = Sending::default();
-            let mut sent = 0;
-            let mut count = |_: Outgoing<'_>| {
-                sent += 1;
-                true
-            };
-            sending.pass(
-                std::iter::once([3; 32]),
-                std::iter::once(write(3)),
-                &mut count,
-            );
-            sending.pass(std::iter::once([3; 32]), std::iter::empty(), &mut count);
-            sending.pass(
-                std::iter::once([3; 32]),
-                std::iter::once(write(3)),
-                &mut count,
-            );
-            assert_eq!(sent, 1);
-            assert_eq!(
-                sending.answered(&[3; 16]).map(|(id, _)| id),
-                Some([3; 32])
-            );
-            assert!(sending.answered(&[3; 16]).is_none(), "an answer is taken once");
-        }
-    }
-
-    /// A device that entered a workspace and wrote nothing to it owes it nothing: each pass sends
-    /// nothing and asks nothing of its standing. A device whose standing does not hold there (a
-    /// key let in that is not on the roster yet) was judged absent again on every pass.
-    #[test]
-    fn a_device_that_owes_a_workspace_nothing_is_not_judged_on_each_pass() {
-        use tilo_peer_state::owner::testing;
-        let (intent, bootstrap, _admission, _governor, now) = testing::raw_fixture();
-        let directory = tempfile::tempdir().unwrap();
-        let owner =
-            tilo_peer_state::owner::open_file(&directory.path().join("joined-workspaces.json"))
-                .unwrap();
-        let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-        owner
-            .install(&testing::finalize(intent, pending, bootstrap).unwrap(), now)
-            .unwrap();
-        let workspace = WorkspaceId::parse(testing::WORKSPACE).unwrap();
-        let mut sending = Sending::default();
-        for _ in 0..2 {
-            assert_eq!(
-                sending.drive(&owner, workspace, |_| Ok(()), |_| panic!("nothing is owed")),
-                Ok(true),
-                "nothing owed asks nothing of the device's standing"
-            );
-        }
-        assert_eq!(sending.held(), 0);
-    }
-
-    #[test]
-    fn a_write_the_host_was_not_ready_for_goes_again_once_it_is() {
-        let mut sending = Sending::default();
-        let sent = std::cell::Cell::new(0_u32);
-        let count = |_: Outgoing<'_>| {
-            sent.set(sent.get().saturating_add(1));
-            true
-        };
-        let queued = || std::iter::once([4; 32]);
-        sending.pass(queued(), std::iter::once(write(4)), count);
-        assert_eq!(sending.answered(&[4; 16]).map(|(id, _)| id), Some([4; 32]));
-        // Not ready: it waits, still held, and is not sent meanwhile.
-        sending.send_once_ready([4; 32]);
-        sending.pass(queued(), std::iter::once(write(4)), count);
-        assert_eq!(
-            sent.get(),
-            1,
-            "a write waiting for the host does not leave before it is ready"
-        );
-        assert!(sending.ready());
-        sending.pass(queued(), std::iter::once(write(4)), count);
-        assert_eq!(sent.get(), 2, "once the host is ready, it leaves again");
-        assert!(!sending.ready(), "nothing waits any more");
-    }
 
     #[test]
     fn saved_keys_without_document_routes_still_open() -> Result<(), Box<dyn std::error::Error>> {

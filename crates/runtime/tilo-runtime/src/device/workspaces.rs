@@ -182,10 +182,12 @@ impl ServiceWorkspaces {
         self.keys.as_ref().map(KeyService::keys).unwrap_or_default()
     }
 
-    /// What the login's session runs on: this device's endpoint and key service.
+    /// What the login's session runs on: this device's endpoint and key service, and the member
+    /// copies it reads and writes through.
     pub(crate) fn lent(&self) -> tilo_session_client::Lent {
         tilo_session_client::Lent {
             keys: self.keys().get(),
+            links: Arc::new(MemberLinks(Arc::clone(&self.service))),
             endpoint: Some(Arc::clone(&self.bound)),
             own: true,
         }
@@ -999,3 +1001,12 @@ where
 #[cfg(test)]
 #[path = "workspaces_tests.rs"]
 mod tests;
+
+/// The device service's member copies, as the login's session reads and writes them.
+struct MemberLinks(Arc<WorkspaceService>);
+
+impl tilo_session_client::MemberLinks for MemberLinks {
+    fn link(&self, workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
+        self.0.workspaces().member_link(workspace)
+    }
+}

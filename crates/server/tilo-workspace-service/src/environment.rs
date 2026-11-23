@@ -63,6 +63,7 @@ use tilo_lock::RwLockRecover as _;
 
 use crate::workspace_access::WorkspaceOperation;
 use tilo_server_protocol::WorkspaceId;
+use tilo_user_identity::DeviceCert;
 
 /// The record's channel on the state protocol: [`neighbour_wire::app_document_group`]
 /// for the record's app and id. The state protocol names a record by this alone;
@@ -187,12 +188,15 @@ pub struct EnvironmentRegistry {
     table: Arc<Table>,
 }
 
-/// What the register keeps of one device: the environment it is, and when the
-/// certificate it was given expires — after which it says nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What the register keeps of one device: the environment it is, when the
+/// certificate it was given expires — after which it says nothing — and the
+/// certificate itself, so the device's link is admitted with it when the
+/// workspace's roster does not hold one yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Kept {
     environment: Environment,
     until_ns: u64,
+    cert: Option<DeviceCert>,
 }
 
 struct Table {
@@ -294,9 +298,45 @@ impl EnvironmentRegistry {
             Some(Kept {
                 environment: Environment::Placed(scope),
                 until_ns,
+                cert: None,
             }),
             "an environment's device was not kept",
         )
+    }
+
+    /// [`Self::place`] the device `cert` was certified with: its link is
+    /// admitted with that certificate, which the workspace's roster may not
+    /// hold, and the certificate's expiry is what confines it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::place`].
+    pub fn place_certified(
+        &self,
+        cert: &DeviceCert,
+        scope: EnvironmentScope,
+        until_ns: u64,
+    ) -> Result<(), String> {
+        self.keep(
+            cert.device_public_key,
+            Some(Kept {
+                environment: Environment::Placed(scope),
+                until_ns,
+                cert: Some(cert.clone()),
+            }),
+            "an environment's device was not kept",
+        )
+    }
+
+    /// The certificate `device` was placed with, when the register holds one:
+    /// what its link is admitted as before the workspace's roster lists it.
+    #[must_use]
+    pub fn certificate(&self, device: &[u8; 32]) -> Option<DeviceCert> {
+        self.table
+            .devices
+            .read_recover()
+            .get(device)
+            .and_then(|kept| kept.cert.clone())
     }
 
     /// Refuse `device` on every protocol from now on, until `until_ns` — when the
@@ -314,6 +354,7 @@ impl EnvironmentRegistry {
             Some(Kept {
                 environment: Environment::Stopped { until_ns },
                 until_ns,
+                cert: None,
             }),
             "a stopped environment's device was not written down",
         )
@@ -457,7 +498,7 @@ impl EnvironmentRegistry {
             devices: devices
                 .iter()
                 .filter(|(_, kept)| kept.until_ns > now)
-                .map(|(device, kept)| (hex::encode(device), StoredDevice::of(*kept)))
+                .map(|(device, kept)| (hex::encode(device), StoredDevice::of(kept)))
                 .collect(),
         };
         let bytes = serde_json::to_vec(&stored).map_err(|error| error.to_string())?;
@@ -503,6 +544,10 @@ struct StoredDevice {
     scope: Option<StoredScope>,
     /// Its certificate's expiry: after this the entry says nothing.
     until_ns: u64,
+    /// The certificate it was placed with, postcard-encoded and hex, when one
+    /// was: what its link is admitted with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cert: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -513,7 +558,7 @@ struct StoredScope {
 }
 
 impl StoredDevice {
-    fn of(kept: Kept) -> Self {
+    fn of(kept: &Kept) -> Self {
         let scope = match kept.environment {
             Environment::Placed(scope) => Some(StoredScope {
                 workspace: scope.workspace,
@@ -521,9 +566,15 @@ impl StoredDevice {
             }),
             Environment::Stopped { .. } => None,
         };
+        let cert = kept
+            .cert
+            .as_ref()
+            .and_then(|cert| postcard::to_allocvec(cert).ok())
+            .map(hex::encode);
         Self {
             scope,
             until_ns: kept.until_ns,
+            cert,
         }
     }
 
@@ -542,9 +593,16 @@ impl StoredDevice {
                 until_ns: self.until_ns,
             },
         };
+        let cert = self.cert.as_deref().and_then(|cert| {
+            tilo_failure::ignored!(
+                "an environment's device certificate is the server's own to sign",
+                postcard::from_bytes::<DeviceCert>(&hex::decode(cert).ok()?).ok()
+            )
+        });
         Some(Kept {
             environment,
             until_ns: self.until_ns,
+            cert,
         })
     }
 }

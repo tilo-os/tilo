@@ -291,7 +291,7 @@ struct Folder<S> {
     server: S,
     state: tempfile::TempDir,
     owner_device: super::support::Device,
-    company: tilo_server_session::workspaces::WorkspaceSummary,
+    company: tilo_server_protocol::workspaces::WorkspaceSummary,
     /// How a page reaches the host.
     page: ServerAddress,
 }

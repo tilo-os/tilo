@@ -56,9 +56,12 @@ registry-types = { path = "../../packaging/registry-types" }
 key-group = { path = "../key-group" }
 # The server's workspace a peer syncs through, and a frame's retained entry id.
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
+# The link a page holds to its host, which a workspace's link runs on as one
+# more transport (`transport::Transport`).
+tilo-server-client = { version = "0.1.0", path = "../../server/tilo-server-client" }
 parking_lot.workspace = true
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
-tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "io-util"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 # The person's own documents between two of their devices: the link every host
@@ -105,6 +108,12 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+# A page's way into its workspace is tested over the browser's own transport:
+# a listener with a certificate of its own, which the page pins.
+tilo-net = { path = "../../platform/tilo-net", features = ["webtransport"] }
+rustls.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
 # The surface a received workspace desktop is drawn on: every host
 # shows another device's windows through, reconciled from the tree that
 # arrived, not read as a document.

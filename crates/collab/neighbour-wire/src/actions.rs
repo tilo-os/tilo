@@ -203,6 +203,29 @@ impl SignedDeviceAction {
         })
     }
 
+    /// [`Self::sign`] for a signer that may answer only later: the same bytes, awaited. A
+    /// browser's key signs through a promise, so a device of a page signs this way.
+    ///
+    /// # Errors
+    /// As [`Self::sign`], including the signer's own failure.
+    pub async fn signed(
+        action: &DeviceAction,
+        issued_at_ns: u64,
+        device: &dyn collab_types::signer::DeviceSigner,
+    ) -> Result<Self, ActionSignatureError> {
+        let (encoded, message) = statement(action, issued_at_ns, &device.device_public_key())?;
+        let signature = device
+            .sign(message)
+            .await
+            .map_err(|_| ActionSignatureError::Signer)?;
+        Ok(Self {
+            action: action.clone(),
+            encoded,
+            issued_at_ns,
+            signature,
+        })
+    }
+
     /// The action as claimed. Trust it only after [`Self::verify`].
     #[must_use]
     pub const fn action(&self) -> &DeviceAction {

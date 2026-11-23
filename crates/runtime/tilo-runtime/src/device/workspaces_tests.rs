@@ -215,6 +215,125 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
     server.shutdown().await;
 }
 
+/// A workspace this computer joins after its login reaches it over its host's link like the one it
+/// logged into: the join is the host's own entry, and its answer names where the host holds the
+/// workspace, so this device's service takes it in as a member copy and the records sealed there
+/// open here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one login, one join and the records it brings, read top to bottom"
+)]
+async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let studio = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .enter(&studio, &laptop_cert)
+        .await
+        .expect("a device of the person enters the workspace it logs into");
+    found_front(&hosted, &studio, "Main").await;
+    // A second workspace of the host's, which this device is a member of and which the login did
+    // not name: the join is how it reaches the device.
+    let labs = hosted.create("Labs").await.unwrap().workspace;
+    hosted
+        .enter(&labs, &laptop_cert)
+        .await
+        .expect("the same device is a member of the second workspace");
+    found_front(&hosted, &labs, "Bench").await;
+
+    // The computer's login, as `tilo login` left it, naming the server's address.
+    let login = tilo_device_identity::login::Device {
+        site: "https://tilo.test/".into(),
+        host_origin: "https://eu1.tilo.test".into(),
+        workspace: studio.clone(),
+        workspace_name: Some("Studio".into()),
+        agent: "Claude Code".into(),
+        cert: laptop_cert.clone(),
+        server_cert: server_cert.clone(),
+        server_address: Some(tilo_server_protocol::web::ServerAddress {
+            endpoint_addr: server.node_addr(),
+            relay_url: None,
+            web: None,
+        }),
+    };
+    let own = ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop"),
+        &laptop_key,
+        &laptop_cert,
+        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
+    )
+    .await
+    .expect("the laptop's own service opens");
+    let entered = tilo_test_env::within(
+        "the login enters its workspace from the device's endpoint",
+        tilo_api::daemon::enter::connect(&laptop_key, &login, Some(own.lent())),
+    )
+    .await
+    .expect("the login enters");
+    tilo_test_env::within(
+        "the device's service keeps the workspace",
+        own.hold(&entered),
+    )
+    .await;
+    assert!(
+        !own.copies().is_member(&labs).await.unwrap(),
+        "a workspace the login did not enter is not held before the join"
+    );
+
+    // The join goes over the device's link: the host's answer says where it holds the workspace,
+    // and its records reach the copy the device's service keeps by it.
+    tilo_test_env::within(
+        "the host enters the device into the workspace it joins",
+        entered.join(&labs),
+    )
+    .await
+    .expect("the host enters a device that is a member of its workspace");
+    tilo_test_env::within(
+        "the device's service keeps the joined workspace",
+        own.hold(&entered),
+    )
+    .await;
+    assert!(
+        own.copies().is_member(&labs).await.unwrap(),
+        "the joined workspace is a member copy here"
+    );
+    tilo_test_env::within("the joined workspace's records arrive here", async {
+        loop {
+            let (copies, named) = (own.copies().clone(), labs.clone());
+            let read = tokio::task::spawn_blocking(move || front(&copies, &named))
+                .await
+                .unwrap();
+            if read.as_deref() == Some("Bench") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    entered.close();
+    server.shutdown().await;
+}
+
 /// A provider registered on a device answers what another device of the workspace asks over
 /// `tilo-actions/1` only as this device's own copy of the workspace says: the asking device is
 /// refused while its role does not let it run the action, and once the person's server writes it
@@ -378,7 +497,7 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
         .set_member_role(
             &workspace,
             &server_cert,
-            tilo_server_session::workspaces::SetMemberRoleRequest {
+            tilo_server_protocol::workspaces::SetMemberRoleRequest {
                 request_id: [82; 32],
                 user_public_key: guest_root.verifying_key().to_bytes(),
                 role: Role::Editor,

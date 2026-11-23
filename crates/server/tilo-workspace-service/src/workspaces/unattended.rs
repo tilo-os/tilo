@@ -26,7 +26,7 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeReques
 use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_server_session::workspaces::Refusal;
+use tilo_server_session::workspaces::AdminRefusal;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
@@ -190,7 +190,7 @@ impl Workspaces {
         let person = certificate.user_public_key;
         let own = self
             .own()
-            .ok_or_else(|| ActionCallError::refused(Refusal::NotYourOwn.to_reason()))?;
+            .ok_or_else(|| refused(AdminRefusal::NotYourOwn.to_reason()))?;
         let workspace = self
             .workspace_identity(workspace_id)
             .await
@@ -205,7 +205,7 @@ impl Workspaces {
             .agent
             .is_none_or(|scope| scope.reaches(&workspace));
         if !reaches || own.owner_of(&workspace) != Some(person) {
-            return Err(ActionCallError::refused(Refusal::NotYourOwn.to_reason()));
+            return Err(refused(AdminRefusal::NotYourOwn.to_reason()));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
         if !on || own.runs_unattended(&workspace) {

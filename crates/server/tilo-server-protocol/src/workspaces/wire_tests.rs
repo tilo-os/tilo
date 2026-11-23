@@ -201,30 +201,30 @@ fn an_actions_invitation_decodes_to_what_was_issued() {
 
 #[test]
 fn a_workspace_refusal_is_read_back_typed() {
-    use super::Refusal;
+    use super::AdminRefusal;
     for refusal in [
-        Refusal::NotYourOwn,
-        Refusal::BranchNotMade {
+        AdminRefusal::NotYourOwn,
+        AdminRefusal::BranchNotMade {
             part: "the record uuid:plan of so.tilo.notes".into(),
         },
     ] {
         assert_eq!(
-            Refusal::from_reason(&refusal.to_reason()),
+            AdminRefusal::from_reason(&refusal.to_reason()),
             Some(refusal.clone()),
             "a caller decides on the case without reading the words"
         );
     }
     // Words a host said without naming a case are no case of its own.
-    assert_eq!(Refusal::from_reason("the host refused"), None);
+    assert_eq!(AdminRefusal::from_reason("the host refused"), None);
     assert_eq!(
-        Refusal::from_reason(&format!(
+        AdminRefusal::from_reason(&format!(
             "the host refused: {}",
-            Refusal::NotYourOwn.to_reason()
+            AdminRefusal::NotYourOwn.to_reason()
         )),
         None
     );
     assert_eq!(
-        Refusal::from_reason(r#"{"not_your_own":null,"part":"said"}"#),
+        AdminRefusal::from_reason(r#"{"not_your_own":null,"part":"said"}"#),
         None,
         "a case takes only the fields it names"
     );

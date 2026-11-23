@@ -6,13 +6,13 @@
 //! deleted), and a session that has heard none yet asks once ([`LIST_PERSONAL`]): so the list a
 //! device reads is never older than the workspaces it may enter, and nothing asks on a timer.
 //!
-//! [`LIST_PERSONAL`]: tilo_server_session::workspaces::LIST_PERSONAL
+//! [`LIST_PERSONAL`]: tilo_server_protocol::workspaces::LIST_PERSONAL
 
 use std::sync::Mutex;
 
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_session::workspaces::{PersonalList, WorkspaceLabels};
+use tilo_server_protocol::workspaces::{PersonalList, WorkspaceLabels};
 
 use crate::device::{Device, DeviceRefusal};
 use crate::{Event, Events, Link};

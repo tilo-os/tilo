@@ -179,6 +179,23 @@ impl Workspaces {
             .unwrap_or_else(|error| WorkspacesReply::Refused(error.to_string()))
     }
 
+    /// Answer one workspace administration request of `device`, on the
+    /// action `caller` asks as: admitted first as an agent's requests are
+    /// ([`Workspaces::admit_page`]), then decided as the workspace each
+    /// request names decides it. A host that governs no workspace refuses
+    /// rather than staying silent.
+    pub async fn answer_administration(
+        &self,
+        device: &DeviceCert,
+        caller: &tilo_actions::remote::Caller,
+        request: WorkspacesRequest,
+    ) -> WorkspacesReply {
+        match self.admit_page(device, caller, &request).await {
+            Ok(()) => self.page_workspaces(device, request).await,
+            Err(why) => WorkspacesReply::Refused(why),
+        }
+    }
+
     async fn page_document_access(
         &self,
         workspace: &str,
@@ -620,7 +637,7 @@ impl Workspaces {
             person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
         if !theirs || !self.lists_to(device, workspace) {
             return Err(CollaborationError::new(
-                tilo_server_session::workspaces::Refusal::NotYourOwn.to_reason(),
+                tilo_server_session::workspaces::AdminRefusal::NotYourOwn.to_reason(),
             ));
         }
         {

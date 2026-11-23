@@ -555,9 +555,9 @@ pub(crate) const BRANCH_INCOMPLETE: &str = "branch_incomplete";
 /// the caller reads which part of the source did not come; why stays in the
 /// log, as for every refusal. `None` for any other refusal.
 pub(crate) fn not_branched(error: &ServerError) -> Option<Outcome> {
-    let ServerError::RefusedWorkspace(tilo_server_session::workspaces::Refusal::BranchNotMade {
-        part,
-    }) = error
+    let ServerError::RefusedWorkspace(
+        tilo_server_protocol::workspaces::AdminRefusal::BranchNotMade { part },
+    ) = error
     else {
         return None;
     };
@@ -1802,7 +1802,7 @@ fn labels_of(args: &Value) -> Result<WorkspaceLabels, Outcome> {
             })?
         }
     };
-    tilo_server_session::workspaces::check_labels(&labels)
+    tilo_server_protocol::workspaces::check_labels(&labels)
         .map_err(|why| failed("invalid_arguments", why, "fix the label and ask again"))?;
     Ok(labels)
 }

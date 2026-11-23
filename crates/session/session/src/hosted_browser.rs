@@ -1198,7 +1198,7 @@ async fn invitation(material: &Material) -> Result<String, String> {
         )
         .await
         .map_err(|error| format!("the session could not reach its server: {error}"))?;
-        tilo_server_session::workspaces::enter_invitation(
+        tilo_server_protocol::workspaces::enter_invitation(
             &client,
             &material.workspace,
             ENTER_INVITATION_SECONDS,

@@ -22,7 +22,7 @@ use std::time::Duration;
 use tilo_server_client::CertifyError;
 /// Where a server is dialed over iroh, and that with its certificate.
 pub use tilo_server_protocol::web::{ServerAddress, ServerInfo};
-use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
+use tilo_server_protocol::workspaces::{AdminRefusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, DeviceRefusal};
 
@@ -62,7 +62,7 @@ pub struct Workspace {
     pub kept_here: bool,
     /// Where the device keeping it is reached, as the person's list says.
     #[serde(skip)]
-    pub address: Option<tilo_server_session::workspaces::KeepingDeviceAddress>,
+    pub address: Option<tilo_server_protocol::workspaces::KeepingDeviceAddress>,
 }
 
 impl Workspace {
@@ -440,7 +440,7 @@ impl Server {
                 }
                 other => other,
             })?;
-        let made: tilo_server_session::workspaces::CreatedWorkspace =
+        let made: tilo_server_protocol::workspaces::CreatedWorkspace =
             serde_json::from_value(output).map_err(|error| {
                 ServerError::Unavailable(format!("the server answered no workspace: {error}"))
             })?;
@@ -466,7 +466,10 @@ impl Server {
         arguments.insert("workspace".into(), json!(workspace));
         connection
             .device
-            .host_action(tilo_server_session::workspaces::DELETE_WORKSPACE, arguments)
+            .host_action(
+                tilo_server_protocol::workspaces::DELETE_WORKSPACE,
+                arguments,
+            )
             .await
             .map_err(|refusal| match ServerError::from(refusal) {
                 ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => {
@@ -677,8 +680,16 @@ impl Connection {
             .cloned()
     }
 
-    fn workspace(&self, listing: &tilo_server_session::workspaces::WorkspaceListing) -> Workspace {
-        Workspace::listed(listing, Some(self.host.clone()))
+    fn workspace(&self, listing: &tilo_server_protocol::workspaces::WorkspaceListing) -> Workspace {
+        Workspace {
+            id: listing.workspace.clone(),
+            name: listing.name.clone(),
+            host: Some(self.host.clone()),
+            role: listing.role.clone(),
+            labels: listing.labels.clone(),
+            unattended: listing.unattended,
+            address: None,
+        }
     }
 
     /// Whether the session still serves: not closed, and not refused by

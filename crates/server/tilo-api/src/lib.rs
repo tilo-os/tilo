@@ -1507,7 +1507,7 @@ impl Server {
                     .server()
                     .labelled(
                         &connection,
-                        &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                        &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
                     )
                     .await
                     .map(|listed| listed.into_iter().map(|workspace| workspace.id).collect())
