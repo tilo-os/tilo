@@ -68,6 +68,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "Actor::app" = "tuple(AppId)"
 "Actor::automation" = "tuple(AutomationId)"
 "Actor::member" = "tuple(MemberId)"
+"Actor::visitor" = "tuple(String)"
 "AdoptedQuery" = "struct"
 "AdoptedQuery.options" = "FindOptions optional"
 "AdoptedQuery.query" = "String"

@@ -31,7 +31,7 @@ tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../collab/actions", features = ["off-worker"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-content = { path = "../../system/content" }
 tilo-files = { path = "../../platform/tilo-files" }

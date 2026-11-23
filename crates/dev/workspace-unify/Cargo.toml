@@ -1146,7 +1146,7 @@ doc = false
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 "tilo-account-probe" = { path = "../../../crates/platform/account-probe", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
-"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
+"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = ["test-support"] }
@@ -2440,7 +2440,7 @@ doc = false
 "threshold-identity" = { path = "../../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
-"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
+"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-turn" = { path = "../../../crates/agent/agent-turn", default-features = false, features = [] }
 "tilo-api" = { path = "../../../crates/server/tilo-api", default-features = false, features = ["test-support"] }
@@ -3804,7 +3804,7 @@ doc = false
 "tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 "tilo-account-probe" = { path = "../../../crates/platform/account-probe", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
-"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
+"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-session" = { path = "../../../crates/agent/agent-session", default-features = false, features = ["test-support"] }
@@ -5097,7 +5097,7 @@ doc = false
 "threshold-identity" = { path = "../../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
-"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
+"tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-turn" = { path = "../../../crates/agent/agent-turn", default-features = false, features = [] }
 "tilo-api" = { path = "../../../crates/server/tilo-api", default-features = false, features = ["test-support"] }
