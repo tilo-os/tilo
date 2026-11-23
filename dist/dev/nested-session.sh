@@ -931,12 +931,16 @@ if [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} ]]; th
         sleep 0.2
     done
     if [[ -S $TILO_FS_BLOB_SOCKET ]]; then
-        machine_files=1
         deadline=$((SECONDS + 60))
-        while ! mountpoint -q "$TILO_WORKSPACE_ROOTS" 2>/dev/null; do
+        while ! mountpoint -q "${TILO_WORKSPACE_ROOTS:-/var/workspace}" 2>/dev/null; do
             ((SECONDS < deadline)) || break
             sleep 0.1
         done
+        if mountpoint -q "${TILO_WORKSPACE_ROOTS:-/var/workspace}" 2>/dev/null; then
+            machine_files=1
+        else
+            say "the machine served $TILO_FS_BLOB_SOCKET but mounted no workspace; this session serves its own"
+        fi
     fi
 fi
 if ((machine_files)); then
