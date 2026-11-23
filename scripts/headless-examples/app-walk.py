@@ -46,14 +46,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
+import functools
 import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -79,6 +83,23 @@ FILE_CHOOSER = "so.tilo.file-chooser"
 FILE_CHOOSER_STEP = f"{FILE_CHOOSER}.step"
 FILE_CHOOSER_QUESTION = "portal.file-chooser"
 FILE_CHOOSER_RESOURCE = "file-chooser.request"
+# The small picture a walk of an app that shows photographs imports: the same
+# 64-by-64 PNG in two colours that `ui::headless::FIXTURE_PICTURE` carries, kept
+# here as its bytes so a file chooser can be handed a real image.
+FIXTURE_PICTURE_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABAAQMAAACQp+OdAAAABlBMVEXyyHpLP7ovf/CwAAAAf0lE"
+    "QVR42j3RsRHAMAhDUcj+QzEKI1BScJAi+nHjdyp0NvjZdx7dBxYMaFAgQbh6XMlRuGBAgwIJwtTj"
+    "So6HLRjQoECCMPW4kuODCwY0KJAgTD2u5BjUggENCiQIU48rOQa+YECDAglCgz329WPBgAYFEgR7"
+    "Zu8/FgxoUCABNS8YGz171qSmDgAAAABJRU5ErkJggg==")
+
+
+class PageServer(SimpleHTTPRequestHandler):
+    """The pages a walk serves on this machine's loopback, without the request
+    each line `http.server` would print into the walk's log."""
+
+    def log_message(self, _format: str, *args) -> None:
+        pass
+
 
 # The stand-in mail server a walk adds a mail account against: the address's own
 # domain, the server names a mail program works out from it, the ports it asks
@@ -527,8 +548,10 @@ class Walk:
         # stopped when its session goes.
         self.services: list = []
         # What the run answered and a later step may name: a stand-in's address,
-        # a provider's id (`{"served": "provider.id"}`).
+        # a provider's id (`{"served": "provider.id"}`), a page server's address.
         self.served: dict = {}
+        # The pages a `serve` step put on this machine's loopback.
+        self.pages: ThreadingHTTPServer | None = None
 
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
@@ -1195,6 +1218,19 @@ class Walk:
             addresses = provider_addresses(out)
             self.served.update(addresses)
             return addresses
+        if value.get("pages"):
+            # A browser reaches this machine's loopback and refuses a file path:
+            # the tree's test pages, served where a page can be opened.
+            served = value["pages"]
+            folder = REPO / (served.get("dir") or "apps/browser/test-pages")
+            handler = functools.partial(PageServer, directory=str(folder))
+            self.pages = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=self.pages.serve_forever, daemon=True).start()
+            address = f"http://127.0.0.1:{self.pages.server_port}"
+            if served.get("page"):
+                address = f"{address}/{served['page']}"
+            self.served["pages"] = address
+            return {"pages": address, "dir": str(folder)}
         raise Failed(f"the step names a stand-in this walk does not know: {json.dumps(value)}")
 
     def service(self, binary: str, args: list[str], wait=None, lines: int = 0) -> str:
@@ -1244,6 +1280,10 @@ class Walk:
 
     def stop_services(self) -> None:
         """Stop the stand-ins this walk started: their sessions are the walk's."""
+        if self.pages is not None:
+            self.pages.shutdown()
+            self.pages.server_close()
+            self.pages = None
         for proc, log in self.services:
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -1277,9 +1317,9 @@ class Walk:
         ident = value if "." in value else real_apps.app_id(value)
 
         def front():
-            dump = self.session.state_dump()
-            text = json.dumps(dump.get("focus") or dump.get("focused") or {})
-            return ident in text
+            return next((w for w in self.session.windows()
+                         if w.get("app_id") == ident and w.get("window") and w.get("active")),
+                        None)
         until_value(f"the window of {ident} to have the keyboard", front, 10)
         return {"focused": ident}
 
@@ -1481,43 +1521,61 @@ class Walk:
         every run — and requires each dotted path into the answer's value to
         read the value given (`#len` for how many it lists). `contains` holds
         the whole answer's words to a text instead, for a read of a document.
-        `"do": [provider, resource, action, args?]` calls an exact address. A
-        read that is refused, or answers something else, is the step's finding."""
-        if "app" in value:
-            app, operation = value["app"], value["operation"]
-            args = value.get("args")
-            row = app_action(self.session, app, operation)
-            if row is None and args:
-                # Several rows of one operation (a pane's `open-pane`): the one
-                # whose parameters take the arguments named.
-                names = set(args)
-                row = next((a for a in self.session.actions("")
-                            if a.get("app_id") == app and address(a)
-                            and address(a)[1] == operation
-                            and names <= {p.get("name") for p in
-                                          (a.get("action") or {}).get("params") or []}), None)
-            if row is None:
-                raise Failed(f"{app} publishes no {operation!r}")
-            invoked = f"{app} {operation}"
-            answer = value_of(self.session.invoke_row(row, args))
-        else:
-            call = value["do"]
-            provider, resource, action = (pick(item, self.variant) for item in call[:3])
-            args = pick(call[3], self.variant) if len(call) > 3 else None
-            invoked = f"{resource}#{action}"
-            answer = value_of(self.session.invoke(provider, resource, action, args))
-        if "contains" in value:
-            text = pick(value["contains"], self.variant)
-            if text not in json.dumps(answer, ensure_ascii=False):
-                raise Failed(f"{invoked} answered no {text!r}: "
-                             f"{json.dumps(answer, ensure_ascii=False)[:2000]}")
-        wanted = {path: pick(each, self.variant) for path, each in (value.get("is") or {}).items()}
-        wrong = {path: at_path(answer, path) for path, each in wanted.items()
-                 if at_path(answer, path) != each}
-        if wrong:
-            raise Failed(f"{invoked} answered {json.dumps(wrong)} for "
-                         f"{json.dumps({k: wanted[k] for k in wrong})}")
-        return {"read": invoked, "is": wanted,
+        `"do": [provider, resource, action, args?]` calls an exact address.
+        `{"within": seconds}` asks again while the app catches up with typing
+        that commits a moment later. A read that is refused, or answers
+        something else, is the step's finding."""
+        within = float(value.get("within", 0)) if isinstance(value, dict) else 0.0
+        end = time.monotonic() + within
+
+        def call() -> tuple[str, object]:
+            if "app" in value:
+                app, operation = value["app"], value["operation"]
+                args = value.get("args")
+                row = app_action(self.session, app, operation)
+                if row is None and args:
+                    # Several rows of one operation (a pane's `open-pane`): the one
+                    # whose parameters take the arguments named.
+                    names = set(args)
+                    row = next((a for a in self.session.actions("")
+                                if a.get("app_id") == app and address(a)
+                                and address(a)[1] == operation
+                                and names <= {p.get("name") for p in
+                                              (a.get("action") or {}).get("params") or []}), None)
+                if row is None:
+                    raise Failed(f"{app} publishes no {operation!r}")
+                return f"{app} {operation}", value_of(self.session.invoke_row(row, args))
+            call_parts = value["do"]
+            provider, resource, action = (pick(item, self.variant) for item in call_parts[:3])
+            args = pick(call_parts[3], self.variant) if len(call_parts) > 3 else None
+            return (f"{resource}#{action}",
+                    value_of(self.session.invoke(provider, resource, action, args)))
+
+        def trouble(invoked: str, answer) -> str | None:
+            if "contains" in value:
+                text = pick(value["contains"], self.variant)
+                if text not in json.dumps(answer, ensure_ascii=False):
+                    return (f"{invoked} answered no {text!r}: "
+                            f"{json.dumps(answer, ensure_ascii=False)[:2000]}")
+            wanted = {path: pick(each, self.variant)
+                      for path, each in (value.get("is") or {}).items()}
+            wrong = {path: at_path(answer, path) for path, each in wanted.items()
+                     if at_path(answer, path) != each}
+            if wrong:
+                return (f"{invoked} answered {json.dumps(wrong)} for "
+                        f"{json.dumps({k: wanted[k] for k in wrong})}")
+            return None
+
+        while True:
+            invoked, answer = call()
+            problem = trouble(invoked, answer)
+            if problem is None or time.monotonic() >= end:
+                break
+            time.sleep(0.2)
+        if problem is not None:
+            raise Failed(problem)
+        return {"read": invoked, "is": {path: pick(each, self.variant)
+                                        for path, each in (value.get("is") or {}).items()},
                 **({"contains": value["contains"]} if "contains" in value else {}),
                 # What it answered, for a step recording a shape a walk is written to.
                 "answered": json.dumps(answer, ensure_ascii=False)[:4000]}
@@ -1589,6 +1647,19 @@ class Walk:
         path = folder / name
         path.write_text(text)
         return {"file": str(path)}
+
+    def op_image(self, value) -> dict:
+        """Write a picture where a person's file chooser reaches it, and record
+        its path: `{"name": "beach.png"}` writes a 64-by-64 PNG in two colours
+        (the same picture the framework's own capture tests show), which an app
+        that shows photographs can import."""
+        name = pick(value["name"], self.variant) if isinstance(value["name"], dict) \
+            else value["name"]
+        folder = self.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        path.write_bytes(FIXTURE_PICTURE_PNG)
+        return {"image": str(path)}
 
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""

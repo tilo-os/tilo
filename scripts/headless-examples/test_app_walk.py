@@ -567,5 +567,36 @@ class CountingControls(unittest.TestCase):
         self.assertTrue(walk.matches(self.TARGETS[3], {"doing": "dpj7scfe"}))
 
 
+class ServingAPageAndAPicture(unittest.TestCase):
+    """What the Browser and Photos walks need from the machine itself: a page on
+    this machine's loopback, because a browser refuses a file path, and a real
+    picture, because a photograph is not a text file."""
+
+    def walk(self, out):
+        return walk.Walk({"app": "browser", "rust": {"id": "so.tilo.browser"}},
+                         "rust", out, out / "state")
+
+    def test_a_page_is_served_on_this_machine_s_loopback(self):
+        import tempfile
+        import urllib.request
+        out = Path(tempfile.mkdtemp(prefix="app-walk-pages-"))
+        w = self.walk(out)
+        try:
+            served = w.op_serve({"pages": {"dir": "apps/browser/test-pages",
+                                            "page": "links.html"}})
+            body = urllib.request.urlopen(served["pages"], timeout=10).read().decode()
+            self.assertIn("Second section", body)
+            self.assertEqual(w.served["pages"], served["pages"])
+        finally:
+            w.stop_services()
+
+    def test_the_picture_a_photograph_walk_imports_is_a_png(self):
+        import tempfile
+        out = Path(tempfile.mkdtemp(prefix="app-walk-image-"))
+        found = self.walk(out).op_image({"name": "beach.png"})
+        self.assertTrue(found["image"].endswith("beach.png"))
+        self.assertTrue(Path(found["image"]).read_bytes().startswith(b"\x89PNG"))
+
+
 if __name__ == "__main__":
     unittest.main()

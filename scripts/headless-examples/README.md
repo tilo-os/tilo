@@ -93,7 +93,11 @@ the session's start (`session_start_ms`).
 `app-walk.py`'s `Walk` — `must` (what has to be drawn: a name, an identity, or a
 list of alternatives), `must_not`, `press`, `click`, `type`, `key`, `chord`,
 `open` (another app, by directory name), `do` (an action by its address, red when
-refused), `windows`, `search`, `theme`, `wait_for`… `scripts/headless-examples/walk.sh WALK
+refused), `read` (an action the app publishes, held to the paths or words a
+person made), `act` (an action by resource and operation, its answer kept for a
+later step), `serve` (a stand-in, and test pages on this machine's loopback),
+`image` (a picture for an app that shows photographs), `windows`, `search`,
+`theme`, `wait_for`… `scripts/headless-examples/walk.sh WALK
 --discover` keeps every step's controls and the desktop's actions in `walk.json`,
 for naming the control that is really there.
 
