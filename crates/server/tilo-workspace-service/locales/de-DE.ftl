@@ -51,3 +51,12 @@ tilo-devices = Deine Geräte
 tilo-devices-keep-device = Ein Gerät der Person behalten
 tilo-devices-keep-fact = Behalten, was ein Gerät über sich sagt
 tilo-devices-keep-wifi = Ein WLAN-Passwort behalten
+
+## Nearby Send
+
+so-tilo-device-nearby-send-send = Dateien an ein Gerät in der Nähe senden
+so-tilo-device-nearby-send-accept = Eine angebotene Datei behalten
+so-tilo-device-nearby-send-decline = Eine angebotene Datei ablehnen
+so-tilo-device-nearby-send-cancel = Eine Übertragung stoppen
+so-tilo-device-nearby-send-retry = Eine fehlgeschlagene Übertragung erneut anbieten
+so-tilo-device-nearby-send-share = Eine Ressource mit Personen teilen, über das Einladungsblatt
