@@ -632,7 +632,7 @@ pub(super) fn machine_line() -> Vec<String> {
 fn hosts() -> Vec<String> {
     vec![
         "raw".to_owned(),
-        super::session_frame("devices", "read", serde_json::json!("None")).to_string(),
+        super::session_frame("devices", "read", &serde_json::json!("None")).to_string(),
     ]
 }
 

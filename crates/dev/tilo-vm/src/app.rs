@@ -114,14 +114,14 @@ fn windows_args() -> &'static [String] {
     ARGS.get_or_init(|| {
         vec![
             "raw".into(),
-            session_frame("windows", "read", serde_json::json!("None")).to_string(),
+            session_frame("windows", "read", &serde_json::json!("None")).to_string(),
         ]
     })
 }
 
 /// The action model's frame invoking `resource`'s `action` of the session with `argument`, at the
 /// version this build's session reads.
-fn session_frame(resource: &str, action: &str, argument: serde_json::Value) -> serde_json::Value {
+fn session_frame(resource: &str, action: &str, argument: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "version": 3,
         "message": {"Invoke": {
@@ -141,7 +141,7 @@ fn open_app_frame(app: &str) -> String {
     session_frame(
         "desktop:chrome",
         "open-app",
-        serde_json::json!({"Json": {"app": app}}),
+        &serde_json::json!({"Json": {"app": app}}),
     )
     .to_string()
 }

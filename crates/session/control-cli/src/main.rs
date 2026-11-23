@@ -637,7 +637,7 @@ fn read_frame(resource: &str) -> String {
     serde_json::to_string(&RemoteActionFrame::new(RemoteActionMessage::Invoke(
         request,
     )))
-    .expect("a frame")
+    .unwrap_or_default()
 }
 
 /// The value a frame's completed receipt carried.
@@ -1053,13 +1053,11 @@ fn main() -> ExitCode {
     // The state reads are the session's own resources, read as the walk reads them: the value
     // is the same the op answered, so what is printed below does not change.
     let response = if let Some(resource) = read {
-        match frame_value(&response) {
-            Some(value) => value,
-            None => {
-                eprintln!("tilo-control: the desktop did not read `{resource}`");
-                return ExitCode::from(1);
-            }
-        }
+        let Some(value) = frame_value(&response) else {
+            eprintln!("tilo-control: the desktop did not read `{resource}`");
+            return ExitCode::from(1);
+        };
+        value
     } else {
         response
     };
