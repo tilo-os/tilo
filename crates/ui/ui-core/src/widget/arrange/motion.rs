@@ -1,34 +1,20 @@
-//! How a container's parts move when what it holds changes: a part the person added fades in while
-//! the others slide aside to open its slot, a part taken away fades out where it stood while the
-//! others close the gap, and a part moved slides from where it was drawn (`motion::ListChange`). A
-//! container that swaps one child for another in place cross-fades them instead
-//! (`motion::CrossFade`). A change nobody's hand made (a sync, a shortcut, an agent) and reduced
-//! motion land at once.
+//! How a container's parts move when what it holds changes (`motion::ListChange`): a part the person
+//! added fades in while the others slide aside to open its slot, a part taken away fades out where it
+//! stood while the others close the gap, and a part moved slides from where it was drawn. The
+//! container's [`Feel`] paces it; [`Feel::Still`], a change nobody's hand made (a sync, a shortcut, an
+//! agent) and reduced motion land at once.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
 use crate::collection_transition::RowMotions;
-use crate::motion::CrossFade;
+use crate::motion::Feel;
 use crate::draw::DrawEnv;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::{EffectiveMotion, MotionSource};
+use crate::tokens::EffectiveMotion;
 use crate::widget::{Element, Widget};
-
-/// How a container's parts move when what it holds changes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PartsMotion {
-    /// Parts slide to their new places, and arrive and leave with a fade (`motion::ListChange`).
-    #[default]
-    List,
-    /// One child swapped for another in place: the old fades out as the new fades in, and nothing
-    /// slides (`motion::CrossFade`).
-    CrossFade,
-    /// Every change lands at once.
-    None,
-}
 
 /// A part taken out of the container, painted where it stood while it fades out: never hit-tested and
 /// not in the accessibility tree, since the container no longer holds it.
@@ -37,8 +23,6 @@ struct Leaver {
     element: Element,
     /// Where it stood, from the container's origin.
     at: Vec2,
-    /// The cross-fade generation it was shown in.
-    generation: u64,
 }
 
 /// What a part looks like at an instant: where it is drawn and how opaque.
@@ -52,17 +36,12 @@ pub struct DrawnPart {
 }
 
 pub(super) struct PartMotions {
-    kind: PartsMotion,
+    feel: Feel,
     rows: RowMotions<u64, Vec2>,
-    /// The cross-fade of the last swap, from the generation before to the one shown now.
-    cross: Option<CrossFade<u64>>,
-    /// The cross-fade generation shown now; a change shows the next.
-    generation: u64,
-    /// The parts a cross-fade brings in.
-    arriving: Vec<u64>,
     leavers: Vec<Leaver>,
-    /// The hand that made the change waiting for the next layout to start moving.
-    pending: Option<MotionSource>,
+    /// A change waits for the next layout to start moving.
+    pending: bool,
+    /// The motion the theme and the person allow, at this container's pace.
     motion: EffectiveMotion,
     /// Each moving part and leaver where this frame drew it, and where the frame before did: what
     /// the next frame repaints.
@@ -73,13 +52,10 @@ pub(super) struct PartMotions {
 impl Default for PartMotions {
     fn default() -> Self {
         Self {
-            kind: PartsMotion::List,
+            feel: Feel::Standard,
             rows: RowMotions::default().fading_out_leavers(),
-            cross: None,
-            generation: 0,
-            arriving: Vec::new(),
             leavers: Vec::new(),
-            pending: None,
+            pending: false,
             motion: EffectiveMotion::default(),
             painted: Vec::new(),
             painted_before: Vec::new(),
@@ -88,21 +64,19 @@ impl Default for PartMotions {
 }
 
 impl PartMotions {
-    pub(super) fn set_kind(&mut self, kind: PartsMotion) {
-        if self.kind != kind {
-            self.clear();
-            self.kind = kind;
-        }
+    pub(super) fn set_feel(&mut self, feel: Feel) {
+        self.feel = feel;
     }
 
-    pub(super) const fn kind(&self) -> PartsMotion {
-        self.kind
+    pub(super) const fn feel(&self) -> Feel {
+        self.feel
     }
 
-    /// The motion the theme allows: what the next change moves with.
-    pub(super) fn set_motion(&mut self, motion: EffectiveMotion) {
-        self.motion = motion;
-        if motion.reduced() && !self.at_rest() {
+    /// The motion the theme allows (`theme`): what the next change moves with, at this container's
+    /// pace.
+    pub(super) fn set_motion(&mut self, theme: EffectiveMotion) {
+        self.motion = self.feel.over(theme);
+        if self.motion.reduced() && !self.at_rest() {
             self.clear();
         }
     }
@@ -111,7 +85,7 @@ impl PartMotions {
     /// stands, when the person's hand made the change. The first change of a frame notes them; the
     /// rest of that frame's changes join it.
     pub(super) fn before_change(&mut self, parts: impl Iterator<Item = (u64, Vec2)>) {
-        if self.pending.is_some() || self.kind == PartsMotion::None {
+        if self.pending {
             return;
         }
         let now = crate::motion::frame_now();
@@ -119,100 +93,48 @@ impl PartMotions {
         else {
             return;
         };
-        self.pending = Some(source);
-        if self.kind == PartsMotion::List {
-            self.rows.capture(parts, true, Some(source));
-        }
-    }
-
-    /// Whether the change being made moves: what it takes out is kept to fade out.
-    pub(super) fn changing(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    /// A part arrived with the change being made.
-    pub(super) fn arrive(&mut self, key: u64) {
-        if self.pending.is_some() && self.kind == PartsMotion::CrossFade {
-            self.arriving.push(key);
-        }
+        self.pending = true;
+        self.rows.capture(parts, true, Some(source));
     }
 
     /// A part (`key`, `element`, standing `at` from the container's origin) left with the change being
-    /// made: it fades out where it stood.
+    /// made: it fades out where it stood when the change moves.
     pub(super) fn leave(&mut self, key: u64, element: Element, at: Vec2) {
-        if self.pending.is_none() {
+        if !self.pending {
             return;
         }
         self.leavers.retain(|leaver| leaver.key != key);
-        self.leavers.push(Leaver {
-            key,
-            element,
-            at,
-            generation: self.generation,
-        });
+        self.leavers.push(Leaver { key, element, at });
     }
 
     /// After the parts were laid out again: start the motion of the change noted before, from where
     /// each part was drawn to where it is laid out now (`shown`).
     pub(super) fn start(&mut self, shown: impl Iterator<Item = (u64, Vec2)>) {
-        let Some(source) = self.pending.take() else {
+        if !std::mem::take(&mut self.pending) {
             return;
-        };
+        }
         let now = crate::motion::frame_now();
-        match self.kind {
-            PartsMotion::List => {
-                self.rows.start(shown, self.motion, now);
-                let leaving: Vec<u64> = self.rows.leaving(now).map(|(key, _, _)| *key).collect();
-                self.leavers.retain(|leaver| leaving.contains(&leaver.key));
-            }
-            PartsMotion::CrossFade => {
-                let outgoing = self.generation;
-                self.generation = self.generation.wrapping_add(1);
-                self.cross
-                    .get_or_insert_with(|| CrossFade::new(outgoing))
-                    .show(self.generation, self.motion, source, now);
-                self.leavers.retain(|leaver| leaver.generation == outgoing);
-            }
-            PartsMotion::None => {}
-        }
-        if let Some(until) = self.settles_at() {
-            crate::motion::want_frames_until(until);
-        }
+        self.rows.start(shown, self.motion, now);
+        let leaving: Vec<u64> = self.rows.leaving(now).map(|(key, _, _)| *key).collect();
+        self.leavers.retain(|leaver| leaving.contains(&leaver.key));
     }
 
     /// Forget every motion: the parts stand where they are laid out.
     pub(super) fn clear(&mut self) {
         self.rows.clear();
-        self.cross = None;
-        self.arriving.clear();
         self.leavers.clear();
-        self.pending = None;
-    }
-
-    fn settles_at(&self) -> Option<Instant> {
-        let cross = self.cross.as_ref().and_then(CrossFade::settles_at);
-        self.rows.settles_at().max(cross)
+        self.pending = false;
     }
 
     /// Whether anything is on its way at `now`.
     pub(super) fn is_moving(&self, now: Instant) -> bool {
-        self.rows.is_moving(now) || self.cross_moving(now)
-    }
-
-    fn cross_moving(&self, now: Instant) -> bool {
-        self.cross
-            .as_ref()
-            .is_some_and(|cross| cross.is_moving(now))
+        self.rows.is_moving(now)
     }
 
     /// Whether nothing moves or waits to, and the last frame drew nothing moving: the container
     /// draws as laid out.
     pub(super) fn at_rest(&self) -> bool {
-        self.painted.is_empty()
-            && self.leavers.is_empty()
-            && self.pending.is_none()
-            && self.rows.is_empty()
-            && self.arriving.is_empty()
+        self.painted.is_empty() && self.leavers.is_empty() && !self.pending && self.rows.is_empty()
     }
 
     /// Whether the next frame draws something other than the last: a part on its way, or one the last
@@ -223,40 +145,19 @@ impl PartMotions {
 
     /// How far from its laid-out place part `key` is drawn at `now`, and its opacity.
     pub(super) fn pose(&self, key: u64, now: Instant) -> (Vec2, f32) {
-        match self.kind {
-            PartsMotion::List => self.rows.pose(&key, now),
-            PartsMotion::CrossFade if self.arriving.contains(&key) => {
-                let opacity = self.cross.as_ref().map_or(1.0, |cross| cross.incoming(now));
-                (Vec2::ZERO, opacity)
-            }
-            _ => (Vec2::ZERO, 1.0),
-        }
+        self.rows.pose(&key, now)
     }
 
-    /// The parts fading out at `now`: each one's element, the place it stood from the container's
-    /// origin, and its opacity.
+    /// The parts fading out at `now`: each one's index among the leavers, the place it stood from the
+    /// container's origin, and its opacity.
     fn leaving(&self, now: Instant) -> Vec<(usize, Vec2, f32)> {
-        match self.kind {
-            PartsMotion::List => self
-                .rows
-                .leaving(now)
-                .filter_map(|(key, at, opacity)| {
-                    let index = self.leavers.iter().position(|leaver| leaver.key == *key)?;
-                    Some((index, at, opacity))
-                })
-                .collect(),
-            PartsMotion::CrossFade => {
-                let outgoing = self.cross.as_ref().and_then(|cross| cross.outgoing(now));
-                let Some((generation, opacity)) = outgoing else {
-                    return Vec::new();
-                };
-                (self.leavers.iter().enumerate())
-                    .filter(|(_, leaver)| leaver.generation == *generation)
-                    .map(|(index, leaver)| (index, leaver.at, opacity))
-                    .collect()
-            }
-            PartsMotion::None => Vec::new(),
-        }
+        self.rows
+            .leaving(now)
+            .filter_map(|(key, at, opacity)| {
+                let index = self.leavers.iter().position(|leaver| leaver.key == *key)?;
+                Some((index, at, opacity))
+            })
+            .collect()
     }
 
     /// The leavers at `now`, as drawn from a container whose origin is `origin`.
@@ -277,9 +178,6 @@ impl PartMotions {
     /// Forget what has arrived and faded out.
     pub(super) fn settle(&mut self, now: Instant) {
         self.rows.settle(now);
-        if !self.cross_moving(now) {
-            self.arriving.clear();
-        }
         if self.leaving(now).is_empty() {
             self.leavers.clear();
         }

@@ -14,9 +14,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::Side;
-use super::motion::{DrawnPart, PartMotions, PartsMotion, draw_posed};
+use super::motion::{DrawnPart, PartMotions, draw_posed};
 use super::units::{At, Fit, Length, WidthClass};
 use crate::interaction::InteractionEnvironment;
+use crate::motion::Feel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
@@ -313,23 +314,23 @@ impl<L: Layout> Arranged<L> {
         }
     }
 
-    /// Move the parts as `motion` names when what this container holds changes; by default they
-    /// slide, arrive and leave as a list's rows do ([`PartsMotion::List`]).
+    /// Move the parts at `feel`'s pace when what this container holds changes: they slide, arrive
+    /// and leave as a list's rows do, and [`Feel::Still`] lands every change at once.
     #[must_use]
-    pub fn motion(mut self, motion: PartsMotion) -> Self {
-        self.set_motion(motion);
+    pub fn with_feel(mut self, feel: Feel) -> Self {
+        self.set_feel(feel);
         self
     }
 
-    /// Move the parts as `motion` names from the next change on.
-    pub fn set_motion(&mut self, motion: PartsMotion) {
-        self.motions.set_kind(motion);
+    /// Move the parts at `feel`'s pace from the next change on.
+    pub fn set_feel(&mut self, feel: Feel) {
+        self.motions.set_feel(feel);
     }
 
-    /// How the parts move when what this container holds changes.
+    /// The pace the parts move at when what this container holds changes.
     #[must_use]
-    pub const fn parts_motion(&self) -> PartsMotion {
-        self.motions.kind()
+    pub const fn feel(&self) -> Feel {
+        self.motions.feel()
     }
 
     /// Where each part is drawn at `now` and how opaque, in order, then the parts that left and are
@@ -475,38 +476,21 @@ impl<L: Layout> Arranged<L> {
 
     /// Show `element` in part `index` instead of its child, which it returns; the part keeps
     /// its sizing. A change the frame's damage describes: the new child draws itself whole,
-    /// and the host repaints where the boxes it moved were and are. A container that cross-fades
-    /// ([`PartsMotion::CrossFade`]) keeps the old child to fade out under the new one, and returns
-    /// none.
+    /// and the host repaints where the boxes it moved were and are.
     pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
-        let swaps = self.motions.kind() == PartsMotion::CrossFade;
-        if swaps && index < self.parts.len() {
-            self.before_change();
-        }
-        let origin = self.origin();
         let part = self.parts.get_mut(index)?;
         let held = std::mem::replace(&mut part.element, element);
-        let held = if swaps && self.motions.changing() {
-            let at = held.get_rect().origin().to_vec2() - origin;
-            self.motions.leave(part.key, held, at);
-            part.key = next_part_key();
-            self.motions.arrive(part.key);
-            None
-        } else {
-            Some(held)
-        };
         // The new child has no layout until the parts are laid out again: nothing places it or
         // hands it input through the node its predecessor stood in.
         part.wrapper = None;
         self.parts_changed();
-        held
+        Some(held)
     }
 
     /// Insert `part` at `index` (at the end past it). Described, as [`Self::replace`] is.
     pub fn insert(&mut self, index: usize, part: Part) {
         self.before_change();
         let index = index.min(self.parts.len());
-        self.motions.arrive(part.key);
         self.parts.insert(index, part);
         self.parts_changed();
     }
@@ -998,7 +982,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 continue;
             }
             part.element
-                .draw_child(scene, transform, text, theme,&env);
+                .draw_child(scene, transform, text, theme, &env);
         }
     }
 

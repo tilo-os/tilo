@@ -51,10 +51,10 @@ the room it holds back on every side. Text wraps by default; `lines: n` clamps i
 
 What a `stack`, `row` or `grid` holds moves when it changes, with no code in the view: a child the
 person adds fades in while the others slide aside, one they take away fades out where it stood, and
-one that moves slides from where it was. `motion:` names another of the toolkit's motions:
-`.cross_fade` for a container that swaps one child for another in place, `.none` for one whose
-changes land at once. It takes names only, never timings. A change no hand made (a sync, an agent,
-a shortcut) and reduced motion land at once.
+one that moves slides from where it was. `motion:` sets the pace, as it does for a list:
+`.standard` (the default), `.brisk`, `.calm`, or `.still`, whose changes land at once. It takes
+names only, never timings. A change no hand made (a sync, an agent, a shortcut) and reduced motion
+land at once.
 
 ## 4. Responding to space
 

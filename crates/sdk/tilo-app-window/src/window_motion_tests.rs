@@ -1,7 +1,7 @@
 //! What a person sees while a view's layout changes: parts that stay slide to their new places,
-//! parts that arrive fade in, parts that leave fade out where they stood, and a container that swaps
-//! one child for another cross-fades them. A change no hand made, reduced motion and `motion: .none`
-//! land at once.
+//! parts that arrive fade in and parts that leave fade out where they stood, at the pace the
+//! container's `motion:` names. A change no hand made, reduced motion and `motion: .still` land at
+//! once.
 
 use super::*;
 use tilo_render_protocol::patch::{Patch, local};
@@ -209,36 +209,36 @@ fn a_shortcut_a_sync_and_reduced_motion_land_at_once() {
 }
 
 #[test]
-fn a_container_that_names_no_motion_lands_at_once() {
-    let (mut app, mut harness) = shown(&page(&["a", "b", "c"], Some("none")));
+fn a_still_container_lands_at_once() {
+    let (mut app, mut harness) = shown(&page(&["a", "b", "c"], Some("still")));
     let started = change(&mut app, &mut harness, MotionSource::Pointer, reorder());
     let landed = drawn(&harness, started + Duration::from_millis(1));
     assert!(at_rest(&landed) && landed.len() == 3, "{landed:?}");
 }
 
-#[test]
-fn a_cross_fading_container_swaps_its_child_in_place() {
-    let (mut app, mut harness) = shown(&page(&["a"], Some("cross_fade")));
-    let was = drawn(&harness, ui::time::now())[0].rect;
-    let started = change(
-        &mut app,
-        &mut harness,
-        MotionSource::Pointer,
-        vec![remove("a"), insert(0, "b")],
-    );
-    // The old child is gone by the time the new one is 60% in.
-    let midway = drawn(&harness, started + Duration::from_millis(8));
-    let [b, a] = midway[..] else {
-        panic!("the new child and the old one fading out: {midway:?}");
+/// How far `c` (second after the change) still has to go at `after` the change started, in a list
+/// moving at `feel`'s pace.
+fn left_to_go(feel: &str, after: Duration) -> f64 {
+    let (mut app, mut harness) = shown(&page(&["a", "b", "c"], Some(feel)));
+    let started = change(&mut app, &mut harness, MotionSource::Pointer, reorder());
+    let at = |since: Duration| {
+        let instant = started.checked_add(since).expect("an instant");
+        drawn(&harness, instant)[1].rect.y0
     };
-    assert!(!b.leaving && b.opacity > 0.0 && b.opacity < 1.0, "{b:?}");
-    assert!(a.leaving && a.opacity > 0.0 && a.opacity < 1.0, "{a:?}");
-    assert_eq!(
-        a.rect.origin(),
-        was.origin(),
-        "the old one fades where it stood"
+    let (moving, rest) = (at(after), at(LATER));
+    (moving - rest).abs()
+}
+
+#[test]
+fn a_calm_list_moves_slower_than_a_brisk_one() {
+    let after = Duration::from_millis(60);
+    let (brisk, standard, calm) = (
+        left_to_go("brisk", after),
+        left_to_go("standard", after),
+        left_to_go("calm", after),
     );
-    assert_eq!(b.rect.origin(), was.origin(), "nothing slides");
-    let rest = drawn(&harness, started + LATER);
-    assert!(at_rest(&rest) && rest.len() == 1, "{rest:?}");
+    assert!(
+        brisk < standard && standard < calm,
+        "{brisk} < {standard} < {calm}"
+    );
 }

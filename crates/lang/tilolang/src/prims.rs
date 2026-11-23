@@ -86,9 +86,8 @@ pub const PRIMS: &[Prim] = &[
     prim_of("form", &[], &[]),
     prim_of("field", &["label"], &["help"]),
     prim_of("choice", &[], &["bind"]),
-    // `motion:` names how what a container holds moves when it changes: `.list` (the default)
-    // slides, fades in and fades out; `.cross_fade` swaps one child for another in place; `.none`
-    // lands at once.
+    // `motion:` is the pace what a container holds moves at when it changes (a `Motion`, the feel
+    // a list or a section takes): `.standard`, `.brisk`, `.calm`, or `.still`, which lands at once.
     prim_of("stack", &[], &["gap", "padding", "align", "motion"]),
     // With a block, a layout row; with a title and no block, a list row.
     prim_of("row", &[], LAYOUT_ROW_ARGS),
@@ -163,7 +162,7 @@ pub const CHOICES: &[Choice] = &[
     Choice {
         kind: "motion",
         name: "Motion",
-        variants: &["list", "cross_fade", "none"],
+        variants: &["standard", "brisk", "calm", "still"],
     },
     Choice {
         kind: "collapse",

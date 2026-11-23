@@ -15,8 +15,8 @@ use crate::{UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
-    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Part,
-    PartsMotion, Row, Side, Split, Stack,
+    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Part, Row, Side,
+    Split, Stack,
 };
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Dropdown,
@@ -260,14 +260,19 @@ fn lead(node: &UiNode) -> i16 {
     }
 }
 
-/// How a container's parts move when what it holds changes (`motion: .cross_fade`), when it names it.
-fn parts_motion(node: &UiNode) -> Option<PartsMotion> {
-    Some(match token(node, "motion")? {
-        "list" => PartsMotion::List,
-        "cross_fade" => PartsMotion::CrossFade,
-        "none" => PartsMotion::None,
-        _ => return None,
-    })
+/// The pace a container's parts move at when what it holds changes (`motion: .calm`), when it names
+/// one: read as a component's `motion:` is. The checker admits only the cases a `Motion` has, so a
+/// case it does not know is said and the container keeps the standard pace.
+fn feel(node: &UiNode) -> Option<ui::motion::Feel> {
+    use ui::component::PropType;
+    let case = ui::component::Value::Text(token(node, "motion")?.to_owned());
+    match ui::motion::Feel::from_value(&case) {
+        Ok(feel) => Some(feel),
+        Err(error) => {
+            tracing::warn!(%error, key = %node.key, "a container's motion is not a pace");
+            None
+        }
+    }
 }
 
 /// The tree as it is drawn: a `page` inside another page, or inside a block's view, is a plain
@@ -417,7 +422,7 @@ trait PartContainer {
     fn move_part(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
     fn set_lead(&mut self, lead: i16);
-    fn set_motion(&mut self, motion: PartsMotion);
+    fn set_feel(&mut self, feel: ui::motion::Feel);
 }
 
 impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arrange::Arranged<L> {
@@ -450,8 +455,8 @@ impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arr
         ui::widget::arrange::Arranged::set_lead(self, lead);
     }
 
-    fn set_motion(&mut self, motion: PartsMotion) {
-        ui::widget::arrange::Arranged::set_motion(self, motion);
+    fn set_feel(&mut self, feel: ui::motion::Feel) {
+        ui::widget::arrange::Arranged::set_feel(self, feel);
     }
 }
 
@@ -680,8 +685,8 @@ impl Reconciler {
         if lead > 0 {
             with_part_container(&mut element, |container| container.set_lead(lead));
         }
-        if let Some(motion) = parts_motion(node) {
-            with_part_container(&mut element, |container| container.set_motion(motion));
+        if let Some(feel) = feel(node) {
+            with_part_container(&mut element, |container| container.set_feel(feel));
         }
         element
     }
