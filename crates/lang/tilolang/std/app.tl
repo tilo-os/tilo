@@ -958,12 +958,12 @@ view suggestions<R>(of: R) {
 /// messages"), so the count stands in the sentence and no count stands beside it. A step of
 /// several other changes says how many ("You · 2 changes"), and opened, each says what it did.
 /// What the sentence leaves out stands under it, muted (`version_notes`): each field the change
-/// wrote, what it held before beside what it holds now, each as the field's type shows it. Steps of one hand, within the hour,
-/// group under the face of the step that opens them; each step says where it stands among the
-/// visits, so an entry reads nothing of the steps around it.
+/// wrote, what it held before beside what it holds now, each as the field's type shows it.
+/// Steps of one hand, within the hour, group under the face of the step that opens them; each
+/// step says where it stands among the visits, so an entry reads nothing of the steps around it.
 ///
 /// A change is taken back where a person means it. The newest step is the change the page shows
-/// the result of, so it offers its undo where it stands, as quiet as the words around it, a
+/// the result of, so it offers its undo where it stands, a small button that reads as one, a
 /// run's undo taking the whole run. Every older step keeps its undo in the step's own menu: a
 /// history reads as a timeline, not as a column of buttons. The step that made the resource
 /// offers nothing to take back — reversing it would remove the thing whose page a person is
@@ -1041,14 +1041,14 @@ view history<R>(of: R) {
                                         ui.Text("·", role: .caption, secondary: true)
                                         ui.Time(s.at, role: .caption, secondary: true)
                                         spacer()
-                                        // Taken back here, quietly, on the step the page ends with; in
-                                        // the step's menu anywhere older.
+                                        // Taken back here, on the step the page ends with, as a button
+                                        // that reads as one; in the step's menu anywhere older.
                                         if undoable {
                                             if newest {
                                                 if let run = s.run {
                                                     ui.Button(
                                                         phrase("tilolang-undo"),
-                                                        role: .plain,
+                                                        icon: .undo_2,
                                                         size: .small,
                                                     ) {
                                                         on press: undo(run)
@@ -1056,7 +1056,7 @@ view history<R>(of: R) {
                                                 } else if let v = s.versions.last() {
                                                     ui.Button(
                                                         phrase("tilolang-undo"),
-                                                        role: .plain,
+                                                        icon: .undo_2,
                                                         size: .small,
                                                     ) {
                                                         on press: undo(v)
@@ -1101,7 +1101,7 @@ view history<R>(of: R) {
                                         if open == key {
                                             ui.Button(
                                                 phrase("tilolang-history-hide"),
-                                                role: .plain,
+                                                icon: .chevron_down,
                                                 size: .small,
                                             ) {
                                                 on press: set(open, "")
@@ -1125,7 +1125,7 @@ view history<R>(of: R) {
                                                         if v.mine and v.kind != "created" {
                                                             ui.Button(
                                                                 phrase("tilolang-undo"),
-                                                                role: .plain,
+                                                                icon: .undo_2,
                                                                 size: .small,
                                                             ) {
                                                                 on press: undo(v)
@@ -1138,7 +1138,7 @@ view history<R>(of: R) {
                                         } else {
                                             ui.Button(
                                                 phrase("tilolang-history-show"),
-                                                role: .plain,
+                                                icon: .chevron_right,
                                                 size: .small,
                                             ) {
                                                 on press: set(open, key)
