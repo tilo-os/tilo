@@ -15,7 +15,9 @@
 //! [`crate::work::takes_turn`] decides) and [`supersede`] marks a reply another device's answer
 //! stands in place of. [`ask`] makes an ask outright, keyed by its
 //! cause: what a reminder, an event or a sub-agent asks. [`show`] puts the thing the agent worked
-//! on into the reply's body as a card of it, live.
+//! on into the reply's body as a card of it, live. [`keep_summary`] keeps what a conversation
+//! said before the part a turn was shown, keyed by the conversation and the agent, and
+//! [`summaries`] reads back what was kept.
 
 use tilo_actions::MemberId;
 use tilolang_tilo::runtime::Value;
@@ -194,6 +196,10 @@ pub struct Around {
     /// What it is called (a conversation's name).
     pub title: String,
     pub items: Vec<Said>,
+    /// How many items before the window the collection holds and the turn is not told.
+    pub earlier: usize,
+    /// The last item before the window, where any is: what a summary kept of it reaches.
+    pub before: Option<Said>,
 }
 
 /// One item around an ask.
@@ -208,6 +214,24 @@ pub struct Said {
     pub when: String,
     /// Whether it is what the ask is about.
     pub asked_about: bool,
+}
+
+/// What an agent kept of what a conversation said before the part a turn was shown, as the
+/// record holds it now.
+#[derive(Clone, Debug)]
+pub struct Summary {
+    /// The summary itself.
+    pub at: ResourceRef,
+    /// The agent that keeps it.
+    pub agent: MemberId,
+    /// The conversation it summarizes: what it is made from.
+    pub conversation: Option<ResourceRef>,
+    /// What the conversation said before, in the agent's words.
+    pub text: String,
+    /// The item it reaches.
+    pub through: String,
+    /// When that item was written, ISO-8601 UTC.
+    pub through_at: String,
 }
 
 fn meta(opened: &Opened) -> Result<tilolang_tilo::runtime::meta::Meta, String> {
@@ -405,6 +429,37 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
     Ok(out)
 }
 
+/// Every summary the record holds: what each agent kept of a conversation longer than a turn is
+/// told of it.
+///
+/// # Errors
+/// The agent package is not loaded in the record.
+pub fn summaries(opened: &Opened) -> Result<Vec<Summary>, String> {
+    let meta = meta(opened)?;
+    let root = root(&meta)?;
+    let mut out = Vec::new();
+    for at in items(opened, &root, "summaries") {
+        let Some(Value::Actor(Actor::Member(agent))) = read(opened, &at, "agent") else {
+            continue;
+        };
+        let made = opened
+            .host()
+            .store()
+            .versions(&at)
+            .ok()
+            .and_then(|versions| versions.into_iter().next());
+        out.push(Summary {
+            agent,
+            conversation: made.as_ref().and_then(|made| made.from.clone()),
+            text: text(read(opened, &at, "text")),
+            through: text(read(opened, &at, "through")),
+            through_at: text(read(opened, &at, "through_at")),
+            at,
+        });
+    }
+    Ok(out)
+}
+
 /// What sits around `about`: the collection it is in, at most the `most` items up to and
 /// including it, each by its first text and who made it. Read by structure alone: no app's
 /// field is named.
@@ -416,6 +471,8 @@ pub fn around(opened: &Opened, about: &ResourceRef, most: usize) -> Around {
             holder: None,
             title: String::new(),
             items: vec![said(opened, about, true)],
+            earlier: 0,
+            before: None,
         };
     };
     let title = store.first_text(&holder).unwrap_or_default();
@@ -432,6 +489,11 @@ pub fn around(opened: &Opened, about: &ResourceRef, most: usize) -> Around {
             .skip(skip)
             .map(|item| said(opened, item, item.same(about)))
             .collect(),
+        earlier: skip,
+        before: skip
+            .checked_sub(1)
+            .and_then(|at| all.get(at))
+            .map(|item| said(opened, item, false)),
     }
 }
 
@@ -740,6 +802,33 @@ pub fn supersede(opened: &mut Opened, agent: &MemberId, reply: &ResourceRef) -> 
             (AGENT_APP, "supersede"),
             vec![Value::resource(reply)],
             None,
+        )
+        .map(drop)
+}
+
+/// Keep, as `agent`, a summary of what `conversation` said before the part a turn was shown:
+/// `text` says it, reaching `through`, the item it last took in. What the agent kept before is
+/// what it says now.
+///
+/// # Errors
+/// The package refused it, or the record could not be written.
+pub fn keep_summary(
+    opened: &mut Opened,
+    agent: &MemberId,
+    conversation: &ResourceRef,
+    (text, reaches, wrote_at): (&str, &str, &str),
+) -> Result<(), String> {
+    opened
+        .invoke(
+            &self::agent(agent),
+            (AGENT_APP, "keep_summary"),
+            vec![
+                Value::Actor(self::agent(agent)),
+                Value::Text(text.into()),
+                Value::Text(reaches.into()),
+                Value::Text(wrote_at.into()),
+            ],
+            Some(conversation),
         )
         .map(drop)
 }

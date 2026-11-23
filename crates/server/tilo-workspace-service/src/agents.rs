@@ -96,6 +96,7 @@ mod mail_connect;
 mod shares;
 mod steps;
 mod sub_agents;
+mod summaries;
 mod task_waits;
 mod team;
 mod turn_provider;
@@ -712,6 +713,23 @@ pub struct Turn {
     pub typed: bool,
     /// Where a sub-agent's turn stands in its team ([`Line`]): none for an agent a person made.
     pub line: Option<Line>,
+    /// What its agent kept of what the conversation said before the window, where it kept any
+    /// and the window leaves any out: told before the window ([`crate::asks::Summary`]).
+    pub summary: Option<String>,
+    /// Where a turn of a conversation longer than its window keeps a summary of what came
+    /// before it, and what that summary reaches; none where the whole rest is in the window.
+    pub summarize: Option<Summarize>,
+}
+
+/// Where a turn keeps a summary of what its conversation said before the window it is shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Summarize {
+    /// The conversation the summary is keyed by: what it is made from.
+    pub conversation: crate::asks::ResourceRef,
+    /// The item before the window the summary reaches.
+    pub through: String,
+    /// When that item was written, ISO-8601 UTC.
+    pub through_at: String,
 }
 
 /// The turns of a server's agents, as the server stops: it begins none, and waits for those going.
@@ -1445,6 +1463,8 @@ impl ServerAgents {
                 asked: issue.title.clone(),
                 typed: true,
                 line: None,
+                summary: None,
+                summarize: None,
                 ask: Ask::Issue {
                     record: document.clone(),
                     issue: ask.issue.to_string(),
@@ -1767,6 +1787,7 @@ impl ServerAgents {
             )
             .await;
         let keeping = learned::Keeping::of(&self.workspaces, workspace, &turn);
+        let summarizing = summaries::Summarizing::of(&self.workspaces, workspace, &turn);
         let (outcome, cost) = match (asked, limit) {
             (_, Some(limit)) if spent_before >= limit => (
                 Outcome::Stopped(format!(
@@ -1785,8 +1806,16 @@ impl ServerAgents {
                     (day, task) => day.or(task),
                 };
                 let keeping = keeping.as_ref();
+                let summarizing = summarizing.as_ref();
                 Box::pin(work(
-                    model, &scope, &mut turn, budget, &mut reply, going, keeping,
+                    model,
+                    &scope,
+                    &mut turn,
+                    budget,
+                    &mut reply,
+                    going,
+                    keeping,
+                    summarizing,
                 ))
                 .await
             }
@@ -2481,6 +2510,7 @@ async fn work(
     reply: &mut Reply,
     going: &going::Going,
     keeping: Option<&learned::Keeping>,
+    summarizing: Option<&summaries::Summarizing>,
 ) -> (Outcome, u64) {
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
@@ -2501,10 +2531,12 @@ async fn work(
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
-    // What the turn keeps about its keeper, and in an answer to an ask the view or the document
-    // it may answer with, are its own tools beside the agent tools.
+    // What the turn keeps about its keeper, of what its conversation said before its window, and
+    // in an answer to an ask the view or the document it may answer with, are its own tools
+    // beside the agent tools.
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
     own_tools.extend(shares::tools(turn));
+    own_tools.extend(summaries::tools(turn));
     let asked = tilo_agent_turn::Asked {
         history: Vec::new(),
         own_tools,
@@ -2525,6 +2557,7 @@ async fn work(
         scope,
         going,
         keeping,
+        summarizing,
         reads: Mutex::new(steps::reads(&server).await),
         noted: Mutex::default(),
         at: tokio::sync::Mutex::new((turn, reply)),
@@ -2578,6 +2611,9 @@ struct Answering<'a> {
     going: &'a going::Going,
     /// What a turn that knows and keeps facts keeps of what it learns ([`learned`]).
     keeping: Option<&'a learned::Keeping>,
+    /// What a turn of a conversation longer than its window keeps of what came before it
+    /// ([`summaries`]).
+    summarizing: Option<&'a summaries::Summarizing>,
     /// Which of the turn's tools only read, by its server's own word of each.
     reads: Mutex<HashSet<String>>,
     /// Of the answer whose calls are being carried out: the tool of the call before, and the
@@ -2664,9 +2700,9 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         answer
     }
 
-    /// What the turn keeps about its person is carried out here, and the view or document it
-    /// answers with;
-    /// every other tool is the agent tools'.
+    /// What the turn keeps about its person, and of what its conversation said before its
+    /// window, is carried out here, and the view or document it answers with; every other tool
+    /// is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {
         let (text, is_error) = if call.name == shares::ANSWER_WITH_VIEW {
             let at = self.at.lock().await;
@@ -2674,6 +2710,10 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         } else if call.name == shares::ANSWER_WITH_DOCUMENT {
             let at = self.at.lock().await;
             Box::pin(at.1.document(self.server, &call.input)).await
+        } else if let Some((text, is_error)) =
+            summaries::call(self.summarizing, &call.name, &call.input).await
+        {
+            (text, is_error)
         } else {
             learned::call(self.keeping, &call.name, &call.input).await?
         };

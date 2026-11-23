@@ -995,3 +995,379 @@ async fn the_file_a_message_sends_reaches_the_turn_that_answers_it() {
     let _ = (root, host);
     page.peer.close();
 }
+
+/// `person` asks again for an answer to the last ask the record holds: the agent package's
+/// `retry`, invoked as them. What it answered, or how it refused.
+async fn retry_as(workspaces: &Workspaces, workspace: &str, person: &str) -> Result<(), String> {
+    let packages = asks::chat_packages().unwrap();
+    let who = asks::Actor::Member(MemberId::person(person.to_owned()));
+    workspaces
+        .with_tl_record(workspace, &packages, who.clone(), move |opened| {
+            let ask = asks::asks(opened)?
+                .into_iter()
+                .last()
+                .ok_or_else(|| "the record holds no ask".to_owned())?;
+            opened
+                .invoke(
+                    &who,
+                    (asks::AGENT_APP, "retry"),
+                    vec![Value::resource(&ask.at)],
+                    None,
+                )
+                .map(drop)
+        })
+        .await
+}
+
+/// `person` opens a channel called `plans` and writes `said` there, oldest first, then writes
+/// `ask` mentioning Scout, which asks it. Answers the channel's id and type, so a later message
+/// can go into the same conversation.
+async fn channel_with_chatter(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    said: &[String],
+    ask: &str,
+) -> (String, String) {
+    let packages = asks::chat_packages().unwrap();
+    let who = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let chat = packages.app().to_owned();
+    let said = said.to_vec();
+    let ask = ask.to_owned();
+    workspaces
+        .with_tl_record(workspace, &packages, who.clone(), move |opened| {
+            let all = opened
+                .host()
+                .root_of(&chat)
+                .map_err(|error| error.to_string())?;
+            let channel = opened.invoke(
+                &who,
+                (&chat, "new_channel"),
+                vec![Value::resource(&all), Value::Text("plans".into())],
+                None,
+            )?;
+            for line in &said {
+                opened.invoke(
+                    &who,
+                    (&chat, "send"),
+                    vec![
+                        channel.clone(),
+                        Value::Rich(RichValue::from_text(line)),
+                        Value::Opt(None),
+                    ],
+                    None,
+                )?;
+            }
+            opened.invoke(
+                &who,
+                (&chat, "send"),
+                vec![
+                    channel.clone(),
+                    asks::mentioning(&MemberId::agent(SCOUT), "Scout", &ask),
+                    Value::Opt(None),
+                ],
+                None,
+            )?;
+            let Value::Ref(reference) = &channel else {
+                return Err("the channel is no resource".to_owned());
+            };
+            Ok((reference.target.id_string(), reference.target.ty.clone()))
+        })
+        .await
+        .unwrap()
+}
+
+/// `person` writes `then` in the channel `channel` (its id and type), mentioning Scout, which
+/// asks it there.
+async fn mention_in(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    channel: &(String, String),
+    then: &str,
+) {
+    let packages = asks::chat_packages().unwrap();
+    let who = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let chat = packages.app().to_owned();
+    let channel =
+        asks::ResourceRef::parse_id(&channel.0, channel.1.clone()).expect("the channel's id");
+    let then = then.to_owned();
+    workspaces
+        .with_tl_record(workspace, &packages, who.clone(), move |opened| {
+            opened
+                .invoke(
+                    &who,
+                    (&chat, "send"),
+                    vec![
+                        Value::resource(&channel),
+                        asks::mentioning(&MemberId::agent(SCOUT), "Scout", &then),
+                        Value::Opt(None),
+                    ],
+                    None,
+                )
+                .map(drop)
+        })
+        .await
+        .unwrap();
+}
+
+/// What the agent package holds of the summaries in Chat's record now.
+async fn summaries(workspaces: &Workspaces, workspace: &str, person: &str) -> Vec<asks::Summary> {
+    let packages = asks::chat_packages().unwrap();
+    workspaces
+        .with_tl_record(
+            workspace,
+            &packages,
+            asks::Actor::Member(MemberId::person(person.to_owned())),
+            |opened| asks::summaries(opened),
+        )
+        .await
+        .unwrap()
+}
+
+/// A turn that ends without an answer leaves a reply that failed: its asker asks again, and the
+/// next turn is a second attempt whose reply stands beside the one that failed, which stays in
+/// the record. Somebody else may not ask it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_answer_is_asked_again_as_its_next_attempt() {
+    ada_and_scout!(root, host, served, workspaces, workspace, page, person);
+    mention_in_channel(&workspaces, &workspace, &person, " what is planned?").await;
+    // The workspace's server has no model its agent can work with, so the turn fails.
+    let approved = served.approving(&workspace, &[SCOUT]).await;
+    let agents = approved.clone().scripted(None);
+    let failed_turn = answered_one(&agents, &workspace).await;
+    assert!(
+        matches!(&failed_turn.ask, Ask::Asked { attempt: 1, .. }),
+        "{:?}",
+        failed_turn.ask
+    );
+    let failed = asked(&workspaces, &workspace, &person).await;
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].state, AskState::Failed);
+    let first = failed[0].latest().expect("the turn wrote a reply").clone();
+    assert_eq!(
+        (first.attempt, first.state, first.superseded),
+        (1, AskState::Failed, false),
+        "the reply that failed is there: {first:?}"
+    );
+    assert!(
+        agents.turns(&workspace).await.unwrap().is_empty(),
+        "a failed ask is owed nothing until it is asked again"
+    );
+
+    // Somebody else asks it again: refused, and nothing moves.
+    let (bo_root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
+    let bo = enrol(&bo_root, "bo-laptop", DeviceCapabilities::member());
+    admit(&workspaces, &host, &workspace, &bo).await;
+    let refused = retry_as(
+        &workspaces,
+        &workspace,
+        &hex::encode(bo.cert.user_public_key),
+    )
+    .await
+    .expect_err("only who asked may ask it again");
+    assert!(refused.contains("Only who asked"), "{refused}");
+    assert_eq!(
+        asked(&workspaces, &workspace, &person).await[0].state,
+        AskState::Failed,
+        "another member's retry changed nothing"
+    );
+
+    // Its asker asks again: the same ask waits for a turn once more.
+    retry_as(&workspaces, &workspace, &person)
+        .await
+        .expect("its asker asks it again");
+    assert_eq!(
+        asked(&workspaces, &workspace, &person).await[0].state,
+        AskState::Waiting
+    );
+
+    // The next turn is the second attempt, and its reply stands beside the one that failed.
+    let agents = approved.scripted(looks_then_answers(1_000, Arc::default()));
+    let second = answered_one(&agents, &workspace).await;
+    assert!(
+        matches!(&second.ask, Ask::Asked { attempt: 2, .. }),
+        "the turn is the second attempt: {:?}",
+        second.ask
+    );
+    let answered = asked(&workspaces, &workspace, &person).await;
+    assert_eq!(answered[0].state, AskState::Done);
+    let replies = &answered[0].replies;
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    let attempts: Vec<i64> = replies.iter().map(|reply| reply.attempt).collect();
+    assert_eq!(attempts, [1, 2]);
+    assert_eq!(
+        (replies[0].state, replies[0].superseded),
+        (AskState::Failed, false),
+        "the reply that failed stays in the record, visible: {replies:?}"
+    );
+    assert_eq!(replies[1].state, AskState::Done);
+    assert!(
+        replies[1].body.contains("the plan is ready"),
+        "{}",
+        replies[1].body
+    );
+    let _ = root;
+    page.peer.close();
+}
+
+/// The summary a long conversation's turn keeps.
+const SUMMARY: &str = "The launch is planned for May, and the cake is ordered.";
+
+/// A model that keeps `SUMMARY` when its turn offers the summary tool, and otherwise answers in
+/// words. Every request it was sent is kept.
+struct Summarizes {
+    asked: Arc<Mutex<Vec<ModelRequest>>>,
+}
+
+impl tilo_agent_session::model::PlanTurns for Summarizes {
+    fn turn(
+        &mut self,
+        request: &ModelRequest,
+        _: &str,
+        _: Instant,
+        _: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.asked.lock().unwrap().push(request.clone());
+        let answered = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .any(|content| matches!(content, Content::ToolResult(_)));
+        if answered {
+            return Ok(answer(
+                vec![Content::Text {
+                    text: "Kept.".into(),
+                }],
+                StopReason::EndTurn,
+                1,
+            ));
+        }
+        if request.tools.iter().any(|tool| tool.name == "keep-summary") {
+            return Ok(answer(
+                vec![Content::ToolCall(ToolCall {
+                    id: "call-1".into(),
+                    name: "keep-summary".into(),
+                    input: serde_json::json!({ "text": SUMMARY }),
+                    extra_content: None,
+                })],
+                StopReason::ToolCalls,
+                1,
+            ));
+        }
+        Ok(answer(
+            vec![Content::Text {
+                text: "Nothing to do.".into(),
+            }],
+            StopReason::EndTurn,
+            1,
+        ))
+    }
+
+    fn model(&self) -> &'static str {
+        "scripted"
+    }
+}
+
+/// A conversation longer than the window a turn is shown: the model keeps a summary of what
+/// came before, and the next turn there is told it, before the part it is shown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_conversation_keeps_a_summary_its_next_turn_is_told() {
+    ada_and_scout!(root, host, served, workspaces, workspace, page, person);
+    let said: Vec<String> = (0..40)
+        .map(|line| format!("line {line}: how the launch is going"))
+        .collect();
+    let channel = channel_with_chatter(
+        &workspaces,
+        &workspace,
+        &person,
+        &said,
+        " where does the launch stand?",
+    )
+    .await;
+    let model_asked = Arc::new(Mutex::new(Vec::new()));
+    let minded = {
+        let asked = Arc::clone(&model_asked);
+        Arc::new(move || {
+            Some(Box::new(Summarizes {
+                asked: Arc::clone(&asked),
+            })
+                as Box<dyn tilo_agent_session::model::PlanTurns>)
+        }) as Model
+    };
+    let agents = served
+        .approving(&workspace, &[SCOUT])
+        .await
+        .scripted(minded);
+    let turn = answered_one(&agents, &workspace).await;
+    let offered = tools_of(&model_asked.lock().unwrap()[0]);
+    assert!(
+        offered.iter().any(|name| name == "keep-summary"),
+        "a turn shown less than came before it may keep a summary: {offered:?}"
+    );
+    assert!(
+        !turn.request.contains("line 0:"),
+        "the window leaves the oldest out: {}",
+        turn.request
+    );
+    assert!(
+        turn.request.contains("line 39:"),
+        "the window holds the newest: {}",
+        turn.request
+    );
+    let kept = summaries(&workspaces, &workspace, &person).await;
+    let [summary] = kept.as_slice() else {
+        panic!("one summary, not {kept:?}")
+    };
+    assert_eq!(summary.text, SUMMARY);
+    assert_eq!(summary.agent, MemberId::agent(SCOUT));
+    assert!(
+        summary.conversation.is_some(),
+        "the summary is keyed by the conversation it is made from"
+    );
+    let reply = reply_reads(&workspaces, &workspace, &person, "Kept.").await;
+    assert_eq!(reply.state, AskState::Done);
+
+    // Her next message there: the turn is told the summary before the part it is shown.
+    model_asked.lock().unwrap().clear();
+    mention_in(&workspaces, &workspace, &person, &channel, " and the cake?").await;
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    let request = &turns[0].request;
+    assert!(request.contains(SUMMARY), "{request}");
+    assert!(
+        request.find(SUMMARY) < request.find("In \"plans\":"),
+        "the summary stands before the window: {request}"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+    let told = model_asked.lock().unwrap()[0]
+        .messages
+        .iter()
+        .filter(|message| matches!(message.role, Role::User))
+        .flat_map(|message| message.content.iter())
+        .filter_map(|content| match content {
+            Content::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        told.contains(SUMMARY),
+        "the model is sent the summary: {told}"
+    );
+    let kept = summaries(&workspaces, &workspace, &person).await;
+    assert_eq!(
+        kept.len(),
+        1,
+        "one summary per conversation and agent: {kept:?}"
+    );
+    assert_eq!(kept[0].text, SUMMARY);
+    let _ = root;
+    page.peer.close();
+}

@@ -104,8 +104,29 @@ d-uwopf5u7-filter-attempt = Attempt
 
 d-uwopf5u7-filter-superseded = Superseded
 
+d-kprk52dn = Summary
+    .doc = What an agent keeps of what a conversation said before the part a turn is shown, so a conversation longer than a turn can keep what it said earlier.
+    .noun = { $count ->
+        [one] summary
+       *[other] summaries
+    }
+
+d-fbk2rxka = Agent
+    .doc = The agent that keeps it.
+
+d-wl4g23ke = Text
+    .doc = What the conversation said before, in the agent's words.
+
+d-hefqltbc = Through
+    .doc = The item it reaches: the conversation's message the agent last took in.
+
+d-cs27n4h5 = Through at
+    .doc = When that item was written, ISO-8601 UTC.
+
+d-kprk52dn-filter-agent = Agent
+
 d-7nochn55 = Agents
-    .doc = Every ask and reply of the workspace.
+    .doc = Every ask and reply of the workspace, and what its agents keep of its long conversations.
     .noun = { $count ->
         [one] agent
        *[other] agents
@@ -114,6 +135,8 @@ d-7nochn55 = Agents
 d-mzzoxssv = Asks
 
 d-353i7jsi = Replies
+
+d-srbtof5j = Summaries
 
 d-zofobn2n = Ask state
     .doc = Where an ask stands.
@@ -159,12 +182,17 @@ d-so4an2tr = Ask again
     .w-only-who-asked-can-ask-it = Only who asked can ask it again
     .w-it-was-not-withdrawn = It was not withdrawn
 
+d-xamg74g2 = Retry
+    .doc = Asks again for an answer that failed: the same ask, its next attempt, so the reply written now stands beside the one that failed.
+    .w-only-who-asked-can-ask-it = Only who asked can ask it again
+    .w-it-did-not-fail = It did not fail
+
 d-5zilxes5 = Stop
     .doc = Stops a turn that is working; what the agent did until then stays.
     .w-nothing-is-working-on-it = Nothing is working on it
 
 d-zl7upzy7 = Answer
-    .doc = The agent starts its reply to `a`, the ask's next attempt.
+    .doc = The agent starts its reply to `a`, the ask's next attempt: the one after its newest reply, so a reply that failed and was asked again stands beside it.
     .did = answered
     .w-only-the-agent-asked-may-answer = Only the agent asked may answer
     .w-nobody-waits-for-an-answer = Nobody waits for an answer
@@ -222,9 +250,23 @@ d-5n4bbzji = Supersede
     .doc = Another device's answer to the same ask stands instead of `r`.
     .w-only-the-agent-asked-may-answer = Only the agent asked may answer
 
+d-q7wtfy6u = Keep a summary
+    .doc = The agent keeps what the conversation this is made from said before the part its turn was shown: `text` says it in the agent's words, reaching `through`, the item it last took in.
+    .w-only-the-agent-may-keep-its = Only the agent may keep its summary
+
+d-q7wtfy6u-agent = Agent
+
+d-q7wtfy6u-text = Text
+
+d-q7wtfy6u-through = Through
+
+d-q7wtfy6u-through_at = Through at
+
 d-koyxjtxv = Withdraw~present
 
 d-rxmz2d33 = Reopen~present
+
+d-za2dxf3d = Retry~present
 
 d-mzbpkahz = Stop~present
 
@@ -243,6 +285,8 @@ d-64ypkzcb = Show~present
 d-3ebfgkt2 = Finish~present
 
 d-wsxdear2 = Supersede~present
+
+d-hcwspess = Keep summary~present
 
 d-zfzqq5xy = Asked
     .w-nobody-asked-an-agent-yet = Nobody asked an agent yet

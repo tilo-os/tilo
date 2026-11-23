@@ -191,6 +191,8 @@ pub(super) fn team_turn(
             asked: said,
             typed,
             line,
+            summary: None,
+            summarize: None,
             ask: Ask::Asked {
                 app: app.to_owned(),
                 ask: asked.at.id_string(),

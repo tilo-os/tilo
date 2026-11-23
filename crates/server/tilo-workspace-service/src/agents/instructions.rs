@@ -1,10 +1,12 @@
 //! Instructions the hosted model receives for a turn.
 
-use super::{Turn, learned, shares, sub_agents};
+use super::{Turn, learned, shares, sub_agents, summaries};
 
 /// What the agent is told before every ask: what every agent a host runs is told, and after it
 /// what its keeper told it about how to work for them ([`super::Agent::told`]), when they told it
-/// anything. Workspace Skills are reached through the turn's ordinary action tools.
+/// anything, and how a conversation longer than the turn's window keeps what came before
+/// ([`summaries::told_how`]). Workspace Skills are reached through the turn's ordinary action
+/// tools.
 pub(super) fn for_turn(turn: &Turn) -> String {
     let told = turn.agent.told().map_or_else(String::new, |told| {
         format!(
@@ -27,9 +29,10 @@ pub(super) fn for_turn(turn: &Turn) -> String {
         conversation = turn.conversation,
     );
     format!(
-        "{every}{}{}{}{told}",
+        "{every}{}{}{}{}{told}",
         shares::told(turn),
         learned::told_how(turn),
-        sub_agents::told(turn)
+        sub_agents::told(turn),
+        summaries::told_how(turn)
     )
 }

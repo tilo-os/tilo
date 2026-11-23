@@ -83,10 +83,26 @@ type Reply {
     superseded: Bool = false
 }
 
-/// Every ask and reply of the workspace.
+/// What an agent keeps of what a conversation said before the part a turn is shown, so a
+/// conversation longer than a turn can keep what it said earlier. The agent writes it while it
+/// answers; the next turn there is told it before the part it is shown. One per conversation
+/// and agent.
+type Summary {
+    /// The agent that keeps it.
+    agent: Actor
+    /// What the conversation said before, in the agent's words.
+    text: Text = ""
+    /// The item it reaches: the conversation's message the agent last took in.
+    through: Text = ""
+    /// When that item was written, ISO-8601 UTC.
+    through_at: Text = ""
+}
+
+/// Every ask and reply of the workspace, and what its agents keep of its long conversations.
 type Agents {
     asks: Collection<Ask>
     replies: Collection<Reply>
+    summaries: Collection<Summary>
 }
 
 root agents: Agents
@@ -135,17 +151,26 @@ action reopen(a: Ask) (icon: .rotate_ccw, label: "Ask again") {
     a.state = .waiting
 }
 
+/// Asks again for an answer that failed: the same ask, its next attempt, so the reply written
+/// now stands beside the one that failed. Only its asker may.
+action retry(a: Ask) (icon: .rotate_ccw, label: "Retry") {
+    require created(a)?.who == invoker "Only who asked can ask it again"
+    require a.state == .failed "It did not fail"
+    a.state = .waiting
+}
+
 /// Stops a turn that is working; what the agent did until then stays.
 action stop(a: Ask) (icon: .square, label: "Stop") {
     require a.state == .working "Nothing is working on it"
     a.state = .stopped
 }
 
-/// The agent starts its reply to `a`, the ask's next attempt.
+/// The agent starts its reply to `a`, the ask's next attempt: the one after its newest reply,
+/// so a reply that failed and was asked again stands beside it.
 action answer(a: Ask) -> Reply (icon: .sparkles, label: "Answer", did: "answered") {
     require invoker == a.agent "Only the agent asked may answer"
     require a.state == .waiting or a.state == .working "Nobody waits for an answer"
-    let attempt = agents.replies.filter(r -> r.ask == a).len() + 1
+    let attempt = if let newest = latest_reply(a) { newest.attempt + 1 } else { 1 }
     a.state = .working
     agents.replies.insert(Reply(ask: a, body: RichText(""), attempt: attempt))
 }
@@ -202,9 +227,32 @@ action supersede(r: Reply) {
     r.superseded = true
 }
 
+/// The agent keeps what the conversation this is made from said before the part its turn was
+/// shown: `text` says it in the agent's words, reaching `through`, the item it last took in. One
+/// per conversation and agent: what it kept before is what it says now.
+action keep_summary(agent: Actor, text: Text, through: Text, through_at: Text = "") -> Summary (
+    icon: .file_text,
+    label: "Keep a summary",
+) {
+    require invoker == agent "Only the agent may keep its summary"
+    let wanted = Summary(agent: agent)
+    let kept = if let from = made_from {
+        agents.summaries.insert(wanted, key: "{from.id()}|{agent.id()}")
+    } else { agents.summaries.insert(wanted) }
+    kept.text = text
+    kept.through = through
+    kept.through_at = through_at
+    kept
+}
+
 /// The asks made from `about`, oldest first: what a message, a note or a task shows under it.
 fn asks_on(about: host.Resource) -> List<Ask> {
     agents.asks.filter(a -> created(a)?.from == about)
+}
+
+/// The newest reply to `a`, by its attempt: the one that says where the ask stands.
+fn latest_reply(a: Ask) -> Option<Reply> {
+    agents.replies.filter(r -> r.ask == a).sort_by(r -> r.attempt).last()
 }
 
 /// Every ask, newest last: who asked which agent, and where it stands.
@@ -223,7 +271,8 @@ view ask_row(a: Ask) {
 }
 
 /// An agent's answer as it writes it, and what it called on the way. Another device's answer to
-/// the same ask stands instead of a superseded one, which shows nothing.
+/// the same ask stands instead of a superseded one, which shows nothing. Its asker can stop it
+/// while it works and ask again when it failed.
 view reply(r: Reply) {
     state open: Bool
     if not r.superseded {
@@ -253,14 +302,24 @@ view reply(r: Reply) {
             for step in r.steps {
                 text(step.called, role: .caption, secondary: true)
             }
-            // The person whose ask this answer is stops the turn while the agent works. The
-            // reply and its ask are working together until the agent's finish moves them on, so
-            // a stopped ask offers the control no more.
-            if r.state == .working
-                and r.ask.state == .working
-                and created(r.ask)?.who == workspace.me {
-                row {
-                    button(stop(r.ask))
+            // What its asker can do with it: stop the turn while the agent works, and ask again
+            // when it failed. The reply and its ask are working together until the agent's
+            // finish moves them on, so a stopped ask offers Stop no more. The newest reply alone
+            // offers either, so one already pressed, or one a later attempt replaced, asks
+            // nothing.
+            if created(r.ask)?.who == workspace.me {
+                if let newest = latest_reply(r.ask) {
+                    if newest == r {
+                        if r.state == .working and r.ask.state == .working {
+                            row {
+                                button(stop(r.ask))
+                            }
+                        } else if r.state == .failed and r.ask.state == .failed {
+                            row {
+                                button(retry(r.ask))
+                            }
+                        }
+                    }
                 }
             }
         }

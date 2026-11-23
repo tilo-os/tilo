@@ -290,6 +290,8 @@ mod tests {
             asked: message.to_owned(),
             typed: true,
             line: None,
+            summary: None,
+            summarize: None,
         }
     }
 
