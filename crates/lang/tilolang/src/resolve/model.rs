@@ -228,6 +228,9 @@ pub struct Presentation {
     /// (`text/markdown`) or an extension (`md`). The platform opens a file of one of them with this
     /// action ([`crate::meta::ActionMeta::opens`]).
     pub opens: Vec<String>,
+    /// `shows: [d.to, d.subject, d.body]`: what a call of the action shows the person asked to
+    /// allow it ([`crate::meta::ShownMeta`]).
+    pub shows: Vec<crate::meta::ShownMeta>,
 }
 
 /// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in one

@@ -1133,7 +1133,7 @@ impl Core {
         aref: &ActionRef,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, invoker, aref, aref.from.as_ref(), gesture)
+        self.invoke_direct_as_in(None, invoker, aref, aref.from.as_ref(), gesture, false)
     }
 
     /// [`Core::invoke_direct`] as the run `identity` when every replica can name it the same
@@ -1151,7 +1151,24 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(identity, invoker, aref, from, None)
+        self.invoke_direct_as_in(identity, invoker, aref, from, None, false)
+    }
+
+    /// [`Core::invoke_direct`] of a call the dispatch already admitted for `invoker`: it asked
+    /// whoever had to say yes before it delivered the call, so the run does not ask again. Code
+    /// an author wrote (a block, a view of someone's) still asks for what its author may not do:
+    /// the dispatch decided the invoker, not that code.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::invoke_direct`].
+    pub(crate) fn invoke_admitted(
+        &self,
+        invoker: &Actor,
+        aref: &ActionRef,
+        from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_as_in(None, invoker, aref, from, None, true)
     }
 
     /// [`Core::invoke_direct_as`] as one part of the person's act `gesture`.
@@ -1162,6 +1179,7 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
         gesture: Option<&str>,
+        admitted: bool,
     ) -> Result<InvokeOutcome, RuntimeError> {
         // One action over many items is one change: its references are the change's own.
         if aref.action == MANY_ACTION {
@@ -1199,6 +1217,18 @@ impl Core {
                 ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
             },
             Decision::Deny => Ok(InvokeOutcome::Denied),
+            // The dispatch asked before it delivered the call: the yes it took is the answer.
+            Decision::Ask if admitted && ctx.chain.is_empty() => {
+                let ctx = ExecCtx {
+                    approved_by: Some(invoker.clone()),
+                    ..ctx
+                };
+                match self.run_answered(&ctx, aref)? {
+                    ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
+                    ActionOutcome::Waits(waits) => Ok(waits.into()),
+                    ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
+                }
+            }
             Decision::Ask => self.wait_on_person(aref),
         }
     }
@@ -1292,6 +1322,7 @@ impl Core {
             target: Some(ResourceRef::clone(&target.target)),
             from: aref.from.clone(),
             asks: false,
+            shows: Vec::new(),
         }))
     }
 
@@ -1846,10 +1877,89 @@ impl Core {
             })));
         }
         let mut invocation = self.invocation_of(aref)?;
-        if let crate::delegate::Invocation::Action { asks: asking, .. } = &mut invocation {
+        if let crate::delegate::Invocation::Action {
+            asks: asking,
+            shows,
+            ..
+        } = &mut invocation
+        {
             *asking = asks;
+            if asks {
+                *shows = self.asked_shows(aref)?;
+            }
         }
         self.delegated_step(&aref.action, &invocation)
+    }
+
+    /// What a call of `aref` shows the person asked to allow it: each entry of its action's
+    /// `shows:`, labelled as the field (or the parameter) is in the person's language, with the
+    /// value it holds now. A field is read through this run, so what the run wrote before the
+    /// call (the draft an answer made) is what the person reads.
+    fn asked_shows(&self, aref: &ActionRef) -> Result<Vec<crate::delegate::Shown>, RuntimeError> {
+        let Some((params, shows)) = self
+            .registry
+            .borrow()
+            .action_package(&aref.action)
+            .and_then(|pkg| {
+                pkg.action(&aref.action)
+                    .map(|meta| (meta.params.clone(), meta.shows.clone()))
+            })
+        else {
+            return Ok(Vec::new());
+        };
+        let mut shown = Vec::with_capacity(shows.len());
+        for entry in shows {
+            let Some(arg) = params
+                .iter()
+                .position(|p| p.name == entry.param)
+                .and_then(|at| aref.args.get(at))
+            else {
+                continue;
+            };
+            let (label, value) = match &entry.field {
+                None => (tilolang::messages::label(&entry.param), arg.clone()),
+                Some(name) => {
+                    let Value::Ref(at) = arg else {
+                        continue;
+                    };
+                    let target = &at.target;
+                    let field = {
+                        let registry = self.registry.borrow();
+                        registry
+                            .type_id(&target.ty)
+                            .and_then(|ty| registry.type_info(&ty))
+                            .and_then(|(_, info)| {
+                                info.fields.iter().find(|f| f.name == *name).cloned()
+                            })
+                    };
+                    let Some(field) = field else {
+                        continue;
+                    };
+                    let value = self
+                        .read_value(target, &field, None)
+                        .map_err(RuntimeError::Trap)?;
+                    let label = self.words.borrow().word(
+                        &tilolang::messages::key_of(&field.id),
+                        &[],
+                        &tilolang::messages::label(name),
+                    );
+                    (label, value)
+                }
+            };
+            let value = match crate::host_res::unboxed(value) {
+                Value::Text(text) => text,
+                other => {
+                    crate::project::project(self, &other, crate::project::ProjectOptions::default())
+                        .to_string()
+                }
+            };
+            shown.push(crate::delegate::Shown {
+                label,
+                value,
+                render: entry.render.clone(),
+            });
+        }
+        Ok(shown)
     }
 
     /// Run `step` as a run of its own, a change of its own, invoked by `run`: its outcome is
@@ -2229,6 +2339,7 @@ impl Core {
                 }),
             from: aref.from.clone(),
             asks: false,
+            shows: Vec::new(),
         })
     }
 

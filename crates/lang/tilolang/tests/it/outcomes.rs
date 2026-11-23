@@ -349,6 +349,7 @@ fn published() -> tilolang::PackageMeta {
             carries: false,
             outside: Vec::new(),
             opens: Vec::new(),
+            shows: Vec::new(),
         }],
         ..tilolang::PackageMeta::default()
     }

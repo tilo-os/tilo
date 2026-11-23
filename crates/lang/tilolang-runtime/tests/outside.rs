@@ -202,6 +202,121 @@ mod cases {
         }
     }
 
+    /// An answer drafts its message, then sends it: the send reaches outside, so a person is
+    /// asked, and what they read is the draft the answer wrote.
+    const ANSWERS: &str = r#"app test.answers "Answers"
+
+type Draft {
+    to: Text
+    subject: Text
+    body: Text
+    key: Text
+    sent: Bool = false
+}
+
+action send(d: Draft) (shows: [(d.to, .addresses), d.subject, (d.body, .long), (d.key, .secret)]) {
+    d.sent = true
+    outside("post", (d.to, d.subject, d.body))
+}
+
+action answer(d: Draft, to: Text, body: Text) {
+    d.to = to
+    d.subject = "Re: lunch"
+    d.body = body
+    d.key = "s3cret"
+    send(d)
+}
+"#;
+
+    tilo_test_env::scenario! {
+        fn an_asked_call_shows_what_it_sends;
+
+        phase a_nested_send_shows_the_drafted_message_and_a_decline_takes_the_draft_back;
+        {
+            let w = World::new();
+            let app = App::compile(ANSWERS, &[]);
+            app.load(&w.rt);
+            let draft = w.rt.create("Draft").unwrap();
+            let out = w
+                .rt
+                .invoke_action(
+                    &w.me,
+                    (
+                        app.action("answer"),
+                        vec![
+                            Value::resource(&draft),
+                            Value::text("ada@example.org"),
+                            Value::text("Noon works"),
+                        ],
+                    ),
+                )
+                .unwrap();
+            let InvokeOutcome::Waits { run, .. } = out else {
+                panic!("the send reaches outside, so it asks: {out:?}");
+            };
+            let tilolang_runtime::delegate::Invocation::Action { asks, shows, .. } =
+                w.dispatch.waiting()
+            else {
+                panic!("the ask is an action");
+            };
+            assert!(asks);
+            let shown = |label: &str, value: &str, render: Option<&str>| {
+                tilolang_runtime::delegate::Shown {
+                    label: label.to_owned(),
+                    value: value.to_owned(),
+                    render: render.map(str::to_owned),
+                }
+            };
+            assert_eq!(
+                shows,
+                [
+                    shown("To", "ada@example.org", Some("addresses")),
+                    shown("Subject", "Re: lunch", None),
+                    shown("Body", "Noon works", Some("long")),
+                    shown("Key", "s3cret", Some("secret")),
+                ],
+                "the person reads the message the answer drafted, before it goes"
+            );
+            assert!(w.rt.pending_outbox().is_empty(), "nothing went before the yes");
+
+            decline(&w.rt, &run);
+            for field in ["to", "subject", "body"] {
+                assert_eq!(
+                    w.rt.read(&draft, field).unwrap(),
+                    Value::text(""),
+                    "declining takes back what the answer wrote: {field}"
+                );
+            }
+            assert!(w.rt.pending_outbox().is_empty(), "nothing goes");
+        }
+
+        phase a_call_the_dispatch_admitted_runs_without_asking_again;
+        {
+            let w = World::new();
+            let app = App::compile(ANSWERS, &[]);
+            app.load(&w.rt);
+            let draft = w.rt.create("Draft").unwrap();
+            let send = app.action("send");
+            let asked = w
+                .rt
+                .invoke_action(&w.me, (send.as_str(), vec![Value::resource(&draft)]))
+                .unwrap();
+            assert!(
+                matches!(asked, InvokeOutcome::Asked(_)),
+                "a call nobody admitted asks: {asked:?}"
+            );
+            let calls = w.dispatch.len();
+            let out = w
+                .rt
+                .invoke_admitted(&w.me, (send.as_str(), vec![Value::resource(&draft)]), None)
+                .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(w.dispatch.len(), calls, "nobody is asked again");
+            assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+            assert_eq!(w.rt.pending_outbox().len(), 1, "it goes once");
+        }
+    }
+
     /// A sink that answers what the test scripted, one answer per hand-over.
     #[derive(Clone, Default)]
     struct Scripted(std::rc::Rc<std::cell::RefCell<Vec<tilolang_runtime::Delivery>>>);

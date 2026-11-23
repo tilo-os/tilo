@@ -446,6 +446,7 @@ impl Env {
                 did: a.did.clone(),
                 search: a.search.clone(),
                 opens: a.opens.clone(),
+                shows: a.shows.clone(),
             };
             add(
                 CKind::Action,
@@ -1892,6 +1893,81 @@ impl Resolver<'_> {
     /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`. A
     /// `label:` or `icon:` written as an `if` follows the target; the static one is its `else`
     /// branch's value, which a menu shows without evaluating anything.
+    /// One entry of an action's `shows:`: a parameter (`body`), or a field of the record a
+    /// parameter takes (`d.subject`), shown as text; or either with how it is shown,
+    /// `(d.to, .addresses)`, `(d.body, .long)`, `(p.password, .secret)`.
+    fn shown(&mut self, item: &Expr, params: &[ParamInfo]) -> Option<crate::meta::ShownMeta> {
+        let (item, render) = match &item.kind {
+            ExprKind::Tuple(parts) => match parts.as_slice() {
+                [path, how] => match &how.kind {
+                    ExprKind::Variant { name, args: None }
+                        if crate::meta::SHOWN_AS.contains(&name.name.as_str()) =>
+                    {
+                        (path, Some(name.name.clone()))
+                    }
+                    _ => {
+                        self.err(
+                            "E090",
+                            how.span,
+                            "`shows:` shows an entry as `.text`, `.addresses`, `.long` or `.secret`: `(d.to, .addresses)`",
+                        );
+                        return None;
+                    }
+                },
+                _ => (item, None),
+            },
+            _ => (item, None),
+        };
+        let render = render.filter(|how| how != "text");
+        let (param, field) = match &item.kind {
+            ExprKind::Ident(param) => (param.as_str(), None),
+            ExprKind::Field { base, name } => match &base.kind {
+                ExprKind::Ident(param) => (param.as_str(), Some(name)),
+                _ => ("", Some(name)),
+            },
+            _ => ("", None),
+        };
+        let Some(info) = params.iter().find(|p| p.name == param) else {
+            self.err(
+                "E090",
+                item.span,
+                "`shows:` names a parameter of the action, or a field of one: `shows: [d.to, d.subject]`",
+            );
+            return None;
+        };
+        let Some(field) = field else {
+            return Some(crate::meta::ShownMeta {
+                param: info.name.clone(),
+                field: None,
+                render,
+            });
+        };
+        let found = match &info.ty {
+            Ty::Record(key) => self
+                .env
+                .type_info(key)
+                .and_then(|t| t.field(&field.name))
+                .map(|f| f.name.clone()),
+            _ => None,
+        };
+        let Some(name) = found else {
+            self.err(
+                "E090",
+                field.span,
+                format!(
+                    "`shows:` names a field of the record `{param}` takes; `{}` is not one",
+                    field.name
+                ),
+            );
+            return None;
+        };
+        Some(crate::meta::ShownMeta {
+            param: info.name.clone(),
+            field: Some(name),
+            render,
+        })
+    }
+
     fn presentation(&mut self, a: &ast::ActionDecl, params: &[ParamInfo]) -> Presentation {
         let target = params.first().and_then(|p| match &p.ty {
             Ty::Record(key) => self.env.type_info(key).cloned(),
@@ -1911,6 +1987,7 @@ impl Resolver<'_> {
             did: None,
             search: None,
             opens: Vec::new(),
+            shows: Vec::new(),
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -2036,6 +2113,19 @@ impl Resolver<'_> {
                         );
                     }
                 }
+                // `shows: [d.to, d.subject, d.body]`: what a call of the action shows the person
+                // asked to allow it, each a parameter or a field of a parameter's record.
+                ("shows", ExprKind::List(items)) if !items.is_empty() => {
+                    out.shows = items
+                        .iter()
+                        .filter_map(|item| self.shown(item, params))
+                        .collect();
+                }
+                ("shows", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`shows:` lists what a call of the action shows the person asked to allow it, each a parameter or a field of one: `shows: [d.to, d.subject, d.body]`",
+                ),
                 ("opens", _) => self.err(
                     "E090",
                     opt.value.span,
@@ -2044,7 +2134,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:` and `opens:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:`, `opens:` and `shows:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

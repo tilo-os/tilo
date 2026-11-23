@@ -965,3 +965,52 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    /// E090: an action's `shows:` names what the person asked to allow it reads: a parameter, or
+    /// a field of the record one takes, each shown as text unless it says how.
+    fn shows_e090;
+
+    phase what_an_ask_shows_is_declared_on_the_action;
+    {
+        let sends = |shows: &str| {
+            format!(
+                "type Draft {{\n    to: Text\n    subject: Text\n    body: Text\n}}\n\naction send(d: Draft, note: Text) (shows: {shows}) {{\n    d.subject = note\n}}\n"
+            )
+        };
+        let compiled = compile(&format!(
+            "app t.x \"X\"\n{}",
+            sends("[(d.to, .addresses), d.subject, (d.body, .long), (note, .text)]")
+        ));
+        let send = compiled
+            .meta
+            .actions
+            .iter()
+            .find(|action| action.name == "send")
+            .expect("send is declared");
+        let shown: Vec<_> = send
+            .shows
+            .iter()
+            .map(|shown| {
+                (
+                    shown.param.as_str(),
+                    shown.field.as_deref(),
+                    shown.render.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("d", Some("to"), Some("addresses")),
+                ("d", Some("subject"), None),
+                ("d", Some("body"), Some("long")),
+                ("note", None, None),
+            ]
+        );
+        expect("E090", &sends("[d.cc]"));
+        expect("E090", &sends("[e.to]"));
+        expect("E090", &sends("[(d.to, .loud)]"));
+        expect("E090", &sends("d.to"));
+    }
+}

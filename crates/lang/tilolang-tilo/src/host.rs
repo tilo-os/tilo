@@ -750,10 +750,7 @@ impl HostInner {
         if has_present {
             // What it is called and the icon beside it on this resource, as its presentation
             // gives them now: a menu of a finished task offers "Reopen", not "Complete".
-            match self
-                .runtime
-                .presentation_reading(action, &target, who)
-            {
+            match self.runtime.presentation_reading(action, &target, who) {
                 Ok((presented, read_here)) => {
                     if let Some(presented) = presented {
                         offered.label = presented.label;
@@ -848,16 +845,12 @@ impl HostInner {
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
                 self.store.take_made();
-                let outcome = match request.from {
-                    Some(from) => {
-                        self.runtime
-                            .invoke_action_from(&invoker, (request.action_id, args), from)
-                    }
-                    None => self
-                        .runtime
-                        .invoke_action(&invoker, (request.action_id, args)),
-                }
-                .map_err(|error| error.to_string())?;
+                // The API admitted the call before it asked for its plan, asking the person
+                // first where it had to: the run does not ask them again.
+                let outcome = self
+                    .runtime
+                    .invoke_admitted(&invoker, (request.action_id, args), request.from)
+                    .map_err(|error| error.to_string())?;
                 self.returned_by(request.action_id, &outcome);
                 match outcome {
                     InvokeOutcome::Done(_) => {}
@@ -1169,7 +1162,8 @@ impl Host {
     #[must_use]
     pub fn offered_reading(&self, resource: &str, action: &str) -> Option<(Offered, Reading)> {
         let id = self.published_action(resource, action)?.id;
-        self.inner.offered_reading(resource, &id, &self.inner.viewer)
+        self.inner
+            .offered_reading(resource, &id, &self.inner.viewer)
     }
 
     /// The action the API publishes as `action` on `resource`: one of the package whose

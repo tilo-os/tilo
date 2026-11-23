@@ -1297,8 +1297,12 @@ fn send_refusal(m: Mail) -> Text {
 /// Sends the message from its account. It leaves the system, so it goes once, and waits in the
 /// outbox until the server took it; it is held back for the person's hold first, so they can
 /// take it back. The effect is an argument the action records, so the wait survives a window
-/// closing and an agent takes it back the same way.
-primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
+/// closing and an agent takes it back the same way. Whoever is asked to let it go reads who it
+/// goes to and what it says.
+primary action send(d: Draft) uses time proposal compose(d) (
+    icon: .send,
+    shows: [(d.to, .addresses), (d.cc, .addresses), (d.bcc, .addresses), d.subject, (d.body, .long)],
+) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" or d.bcc != "" "It goes to nobody yet"
     require d.from != "" "Pick the account it goes from"

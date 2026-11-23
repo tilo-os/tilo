@@ -700,7 +700,27 @@ pub struct ActionMeta {
     /// app with this action, which the platform knows by the manifest's `[providers]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub opens: Vec<String>,
+    /// `shows: [d.to, d.subject, d.body]`: what a call of the action shows the person asked to
+    /// allow it, in order. Empty where it declares nothing, and a call shows only its name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shows: Vec<ShownMeta>,
 }
+
+/// One thing a call of an action shows the person asked to allow it: a parameter, or a field of
+/// the record a parameter takes, by name. Its label is the field's, or the parameter's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownMeta {
+    pub param: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// How it is shown, one of [`SHOWN_AS`] other than `text`: `None` is text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render: Option<String>,
+}
+
+/// The ways a `shows:` entry is shown: as text, as a list of addresses, as long text, or as a
+/// secret, which the person never reads.
+pub const SHOWN_AS: [&str; 4] = ["text", "addresses", "long", "secret"];
 
 impl ActionMeta {
     /// Whether it is a `migration action`: never offered, run once by the platform on each resource

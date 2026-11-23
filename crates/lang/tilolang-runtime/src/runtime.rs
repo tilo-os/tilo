@@ -823,6 +823,24 @@ impl Runtime {
             .invoke_direct_as(None, actor, &action.into(), Some(from))
     }
 
+    /// [`Runtime::invoke_action`] of a call the dispatch delivered, made from `from` when it
+    /// names it: the dispatch admitted it for `actor`, asking whoever had to say yes first, so
+    /// the run does not ask them again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_admitted(
+        &self,
+        actor: &Actor,
+        action: impl Into<ActionRef>,
+        from: Option<&crate::value::ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let action = action.into();
+        let from = from.or(action.from.as_ref());
+        self.core.invoke_admitted(actor, &action, from)
+    }
+
     /// The arguments of an invocation of `action` with those left out (`None`) given their
     /// defaults: each computed now, on the current state, over the arguments before it. What an
     /// invocation records, so that replay never computes a default again.
@@ -1400,9 +1418,24 @@ impl Runtime {
                         Value::Bool(m.deafened),
                         Value::Bool(m.camera),
                         Value::Bool(m.screen),
-                        Value::Text(m.bridged.as_ref().map(|b| b.service.clone()).unwrap_or_default()),
-                        Value::Text(m.bridged.as_ref().map(|b| b.name.clone()).unwrap_or_default()),
-                        Value::Text(m.bridged.as_ref().map(|b| b.avatar.clone()).unwrap_or_default()),
+                        Value::Text(
+                            m.bridged
+                                .as_ref()
+                                .map(|b| b.service.clone())
+                                .unwrap_or_default(),
+                        ),
+                        Value::Text(
+                            m.bridged
+                                .as_ref()
+                                .map(|b| b.name.clone())
+                                .unwrap_or_default(),
+                        ),
+                        Value::Text(
+                            m.bridged
+                                .as_ref()
+                                .map(|b| b.avatar.clone())
+                                .unwrap_or_default(),
+                        ),
                     ])
                 })
                 .collect(),

@@ -37,6 +37,11 @@ pub enum Invocation {
         /// A person is asked before it runs: the code that makes it may not make it unasked, so
         /// the dispatch keeps it as its invocation record, asked, until they answer.
         asks: bool,
+        /// What the person asked about it is shown, as labels and the values the action's
+        /// `shows:` names, read where the call is made: the run that makes it reads what it
+        /// wrote before the call, which nothing outside it can read yet. Empty for a call that
+        /// does not ask, and for an action that declares nothing to show.
+        shows: Vec<Shown>,
     },
     /// The field `field` (its name; `field_id` its id) of the resource `target` set to `value`,
     /// at `path` when the field is one of a record inside the resource.
@@ -138,4 +143,14 @@ pub enum Invoked {
 /// Where a runtime sends the changes a program makes.
 pub trait Invoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked;
+}
+
+/// One thing a person asked to allow a call reads about it: what it is, in their language, the
+/// value it holds where the call is made, and how it is shown (`addresses`, `long`, `secret`;
+/// `None` for plain text), as the action's `shows:` declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub label: String,
+    pub value: String,
+    pub render: Option<String>,
 }
