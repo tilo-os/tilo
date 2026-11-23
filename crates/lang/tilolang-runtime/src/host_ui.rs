@@ -175,7 +175,7 @@ impl Core {
     fn state_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let key = self.state_key(a.h(0)?)?;
         let fallback = self.val_whole(a.h(1)?)?;
-        let (value, generation) = {
+        let (held, generation) = {
             let states = self.view_states.borrow();
             // What the person set, else what a scenario staged the declaration at, else what
             // its view declares.
@@ -186,6 +186,8 @@ impl Core {
                 .unwrap_or(fallback);
             (held, states.generation(&key))
         };
+        // What the slot names, as the view reads it: a resource the workspace removed is gone.
+        let value = self.held_while_here(held);
         let seen = value.clone();
         self.with_view(|vs| {
             vs.state_reads.push((key.clone(), generation));
@@ -193,6 +195,39 @@ impl Core {
             Ok(())
         })?;
         self.ret_h(value)
+    }
+
+    /// `value` as the view reads it while the workspace holds what it names: a state holding a
+    /// reference to a resource the workspace removed reads as nothing, so the page a window
+    /// drew of it closes rather than drawing a record that is gone — whoever removed it: an
+    /// action here or at another surface, an agent, or a change another device made. A
+    /// resource that has not reached this device yet is left as it is: it may still come.
+    fn held_while_here(&self, value: Value) -> Value {
+        let Value::Opt(Some(inner)) = &value else {
+            return value;
+        };
+        let Value::Ref(held) = &**inner else {
+            return value;
+        };
+        if self.removed_here(&held.target) {
+            return Value::none();
+        }
+        value
+    }
+
+    /// Whether the workspace removed `target`: the store does not hold it, and its last version
+    /// is its removal. A root's history names every item made in it, so it is read only for a
+    /// resource the store does not hold.
+    fn removed_here(&self, target: &crate::value::ResourceRef) -> bool {
+        let store = self.store.borrow();
+        matches!(
+            store.type_of(target),
+            Err(crate::store::StoreError::NotFound(_))
+        ) && store.versions(target).is_ok_and(|versions| {
+            versions
+                .last()
+                .is_some_and(|last| last.kind == crate::store::VersionKind::Removed)
+        })
     }
 
     /// The view state slot itself, as an argument of an action reference: it is read when the

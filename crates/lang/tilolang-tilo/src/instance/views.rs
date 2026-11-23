@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::{self as ui, Level, ToUi, Words};
-use tilolang_runtime::store::StoreError;
+use tilolang_runtime::store::{StoreError, VersionKind};
 
 use super::rows::{FIRST_ROWS, ListRows};
 use super::wire;
@@ -369,14 +369,86 @@ impl Instance {
         })
     }
 
-    /// Re-run the views whose reads changed, and send the window what changed: their trees'
-    /// patches, and the changes of their virtual lists' rows. Whether anything did.
+    /// Whether the resource `target` was removed from the workspace, rather than never having
+    /// reached this device: the store's last version of it is its removal. A view of another
+    /// app's resource runs over the reading its app published, which stands where the document
+    /// would, so it is there while the reading is.
+    fn removed(host: &Host, target: &ResourceRef) -> bool {
+        if !matches!(host.store().type_of(target), Err(StoreError::NotFound(_)))
+            || host.runtime().reading(target).is_some()
+        {
+            return false;
+        }
+        host.store().versions(target).is_ok_and(|versions| {
+            versions
+                .last()
+                .is_some_and(|last| last.kind == VersionKind::Removed)
+        })
+    }
+
+    /// Close the page of a level whose resource the workspace no longer holds, whoever removed
+    /// it: an action at this window or another surface, an agent, or a change another device
+    /// made. A page shown beside the window's own closes, and the window goes back where it came
+    /// from; a level with nowhere to go back to — the window's own root — says in the platform's
+    /// words that what it showed is gone. Whether a page closed.
+    pub(super) fn poll_gone(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let mut changed = false;
+        // The history the window shows is the system's page about a resource, its removal
+        // included: it says what became of what it shows, so it stays.
+        let detail_gone = self.window_history.is_none()
+            && self
+                .detail_target()
+                .is_some_and(|target| Self::removed(&host, target));
+        if detail_gone {
+            if self.root.is_some() {
+                self.close_detail();
+            } else {
+                // Nothing stands behind the page: the level itself says it is gone.
+                self.show_gone(Level::Detail);
+                self.detail = None;
+                self.facts = None;
+            }
+            changed = true;
+        }
+        if self
+            .root
+            .as_ref()
+            .is_some_and(|root| Self::removed(&host, &root.target))
+        {
+            self.show_gone(Level::Root);
+            self.root = None;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Show the platform's words for what the window showed and the workspace no longer holds,
+    /// where the level's page stood: what it is gone in the system's words, never the app's.
+    fn show_gone(&mut self, level: Level) {
+        let Some(target) = self.level(level).map(|shown| wire::resource(&shown.target)) else {
+            return;
+        };
+        let words = self.platform.phrase("tilolang-gone", &[]);
+        self.out.push(ToUi::Open {
+            level,
+            target,
+            tree: gone_page(&words),
+            front: None,
+        });
+    }
+
+    /// Close the pages whose resource the workspace removed, re-run the views whose reads
+    /// changed, and send the window what changed: their trees' patches, and the changes of their
+    /// virtual lists' rows. Whether anything did.
     pub(super) fn poll_views(&mut self) -> bool {
         let Some(host) = self.host() else {
             return false;
         };
         let names = Rc::clone(&self.names);
-        let mut changed = false;
+        let mut changed = self.poll_gone();
         for level in [Level::Root, Level::Detail] {
             if !self
                 .level(level)
@@ -705,6 +777,30 @@ impl Instance {
             acked,
         });
     }
+}
+
+/// The key prefix of the page a level shows when what it showed is gone.
+const GONE: &str = "gone~";
+
+/// The page a level shows when the workspace no longer holds what it showed: the platform's
+/// words, in the page's own column where the view stood.
+fn gone_page(words: &str) -> ui::Node {
+    let mut state = ui::Node::empty("ui.EmptyState", &format!("{GONE}state"));
+    state
+        .props
+        .insert("title".to_owned(), ui::Value::text(words));
+    let mut content = ui::Node::empty("part", &format!("{GONE}content"));
+    content
+        .props
+        .insert("name".to_owned(), ui::Value::text("content"));
+    content.children.push(state);
+    let mut shell = ui::Node::empty("ui.NavShell", &format!("{GONE}shell"));
+    shell.props.insert(
+        "content_kind".to_owned(),
+        ui::Value::Enum("page".to_owned()),
+    );
+    shell.children.push(content);
+    shell
 }
 
 /// The item a tree of `node` says it selected, when a window draws its page for it beside the

@@ -8,6 +8,9 @@ tilolang-view-failed = Das konnte nicht angezeigt werden
 tilolang-seen-failed = Was dieses Fenster gezeigt hat, konnte nicht als gesehen markiert werden.
 tilolang-back = Alle Apps
 tilolang-detail = Details
+# The page a window showed of a resource the workspace no longer holds, wherever the removal came
+# from: another surface, an agent or another device.
+tilolang-gone = Das wurde entfernt.
 tilolang-ask-action = „{ $action }“ erlauben?
 tilolang-ask-confirm = Erlauben
 tilolang-ask-decline = Ablehnen

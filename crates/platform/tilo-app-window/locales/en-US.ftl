@@ -8,6 +8,9 @@ tilolang-view-failed = This couldn't be shown
 tilolang-seen-failed = What this window showed could not be marked as seen.
 tilolang-back = All apps
 tilolang-detail = Details
+# The page a window showed of a resource the workspace no longer holds, wherever the removal came
+# from: another surface, an agent or another device.
+tilolang-gone = This was removed.
 # The Ask bar's question, naming the action as its package does ("Allow “Search”?").
 tilolang-ask-action = Allow “{ $action }”?
 tilolang-ask-confirm = Allow
