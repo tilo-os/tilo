@@ -23,36 +23,27 @@ pub enum Resolution {
     ShiftedForward { minutes: i64 },
 }
 
-/// The database built into Tilo: read from its engine library in a release
-/// build, so no app carries a copy, and from the linked crate otherwise.
-#[cfg(feature = "runtime-engine")]
-pub use tilo_timezone_engine::{available, canonical, named};
+/// The zone named `name` (`Europe/Vienna`, any letter case) from the database built into Tilo,
+/// so every device reads a named zone the same way whatever its host has installed.
+///
+/// A thin release build of an app that links the database's engine library
+/// (`libtilo_timezone_engine.so`) reads it from there: `jiff-tzdb` is linked from that library,
+/// so no app carries a copy.
+#[must_use]
+pub fn named(name: &str) -> Option<TimeZone> {
+    let (name, data) = jiff_tzdb::get(name)?;
+    TimeZone::tzif(name, data).ok()
+}
 
-#[cfg(not(feature = "runtime-engine"))]
-pub use linked::*;
+/// The database's own spelling of the zone named `name`.
+#[must_use]
+pub fn canonical(name: &str) -> Option<&'static str> {
+    jiff_tzdb::get(name).map(|(name, _)| name)
+}
 
-#[cfg(not(feature = "runtime-engine"))]
-mod linked {
-    use jiff::tz::TimeZone;
-
-    /// The zone named `name` (`Europe/Vienna`, any letter case) from the database built into Tilo,
-    /// so every device reads a named zone the same way whatever its host has installed.
-    #[must_use]
-    pub fn named(name: &str) -> Option<TimeZone> {
-        let (name, data) = jiff_tzdb::get(name)?;
-        TimeZone::tzif(name, data).ok()
-    }
-
-    /// The database's own spelling of the zone named `name`.
-    #[must_use]
-    pub fn canonical(name: &str) -> Option<&'static str> {
-        jiff_tzdb::get(name).map(|(name, _)| name)
-    }
-
-    /// Every zone name in the database.
-    pub fn available() -> impl Iterator<Item = &'static str> {
-        jiff_tzdb::available()
-    }
+/// Every zone name in the database.
+pub fn available() -> impl Iterator<Item = &'static str> {
+    jiff_tzdb::available()
 }
 
 /// Validate a persisted zone spelling. `floating` deliberately has no instant;

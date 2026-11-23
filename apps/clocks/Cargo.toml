@@ -36,8 +36,10 @@ thin = ["dep:runtime-dylib"]
 # instead of the runtime, as Calendar reads it. The release collection enables
 # it (dist/apps/app-collections.toml); a `thin` build without it
 # (`tilo-app dev`) links the database statically, because an engine library
-# links only through tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-timezone-engine/thin", "tilo-recurrence/runtime-engine"]
+# links only through tools/ci/rustc-thin-app-wrapper.sh. tilo-recurrence reads
+# the database through jiff-tzdb, which rustc then links from the engine
+# library, because `extern crate tilo_timezone_engine` (src/main.rs) links it.
+runtime-engine = ["thin", "tilo-timezone-engine/thin"]
 
 [lints]
 workspace = true
