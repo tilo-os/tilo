@@ -353,25 +353,15 @@ d-qynvz25p = Wiedergabeeinstellungen
 
 d-qynvz25p-filter-autoplay = Automatisch weiterspielen
 
-d-qynvz25p-filter-captions = Untertitel
-
 d-qynvz25p-filter-member = Person
-
-d-qynvz25p-filter-speed = Geschwindigkeit
 
 d-5twttwwn = Person
 
 d-vze2yftu = Automatisch weiterspielen
     .doc = Spielt das nächste Video ab, wenn dieses endet.
 
-d-5bpxm33f = Geschwindigkeit
-    .doc = Wie schnell es läuft: 0,25×, 0,5×, 1×, 1,5×, 2× oder 3×.
-
 d-lesyml4z = Bevorzugte Qualität
     .doc = Das höchste Bild, das sie möchte, wie YouTube es nennt (1080p, 720p, 480p), oder auto für das beste, das passt.
-
-d-u3fgpv6e = Untertitel
-    .doc = Untertitel zeigen, wenn das Video welche hat.
 
 d-7mtvj3xd = Gesehen von
     .doc = Wer es gesehen hat. Leer für einen Eintrag aus dem Verlauf des früheren Tube, bevor dieses Programm festhielt, wer was gesehen hat: er bleibt der des Workspace, und wer das Video erneut sieht, macht ihn zu seinem.
@@ -400,19 +390,35 @@ d-4hpmg3yw = Erneut versuchen
 d-lcvxshh4 = Automatisch weiterspielen
     .doc = Jede dieser Aktionen hält eine der Wiedergabeeinstellungen der Person fest: der Eintrag gehört ihr, entsteht beim ersten Setzen, und jede andere Person liest ihre eigenen.
 
-d-3r5wepfg = Wiedergabegeschwindigkeit
-    .doc = Wie schnell Videos für die Person laufen: 0,25 bis 3, 1 für die übliche Geschwindigkeit.
-
 d-lzop6dva = Bevorzugte Qualität
     .doc = Das höchste Bild, das die Person möchte, wie YouTube es nennt; auto nimmt das beste, das passt.
 
-d-fmurpek2 = Untertitel
-    .doc = Ob Videos ihre Untertitel für die Person zeigen.
-
 d-lcvxshh4-on = Ein
-
-d-3r5wepfg-speed = Geschwindigkeit
 
 d-lzop6dva-quality = Qualität
 
-d-fmurpek2-on = Ein
+# The shared playback session this app plays through.
+d-pnt3r5fh = Wiedergabe
+    .doc = Was gerade läuft, und wo es steht: die gemeinsame Wiedergabe, die der Player, die Live-Karte der Shell und jedes Gerät lesen.
+
+d-upzs3qkn = Wiedergaben
+    .doc = Jede Wiedergabe, die diese App angelegt hat, als eigene Ressource; `playing` benennt die eine.
+
+d-thwdswkk-filter-playing = Läuft
+
+d-pkrsaacd = Wiedergabe
+    .doc = Die Wiedergabe, über die diese App abspielt: die vorhandene, oder eine jetzt angelegte.
+
+d-3e5q2ijn = Videos abspielen
+    .doc = Spielt `videos` in der Wiedergabe ab, beginnend bei der Stelle von `at`: was läuft und was folgt, damit ein gemeinsames Weiter, die Live-Karte und ein anderes Gerät durch dieselbe Liste gehen.
+d-3e5q2ijn-videos = Videos
+d-3e5q2ijn-at = Bei
+
+d-kxi5h2rb = Wiedergabequalität
+    .doc = Spielt das Video in `quality` ab, von wo es steht: das Qualitätsmenü des Players, das den Dienst um einen Stream dieses Bildes bittet.
+d-kxi5h2rb-quality = Qualität
+
+d-bxmkupyx = Nächstes automatisch abspielen
+    .doc = Wenn das Video sein Ende erreicht und die Person das nächste verlangt hat, geht die Wiedergabe zum folgenden über: das nächste Video der Warteschlange wird jetzt angesehen, damit seine Stelle im Verlauf bleibt und seine Bytes angefragt werden, wenn der Dienst sie noch nicht geantwortet hat.
+d-bxmkupyx-p = P
+d-bxmkupyx-share = Anteil

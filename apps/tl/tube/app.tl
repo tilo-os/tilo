@@ -633,16 +633,11 @@ action progress(v: Video, at: Float) uses time {
         outside("youtube.stream", (v.key, quality_of(yt, mine)))
     }
     // The address YouTube answered with is what plays: when the person picked another quality,
-    // the service writes a new one and the session's item follows it, so the live card names the
-    // stream the player opened.
+    // the service writes a new one and the session follows it, so the live card names the stream
+    // the player opened.
     if let p = yt.playing {
-        if p.track == v.key {
-            if let item = p.queue.find(i -> i.ref == v.key) {
-                if item.source != v.stream {
-                    item.source = v.stream
-                    p.source = v.stream
-                }
-            }
+        if p.track == v.key and p.source != v.stream {
+            playback.set_source(p, v.stream)
         }
     }
 }

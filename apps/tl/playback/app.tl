@@ -170,6 +170,16 @@ action set_playing(p: Playback, on: Bool) {
     p.state = if on { .playing } else { .paused }
 }
 
+/// Where what plays comes from, as the app that knows it answered again: a video's other
+/// quality, or the address it was asked for once more. The player opens it, and the live card
+/// and another device name the same bytes.
+action set_source(p: Playback, source: Text) {
+    p.source = source
+    if let item = p.queue.find(i -> i.ref == p.track) {
+        item.source = source
+    }
+}
+
 /// What the player reports of its length, once the decoder knows it.
 action set_length(p: Playback, seconds: Float) {
     p.length = seconds.max(0.0)

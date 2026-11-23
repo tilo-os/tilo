@@ -226,16 +226,10 @@ d-qynvz25p = Playback prefs
 d-5twttwwn = Member
 
 d-vze2yftu = Autoplay
-    .doc = Play the next video when this one ends.
-
-d-5bpxm33f = Speed
-    .doc = How fast it plays: 0.25×, 0.5×, 1×, 1.5×, 2× or 3×.
+    .doc = Play the next video the session holds when this one ends.
 
 d-lesyml4z = Quality
     .doc = The tallest picture they want, as YouTube names it (`1080p`, `720p`, `480p`), or `auto` for the best that fits.
-
-d-u3fgpv6e = Captions
-    .doc = Show the video's captions when it has them.
 
 d-vbbcsaos = Sponsorblock
     .doc = Skip the segments SponsorBlock marks, as they play.
@@ -249,10 +243,6 @@ d-eyoonq3d = Dislikes
 d-qynvz25p-filter-member = Member
 
 d-qynvz25p-filter-autoplay = Autoplay
-
-d-qynvz25p-filter-speed = Speed
-
-d-qynvz25p-filter-captions = Captions
 
 d-qynvz25p-filter-sponsorblock = Sponsorblock
 
@@ -321,6 +311,12 @@ d-iphlnbkx = Replies
 d-epgpppzy = Playback
     .doc = Each member's own playback preferences.
 
+d-pnt3r5fh = Playing
+    .doc = What plays, and where it stands: the shared session, which the player, the shell's live card and every device read.
+
+d-upzs3qkn = Sessions
+    .doc = Every session this app made, kept as the resources they are; `playing` names the one.
+
 d-bqesicxq = Search text
     .doc = What the last search asks for, as it was typed.
 
@@ -350,6 +346,8 @@ d-qv7t2mza = Online
 
 d-thwdswkk-filter-history_cleared = History cleared
 
+d-thwdswkk-filter-playing = Playing
+
 d-thwdswkk-filter-online = Online
 
 d-tmam46un = Subscribe
@@ -377,13 +375,35 @@ d-yw4tuoq4 = Watch later
 d-yw4tuoq4-saved = On the watch queue
 
 d-4bg5hmr2 = Play all
-    .doc = Plays the queue from its oldest video: what was put on it first plays first.
+    .doc = Plays the queue from its oldest video: what was put on it first plays first, and the rest follow in that order, so autoplay goes on down the queue.
 
 d-6ux63onw = Play
-    .doc = Plays the video, whether or not it was played before.
+    .doc = Plays the video, whether or not it was played before: the session takes it as its one item, so the player, the live card and the media keys all act on it, and it continues where the person left it.
 
 d-s334bmn6 = Resume
     .doc = Plays the video from where the person left off, when they did not finish it.
+
+d-pkrsaacd = Session
+    .doc = The session this app plays through: the one it has, or one made now.
+
+d-3e5q2ijn = Play items
+    .doc = Plays `videos` in the session, beginning with `at`'s place: what plays and what follows, so a shared next, the live card and another device move through the same list.
+
+d-3e5q2ijn-videos = Videos
+
+d-3e5q2ijn-at = At
+
+d-kxi5h2rb = Playback quality
+    .doc = Plays the video at `quality`, from where it stands: the player's own quality menu, which asks the service for a stream of that picture.
+
+d-kxi5h2rb-quality = Quality
+
+d-bxmkupyx = Autoplay next
+    .doc = When the video reaches its end and the person asked for the next one, the session moves on to what follows it: the queue's next video is watched now, so its place in the history is kept and its bytes are asked for when the service has not answered with them yet.
+
+d-bxmkupyx-p = P
+
+d-bxmkupyx-share = Share
 
 d-jxokfijg = Progress
     .doc = Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet.
@@ -408,7 +428,7 @@ d-edbp7ej2 = Refresh
     .doc = Asks the service for what the playlist holds, in its maker's order.
 
 d-7lfzugkh = Play all
-    .doc = Plays the playlist from its first video.
+    .doc = Plays the playlist from its first video, and the rest in its maker's order.
 
 d-ckcysqaa = Fetch on open
     .doc = Opening a playlist asks the service what it holds, when the client does not know yet: a playlist a search found is known by its name and cover alone, and its videos appear once YouTube says them, so a page is never empty until someone presses Refresh.
@@ -434,20 +454,10 @@ d-lcvxshh4 = Autoplay next video
 
 d-lcvxshh4-on = On
 
-d-3r5wepfg = Playback speed
-    .doc = How fast videos play for the person: 0.25 to 3, 1 for the usual speed.
-
-d-3r5wepfg-speed = Speed
-
 d-lzop6dva = Preferred quality
     .doc = The tallest picture the person wants, as YouTube names it; `auto` takes the best that fits.
 
 d-lzop6dva-quality = Quality
-
-d-fmurpek2 = Captions
-    .doc = Whether videos show their captions for the person.
-
-d-fmurpek2-on = On
 
 d-dinedg2j = Skip sponsor segments
     .doc = Whether the player skips the segments SponsorBlock marks, as they play.
@@ -632,6 +642,11 @@ d-w7mpbzm4 = Video page
     .w-no-comments-yet = No comments yet
     .w-refresh-comments = Refresh comments
     .w-comments = Comments
+    .w-pinned = Pinned
+    .w-reply = Reply
+    .w-delete = Delete
+    .w-send = Send
+    .w-cancel = Cancel
     .w-found-for = Found for { $found_for }
 
 d-eijjevst = Playlist page
