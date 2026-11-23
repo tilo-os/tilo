@@ -737,10 +737,10 @@ mod tests {
         value: bool,
     ) -> Result<(), String> {
         app.call_on(
-            "settings:settings.notifications",
-            "field-edit",
+            &crate::testing::section("settings.notifications"),
+            "set-per-app",
             serde_json::json!({ "edit": {
-                "path": [{ "field": "per_app" }, { "key": app_id }, { "field": field }],
+                "path": [{ "key": app_id }, { "field": field }],
                 "op": "set",
                 "value": value,
             }}),
@@ -852,14 +852,14 @@ mod tests {
         // the section refuses a rule for something that is not an app id.
         let rule = |app_id: &str, value: serde_json::Value| {
             serde_json::json!({ "edit": {
-                "path": [{ "field": "per_app" }, { "key": app_id }],
+                "path": [{ "key": app_id }],
                 "op": "set",
                 "value": value,
             }})
         };
         app.call_on(
-            "settings:settings.notifications",
-            "field-edit",
+            &crate::testing::section("settings.notifications"),
+            "set-per-app",
             rule("so.tilo.calendar", serde_json::json!({ "priority": true })),
         )
         .unwrap();
@@ -868,8 +868,8 @@ mod tests {
         assert_eq!(calendar.banners, None);
         assert!(
             app.call_on(
-                "settings:settings.notifications",
-                "field-edit",
+                &crate::testing::section("settings.notifications"),
+                "set-per-app",
                 rule("not an id", serde_json::json!({ "priority": true })),
             )
             .is_err()
@@ -1015,17 +1015,12 @@ mod tests {
             "stored rule under `foo.` remains listed: {listed:?}"
         );
 
-        // Switching Do Not Disturb still succeeds through both the verb and field-edit.
-        invoke_section(
-            &mut app,
-            NOTIFICATIONS,
-            "set-do-not-disturb",
-            serde_json::json!({ "on": true }),
-        )
-        .expect("set-do-not-disturb must still work with stored `foo.`");
+        // Switching Do Not Disturb on and off again still succeeds through its setter.
+        edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true)
+            .expect("set-do-not-disturb must still work with stored `foo.`");
         assert!(app.settings::<NotificationPrefs>().get().do_not_disturb);
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", false)
-            .expect("field-edit on do_not_disturb must still work with stored `foo.`");
+            .expect("set-do-not-disturb must still work with stored `foo.`");
         assert!(!app.settings::<NotificationPrefs>().get().do_not_disturb);
 
         // Adding a new rule under `a..b` via `mute-app` is refused.
@@ -1047,14 +1042,11 @@ mod tests {
         );
 
         // Removing the stored `foo.` rule succeeds.
-        app.call_on(
-            "settings:settings.notifications",
-            "field-edit",
-            serde_json::json!({ "edit": {
-                "path": [{ "field": "per_app" }],
-                "op": "remove-key",
-                "key": "foo.",
-            }}),
+        invoke_section(
+            &mut app,
+            NOTIFICATIONS,
+            "set-per-app",
+            serde_json::json!({ "edit": { "path": [], "op": "remove-key", "key": "foo." } }),
         )
         .expect("removing stored `foo.` must succeed");
         assert!(

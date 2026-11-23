@@ -57,7 +57,7 @@ tilo-wallpapers = { path = "../../../desktop/tilo-wallpapers", optional = true }
 tilo-accessibility-settings = { path = "../../../desktop/tilo-accessibility-settings", features = ["model"], optional = true }
 tilo-pc-keyboard-geometry = { path = "../../../desktop/pc-keyboard-geometry", optional = true }
 tilo-zone-globe = { path = "../../../sdk/zone-globe", optional = true }
-settings-sections = { path = "../../../system/settings-sections", optional = true }
+settings-sections = { path = "../../../desktop/settings-sections", optional = true }
 # Settings' library: the window, its effects and every pane. The app's
 # binary is one call into this library (apps/settings/src/main.rs), so the
 # app's package stays far below the package size limit; Settings' code ships

@@ -1690,7 +1690,7 @@ fn session_where(
     surfaces: Vec<tilo_session::surfaces::Surface>,
 ) -> Session {
     let mut services: Vec<Box<dyn tilo_session::Service>> = vec![
-        Box::new(tilo_settings_service::SettingsService::new()),
+        Box::new(settings_sections::service::SettingsService::new()),
         Box::new(speaker()),
     ];
     services.extend(extra);
@@ -1740,7 +1740,7 @@ fn press_at_rest(session: &mut Session, name: &str) {
 /// The person's appearance mode, as the session publishes their settings.
 fn appearance_mode(session: &Session) -> serde_json::Value {
     session
-        .read("settings:settings.appearance")
+        .read("settings/appearance")
         .map(|section| section["mode"].clone())
         .unwrap_or_default()
 }
@@ -2554,7 +2554,7 @@ fn device_session_over(width: i32, height: i32, device: Device) -> Session {
     let mut session = Session::headless(
         Options {
             services: vec![
-                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(settings_sections::service::SettingsService::new()),
                 Box::new(speaker()),
                 Box::new(device),
             ],
@@ -2575,7 +2575,7 @@ fn device_session_over(width: i32, height: i32, device: Device) -> Session {
 fn set_appearance(session: &mut Session, dark: bool) {
     session
         .invoke(
-            "settings:settings.appearance",
+            "settings/appearance",
             "set-dark-mode",
             &serde_json::Map::from_iter([("on".to_owned(), serde_json::json!(dark))]),
         )
@@ -2934,7 +2934,7 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
         let mut session = Session::headless(
             Options {
                 services: vec![
-                    Box::new(tilo_settings_service::SettingsService::new()),
+                    Box::new(settings_sections::service::SettingsService::new()),
                     Box::new(speaker()),
                 ],
                 collab: false,
@@ -3119,7 +3119,7 @@ fn the_quick_settings_devices_section_keeps_an_offer_and_tries_again() {
     let mut session = Session::headless(
         Options {
             services: vec![
-                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(settings_sections::service::SettingsService::new()),
                 Box::new(speaker()),
                 Box::new(Device { charging: true }),
                 Box::new(nearby),
@@ -3174,7 +3174,7 @@ fn the_quick_settings_silences_one_app_and_says_where_it_plays() {
     let mut session = Session::headless(
         Options {
             services: vec![
-                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(settings_sections::service::SettingsService::new()),
                 Box::new(speaker_with_streams()),
                 Box::new(Device { charging: true }),
             ],
@@ -3333,7 +3333,7 @@ fn wireless_session() -> Session {
         Options {
             services: vec![
                 Box::new(connectivity),
-                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(settings_sections::service::SettingsService::new()),
                 Box::new(speaker_with_microphone()),
             ],
             ..options()
@@ -3359,6 +3359,8 @@ fn the_quick_settings_switches_change_what_they_publish() {
     let published = |session: &Session, resource: &str| {
         session.read(resource).expect("the resource is published")
     };
+    let section =
+        |kind: &str| settings_sections::address(kind).expect("a section the session keeps");
     press_at(&mut session, "Volume, 40%", WIDTH, TALL);
     until_settled(&mut session, |session| here(session) == "quick-settings");
     until_settled(&mut session, |session| says(session, "Cafe"));
@@ -3386,12 +3388,12 @@ fn the_quick_settings_switches_change_what_they_publish() {
     });
     press_at(&mut session, "Do not disturb", WIDTH, TALL);
     until_settled(&mut session, |session| {
-        published(session, "settings:settings.notifications")["do_not_disturb"]
+        published(session, &section("settings.notifications"))["do_not_disturb"]
             == serde_json::json!(true)
     });
     press_at(&mut session, "Rotation lock", WIDTH, TALL);
     until_settled(&mut session, |session| {
-        published(session, "settings:settings.display")["rotation_lock"] == serde_json::json!(true)
+        published(session, &section("settings.display"))["rotation_lock"] == serde_json::json!(true)
     });
     press_at(&mut session, "VPN", WIDTH, TALL);
     until_settled(&mut session, |session| {

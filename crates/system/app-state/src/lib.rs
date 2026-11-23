@@ -43,7 +43,6 @@ pub use doc_writer::{
     StoredLoad,
 };
 pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, finish_writes, workspace_index_directory};
-pub mod held;
 mod save_plan;
 pub use save_plan::{Save, SavePlan};
 
@@ -270,12 +269,6 @@ impl DocStore {
     /// shared with everything else in this process that keeps a document there.
     pub fn native_store() -> Rc<dyn DurableStore> {
         Rc::new(shared_native_store())
-    }
-
-    /// [`Self::native_store`] as a handle any thread may hold: a service
-    /// that keeps a document of its own beside the app's shares this one.
-    pub fn native_store_shared() -> Arc<dyn DurableStore + Send + Sync> {
-        shared_native_store()
     }
 
     /// Open the store for an explicit app id — for tests and migration

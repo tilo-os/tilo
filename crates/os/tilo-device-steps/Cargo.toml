@@ -35,7 +35,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process", "stdio"] }
 serde.workspace = true
 # The display settings contract the Settings app uses, for --outputs layouts.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
@@ -56,6 +56,8 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The settings a session holds, in memory: what the display step and the compositor share.
+settings-store = { path = "../../desktop/settings", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

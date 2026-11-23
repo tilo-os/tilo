@@ -1,10 +1,11 @@
 //! The person's settings, answered by this session's broker for Settings' own controls.
 //!
 //! Settings' sections are records another provider keeps: its window shows them and binds its
-//! controls to their field edits, and each control's action says `run_by("tilo.settings")`, so
+//! controls to their setters, and each control's action says `run_by("tilo.settings")`, so
 //! the click leaves the window as an invocation at that provider through the workspace's broker
 //! ([`crate::mcp_server`]'s caller). The session keeps the settings itself, in its settings
-//! service, which publishes every section as `settings:<kind>`; this is the provider the broker
+//! service, which publishes every section where the settings keep it (`settings/appearance`,
+//! `devices/<device>/settings/power`); this is the provider the broker
 //! answers those actions under, so a control of Settings' window changes the settings the
 //! session publishes whether or not Settings is open, as a script's change does.
 //!
@@ -35,7 +36,7 @@ pub(crate) struct SettingsSteps {
     /// settings service runs it.
     steps: Arc<dyn SessionSteps>,
     /// The settings the service published on its last pass: what the catalogue lists, and the
-    /// sections' field edits an invocation is decided against.
+    /// sections' setters an invocation is decided against.
     resources: std::sync::RwLock<Vec<ResourceSpec>>,
     /// Where what the services publish stood when the settings were last read
     /// ([`tilo_service::Services::revision`]), so a pass reads them again only once a service
@@ -68,7 +69,7 @@ impl SettingsSteps {
         let resources: Vec<ResourceSpec> = services
             .resources()
             .into_iter()
-            .filter(|resource| tilo_settings_service::keeps(resource.id.as_str()))
+            .filter(|resource| settings_sections::service::keeps(resource.id.as_str()))
             .collect();
         let mut held = self.resources.write_recover();
         let changed = !tilo_actions::api::publishes_same(&held, &resources);
@@ -80,7 +81,7 @@ impl SettingsSteps {
     /// what its services publish, and Settings' sections are offered here instead, under
     /// this provider. One address has one entry.
     pub(crate) fn leave_out(resources: &mut Vec<ResourceSpec>) {
-        resources.retain(|resource| !tilo_settings_service::keeps(resource.id.as_str()));
+        resources.retain(|resource| !settings_sections::service::keeps(resource.id.as_str()));
     }
 
     /// The rows the settings stand in now.
@@ -107,14 +108,26 @@ impl SettingsSteps {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
-        let resources = self.resources.read_recover();
-        let spec: &ActionSpec = tilo_actions::api::resolve(&resources, address)?;
+        let published = self.resources.read_recover();
+        // Another of the person's devices' section, or an app's first preference: what stands
+        // there is admitted as a published action is.
+        let standing;
+        let resources: &[ResourceSpec] =
+            if tilo_actions::api::resolve(&published, address).is_some() {
+                &published
+            } else {
+                standing = [settings_sections::service::unpublished(
+                    &published, address,
+                )?];
+                &standing
+            };
+        let spec: &ActionSpec = tilo_actions::api::resolve(resources, address)?;
         let need = spec.need_for(None, argument);
-        let mut descriptor = tilo_actions::api::survey_placed(&resources)
+        let mut descriptor = tilo_actions::api::survey_placed(resources)
             .into_iter()
             .map(|placed| placed.action)
             .find(|descriptor| &descriptor.address == address)?;
-        drop(resources);
+        drop(published);
         descriptor.contract.kind = need.kind;
         descriptor.contract.field = need.field;
         if need.privileged {

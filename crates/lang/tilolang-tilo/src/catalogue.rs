@@ -126,7 +126,19 @@ pub fn parse_surfaces(text: &str) -> Result<Vec<Surface>, String> {
     // Through a JSON value, as receivers read it (`collab_types::surface::SurfaceFile`).
     let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
     let file: SurfaceFile = serde_json::from_value(value).map_err(|error| error.to_string())?;
-    Ok(file.resources)
+    // A resource written field by field publishes a setter of each field, which its file leaves
+    // to the one rule that derives them.
+    Ok(file
+        .resources
+        .into_iter()
+        .map(|surface| {
+            if surface.setters {
+                surface.with_setters()
+            } else {
+                surface
+            }
+        })
+        .collect())
 }
 
 /// One native app's published surface: its package id, the name people call it, and the bytes
@@ -590,6 +602,12 @@ fn row_kinds(surfaces: &[Surface]) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The type name each resource kind of `surfaces` reads as in [`package_of`] of them.
+#[must_use]
+pub fn kind_names_of(surfaces: &[Surface]) -> BTreeMap<String, String> {
+    kind_names(surfaces, &[])
+}
+
 /// How a package spells the ids of its types.
 #[derive(Clone, Copy)]
 enum Ids {
@@ -902,7 +920,10 @@ impl Reader<'_> {
             Ok(0) => ("value".to_owned(), "value".to_owned()),
             Ok(index) => (format!("value{index}"), format!("value{index}")),
             // A service's camel-cased key (`workspaceName`) is named in snake case too.
-            Err(_) => (snake_case(&field.name.replace('-', "_")), field.name.clone()),
+            Err(_) => (
+                snake_case(&field.name.replace('-', "_")),
+                field.name.clone(),
+            ),
         };
         Some(FieldMeta {
             id: format!("{owner}.{key}"),

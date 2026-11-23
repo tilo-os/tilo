@@ -140,12 +140,12 @@ mod tests {
     }
 }
 
-/// The app's settings channel served from a real settings source, for headless app tests.
+/// The app's settings channel served from a real settings source by the session's own
+/// server, for headless app tests: the device's settings app holds every setter, as the image
+/// grants it.
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
 pub struct TestSettings {
-    source: Arc<dyn settings_store::SettingsSource>,
-    app: String,
-    revision: u64,
+    server: runtime_collab::settings::host::AppSettingsServer,
     channel: Arc<crate::collaboration::channel_settings::ChannelSettings>,
     previous: Option<Arc<crate::collaboration::channel_settings::ChannelSettings>>,
 }
@@ -158,59 +158,39 @@ impl TestSettings {
         channel.linked();
         let previous =
             crate::collaboration::channel_settings::replace_for_test(Some(channel.clone()));
-        let settings = Self {
+        let grants = if app == tilo_app_id::apps::SETTINGS {
+            settings_store::workspace::EVERY_SETTER
+                .iter()
+                .map(|&grant| grant.to_owned())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let server = runtime_collab::settings::host::AppSettingsServer::new(
+            app,
             source,
-            app: app.to_owned(),
-            revision: 1,
+            Arc::new(|| Ok(())),
+        )
+        .with_grants(grants);
+        let (revision, view) = server.view();
+        channel.received(revision, view);
+        Self {
+            server,
             channel,
             previous,
-        };
-        let view = settings.view();
-        settings.channel.received(1, view);
-        settings
-    }
-
-    fn view(&self) -> serde_json::Map<String, serde_json::Value> {
-        let document = self.source.load();
-        let mut view = settings_store::app_scope::app_view(&document, &self.app);
-        settings_store::personal_dictionary::delivery::project(&document, &self.app, &mut view);
-        view
+        }
     }
 
     /// Run queued edits through the session's checks and answer the mounted app with what it holds.
     pub fn flush(&mut self) -> io::Result<()> {
         for (section, values, action) in self.channel.take_outbox() {
-            let result = settings_store::personal_dictionary::delivery::command(
-                self.source.as_ref(),
-                &self.app,
-                &section,
-                &values,
-            )
-            .and_then(|handled| {
-                if handled {
-                    Ok(())
-                } else {
-                    settings_store::app_scope::update_for_app_by(
-                        self.source.as_ref(),
-                        &self.app,
-                        &section,
-                        values,
-                        &settings_store::ChangeOrigin {
-                            action,
-                            actor: None,
-                            invoked_by: None,
-                        },
-                    )
-                }
-            });
-            self.revision = self.revision.saturating_add(1);
-            self.channel.answered(
-                result
-                    .as_ref()
-                    .map(|()| (self.revision, self.view()))
-                    .map_err(ToString::to_string),
-            );
-            result?;
+            let bytes = serde_json::to_vec(&values).map_err(io::Error::other)?;
+            let answer = self
+                .server
+                .update(&section, &bytes, action.as_deref())
+                .map(|_| self.server.view());
+            self.channel.answered(answer.clone());
+            answer.map_err(io::Error::other)?;
         }
         Ok(())
     }

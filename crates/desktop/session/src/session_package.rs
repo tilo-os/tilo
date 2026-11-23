@@ -33,9 +33,18 @@ pub const PATH: &str = "apps/tl/session/surface.toml";
 /// its tab, are left out, so `session.focus(window: w)` and a window's close mean the window's.
 const LEFT_OUT: &[(&str, &str)] = &[
     (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "focus"),
-    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "close-tab"),
-    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "wait-window"),
-    (tilo_session_core::desktop::verbs::SHELL_RESOURCE, "force-quit-app"),
+    (
+        tilo_session_core::desktop::verbs::SHELL_RESOURCE,
+        "close-tab",
+    ),
+    (
+        tilo_session_core::desktop::verbs::SHELL_RESOURCE,
+        "wait-window",
+    ),
+    (
+        tilo_session_core::desktop::verbs::SHELL_RESOURCE,
+        "force-quit-app",
+    ),
 ];
 
 /// The declaration of a resource's action, by its id: where the type of a parameter its wire type
@@ -64,7 +73,9 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
     let words: tilo_session_core::layout::Words = std::rc::Rc::new(crate::i18n::word);
     vec![
         (
-            tilo_session_core::desktop::verbs::chrome_resource(&ui::shortcut_table::ShortcutConfig::default()),
+            tilo_session_core::desktop::verbs::chrome_resource(
+                &ui::shortcut_table::ShortcutConfig::default(),
+            ),
             Some(<ChromeEffect as Effect>::declaration),
         ),
         (
@@ -291,6 +302,7 @@ fn entry(
             types: types.into_types(),
             shows: Vec::new(),
             live: None,
+            setters: false,
         },
     }
 }

@@ -227,6 +227,9 @@ struct Class {
     label: String,
     fields: Vec<Member>,
     actions: Vec<Action>,
+    /// Each field is written by its own setter, `set-<field>`, not by a field edit
+    /// (`Surface::setters`).
+    setters: bool,
 }
 
 struct Member {
@@ -339,6 +342,7 @@ fn types_of(app: &App) -> Result<Types> {
             label: surface.label.clone(),
             fields,
             actions,
+            setters: surface.setters,
         });
     }
     types.name_many_types();
@@ -1076,6 +1080,9 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
     let _ = write!(text, "`{}`.", class.kind);
     doc(out, &text, 1);
     let _ = writeln!(out, "    __surface__ = \"{surface}\"");
+    if class.setters {
+        let _ = writeln!(out, "    __setters__ = True");
+    }
     if class.fields.is_empty() && class.actions.is_empty() {
         out.push('\n');
         return;
@@ -1597,11 +1604,12 @@ fn typescript_class(out: &mut String, class: &Class) {
         out,
         "/** The `{}` kind at `path`. */\n\
          export function {made}(ws: tilo.Workspace, path: string): {} {{\n\
-         \x20 return resourceProxy(ws, path, SURFACE, {}_ACTIONS) as unknown as {};\n\
+         \x20 return resourceProxy(ws, path, SURFACE, {}_ACTIONS{}) as unknown as {};\n\
          }}\n\n",
         class.kind,
         class.name,
         class.name.to_uppercase(),
+        if class.setters { ", true" } else { "" },
         class.name,
     );
 }

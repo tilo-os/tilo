@@ -255,6 +255,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
                         ..Stamp::default()
                     },
                 },
+                Vec::new(),
             )
             .await
             .unwrap();
@@ -332,6 +333,7 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
                     ..Stamp::default()
                 },
             },
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -665,6 +667,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
                     stamp: stamp.clone(),
                 },
             ]),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -741,6 +744,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
                 id: "m-1".into(),
                 stamp,
             },
+            Vec::new(),
         )
         .await
         .unwrap();

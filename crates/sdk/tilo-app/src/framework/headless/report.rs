@@ -207,8 +207,7 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
             || resource.starts_with("tilo.")
             || resource.starts_with("person:")
             || collab_types::workspace_document_of_kind(resource).is_some()
-            || ((resource.starts_with("settings.") || resource.starts_with("settings:"))
-                && !opens_links)
+            || (resource.starts_with("settings.") && !opens_links)
             || resource.contains(['/', '@'])
         {
             continue;

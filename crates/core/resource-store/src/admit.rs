@@ -399,60 +399,82 @@ pub(crate) fn within_verb(
     let Some(stamp) = stamp else {
         return Err("the change names no verb".to_owned());
     };
-    let Some(verb) = schema.verb(&stamp.verb) else {
+    let verbs: Vec<&crate::schema::Verb> = schema.verbs_naming(&stamp.verb).collect();
+    if verbs.is_empty() {
         return Err(format!("no verb `{}` is declared", stamp.verb));
-    };
+    }
     for (id, touch) in &touched.resources {
         let Some(kind) = &touch.kind else {
             continue;
         };
-        let Some(writes) = verb.writes.get(kind) else {
-            // A record's verb writes the kinds its type nests that another surface declares, and
-            // their fields are the ones that surface declares: a tilolang package publishes a
-            // surface per type, so a list's items are another surface's kind.
-            if nested_kind(schema, &verb.nested, kind) {
-                continue;
-            }
-            // A tilolang action's code writes the records of its own package it reaches, as an
-            // answer settles the ask it answers: the package's code bounds what its verb writes
-            // there, and a surface lists no write a reference leads to. Another package's
-            // records stay out of its reach.
-            if let Some(package) = tilolang_package(kind)
-                && verb
-                    .writes
-                    .keys()
-                    .any(|own| tilolang_package(own) == Some(package))
-            {
-                continue;
-            }
-            return Err(format!("`{}` writes no `{kind}`", verb.name));
-        };
-        if writes.sets_only
-            && (touch.made
-                || touch.removed
-                || touch.placed
-                || touch.content
-                || touch.retyped_from.is_some())
-        {
-            return Err(format!("`{}` only sets fields of `{id}`", verb.name));
-        }
-        // A record given another kind leaves its old one: the verb must write that kind too.
-        if let Some(was) = &touch.retyped_from {
-            match verb.writes.get(was) {
-                Some(old) if !old.sets_only => {}
-                Some(_) => return Err(format!("`{}` only sets fields of `{was}`", verb.name)),
-                None if nested_kind(schema, &verb.nested, was) => {}
-                None => return Err(format!("`{}` writes no `{was}`", verb.name)),
-            }
-        }
-        if let Some(field) = touch
-            .fields
+        // One verb of the name that admits the resource's write is enough: a family declared
+        // by prefix writes its own kinds beside a verb of the same name another app declares.
+        if !verbs
             .iter()
-            .filter(|field| !field.starts_with('$'))
-            .find(|field| !writes.fields.contains(*field))
+            .any(|verb| verb_admits(schema, verb, id, kind, touch).is_ok())
         {
-            return Err(format!("`{}` writes no `{kind}.{field}`", verb.name));
+            return verbs
+                .iter()
+                .try_for_each(|verb| verb_admits(schema, verb, id, kind, touch));
         }
+    }
+    Ok(())
+}
+
+/// Whether `verb` admits what `touch` does to the resource `id` of `kind`.
+fn verb_admits(
+    schema: &Schema,
+    verb: &crate::schema::Verb,
+    id: &str,
+    kind: &str,
+    touch: &Touch,
+) -> Result<(), String> {
+    let Some(writes) = verb.writes.get(kind) else {
+        // A record's verb writes the kinds its type nests that another surface declares, and
+        // their fields are the ones that surface declares: a tilolang package publishes a
+        // surface per type, so a list's items are another surface's kind.
+        if nested_kind(schema, &verb.nested, kind) {
+            return Ok(());
+        }
+        // A tilolang action's code writes the records of its own package it reaches, as an
+        // answer settles the ask it answers: the package's code bounds what its verb writes
+        // there, and a surface lists no write a reference leads to. Another package's
+        // records stay out of its reach.
+        if let Some(package) = tilolang_package(kind)
+            && verb
+                .writes
+                .keys()
+                .any(|own| tilolang_package(own) == Some(package))
+        {
+            return Ok(());
+        }
+        return Err(format!("`{}` writes no `{kind}`", verb.name));
+    };
+    if writes.sets_only
+        && (touch.made
+            || touch.removed
+            || touch.placed
+            || touch.content
+            || touch.retyped_from.is_some())
+    {
+        return Err(format!("`{}` only sets fields of `{id}`", verb.name));
+    }
+    // A record given another kind leaves its old one: the verb must write that kind too.
+    if let Some(was) = &touch.retyped_from {
+        match verb.writes.get(was) {
+            Some(old) if !old.sets_only => {}
+            Some(_) => return Err(format!("`{}` only sets fields of `{was}`", verb.name)),
+            None if nested_kind(schema, &verb.nested, was) => {}
+            None => return Err(format!("`{}` writes no `{was}`", verb.name)),
+        }
+    }
+    if let Some(field) = touch
+        .fields
+        .iter()
+        .filter(|field| !field.starts_with('$'))
+        .find(|field| !writes.fields.contains(*field))
+    {
+        return Err(format!("`{}` writes no `{kind}.{field}`", verb.name));
     }
     Ok(())
 }

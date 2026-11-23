@@ -16,7 +16,7 @@ bounded-command = { path = "../../platform/bounded-command" }
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../../system/settings-store", features = ["watch"] }
+settings-store = { path = "../../desktop/settings", features = ["watch"] }
 tilo-accessibility-settings = { path = "../tilo-accessibility-settings" }
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }

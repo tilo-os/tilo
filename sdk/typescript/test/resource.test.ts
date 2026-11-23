@@ -3,7 +3,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { SurfaceChanged, Tilo } from "../src/index.ts";
-import { pdfViewer } from "../src/types/index.ts";
+import { pdfViewer, sections } from "../src/types/index.ts";
 import { FakeApi, PDF, SURFACE, TODO, WORKSPACE_ID } from "./fakeApi.ts";
 
 function open(api: FakeApi): Tilo {
@@ -133,5 +133,39 @@ describe("a generated type", () => {
     await form.action("read-form-fields");
 
     expect(api.last()?.headers["tilo-surface"]).toBeUndefined();
+  });
+});
+
+describe("a settings section", () => {
+  it("sets a person's and a device's setting through its setter, and reads them back", async () => {
+    const api = new FakeApi();
+    api.surface = sections.SURFACE;
+    const person = "settings/appearance";
+    const device = `devices/${"ab".repeat(32)}/settings/power`;
+    api.fields[person] = { mode: "light" };
+    api.fields[device] = { blank_minutes: 5 };
+    const workspace = open(api).workspace("jane-doe");
+
+    const appearance = sections.appearance(workspace, person);
+    const power = sections.power(workspace, device);
+    await appearance.load();
+    await power.load();
+    appearance.mode = "dark";
+    power.blank_minutes = 10;
+    await appearance.flush();
+    await power.flush();
+
+    const setters = api.calls.filter((call) => call.path.includes("/actions/set-"));
+    expect(setters.map((call) => [call.path, JSON.parse(call.body)])).toEqual([
+      [`/v1/workspaces/${WORKSPACE_ID}/resources/${person}/actions/set-mode`, { value: "dark" }],
+      [`/v1/workspaces/${WORKSPACE_ID}/resources/${device}/actions/set-blank-minutes`, { value: 10 }],
+    ]);
+    expect(setters.map((call) => call.headers["tilo-surface"])).toEqual([sections.SURFACE, sections.SURFACE]);
+    const appearanceAgain = sections.appearance(workspace, person);
+    const powerAgain = sections.power(workspace, device);
+    await appearanceAgain.load();
+    await powerAgain.load();
+    expect(appearanceAgain.mode).toBe("dark");
+    expect(powerAgain.blank_minutes).toBe(10);
   });
 });

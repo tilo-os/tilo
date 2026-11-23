@@ -24,7 +24,7 @@ input = { version = "0.9.1", default-features = false, features = ["libinput_1_1
 xkbcommon = { version = "0.8", default-features = false }
 rustix = { workspace = true, features = ["event", "mm", "time", "fs"] }
 # The panel's scale, as the desktop and the greeter derive it.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -116,7 +116,7 @@ def default_builds(packages: list[str]) -> list[str]:
 
 def package_name(spec: str) -> str:
     """A package's name from what names it: its name, or t's package id spec for a run that asks
-    for a few packages (`path+file:///src/crates/system/settings-store#settings-store@0.1.0`)."""
+    for a few packages (`path+file:///src/crates/desktop/settings#settings-store@0.1.0`)."""
     return spec.rpartition("#")[2].partition("@")[0]
 
 

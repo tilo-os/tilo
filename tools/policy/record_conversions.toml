@@ -9,7 +9,7 @@ app = "canvas"
 change = "removed"
 lost = "The Rust Canvas app's artworks, which its own surface held. The tilolang Canvas keeps the same artwork records in the workspace; an artwork the old app saved opens from its .artwork file, and one it never saved is not carried."
 
-# kind = "<the resource kind>"
+# kind = "<the resource kind>"   # or kinds = [...], each changed alike
 # app = "<the app whose surface changed>"
 # change = "moved" | "removed"
 # conversion = "<path>:<fn>"   # a function in this tree that carries the data
@@ -152,3 +152,43 @@ kind = "calendar.calendar"
 app = "calendar"
 change = "removed"
 lost = "The native Calendar's events, calendars, tasks and projects, kept in one workspace resource. The tilolang Calendar keeps the workspace's events in the calendar service's own resource types, which the native app never wrote, and it converts no document: what the native app held stays in its old resource and is not shown by the new one."
+
+[[change]]
+kinds = [
+    "settings.accessibility",
+    "settings.accessibility-device",
+    "settings.agent-providers",
+    "settings.appearance",
+    "settings.appearance-device",
+    "settings.audio",
+    "settings.audio-device",
+    "settings.automatic-display",
+    "settings.clock",
+    "settings.continuity",
+    "settings.default-apps",
+    "settings.desktop-controls",
+    "settings.desktop-controls-device",
+    "settings.device-vpn",
+    "settings.display",
+    "settings.display-change",
+    "settings.display-placement",
+    "settings.hosted-agent-providers",
+    "settings.identity",
+    "settings.input",
+    "settings.input-device",
+    "settings.locale",
+    "settings.network-usage",
+    "settings.night-light",
+    "settings.notifications",
+    "settings.osk-sources",
+    "settings.power",
+    "settings.search_history",
+    "settings.shortcuts",
+    "settings.text-assistance",
+    "settings.updates",
+    "settings.widgets",
+    "shell-views",
+]
+app = "settings"
+change = "removed"
+lost = "What a person set in each settings section, kept in the per-profile settings document. Each section is a resource of the workspace now (`settings/<section>`, `devices/<id>/settings/<section>`), which the session publishes and Settings shows, and nothing reads the old document, so every section starts at its defaults."

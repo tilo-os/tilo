@@ -294,9 +294,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
     // It relays through no one: the link names the addresses of this computer's own
     // network, which her device dials directly, rather than a public relay a test cannot count on.
-    settings_store::relay::RELAY
-        .set(settings_store::relay::Relays::None)
-        .expect("the relay setting is kept");
+    home.env().set(settings_store::relay::ENV, "none");
     let Hosted {
         _kept,
         mut session,
@@ -439,9 +437,8 @@ fn a_native_invitation_scans_from_the_sheet_and_admits_over_iroh() {
     let community = home.config().join("community.toml");
     std::fs::write(&community, "site = ''").expect("no community site");
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
-    settings_store::relay::RELAY
-        .set(settings_store::relay::Relays::None)
-        .expect("use the signed direct routes");
+    // Use the signed direct routes.
+    home.env().set(settings_store::relay::ENV, "none");
     let Hosted {
         _kept,
         mut session,

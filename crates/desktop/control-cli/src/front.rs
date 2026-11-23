@@ -450,8 +450,9 @@ pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut
 /// Turn what was typed after an action's name into its arguments:
 /// `name=value`, `--name=value` and `--name value` name a parameter, each
 /// value the JSON it reads as or else text; a lone value goes to the one
-/// parameter that is required (or the only one). The desktop checks them
-/// against what the action takes.
+/// parameter that is required, or the only one, or the one of a type it can
+/// be (`dark` is no object). The desktop checks them against what the action
+/// takes.
 ///
 /// # Errors
 /// A sentence saying what was wrong and what the action takes.
@@ -498,9 +499,22 @@ fn bind_args(offered: &ActionDescriptor, words: &[String]) -> Result<Map<String,
             .iter()
             .filter(|param| param.required && !args.contains_key(param.name.as_ref()))
             .collect();
+        let value = read_value(&bare.join(" "));
         let lone = match (open.as_slice(), offered.params.as_slice()) {
             ([one], _) => Some(*one),
             ([], [only]) if !args.contains_key(only.name.as_ref()) => Some(only),
+            ([], params) => {
+                let fitting: Vec<_> = params
+                    .iter()
+                    .filter(|param| {
+                        !args.contains_key(param.name.as_ref()) && can_be(param.ty, &value)
+                    })
+                    .collect();
+                match fitting.as_slice() {
+                    [one] => Some(*one),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         let Some(lone) = lone else {
@@ -511,10 +525,24 @@ fn bind_args(offered: &ActionDescriptor, words: &[String]) -> Result<Map<String,
                 takes()
             ));
         };
-        args.insert(lone.name.to_string(), read_value(&bare.join(" ")));
+        args.insert(lone.name.to_string(), value);
     }
     bind_choices(offered, &mut args);
     Ok(args)
+}
+
+/// Whether a value typed alone could be one of type `ty`: a word is never an object, a list,
+/// a number or a yes-or-no unless it reads as one.
+fn can_be(ty: tilo_actions::ParamType, value: &Value) -> bool {
+    use tilo_actions::ParamType;
+    match ty {
+        ParamType::Object => value.is_object(),
+        ParamType::Array => value.is_array(),
+        ParamType::Integer => value.is_i64() || value.is_u64(),
+        ParamType::Number => value.is_number(),
+        ParamType::Boolean => value.is_boolean(),
+        ParamType::Text | ParamType::Resource | ParamType::DateTime | ParamType::Secret => true,
+    }
 }
 
 /// A value as typed: the JSON it reads as (`3`, `true`, `[1]`), else text.

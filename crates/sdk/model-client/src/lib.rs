@@ -100,12 +100,6 @@ pub enum Request {
         #[serde(default)]
         stream: bool,
     },
-    /// Read non-secret provider descriptions with their CAS revision.
-    GetProviderConfig,
-    SetProviderConfig {
-        expected_revision: String,
-        config: agent_provider_config::ProviderConfig,
-    },
     /// A content-free timing mark from the agent (whose own stderr a managed
     /// launch discards), written to the gateway's timing log. Older RPC3
     /// servers reject this additive verb; callers ignore the refusal.

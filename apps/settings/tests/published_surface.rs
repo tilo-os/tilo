@@ -543,7 +543,7 @@ fn a_model_link_opens_agent_models() {
 }
 
 #[test]
-fn every_settings_section_is_edited_by_path() {
+fn every_settings_section_is_set_by_its_setters() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
     app.settle();
     let surface = app.agent_surface();
@@ -551,7 +551,6 @@ fn every_settings_section_is_edited_by_path() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|row| row["action"] == "field-edit")
         .filter_map(|row| row["resource"].as_str().map(str::to_owned))
         .collect();
     for kept in [
@@ -574,15 +573,15 @@ fn every_settings_section_is_edited_by_path() {
         "settings.osk-sources",
     ] {
         assert!(
-            !published.contains(&format!("settings:{kept}")),
+            !published.contains(&settings_sections::address(kept).unwrap()),
             "the session publishes {kept}, not Settings: {published:?}"
         );
     }
 
     app.call_on(
-        "settings:settings.desktop-controls",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "vim_mode" }], "op": "set", "value": true } }),
+        &settings_sections::address("settings.desktop-controls").unwrap(),
+        "set-vim-mode",
+        serde_json::json!({ "value": true }),
     )
     .unwrap();
     assert!(
@@ -591,9 +590,9 @@ fn every_settings_section_is_edited_by_path() {
             .vim_mode
     );
     app.call_on(
-        "settings:settings.appearance",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
+        &settings_sections::address("settings.appearance").unwrap(),
+        "set-high-contrast",
+        serde_json::json!({ "value": true }),
     )
     .unwrap();
     assert!(
@@ -602,9 +601,9 @@ fn every_settings_section_is_edited_by_path() {
             .high_contrast
     );
     app.call_on(
-        "settings:settings.notifications",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "do_not_disturb" }], "op": "set", "value": true } }),
+        &settings_sections::address("settings.notifications").unwrap(),
+        "set-do-not-disturb",
+        serde_json::json!({ "value": true }),
     )
     .unwrap();
     assert!(
@@ -614,9 +613,9 @@ fn every_settings_section_is_edited_by_path() {
     );
     assert!(
         app.call_on(
-            "settings:settings.appearance",
-            "field-edit",
-            serde_json::json!({ "edit": { "path": [{ "field": "ui_scale" }], "op": "set", "value": 9.0 } }),
+            &settings_sections::address("settings.appearance").unwrap(),
+            "set-ui-scale",
+            serde_json::json!({ "value": 9.0 }),
         )
         .is_err(),
         "the section's check refuses a scale out of range"
@@ -650,15 +649,16 @@ fn the_settings_read_answers_the_values_its_actions_keep() {
     // The document the panes edit, as the process the app runs in reads it: a
     // launched app is installed this same source by its host.
     let source = settings_store::scoped_source(Some(settings_store::profile(&root)));
+    let power = settings_sections::address("settings.power").expect("power is a section");
 
     app.call_on(
-        "settings:settings.power",
+        &power,
         "set-suspend-plugged-in",
         serde_json::json!({ "minutes": 30 }),
     )
     .expect("the power section takes the timer");
     app.call_on(
-        "settings:settings.power",
+        &power,
         "set-suspend-on-battery",
         serde_json::json!({ "minutes": 45 }),
     )

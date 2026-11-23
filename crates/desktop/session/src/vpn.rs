@@ -44,15 +44,13 @@ use settings_store::device_vpn::{
     self as settings, ClientState, ClientStatus, DeviceVpnStatus, ExitUser, OfferedExit, Problem,
     ProfileBlockStatus, StopRequest, Through,
 };
-use settings_store::live::LiveSettings;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::watch;
 
 /// How long a request to the helper may take.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
-/// Where the person's device VPN choices are published: the settings section whose actions change
-/// them.
-pub(crate) const SETTINGS_SECTION: &str = "settings:settings.device-vpn";
+/// The kind of the settings section whose actions change the person's device VPN choices.
+pub(crate) const SETTINGS_SECTION: &str = "settings.device-vpn";
 /// How often the person's online devices are asked what they offer.
 const PROBE_EVERY: Duration = Duration::from_secs(300);
 /// How long the relays' names may take to resolve before the route opens without exempting them:
@@ -114,14 +112,12 @@ impl Vpn {
     /// Run for the rest of the session: the profile kill switches from now on, and the routes,
     /// which follow the person's devices as the session passes ([`Routes::follow`]).
     pub(crate) fn start(self) -> Routes {
-        let live = LiveSettings::start(|| {});
         let publisher = Publisher::default();
         // Published once before anything blocks, so Settings can tell that this session runs even
         // while nothing is blocked and nothing routes.
         publisher.set_profile_block(ProfileBlockStatus::default());
         let blocking = publisher.clone();
         profile_block::start_with(
-            &live,
             move |block| blocking.set_profile_block(block),
             Sources {
                 helper: self.helper.clone(),
@@ -130,7 +126,6 @@ impl Vpn {
         );
         Routes {
             helper: self.helper,
-            live,
             publisher,
             inputs: watch::Sender::new(Inputs::default()),
             started: std::cell::Cell::new(false),
@@ -213,8 +208,6 @@ impl ExitDevices for HelperExit {
 pub(crate) struct Routes {
     /// The helper's socket.
     helper: PathBuf,
-    /// The settings the person's choices are read from.
-    live: LiveSettings,
     /// What this session published last, and the file it wrote.
     publisher: Publisher,
     /// What the route's task follows.
@@ -246,10 +239,13 @@ impl Routes {
         let endpoint = sync.endpoint()?;
         let mut follow = self.follow.borrow_mut();
         let was_exit_on = follow.exit_on;
-        let generation = self.live.generation();
+        let generation = settings_store::source().map_or(0, |source| source.revision());
         if follow.settings_generation != Some(generation) {
             follow.settings_generation = Some(generation);
-            let section = self.live.section(settings::SECTION);
+            let section = match settings_store::load().remove(settings::SECTION) {
+                Some(serde_json::Value::Object(section)) => section,
+                _ => serde_json::Map::new(),
+            };
             follow.exit_on = settings::EXIT.from_section(&section);
             follow.through = settings::THROUGH.from_section(&section);
             follow.stop = settings::STOP.from_section(&section);
@@ -684,10 +680,11 @@ impl crate::Shared {
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".into(), hex::encode(stopped).into());
         arguments.insert("on".into(), false.into());
-        let invoked =
-            self.services
-                .borrow_mut()
-                .invoke(SETTINGS_SECTION, "route-through", &arguments);
+        let invoked = self.services.borrow_mut().invoke(
+            &settings_sections::address(SETTINGS_SECTION).unwrap_or_default(),
+            "route-through",
+            &arguments,
+        );
         if let Some(Err(error)) = invoked {
             tracing::warn!(%error, "could not clear the device this one routes through");
         }

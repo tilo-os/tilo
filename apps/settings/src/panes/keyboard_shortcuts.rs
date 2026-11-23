@@ -404,7 +404,8 @@ mod tests {
             recorders.iter().all(|binding| matches!(
                 &binding.kind,
                 ui::widget::ControlBindingKind::Action(address)
-                    if address.resource == "settings:settings.shortcuts" && address.action == REBIND
+                    if address.resource == crate::testing::section("settings.shortcuts")
+                        && address.action == REBIND
             )),
             "{recorders:?}"
         );

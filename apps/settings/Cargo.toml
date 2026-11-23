@@ -58,10 +58,10 @@ tilo-process = { path = "../../crates/platform/tilo-process" }
 tilo-rt = { path = "../../crates/platform/tilo-rt" }
 bounded-command = { path = "../../crates/platform/bounded-command", optional = true }
 # One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
+settings-store = { path = "../../crates/desktop/settings", features = ["model"] }
 settings-model = { path = "../../crates/sdk/settings-model" }
 # The sections Settings edits, which the session keeps as resources too.
-settings-sections = { path = "../../crates/system/settings-sections" }
+settings-sections = { path = "../../crates/desktop/settings-sections" }
 tilo-accessibility-settings = { path = "../../crates/desktop/tilo-accessibility-settings", features = ["model"] }
 desktop-policy = { path = "../../crates/desktop/default-apps" }
 # The storage pane's scan and cache cleaner.

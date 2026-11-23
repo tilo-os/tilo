@@ -64,7 +64,7 @@ class SettingsWriteContractTests(unittest.TestCase):
     def test_tests_and_the_settings_store_crate_are_exempt(self):
         literal = 'fn t() { settings_store::update_section("input", values); }\n'
         files = {
-            "crates/system/settings-store/src/lib.rs": literal,
+            "crates/desktop/settings/src/lib.rs": literal,
             "crates/x/tests/it.rs": literal,
             "crates/x/src/thing_tests.rs": literal,
             "crates/x/src/inline.rs": (

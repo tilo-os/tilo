@@ -200,7 +200,7 @@ pub struct LaunchableApplication {
     /// launches it and its published action admits the invocation.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
     /// The host capabilities its signed manifest declares (`[capabilities]`) that the host
-    /// decides grants on (`settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`).
+    /// decides grants on (`settings_store::workspace::SET_EVERY_SETTING`).
     pub capabilities: Vec<String>,
     /// What its signed package publishes, in the form it is kept by
     /// (`collab_types::surface::canonical`), when the host can read it: the types an

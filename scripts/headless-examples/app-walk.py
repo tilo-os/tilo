@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import fnmatch
 import functools
 import grp
 import json
@@ -3193,8 +3194,16 @@ def moved() -> dict:
     """Where each capability that left its place lives now: `{"<app> <kind>#<op>":
     {"to": "<app> <kind>#<op>" | "<what does it now>", "test": "<walk/step or test>"}}`,
     written by the change that moves or deletes it (core.md, "The rule for every
-    piece")."""
+    piece"). A key with `*` names every capability it matches, moved alike."""
     return json.loads(MOVED.read_text()) if MOVED.is_file() else {}
+
+
+def moved_place(elsewhere: dict, key: str) -> dict | None:
+    """Where the capability `key` lives now, by its own entry or one whose pattern it matches."""
+    if key in elsewhere:
+        return elsewhere[key]
+    return next((place for pattern, place in elsewhere.items()
+                 if "*" in pattern and fnmatch.fnmatchcase(key, pattern)), None)
 
 
 def compare(now: dict, before: dict) -> dict:
@@ -3244,7 +3253,7 @@ def compare(now: dict, before: dict) -> dict:
             if "catalogue" in was:
                 have = set(step.get("catalogue") or {})
                 for key in sorted(set(was["catalogue"]) - have):
-                    place = elsewhere.get(key)
+                    place = moved_place(elsewhere, key)
                     if place is None or (place.get("to") in was["catalogue"] and place["to"] not in have):
                         regressions.append({**where, "why": f"capability gone: {key} "
                                             f"({was['catalogue'][key].get('label')}), and "

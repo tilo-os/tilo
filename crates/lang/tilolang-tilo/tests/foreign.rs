@@ -624,7 +624,7 @@ view switcher(m: settings.AgentModels) {
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
         let package = host.load_compiled(&compiled).unwrap();
         let reading = tilolang_runtime::ResourceRef::parse_id(
-            "settings:settings.agent-models",
+            "settings/agent-models",
             "so.tilo.settings#AgentModels",
         )
         .unwrap();

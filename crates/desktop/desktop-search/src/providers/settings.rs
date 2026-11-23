@@ -11,9 +11,9 @@
 //! told which setting it is: an action Settings publishes, at the address it
 //! publishes it on, with the app launched first when it is closed.
 //!
-//! What a setting is set to is not this source's: a switch or a value the
-//! settings service publishes is an action of its own, found and flipped
-//! through [`crate::providers::Published`], and left out here
+//! What a setting is set to is not this source's: a setting its section's
+//! own verb changes where it stands (its field's setter) is that action,
+//! found through [`crate::providers::Published`], and left out here
 //! ([`Settings::changing_in_place`]).
 
 use settings_store::index;
@@ -133,9 +133,8 @@ impl Settings {
     }
 
     /// Settings' pages in `workspace`, leaving out the settings `published` changes in place: the
-    /// ones the settings service publishes as actions of their own (a switch, a choice's values, a
-    /// value), which search finds as those actions. A row opening Settings at them would only stand
-    /// beside the switch itself.
+    /// ones whose section's verb (their field's setter) is published, which search finds as that
+    /// action. A row opening Settings at them would only stand beside the setter itself.
     ///
     /// Every desktop that runs a session offers this one source, so a page finds the pages its own
     /// Settings shows ([`settings_store::index::Page::here`]) exactly as a computer does.
@@ -146,16 +145,21 @@ impl Settings {
     ) -> Self {
         let in_place: Vec<&str> = published
             .iter()
-            .filter_map(|action| index::setting_of_resource(action.address.resource.as_str()))
+            .filter_map(|action| {
+                index::changed_by(
+                    action.address.resource.as_str(),
+                    action.address.action.as_str(),
+                )
+            })
+            .map(|setting| setting.id)
             .collect();
         Self::changing_in_place(workspace, &|id| in_place.contains(&id))
     }
 
     /// [`Self::new`], leaving out the settings `in_place` names by id: those
-    /// the settings service publishes as actions that change them in place
-    /// (a switch, a choice's values, a value), which search finds as those
-    /// actions. A row opening Settings at them would only stand beside the
-    /// switch itself.
+    /// a published setter changes in place, which search finds as that
+    /// action. A row opening Settings at them would only stand beside the
+    /// setter itself.
     #[must_use]
     pub fn changing_in_place(
         workspace: impl Into<String>,
@@ -436,17 +440,17 @@ mod tests {
         }
 
         phase a_setting_changed_where_it_stands_is_left_to_its_action;
-        // A setting the settings service publishes as an action of its own is found as that action,
-        // which is the change itself: a row opening Settings at it would only stand beside it.
+        // A setting whose section's verb is published is found as that action, which is the
+        // change itself: a row opening Settings at it would only stand beside it.
         {
             let switch = tilo_actions::ResourceSpec::new(
-                "setting:keyboard.layout",
-                "settings.setting",
-                "Keyboard layout",
+                "settings/input",
+                "settings.input",
+                "Input",
             )
             .with_action(tilo_actions::ActionSpec::immediate_encoded(
-                "set",
-                "Set the keyboard layout",
+                "choose-layout",
+                "Keyboard layout",
                 tilo_actions::ExecutionLocus::ClientLocal,
                 tilo_actions::EncodedAction {
                     type_id: "test.setting".into(),

@@ -662,19 +662,40 @@ async fn kept(workspaces: &crate::workspaces::Workspaces, call: ShellCall) -> Sh
 }
 
 /// `command` run on `app`'s resources in `workspace` as the device's person, answered as the
-/// store's reply.
+/// store's reply. A step the session stamped as serving an invocation (an agent's, set through
+/// a setter) is that invoker's.
 async fn resources(
     workspaces: &crate::workspaces::Workspaces,
     workspace: &str,
     app: &str,
     command: &str,
 ) -> Result<String, String> {
-    let command = serde_json::from_str(command)
+    let command: tilo_resource_store::wire::Command = serde_json::from_str(command)
         .map_err(|error| format!("the resource command does not read: {error}"))?;
+    let serving = invokers(&command);
     let reply = workspaces
-        .own_resource_command(workspace, app, command)
+        .own_resource_command(workspace, app, command, serving)
         .await?;
     serde_json::to_string(&reply).map_err(|error| error.to_string())
+}
+
+/// The invocations `command`'s steps were stamped as serving, with who invoked each.
+fn invokers(
+    command: &tilo_resource_store::wire::Command,
+) -> Vec<(tilo_actions::InvocationId, tilo_actions::Actor)> {
+    use tilo_resource_store::wire::Command;
+    let stamp = match command {
+        Command::Put { stamp, .. }
+        | Command::Remove { stamp, .. }
+        | Command::Undo { stamp, .. }
+        | Command::Edit { stamp, .. } => stamp,
+        Command::Batch(commands) => return commands.iter().flat_map(invokers).collect(),
+        _ => return Vec::new(),
+    };
+    match (uuid::Uuid::parse_str(&stamp.invocation), stamp.invoked_by()) {
+        (Ok(invocation), Some(actor)) => vec![(tilo_actions::InvocationId(invocation), actor)],
+        _ => Vec::new(),
+    }
 }
 
 /// `call` asked of its workspace's vault and accounts.

@@ -35,8 +35,11 @@ pub fn mute_shown(english: &str) -> String {
 /// environment lock and restores the prior value on drop, also while
 /// unwinding from a failed assertion. `HOME` and the cache directory stay put
 /// so the text stack keeps its font cache instead of rebuilding it per test.
+/// The settings this thread reads and writes are a document in that directory,
+/// as a launched app's are the ones its host keeps.
 pub mod test_env {
     pub struct ConfigGuard {
+        _source: settings_store::SourceScope,
         _env: tilo_test_env::ScopedEnv,
         _dir: tempfile::TempDir,
     }
@@ -54,7 +57,11 @@ pub mod test_env {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", dir.path().join("config"))
                 .set("XDG_DATA_HOME", dir.path().join("data"));
+            let source = settings_store::scoped_source(Some(settings_store::profile(
+                &dir.path().join("settings"),
+            ) as _));
             Self {
+                _source: source,
                 _env: env,
                 _dir: dir,
             }

@@ -127,7 +127,7 @@ tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps
 # An app's records are founded and written through a confined worker of this executable.
 tilo-agent-session = { path = "../agent-session" }
 # The person's saved chords, which a shortcut's keyboard trigger may not take.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 # The groups a device's key service settles, and what their members seal is checked against.
 tilo-workspace-keys = { path = "../workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.

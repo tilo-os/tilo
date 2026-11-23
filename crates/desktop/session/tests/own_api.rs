@@ -36,6 +36,15 @@ struct Desktop {
 /// The headless session that holds its workspaces here and serves its person's API at `api`:
 /// what a program of this login reaches as the person.
 fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
+    session_serving(root, api, seeded_apps())
+}
+
+/// [`session_with_api`] running `services`.
+fn session_serving(
+    root: &std::path::Path,
+    api: &std::path::Path,
+    services: Vec<Box<dyn tilo_service::Service>>,
+) -> Desktop {
     // A device of the person's own, as a person's computer is: the API's key is this device's
     // certificate, and its workspaces are held here.
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
@@ -49,8 +58,7 @@ fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
         person: PERSON.to_owned(),
         state: Some(state),
         collab: false,
-        // The seeded apps, `tasks` among them: what a program reads.
-        services: seeded_apps(),
+        services,
         app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
         api_server: Some(api.to_owned()),
         ..Options::default()
@@ -69,6 +77,105 @@ fn served(session: &mut tilo_session::Session, api: &std::path::Path) {
     });
 }
 
+/// The workspace the desktop holds, by its id: the list a program of the person's reads first.
+fn held_workspace(session: &mut tilo_session::Session, api: &std::path::Path) -> String {
+    let mut listed = serde_json::Value::Null;
+    until(session, "the desktop's workspace list", |_| {
+        listed = api_account(api, "account/workspaces", "list", &json!({}))
+            .unwrap_or(serde_json::Value::Null);
+        listed
+            .get("workspaces")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|workspaces| !workspaces.is_empty())
+    });
+    listed["workspaces"][0]["id"]
+        .as_str()
+        .expect("the desktop lists the workspace it entered")
+        .to_owned()
+}
+
+/// A setter of a settings section, called through the API as a generated SDK calls it, is typed
+/// by the sections' own surface whichever app shows the section: the person's and the device's
+/// sections are both set, as the session reads them. A value of the wrong type is refused, and so are types
+/// written for another surface of the sections.
+#[test]
+fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
+    let _settled = ui::motion::testing::settled();
+    let root = crate::common::private_home();
+    let socket = root.path().join("api.sock");
+    let desktop = session_serving(
+        root.path(),
+        &socket,
+        vec![Box::new(settings_sections::service::SettingsService::new())],
+    );
+    let mut session = desktop.session;
+    served(&mut session, &socket);
+    let api = crate::common::Api::open(&mut session, root.path());
+    // What `tilo sdk gen` writes the sections' types for: their committed surface, in the form
+    // it is kept by.
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(include_bytes!(
+        "../../../desktop/settings-sections/published.toml"
+    ))
+    .expect("the sections' committed surface parses");
+    let surface =
+        tilo_api::v1::surface_version(tilo_actions::remote::settings_resources::SURFACE_APP, &kept);
+    let appearance = tilo_app::framework::section_address("appearance", None);
+    let power = tilo_app::framework::section_address("power", None);
+    assert!(
+        power.starts_with("devices/"),
+        "power is a section of this device: {power}"
+    );
+    let set = |session: &mut tilo_session::Session,
+               address: &str,
+               setter: &str,
+               value: serde_json::Value,
+               surface: String| {
+        api.send_typed(
+            &format!("resources/{address}/actions/{setter}"),
+            Some(json!({"value": value})),
+            Some(surface),
+        )
+        .answer(session)
+    };
+    for (address, setter, value) in [
+        (&appearance, "set-mode", json!("light")),
+        (&power, "set-blank-minutes", json!(10)),
+    ] {
+        let answer = set(&mut session, address, setter, value, surface.clone());
+        assert!(
+            answer.is_ok(),
+            "{address}#{setter} is set through its types: {answer:?}"
+        );
+    }
+    for (address, field, wanted) in [
+        (&appearance, "mode", json!("light")),
+        (&power, "blank_minutes", json!(10)),
+    ] {
+        let read = crate::common::wait_for(&mut session, "the setting to change", |session| {
+            session.settle_services();
+            let read = session.read(address)?.get(field).cloned()?;
+            (read == wanted).then_some(read)
+        });
+        assert_eq!(read, wanted, "{address}.{field} is what the API set");
+    }
+
+    let refused = set(&mut session, &appearance, "set-mode", json!(5), surface);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|why| why.ends_with("(invalid_arguments)")),
+        "a number is no light-or-dark mode: {refused:?}"
+    );
+    let other = "so.tilo.settings.sections@0000000000000000".to_owned();
+    let refused = set(&mut session, &power, "set-blank-minutes", json!(15), other);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|why| why.ends_with("(surface_changed)")),
+        "types written for another surface of the sections are refused: {refused:?}"
+    );
+}
+
 /// A request at the socket lists the person's workspaces, and a program it sends to one of them
 /// answers as the person: `describe(tasks)` reaches the workspace's tasks.
 #[test]
@@ -81,35 +188,14 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
     served(&mut session, &api);
 
     // The list a program of the person's reads: workspace this device entered.
-    let mut listed = serde_json::Value::Null;
-    until(&mut session, "the desktop's workspace list", |_| {
-        listed = api_account(&api, "account/workspaces", "list", &json!({}))
-            .unwrap_or(serde_json::Value::Null);
-        listed
-            .get("workspaces")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|workspaces| !workspaces.is_empty())
-    });
-
-    let answer = {
-        let workspace = listed
-            .get("workspaces")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|workspaces| workspaces.first())
-            .expect("the desktop lists the workspace it entered");
-        let workspace = workspace
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .expect("a workspace id")
-            .to_owned();
-        api_request(
-            &api,
-            "POST",
-            &format!("/v1/workspaces/{workspace}/programs"),
-            Some(&json!({"program": "1 + 1"})),
-        )
-        .expect("the program answered")
-    };
+    let workspace = held_workspace(&mut session, &api);
+    let answer = api_request(
+        &api,
+        "POST",
+        &format!("/v1/workspaces/{workspace}/programs"),
+        Some(&json!({"program": "1 + 1"})),
+    )
+    .expect("the program answered");
     let text = answer
         .get("text")
         .and_then(serde_json::Value::as_str)

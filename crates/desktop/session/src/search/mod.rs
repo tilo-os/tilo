@@ -406,16 +406,18 @@ fn names(apps: Option<Arc<dyn Apps>>) -> impl Fn(&str) -> String + Send + Sync +
 }
 
 /// The resource of the section keeping search's history.
-pub(crate) const HISTORY: &str = "settings:settings.search_history";
+pub(crate) fn history() -> String {
+    tilo_app::framework::section_address(settings_store::search_history::SECTION, None)
+}
 
-/// The field edit setting the history's field `field` to `value` .
-fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-    let mut edit = serde_json::Map::new();
-    edit.insert(
-        "edit".into(),
-        serde_json::json!({ "path": [{ "field": field }], "op": "set", "value": value }),
-    );
-    edit
+/// One field of the history, set whole: its setter, and the setter's arguments.
+pub type HistorySet = (String, serde_json::Map<String, serde_json::Value>);
+
+/// The setter of the history's field `field`, setting it to `value`.
+fn set_field(field: &str, value: &serde_json::Value) -> HistorySet {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(tilo_app::framework::SETTER_VALUE.to_owned(), value.clone());
+    (ui::setting_verb(field), arguments)
 }
 
 impl SessionSearch {
@@ -1134,7 +1136,7 @@ impl SessionSearch {
         }
     }
 
-    /// Take up the history as the search history section ([`HISTORY`]) keeps it.
+    /// Take up the history as the search history section ([`history`]) keeps it.
     pub fn restore(&self, kept: &serde_json::Value) {
         let text = |field: &str| kept.get(field).and_then(serde_json::Value::as_str);
         if let (Some(chosen), Some(for_text)) = (text("chosen"), text("chosen_for_text"))
@@ -1157,9 +1159,9 @@ impl SessionSearch {
         }
     }
 
-    /// The field edits that keep what changed of the history since it was last kept, for the search
-    /// history section's `field-edit` .
-    pub fn take_unkept(&self) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    /// The setters that keep what changed of the history since it was last kept, each of a field
+    /// of the search history section.
+    pub fn take_unkept(&self) -> Vec<HistorySet> {
         let (chosen, places) = self.unkept.replace((false, false));
         let mut edits = Vec::new();
         if chosen && let Some(usage) = self.usage.borrow().as_ref() {

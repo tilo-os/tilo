@@ -13,6 +13,10 @@ pub const APP_PERSONAL_SECTION: &str = "app_personal";
 
 pub const APP_DEVICE_LOCAL_SECTION: &str = "app_device_local";
 
+/// The largest value of the person's, as JSON text, that their devices carry. An app's entry in
+/// [`APP_PERSONAL_SECTION`] is one value, so its whole object must fit.
+pub const MAX_PERSONAL_VALUE_BYTES: usize = 64 * 1024;
+
 /// Where an app's typed settings live and how far they travel. Settings follow a person
 /// or a device, never a workspace's members; they are never visible to members.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

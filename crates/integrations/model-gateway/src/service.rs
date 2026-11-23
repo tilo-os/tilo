@@ -123,8 +123,6 @@ struct Handoff {
 
 pub fn main() {
     let cli = Cli::parse();
-    // The service follows the settings its session holds.
-    crate::follow_session_settings();
     let result = match cli.action {
         Action::Serve { socket } => serve(&socket),
     };
@@ -275,10 +273,6 @@ async fn negotiate_cancellation(
     Ok(Some(selected))
 }
 
-fn management_mutation(request: &Request) -> bool {
-    matches!(request, Request::SetProviderConfig { .. })
-}
-
 #[cfg(test)]
 async fn serve_connection(stream: tokio::net::UnixStream, http: &reqwest::Client) {
     serve_connection_within(stream, http, HANDOFF_TIMEOUT).await;
@@ -346,10 +340,6 @@ async fn serve_connection_within(
             }
             continue;
         }
-        // Durable management work cannot be rolled back by dropping its future.
-        // Finish it before acknowledging Stop; an abandoned response is not a
-        // promise that the write was cancelled.
-        let committing = management_mutation(&request);
         // The provider future emits without awaiting, so a whole burst of
         // frames (an answer the provider sent in one read) is queued before
         // the writer runs again. The queue holds every frame one request may
@@ -376,7 +366,7 @@ async fn serve_connection_within(
                     incoming = received.recv() => {
                         let Some(incoming) = incoming else { return };
                         match incoming {
-                            Request::Cancel { id: cancel } if enabled && id == Some(cancel) && !committing => {
+                            Request::Cancel { id: cancel } if enabled && id == Some(cancel) => {
                                 break succeeded(Some(format!("cancelled:{cancel}")), None);
                             }
                             other => {
@@ -516,11 +506,6 @@ pub(super) async fn handle_streaming(
                 .map_or_else(Response::failure, output);
         }
         Request::Complete { .. } | Request::CompleteDefault { .. } => return permission_denied(),
-        Request::GetProviderConfig | Request::SetProviderConfig { .. }
-            if !crate::caller::provider_admin_app(app_id) =>
-        {
-            return permission_denied();
-        }
         Request::Trace {
             trace,
             event,
@@ -592,9 +577,6 @@ async fn settings_request(http: &reqwest::Client, request: Request) -> Result<Re
                     .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
             })
             .map_or_else(Response::failure, output)),
-        request @ (Request::GetProviderConfig | Request::SetProviderConfig { .. }) => {
-            Ok(administration::configuration_request(request).await)
-        }
         _ => Err("caller is not authorized for this gateway operation".into()),
     }
 }
@@ -720,10 +702,6 @@ where
 }
 
 use agent_provider_config::protocol::{ErrorKind, ModelError};
-#[path = "administration.rs"]
-mod administration;
-#[cfg(test)]
-use administration::provider_snapshot;
 
 fn permission_denied() -> Response {
     Response::failure(ModelError::new(ErrorKind::PermissionDenied))

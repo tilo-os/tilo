@@ -18,13 +18,13 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::Screenshot;
-use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 
 /// The person's appearance section, as the settings service publishes it.
-const APPEARANCE: &str = "settings:settings.appearance";
+const APPEARANCE: &str = "settings/appearance";
 /// Who the person is to others, with the colour they wear, as the settings service publishes it.
-const IDENTITY: &str = "settings:settings.identity";
+const IDENTITY: &str = "settings/identity";
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
@@ -32,7 +32,7 @@ const REFRESH: Duration = Duration::from_millis(16);
 /// beside them, and the machine's app lists, so the launcher opens the apps it holds.
 fn session() -> Session {
     let mut services = crate::common::seeded_apps();
-    services.push(Box::new(tilo_settings_service::SettingsService::new()));
+    services.push(Box::new(settings_sections::service::SettingsService::new()));
     crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
         state: Some(crate::common::device_state()),
@@ -88,22 +88,20 @@ fn rect(session: &Session, tab: u64) -> ui::kurbo::Rect {
         .unwrap_or_else(|| panic!("the window {tab} is drawn"))
 }
 
-/// Set the field `field` of the appearance section through its own published `field-edit`, as
+/// Set the field `field` of the appearance section through its own published setter, as
 /// Settings' Appearance page and an agent both do.
 fn set_field(session: &mut Session, field: &str, value: &Value) {
     set_field_of(session, APPEARANCE, field, value);
 }
 
-/// Set the field `field` of the settings section `section` through its own `field-edit`.
+/// Set the field `field` of the settings section `section` through its own setter.
 fn set_field_of(session: &mut Session, section: &str, field: &str, value: &Value) {
-    let arguments: Map<String, Value> = json!({
-        "edit": {"path": [{"field": field}], "op": "set", "value": value}
-    })
-    .as_object()
-    .expect("an object")
-    .clone();
+    let arguments: Map<String, Value> = json!({ "value": value })
+        .as_object()
+        .expect("an object")
+        .clone();
     session
-        .invoke(section, "field-edit", &arguments)
+        .invoke(section, &settings_store::workspace::verb(field), &arguments)
         .unwrap_or_else(|error| panic!("set {field}: {error:?}"));
 }
 

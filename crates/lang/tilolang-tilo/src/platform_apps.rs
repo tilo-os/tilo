@@ -1,7 +1,7 @@
 //! The platform's apps a tilolang view reads but this runtime does not run: the device (its
 //! sound, network, Bluetooth, modem, VPN, tethering, battery, power and displays), Settings
-//! (the person's appearance
-//! and notification settings), Contacts (the workspace's contact directory), the image model
+//! (every section of the person's settings and the device's, each set field by field through
+//! its setters), Contacts (the workspace's contact directory), the image model
 //! (the device's vision actions and the library analysis run), Files, and a workspace's own
 //! actions (its members, roles, invitations and permissions).
 //!
@@ -138,97 +138,6 @@ const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
 ];
-const SETTINGS_ROOTS: &[(&str, &str, &str)] = &[
-    ("appearance", "Appearance", "settings:settings.appearance"),
-    (
-        "notifications",
-        "Notifications",
-        "settings:settings.notifications",
-    ),
-    // The displays' settings: whether the screen stays put when the device turns.
-    ("display", "Display", "settings:settings.display"),
-    // The agent model choice the canvas shows and switches: a reading of
-    // both provider sections, its `use-model` answered by the settings
-    // service (`agent-models-surface.json`).
-    (
-        "agent_models",
-        "AgentModels",
-        "settings:settings.agent-models",
-    ),
-    // The shortcuts table as a reading beside its section: every desktop shortcut's id and
-    // chord, and every action chord (`shortcuts-surface.json`).
-    (
-        "shortcuts_table",
-        "ShortcutsTable",
-        "settings:settings.shortcuts-table",
-    ),
-    // The providers the person set up and the keys this device keeps for them:
-    // a reading of the provider sections and this device's vault, and the
-    // actions that add, change, remove and key a provider
-    // (`agent-providers-surface.json`).
-    (
-        "agent_providers",
-        "AgentProviderSetup",
-        "settings:settings.agent-provider-setup",
-    ),
-    // Every other section the person's settings keep: each published as its record, with the
-    // fields a view shows and the verbs that change it as its own actions.
-    (
-        "accessibility",
-        "Accessibility",
-        "settings:settings.accessibility",
-    ),
-    (
-        "accessibility_device",
-        "AccessibilityDevice",
-        "settings:settings.accessibility-device",
-    ),
-    ("input", "Input", "settings:settings.input"),
-    (
-        "input_device",
-        "InputDevice",
-        "settings:settings.input-device",
-    ),
-    (
-        "text_assistance",
-        "TextAssistance",
-        "settings:settings.text-assistance",
-    ),
-    ("locale", "Locale", "settings:settings.locale"),
-    ("shortcuts", "Shortcuts", "settings:settings.shortcuts"),
-    ("continuity", "Continuity", "settings:settings.continuity"),
-    ("updates", "Updates", "settings:settings.updates"),
-    ("clock", "Clock", "settings:settings.clock"),
-    (
-        "default_apps",
-        "DefaultApps",
-        "settings:settings.default-apps",
-    ),
-    ("identity", "Identity", "settings:settings.identity"),
-    ("night_light", "NightLight", "settings:settings.night-light"),
-    ("audio", "Audio", "settings:settings.audio"),
-    (
-        "network_usage",
-        "NetworkUsage",
-        "settings:settings.network-usage",
-    ),
-    ("device_vpn", "DeviceVpn", "settings:settings.device-vpn"),
-    (
-        "audio_device",
-        "AudioDevice",
-        "settings:settings.audio-device",
-    ),
-    (
-        "desktop_controls",
-        "DesktopControls",
-        "settings:settings.desktop-controls",
-    ),
-    (
-        "desktop_controls_device",
-        "DesktopControlsDevice",
-        "settings:settings.desktop-controls-device",
-    ),
-];
 /// The contacts directory of the workspace, which Contacts keeps and Mail,
 /// Calendar, Messages and a tilolang view read: one record every member sees,
 /// its actions the ones Contacts publishes (`project-contact`,
@@ -239,6 +148,46 @@ const CONTACTS_ROOTS: &[(&str, &str, &str)] = &[(
     "Identities",
     "contacts:tilo.contacts.identities",
 )];
+
+/// What the settings provider publishes, as a view reads it: each section's resource with its
+/// fields and the verbs it declares, the service's readings (the agent model choice, the
+/// providers, the shortcuts table), and where each is published (written by the sections' own
+/// test, beside them).
+const SECTIONS_SURFACE: &str = include_str!("../../../desktop/settings-sections/published.toml");
+
+/// What stands for the device's key in the address of one of the device's settings
+/// (`devices/{device}/settings/power`): a view names the device's settings wherever it runs, and
+/// the host reads and sets them on the device it runs on ([`on_device`]).
+pub const DEVICE_KEY: &str = "{device}";
+
+/// The resource `published` (as a view names it, [`platform_roots`]) on the device `device` (its
+/// key in lowercase hex): where the session publishes it there.
+#[must_use]
+pub fn on_device(published: &str, device: &str) -> String {
+    published.replace(DEVICE_KEY, device)
+}
+
+/// Each of Settings' resources a view names, read from the sections' surface: its name in a
+/// view (`settings.power`), its kind, and where the session publishes it, a device section's
+/// address with [`DEVICE_KEY`] where the device's key goes.
+fn settings_roots() -> Result<Vec<(String, String, String)>, String> {
+    #[derive(Deserialize)]
+    struct Root {
+        name: String,
+        kind: String,
+        published: String,
+    }
+    #[derive(Deserialize)]
+    struct File {
+        roots: Vec<Root>,
+    }
+    let file: File = toml::from_str(SECTIONS_SURFACE).map_err(|error| error.to_string())?;
+    Ok(file
+        .roots
+        .into_iter()
+        .map(|root| (root.name, root.kind, root.published))
+        .collect())
+}
 
 /// One app the platform publishes to programs: what people call it, the resource kinds of its
 /// surface a program reads (all of them when empty), the roots a program names of it
@@ -278,12 +227,11 @@ const PUBLISHED: &[Published] = &[
         app: SETTINGS_APP,
         title: "Settings",
         kinds: &[],
-        roots: SETTINGS_ROOTS,
+        // Its roots are the sections' ([`settings_roots`]).
+        roots: &[],
         files: &[
             include_str!("../../../../apps/settings/surface.toml"),
-            include_str!("../../../session/settings-service/agent-models-surface.json"),
-            include_str!("../../../session/settings-service/shortcuts-surface.json"),
-            include_str!("../../../session/settings-service/agent-providers-surface.json"),
+            SECTIONS_SURFACE,
         ],
         described: false,
         listed: &[],
@@ -379,18 +327,26 @@ pub fn device_surfaces() -> Result<Vec<tilo_actions::surface::Surface>, String> 
     surfaces_of(include_str!("../../../desktop/session/device-surface.json"))
 }
 
-/// The platform's resources a view reads, each as the session publishes it (`power:battery`)
-/// and as the view's type names it (`so.tilo.device#Battery`): what the host reads for them.
+/// The platform's resources a view reads, each as a view names it (`power:battery`,
+/// `devices/{device}/settings/power`: the host reads one of the device's settings on its own
+/// device, [`on_device`]) and as the view's type names it (`so.tilo.device#Battery`): what the
+/// host reads for them.
+///
+/// # Panics
+/// A committed surface this build reads does not read: a fault of the build itself.
 #[must_use]
-pub fn platform_roots() -> Vec<(&'static str, String)> {
-    PUBLISHED
-        .iter()
-        .flat_map(|published| {
-            published.roots.iter().map(move |(_, ty, published_as)| {
-                (*published_as, format!("{}#{ty}", published.app))
-            })
+pub fn platform_roots() -> Vec<(String, String)> {
+    static ROOTS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(|| {
+            platform_packages()
+                .expect("the platform's committed surfaces read")
+                .into_iter()
+                .flat_map(|meta| meta.named_roots)
+                .filter_map(|root| Some((root.published?, root.ty)))
+                .collect()
         })
-        .collect()
+        .clone()
 }
 
 /// The types whose records a view lists with a query (`query(invocations.Invocation)`), each as
@@ -487,7 +443,35 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
             published: Some((*published_as).to_owned()),
         });
     }
+    if published.app == SETTINGS_APP {
+        name_settings(&mut meta, &surfaces)?;
+    }
     Ok(meta)
+}
+
+/// Settings' roots, one per section and reading ([`settings_roots`]), each the type its kind
+/// reads as. Every field of a section is set by `set-<field>`, so a setting's verb can share its
+/// id with one of another package's (Appearance's `set-mode` and the displays' `set-mode`): its
+/// actions are named by their app, as a native app's are in a catalogue, so both packages load
+/// side by side. The settings take the verb back ([`crate::catalogue::published_verb`]).
+fn name_settings(meta: &mut PackageMeta, surfaces: &[Surface]) -> Result<(), String> {
+    let types = crate::catalogue::kind_names_of(surfaces);
+    for (name, kind, published) in settings_roots()? {
+        let ty = types
+            .get(&kind)
+            .and_then(|ty| meta.types.iter().find(|declared| declared.name == *ty))
+            .map(|declared| declared.id.clone())
+            .ok_or_else(|| format!("{} publishes no `{kind}` with fields", meta.app))?;
+        meta.named_roots.push(NamedRootMeta {
+            name,
+            ty,
+            published: Some(published),
+        });
+    }
+    for action in &mut meta.actions {
+        action.id = crate::catalogue::action_id(&meta.app, &action.id);
+    }
+    Ok(())
 }
 
 /// The resources a surface file publishes, however it was written: a service's JSON, or an

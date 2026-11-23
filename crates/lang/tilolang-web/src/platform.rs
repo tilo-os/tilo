@@ -96,7 +96,7 @@ impl Platform for Packages {
             {
                 continue;
             }
-            match tilolang_tilo::runtime::ResourceRef::parse_id(published, ty) {
+            match tilolang_tilo::runtime::ResourceRef::parse_id(&published, &ty) {
                 Some(target) => {
                     if let Err(error) = host.runtime().set_reading(&target, "{}") {
                         eprintln!("tilolang: `{published}` reads nothing: {error}");

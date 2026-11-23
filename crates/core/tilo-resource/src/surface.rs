@@ -10,6 +10,8 @@ pub use tilo_actions::surface::{
     TypeSet, VerbSurface,
 };
 
+pub mod file;
+
 use crate::resource::Resource;
 use crate::shape::Shape;
 use crate::vocabulary::{Declaration, vocabulary};
@@ -125,6 +127,7 @@ fn fields_of(shape: Shape, prefix: &str, types: &mut TypeSet, out: &mut Vec<Fiel
             readonly: field.readonly,
             unit: field.unit,
             label: field.label,
+            whole: false,
             ops: None,
         });
         fields_of(field.shape, &format!("{path}."), types, out);
@@ -164,6 +167,7 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         types: types.into_types(),
         shows: Vec::new(),
         live: None,
+        setters: false,
     }
 }
 
@@ -210,6 +214,7 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
                     readonly: true,
                     unit: false,
                     label: false,
+                    whole: false,
                     ops: None,
                 })
                 .collect()
@@ -226,6 +231,7 @@ pub fn reading_surface<R: crate::JsonSchema, E: crate::Effect>(kind: &str, label
         types: declared,
         shows: Vec::new(),
         live: None,
+        setters: false,
     }
 }
 
@@ -251,6 +257,7 @@ pub fn row_surface<R: crate::words::RowType, E: crate::Effect>() -> Surface {
         types: types.into_types(),
         shows: Vec::new(),
         live: None,
+        setters: false,
     }
 }
 

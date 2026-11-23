@@ -575,11 +575,13 @@ impl Shell {
         // A resource no service of this device serves (no Bluetooth, no battery) is published
         // empty: the device has none of it, so a view reads its fields as absent (off, empty) and
         // shows the device without it.
+        // One of the device's settings is read on this device.
+        let device = tilo_app::framework::settings_device();
         for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
             let reading = services
-                .read(resource)
+                .read(&tilolang_tilo::platform_apps::on_device(&resource, &device))
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-            self.link.publish_reading(resource, &ty, reading);
+            self.link.publish_reading(&resource, &ty, reading);
         }
         self.publish_listings(services);
     }
@@ -721,10 +723,13 @@ impl Shell {
         if !fresh.is_empty() {
             self.rounds = self.rounds.saturating_add(1);
         }
+        let device = tilo_app::framework::settings_device();
         for (id, ty) in fresh {
             let reads = self.reads.entry(id.clone()).or_default();
             *reads = reads.saturating_add(1);
-            if let Some(reading) = services.read(&id) {
+            if let Some(reading) =
+                services.read(&tilolang_tilo::platform_apps::on_device(&id, &device))
+            {
                 self.link.publish_reading(&id, &ty, reading);
             }
         }

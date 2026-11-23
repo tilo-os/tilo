@@ -28,7 +28,6 @@ server = [
     "dep:tilo-clock",
     "dep:accounts",
     "dep:account-credentials",
-    "dep:settings-store",
     "dep:reqwest",
     "dep:hyper",
     "dep:hyper-util",
@@ -70,7 +69,6 @@ tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 accounts = { path = "../accounts", optional = true }
 # Ownership refreshes the Google grant sealed by Settings; no API key is stored.
 account-credentials = { path = "../account-credentials", optional = true }
-settings-store = { path = "../../system/settings-store", optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
 hyper = { optional = true, version = "1", features = ["server", "http1"] }
 hyper-util = { optional = true, version = "0.1", features = ["tokio"] }
@@ -96,7 +94,7 @@ image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] 
 
 [dev-dependencies]
 # Tests keep their provider settings in memory.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 tempfile.workspace = true
 test-http = { path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }

@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use runtime_collab::SettingsView;
 use runtime_collab::settings::host::{AppSettingsServer, Revalidate};
 use serde_json::{Map, Value, json};
-use settings_store::{SettingsSource, Store};
+use settings_store::{HostDocument, SettingsSource};
+
+type Store = HostDocument;
 
 const APP: &str = "so.tilo.monitor";
 
@@ -12,8 +14,55 @@ fn object(value: Value) -> Map<String, Value> {
     serde_json::from_value(value).unwrap()
 }
 
-fn session(dir: &std::path::Path) -> Arc<Store> {
-    Store::open(dir).unwrap()
+fn session(_dir: &std::path::Path) -> Arc<Store> {
+    Arc::new(HostDocument::new(Map::new(), |_| Ok(())))
+}
+
+/// The setters the image grants the device's settings app.
+fn every_setter() -> Vec<String> {
+    settings_store::workspace::EVERY_SETTER
+        .iter()
+        .map(|&grant| grant.to_owned())
+        .collect()
+}
+
+/// A settings source that keeps, beside the document, the action each write names.
+struct Recording {
+    document: HostDocument,
+    actions: std::sync::Mutex<Vec<(String, Option<String>)>>,
+}
+
+impl SettingsSource for Recording {
+    fn load(&self) -> Map<String, Value> {
+        self.document.load()
+    }
+
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        self.update_section_by(name, values, &settings_store::ChangeOrigin::default())
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &settings_store::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        for key in values.keys() {
+            self.actions
+                .lock()
+                .unwrap()
+                .push((format!("{name}.{key}"), origin.action.clone()));
+        }
+        self.document.update_section_by(name, values, origin)
+    }
+
+    fn revision(&self) -> u64 {
+        self.document.revision()
+    }
+
+    fn changes(&self) -> &settings_store::ChangeSignal {
+        self.document.changes()
+    }
 }
 
 fn admitted() -> Revalidate {
@@ -297,24 +346,22 @@ tilo_test_env::scenario! {
 
     phase the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings;
     {
-        use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
         let dir = tempfile::tempdir().unwrap();
         let records = session(dir.path());
-        let reach = Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]);
-        assert_eq!(reach, Reach::System);
-        let channel = |app: &str, reach: Reach| -> AppSettingsHandle {
+        let channel = |app: &str, grants: Vec<String>| -> AppSettingsHandle {
             AppSettingsServer::new(
                 app,
                 Arc::clone(&records) as Arc<dyn SettingsSource>,
                 admitted(),
             )
-            .with_reach(reach)
+            .with_grants(grants)
             .into()
         };
-        let settings = channel("so.tilo.settings", reach);
-        let notes = channel(
-            "so.tilo.notes",
-            Reach::of("so.tilo.notes", &[SYSTEM_SETTINGS_CAPABILITY]),
+        let settings = channel("so.tilo.settings", every_setter());
+        let notes = channel("so.tilo.notes", Vec::new());
+        let appearance_only = channel(
+            "so.tilo.writer",
+            vec!["settings/appearance#set-high-*".to_owned()],
         );
         run(async {
             let written = settings
@@ -340,9 +387,24 @@ tilo_test_env::scenario! {
                     .is_err(),
                 "an app without the grant writes only its own entries"
             );
+            appearance_only
+                .update("appearance", br#"{"high_contrast": false}"#, None)
+                .await
+                .unwrap();
+            assert!(
+                appearance_only
+                    .update("appearance", br#"{"high_contrast": true, "text_scale": 2.0}"#, None)
+                    .await
+                    .is_err(),
+                "a grant covers the setters it names and no other"
+            );
+            assert!(
+                view(&notes.read(0).await.unwrap().document_json).get("input").is_none(),
+                "an app reads only the sections its grants name"
+            );
         });
         let document = records.load();
-        assert_eq!(document["appearance"]["high_contrast"], true);
+        assert_eq!(document["appearance"]["high_contrast"], false);
         assert_eq!(document["appearance"]["text_scale"], 1.3);
         assert_eq!(document["input"]["keyboard_layout"], "de");
     }
@@ -352,15 +414,16 @@ tilo_test_env::scenario! {
     // its channel, so "who changed this" stays answered; a write no action made
     // is kept without one. Who invoked it is not the app's to claim.
     {
-        use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
-        let dir = tempfile::tempdir().unwrap();
-        let records = session(dir.path());
+        let records = Arc::new(Recording {
+            document: HostDocument::new(Map::new(), |_| Ok(())),
+            actions: std::sync::Mutex::default(),
+        });
         let settings: AppSettingsHandle = AppSettingsServer::new(
             "so.tilo.settings",
             Arc::clone(&records) as Arc<dyn SettingsSource>,
             admitted(),
         )
-        .with_reach(Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]))
+        .with_grants(every_setter())
         .into();
         run(async {
             settings
@@ -376,19 +439,75 @@ tilo_test_env::scenario! {
                 .await
                 .unwrap();
         });
-        let log = records.change_log();
-        let entry = |leaf: &str| {
-            log.iter()
-                .rev()
-                .find(|entry| entry["section"] == "appearance" && entry["leaf"] == leaf)
-                .cloned()
-                .unwrap_or_else(|| panic!("the history has appearance.{leaf}: {log:?}"))
+        assert_eq!(
+            *records.actions.lock().unwrap(),
+            [
+                (
+                    "appearance.high_contrast".to_owned(),
+                    Some("appearance/high_contrast".to_owned())
+                ),
+                ("appearance.text_scale".to_owned(), None),
+            ]
+        );
+        assert_eq!(records.load()["appearance"]["high_contrast"], true);
+    }
+
+    phase model_providers_sets_the_providers_only_as_their_rules_allow;
+    // Model Providers sets the model providers through their setters, held to the rules the
+    // providers keep: within bounds, and the provisioner's signed models left as they are. It
+    // sets nothing else.
+    {
+        use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, SETTINGS_SECTION};
+        let records = session(std::path::Path::new(""));
+        let providers: AppSettingsHandle = AppSettingsServer::new(
+            tilo_app_id::apps::MODEL_PROVIDERS,
+            Arc::clone(&records) as Arc<dyn SettingsSource>,
+            admitted(),
+        )
+        .with_grants(
+            agent_provider_config::management::SETTERS
+                .iter()
+                .map(|&grant| grant.to_owned())
+                .collect(),
+        )
+        .with_check(Arc::new(agent_provider_config::management::check_write))
+        .into();
+        let written = |config: &ProviderConfig| {
+            let scratch = HostDocument::new(Map::new(), |_| Ok(()));
+            config.save_in(&scratch).unwrap();
+            serde_json::to_vec(&scratch.load()[SETTINGS_SECTION]).unwrap()
         };
-        let contrast = entry("high_contrast");
-        assert_eq!(contrast["after"], true);
-        assert_eq!(contrast["action"], "appearance/high_contrast");
-        assert!(contrast["actor"].is_null(), "{contrast}");
-        assert!(entry("text_scale")["action"].is_null());
+        let mut profile = ProviderProfile::local_vllm();
+        profile.id = "on-this-device".into();
+        profile.models.push(ModelDescriptor::new("first"));
+        let config = ProviderConfig {
+            profiles: vec![profile],
+            ..ProviderConfig::default()
+        };
+        let mut forged = config.clone();
+        forged.profiles[0].models[0].revision = Some("a".repeat(40));
+        run(async {
+            providers
+                .update(SETTINGS_SECTION, &written(&config), None)
+                .await
+                .unwrap();
+            let refused = providers
+                .update(SETTINGS_SECTION, &written(&forged), None)
+                .await
+                .unwrap_err();
+            assert!(refused.contains("model providers"), "{refused}");
+            assert!(
+                providers
+                    .update("appearance", br#"{"mode": "dark"}"#, None)
+                    .await
+                    .is_err(),
+                "the person's look is not Model Providers' to set"
+            );
+        });
+        let kept = ProviderConfig::load_in(records.as_ref());
+        assert_eq!(kept.profiles[0].id, "on-this-device");
+        assert_eq!(kept.profiles[0].models[0].revision, None, "no signed model was minted");
+        assert!(records.load().get("appearance").is_none());
     }
 }
 
@@ -485,10 +604,9 @@ tilo_test_env::scenario! {
     }
 
     phase the_settings_app_cannot_write_the_dictionary_as_a_section;
-    // The settings app reaches the whole document, but the dictionary is edited
+    // The settings app holds every setter, but the dictionary is edited
     // through its own command and never as a section write.
     {
-        use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
         let dir = tempfile::tempdir().unwrap();
         let records = session(dir.path());
         let settings: AppSettingsHandle = AppSettingsServer::new(
@@ -496,7 +614,7 @@ tilo_test_env::scenario! {
             Arc::clone(&records) as Arc<dyn SettingsSource>,
             admitted(),
         )
-        .with_reach(Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]))
+        .with_grants(every_setter())
         .into();
         run(async {
             assert!(

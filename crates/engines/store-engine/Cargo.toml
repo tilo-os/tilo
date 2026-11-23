@@ -16,7 +16,7 @@ tilo-app-package = { path = "../../core/tilo-app-package" }
 tilo-content = { path = "../../core/content" }
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true

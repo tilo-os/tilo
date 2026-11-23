@@ -21,7 +21,7 @@ tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # What an installed package's signed manifest offers, as the launcher lists it.
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 # The device's keymap, as a host describes its shortcuts from.
-settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+settings-store = { version = "0.1.0", path = "../../desktop/settings" }
 # The collaboration vocabulary a service answers in — its wire messages, presence and
 # control types — without the native client transport.
 runtime-collab = { version = "0.1.0", path = "../runtime-collab", default-features = false }

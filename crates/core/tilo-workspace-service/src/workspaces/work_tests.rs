@@ -638,6 +638,7 @@ async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
                         inputs: serde_json::Value::Null,
                         answer,
                     },
+                    Vec::new(),
                 )
                 .await
                 .expect("the service answers a turn");
@@ -652,11 +653,8 @@ async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
     // The editor's device opened the app first and took the migration of the first notebook.
     let first = format!("{app}/notebook-1#migrate");
     claim_as(workspaces, &workspace, &editor, &lease(&first)).await;
-    assert_eq!(
-        ask(first.clone(), None).await,
-        Answer::Later,
-        "another runs it"
-    );
+    let waits = ask(first.clone(), None).await;
+    assert_eq!(waits, Answer::Later, "another runs it");
     done_as(workspaces, &workspace, &editor, &lease(&first)).await;
     assert_eq!(
         ask(first.clone(), None).await,
@@ -703,6 +701,7 @@ async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
                 inputs: serde_json::Value::Null,
                 answer: None,
             },
+            Vec::new(),
         )
         .await;
     assert!(refused.is_err(), "{refused:?}");

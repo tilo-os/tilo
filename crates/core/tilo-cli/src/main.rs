@@ -47,7 +47,6 @@ mod os;
 mod person;
 mod sdk;
 mod server;
-mod settings;
 mod status;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -447,12 +446,6 @@ enum Cmd {
     /// How to reach Repair Mode, and what it can do.
     #[command(hide = true)]
     Repair,
-    /// Read or change the settings, for scripts.
-    #[command(hide = true)]
-    Settings {
-        #[command(subcommand)]
-        cmd: settings::SettingsCmd,
-    },
     /// Shell completions, for packaging.
     #[command(hide = true)]
     Completions {
@@ -1398,7 +1391,6 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
             mcp::person::serve(cli.key_file.as_deref(), cli.workspace.as_deref())
         }
         Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
-        Cmd::Settings { cmd } => settings::run(cmd).map(|()| ExitCode::SUCCESS),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
             app_open(args.get(1..).unwrap_or_default(), &spelling)

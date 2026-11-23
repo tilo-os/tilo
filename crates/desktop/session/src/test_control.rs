@@ -330,6 +330,8 @@ enum Op {
     /// Whether the shell shows `text` now, as assistive technology reads it: a label, a
     /// description or a value of any of its parts on screen.
     Says,
+    /// The person's and the device's settings as this session reads them.
+    Settings,
     SearchRows,
     Snapshot,
     StateDump,
@@ -343,7 +345,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 27] = [
+    const ALL: [Self; 28] = [
         Self::ClickAt,
         Self::ClickNamed,
         Self::Drag,
@@ -362,6 +364,7 @@ impl Op {
         Self::ProvisionTestIdentity,
         Self::Scroll,
         Self::Says,
+        Self::Settings,
         Self::SearchRows,
         Self::Snapshot,
         Self::StateDump,
@@ -392,6 +395,7 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
+            "settings" => Self::Settings,
             "scroll" => Self::Scroll,
             "says" => Self::Says,
             "search_rows" => Self::SearchRows,
@@ -426,6 +430,7 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
+            Self::Settings => "settings",
             Self::Scroll => "scroll",
             Self::Says => "says",
             Self::SearchRows => "search_rows",
@@ -451,6 +456,7 @@ impl Op {
                 | Self::ProfileStart
                 | Self::ProfileStatus
                 | Self::ProfileStop
+                | Self::Settings
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
@@ -1145,6 +1151,7 @@ fn asked_of_shell(
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
+        Op::Settings => json!({"answer": settings_store::load()}),
         Op::KeepingDevices => session
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),

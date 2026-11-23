@@ -1099,27 +1099,6 @@ pub fn undo(
     take_back(doc, targets, compensate, words)
 }
 
-/// [`undo`] of the steps `owns` claims, for a document whose changes name
-/// their makers in their own words rather than in an entry (a settings
-/// document's). Takes back nothing, and says so with an empty list, when
-/// `owns` claims no step in effect.
-///
-/// # Errors
-/// As [`undo`], but for there being nothing to undo.
-pub fn undo_where(
-    doc: &mut AutoCommit,
-    owns: &dyn Fn(&Version) -> bool,
-    limit: usize,
-    compensate: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
-    words: &dyn HistoryWords,
-) -> Result<Vec<Version>, String> {
-    let targets = owned_undo_targets(doc, owns, limit);
-    if targets.is_empty() {
-        return Ok(targets);
-    }
-    take_back(doc, targets, compensate, words)
-}
-
 /// Take back every step of `scope`'s in effect made after the version
 /// `heads`, as one new change: back to a checkpoint or a change from
 /// history without counting steps. Returns the steps, newest first.
@@ -1248,27 +1227,6 @@ pub fn redo(
             "{} nothing to redo: redo brings back an undo only while no newer step of the same author follows it.",
             scope.subject(*scope == Scope::invoking(doc))
         ));
-    }
-    bring_back(doc, targets, restore, words)
-}
-
-/// [`redo`] of the undos `owns` claims (see [`undo_where`]). Brings back
-/// nothing, and says so with an empty list, when `owns` claims no undo in
-/// effect.
-///
-/// # Errors
-/// As [`redo`], but for there being nothing to redo.
-pub fn redo_where(
-    doc: &mut AutoCommit,
-    owns: &dyn Fn(&Version) -> bool,
-    limit: usize,
-    restore: impl FnMut(&mut AutoCommit, &Version) -> Result<Option<Inverse>, String>,
-    words: &dyn HistoryWords,
-) -> Result<Vec<Version>, String> {
-    doc.get_heads();
-    let targets = undos_in_effect(doc, owns, limit);
-    if targets.is_empty() {
-        return Ok(targets);
     }
     bring_back(doc, targets, restore, words)
 }

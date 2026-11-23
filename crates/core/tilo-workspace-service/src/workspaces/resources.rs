@@ -1518,7 +1518,9 @@ impl Workspaces {
 
 impl Workspaces {
     /// [`Self::resource_command`] as this device's own person, for an app the device starts
-    /// itself rather than through the broker: the caller is the device the service signs as.
+    /// itself rather than through the broker: the caller is the device the service signs as. A
+    /// write serving one of the invocations `serving` names is its invoker's, an agent acting for
+    /// the person included.
     ///
     /// # Errors
     /// As [`Self::resource_command`], or this service serves no device.
@@ -1528,6 +1530,7 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         command: tilo_resource_store::wire::Command,
+        serving: Vec<(tilo_actions::InvocationId, tilo_actions::Actor)>,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         let device = self.member_identity()?;
         let caller = tilo_actions::remote::Caller::authenticated(
@@ -1536,7 +1539,8 @@ impl Workspaces {
         )
         .in_workspace(workspace);
         let context =
-            crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller);
+            crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller)
+                .serving(serving);
         self.resource_command(&context, command).await
     }
 }

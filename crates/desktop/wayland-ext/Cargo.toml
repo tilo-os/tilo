@@ -12,7 +12,7 @@ license.workspace = true
 neighbour-wire = { path = "../../core/neighbour-wire" }
 # A monitor's identity, read from its EDID, is the key a saved display
 # layout follows between ports.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 # The colour a display reports is the colour pipeline's to describe; this
 # crate only parses the bytes that carry it.
 tilo-color-pipeline = { path = "../color-pipeline" }

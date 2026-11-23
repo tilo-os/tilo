@@ -62,6 +62,13 @@ pub fn shown_values(app: &mut TestApp<crate::SettingsShell>, caption: &str) -> V
         .collect()
 }
 
+/// Where the section of kind `kind` is published: the resource its setters and verbs are
+/// invoked on.
+pub fn section(kind: &str) -> String {
+    settings_sections::address(kind)
+        .unwrap_or_else(|| panic!("{kind} is a section the session keeps"))
+}
+
 pub fn edit_field(
     app: &mut TestApp<crate::SettingsShell>,
     kind: &str,
@@ -77,7 +84,7 @@ pub fn invoke_section(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<(), String> {
-    app.call_on(&format!("settings:{kind}"), action, arguments)
+    app.call_on(&section(kind), action, arguments)
         .map(drop)
         .map_err(|error| format!("{error:?}"))
 }
@@ -88,19 +95,21 @@ pub fn edit_path(
     path: &[&str],
     value: impl serde::Serialize,
 ) -> Result<(), String> {
-    let path: Vec<serde_json::Value> = path
-        .iter()
-        .map(|field| serde_json::json!({ "field": field }))
-        .collect();
-    app.call_on(
-        &format!("settings:{kind}"),
-        "field-edit",
-        serde_json::json!({
-            "edit": { "path": path, "op": "set", "value": value }
-        }),
-    )
-    .map(drop)
-    .map_err(|error| format!("{error:?}"))
+    let Some((field, below)) = path.split_first() else {
+        return Err("a path names the field it sets".to_owned());
+    };
+    let arguments = if below.is_empty() {
+        serde_json::json!({ "value": value })
+    } else {
+        let below: Vec<serde_json::Value> = below
+            .iter()
+            .map(|field| serde_json::json!({ "field": field }))
+            .collect();
+        serde_json::json!({ "edit": { "path": below, "op": "set", "value": value } })
+    };
+    app.call_on(&section(kind), &ui::setting_verb(field), arguments)
+        .map(drop)
+        .map_err(|error| format!("{error:?}"))
 }
 
 pub fn switch_named(app: &mut TestApp<crate::SettingsShell>, name: &str) -> ui::accesskit::Node {

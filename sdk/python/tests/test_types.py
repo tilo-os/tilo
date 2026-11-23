@@ -7,6 +7,7 @@ import pytest
 from tilo import AsyncTilo, SurfaceChanged
 
 from tilo.types.pdf_viewer import Document, FormFields
+from tilo.types.sections import Appearance, Power
 
 from fake_api import PDF, FakeApi
 
@@ -94,6 +95,28 @@ async def test_types_written_for_another_surface_say_to_write_them_again(
     assert raised.value.next_steps == [
         "write the types again: tilo sdk gen -w 11111111-2222-3333-4444-555555555555"
     ]
+
+
+async def test_a_settings_section_is_set_through_its_setters(workspace, api):
+    person = "settings/appearance"
+    device = f"devices/{'ab' * 32}/settings/power"
+    api.fields[person] = {"mode": "light"}
+    api.fields[device] = {"blank_minutes": 5}
+    # Every section is typed by the one surface the sections publish.
+    api.surfaces["settings"] = api.surfaces["devices"] = Appearance.__surface__
+
+    appearance = await Appearance(workspace, person).load()
+    power = await Power(workspace, device).load()
+    appearance.mode = "dark"
+    power.blank_minutes = 10
+    await appearance.flush()
+    await power.flush()
+
+    assert api.asked("POST", "/actions/set-mode")[-1]["body"] == b'{"value": "dark"}'
+    assert api.asked("POST", "/actions/set-blank-minutes")[-1]["body"] == b'{"value": 10}'
+    assert not api.asked("POST", "/actions/field-edit")
+    assert (await Appearance(workspace, person).load()).mode == "dark"
+    assert (await Power(workspace, device).load()).blank_minutes == 10
 
 
 def test_a_listing_describes_each_kinds_actions_once() -> None:

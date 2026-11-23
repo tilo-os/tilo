@@ -667,15 +667,28 @@ impl Session {
         // The person's list takes in the workspaces of theirs the device's daemon holds on hosts.
         self.shared.follow_records();
         // The person's settings follow them between their devices in the workspace whose only
-        // member is them: what they set here is written there first, and what they set there
-        // reaches the document this session reads.
-        if let Some(view) = &self.shared.view {
-            self.shared.settings.sync(
-                &self.shared.daemon,
-                &view.person(),
-                &self.shared.wake_handle,
-            );
-        }
+        // member is them, and the device's are kept in its owner's: what was set since the last
+        // pass is written there, and what another device or an agent set there is taken in.
+        let engine = self.shared.engine.as_deref();
+        let identity = engine.map(|engine| {
+            let cert = &engine.identity().device_cert;
+            (cert.user_public_key, cert.device_public_key)
+        });
+        // Whether this device seals writes to a workspace yet: until its keys reach it, a setting
+        // is kept on the device.
+        let sealing = |workspace: &str| {
+            engine
+                .zip(tilo_desktop_model::WorkspaceId::parse(workspace))
+                .is_some_and(|(engine, id)| {
+                    matches!(engine.seal_keys(id), Ok(crate::engine::SealKeys::Here(_)))
+                })
+        };
+        self.shared.settings.follow(
+            &self.shared.daemon,
+            identity,
+            &sealing,
+            &self.shared.wake_handle,
+        );
         // What was handed to an agent, and what was sent since the last look, by a box, an agent
         // or a script.
         self.shared.deliver_hands();

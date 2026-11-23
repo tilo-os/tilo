@@ -97,6 +97,14 @@ pub trait Service {
     /// What it publishes now: its resources, each with its actions.
     fn resources(&self) -> Vec<ResourceSpec>;
 
+    /// The action at `address` it answers, as it would publish it: one of its published
+    /// resources' by default. A service answering a family of addresses it cannot list (another
+    /// of the person's devices' settings, an app's preference set for the first time) answers
+    /// them too.
+    fn resolve(&self, address: &ActionAddress) -> Option<tilo_actions::ActionSpec> {
+        tilo_actions::api::resolve(&self.resources(), address).cloned()
+    }
+
     /// What the actions on the row `row` are like now, when they differ from
     /// their declaration: a drive's write action while it is mounted, a
     /// window's verbs while its app is unresponsive. Read for every published
@@ -709,8 +717,7 @@ impl Services {
             .iter()
             .enumerate()
             .find_map(|(index, service)| {
-                let published = service.resources();
-                let spec = tilo_actions::api::resolve(&published, &address)?;
+                let spec = service.resolve(&address)?;
                 let asks = !matches!(
                     spec.confirmation_for_json(arguments),
                     tilo_actions::ConfirmationPolicy::None

@@ -103,7 +103,7 @@ ntfs_read() {
 }
 
 # What a `-p` names: a package's name, or t's package id spec for a run that
-# asks for a few packages (`path+file:///src/crates/system/settings-store#settings-store@0.1.0`).
+# asks for a few packages (`path+file:///src/crates/desktop/settings#settings-store@0.1.0`).
 package_name() {
     local spec=${1:-}
     spec=${spec##*#}

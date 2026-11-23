@@ -250,6 +250,19 @@ impl Schema {
         self.verbs.iter().find(|verb| verb.name == name)
     }
 
+    /// Every declared verb that names `name`: the verb of that name, and each family of verbs
+    /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
+    /// fields another table lists) that `name` starts with.
+    pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
+        self.verbs.iter().filter(move |verb| {
+            verb.name == name
+                || verb
+                    .name
+                    .strip_suffix('*')
+                    .is_some_and(|prefix| name.len() > prefix.len() && name.starts_with(prefix))
+        })
+    }
+
     /// The type named `name`.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Type> {

@@ -1093,8 +1093,33 @@ macro_rules! __table_functions {
 /// holding only between values of equal JSON forms, as a derived one does:
 /// the edits between two copies compare each value in memory, and serialise
 /// only the ones that differ.
+///
+/// A type whose JSON form is one value of a known type names its schema and
+/// its [`FieldType`](crate::FieldType) variant
+/// (`json_model!(ResetDay => {"type": "integer"}, Int)`): its setter then
+/// takes that value, and a surface publishes the field as that type.
 #[macro_export]
 macro_rules! json_model {
+    ($ty:ty => $schema:tt, $field_type:ident) => {
+        impl $crate::Settable for $ty {}
+        impl $crate::Model for $ty {
+            $crate::leaf_paths!();
+            const NULLABLE: bool = true;
+            const TABLE: &'static $crate::table::ModelTable =
+                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::COMPARED);
+            $crate::__table_functions!();
+            fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
+                ::core::result::Result::Ok(<Self as ::core::default::Default>::default())
+            }
+            fn value_schema() -> $crate::__private::serde_json::Value {
+                $crate::__private::serde_json::json!($schema)
+            }
+            fn field_type(types: &mut $crate::TypeSet) -> $crate::FieldType {
+                let _ = types;
+                $crate::FieldType::$field_type
+            }
+        }
+    };
     ($($ty:ty),* $(,)?) => {$(
         impl $crate::Settable for $ty {}
         impl $crate::Model for $ty {

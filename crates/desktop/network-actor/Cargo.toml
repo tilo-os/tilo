@@ -28,7 +28,7 @@ postcard = { workspace = true, features = ["alloc"] }
 runtime-collab = { path = "../../core/runtime-collab" }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 thiserror.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-delivery-protocol = { path = "../../core/tilo-delivery-protocol" }

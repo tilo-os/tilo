@@ -70,7 +70,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Monitors are known by their EDID identity, which a layout follows
 # between ports.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 tilo-wayland-ext = { path = "../wayland-ext" }
 # What a surface is, and the shapes, key claims and outputs it is told of: the session's
 # own vocabulary, so a surface app is written once for the compositor and the page.

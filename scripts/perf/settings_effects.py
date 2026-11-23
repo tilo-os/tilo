@@ -5,7 +5,7 @@ search. The search is the window bar's (the runner's row outside a session):
 its evidence is the snapshot's `window_search`, and what it narrowed the
 sidebar to is `search_query`. Warmup opens it with Find, or clicks or hovers
 its control. All edits alternate 'z'/Backspace. Results below are a fixed fixture contract sourced from
-crates/system/settings-store/src/index.rs and its Fluent catalogues, through
+crates/desktop/settings/src/index.rs and its Fluent catalogues, through
 apps/settings/src/sidebar.rs and NavList's word-start search.
 Changing the catalogue requires explicitly reviewing this contract.
 """

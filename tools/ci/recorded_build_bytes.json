@@ -1308,10 +1308,6 @@
       "libraries": 387791,
       "tests": 5752208
     },
-    "tilo-settings-service": {
-      "libraries": 1443764,
-      "tests": 165658640
-    },
     "tilo-sheets": {
       "libraries": 138851813,
       "tests": 2567705848

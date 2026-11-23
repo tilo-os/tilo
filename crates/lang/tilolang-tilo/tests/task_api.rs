@@ -119,9 +119,13 @@ impl TaskApi for Apps {
         // The session publishes a platform root no service of this device serves (no battery, no
         // Bluetooth) empty, as the shell's own parts are handed it: a program reads its fields as
         // absent and goes on.
-        let platform = tilolang_tilo::platform_apps::platform_roots()
-            .iter()
-            .any(|(published, ty)| *published == target.id_string() && *ty == target.ty);
+        let platform =
+            tilolang_tilo::platform_apps::platform_roots()
+                .iter()
+                .any(|(published, ty)| {
+                    tilolang_runtime::value::flat_id(published) == target.id_string()
+                        && *ty == target.ty
+                });
         Ok(platform.then(|| json!({})))
     }
 

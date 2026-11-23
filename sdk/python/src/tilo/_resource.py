@@ -306,14 +306,24 @@ class Resource:
             answers.append(dict(answer))
         return answers
 
+    def _edit_call(self, op: str, steps: tuple[Any, ...], value: Any) -> tuple[str, dict]:
+        """The action and arguments an edit is: the field's own setter where each field is
+        written by its setter (`__setters__`), taking its whole value or an edit below it; the
+        field edit elsewhere."""
+        if getattr(type(self), "__setters__", False) and steps and isinstance(steps[0], str):
+            setter = f"{self.path}#set-{steps[0].replace('_', '-')}"
+            if len(steps) == 1 and op == "set":
+                return setter, {"value": value}
+            return setter, {"edit": {"path": segments(steps)[1:], "op": op, "value": value}}
+        return f"{self.path}#field-edit", {
+            "edit": {"path": segments(steps), "op": op, "value": value}
+        }
+
     def edit(self, *steps: Any, op: str = "set", value: Any = None) -> Any:
         """A field edit: the steps name the field, its map keys and its items."""
+        action, arguments = self._edit_call(op, steps, value)
         return self._workspace.client.handoff(
-            self._workspace._outcome(
-                f"{self.path}#field-edit",
-                {"edit": {"path": segments(steps), "op": op, "value": value}},
-                surface=self._surface(),
-            )
+            self._workspace._outcome(action, arguments, surface=self._surface())
         )
 
     def remove(self, *steps: Any) -> Any:
@@ -321,11 +331,8 @@ class Resource:
         return self.edit(*steps, op="remove-key")
 
     def _send_edit(self, op: str, steps: tuple[Any, ...], value: Any) -> None:
-        coroutine = self._workspace._outcome(
-            f"{self.path}#field-edit",
-            {"edit": {"path": segments(steps), "op": op, "value": value}},
-            surface=self._surface(),
-        )
+        action, arguments = self._edit_call(op, steps, value)
+        coroutine = self._workspace._outcome(action, arguments, surface=self._surface())
         client = self._workspace.client
         if client.sync:
             client.handoff(coroutine)

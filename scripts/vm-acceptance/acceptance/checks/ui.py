@@ -18,7 +18,7 @@ THEMES = {
     "dark": {"on": True},
 }
 
-APPEARANCE = core.action("settings:settings.appearance", "set-dark-mode")
+APPEARANCE = core.action("settings/appearance", "set-dark-mode")
 
 # Chrome only: window contents scroll out of view by design.
 NOT_CHROME = re.compile(r"GroupRow|foreign-surface|^tab:|tabbar_new_tab|TileHost|WindowGroup")

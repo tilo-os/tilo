@@ -6,9 +6,9 @@
 //! [`install`] makes a [`ChannelSettings`] this process's
 //! `settings_store::SettingsSource`, so every reader — `Settings<T>`,
 //! `cx.settings::<T>()`, the toolkit's shared sections — reads the app's
-//! view (its own `app_personal` / `app_device_local` entries and the shared
-//! sections, see `settings_store::app_scope`) and writes its entries into
-//! the shell's records. The broker worker fills the view when the primary
+//! view (its own `app_personal` / `app_device_local` entries, the shared
+//! sections, and whatever sections its grants name) and writes into the
+//! shell's records what the shell lets it. The broker worker fills the view when the primary
 //! route joins and keeps it current as the records change, here or on
 //! another of the person's devices; each change wakes the app.
 //!
@@ -118,20 +118,6 @@ impl ChannelSettings {
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.changes.ring();
         true
-    }
-
-    /// What this process shows itself able to write before the shell
-    /// answers: everything for the image's settings app, whose manifest asks
-    /// for it; its own entries for every other. The shell decides
-    /// (`settings_store::app_scope::Reach::of` on the signed manifest) and a
-    /// write it refuses is reported ([`Self::answered`]).
-    fn reach(&self) -> settings_store::app_scope::Reach {
-        use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_APPS};
-        if SYSTEM_SETTINGS_APPS.contains(&self.app_id.as_str()) {
-            Reach::System
-        } else {
-            Reach::App
-        }
     }
 
     /// A new link to the shell: its revisions start again.
@@ -362,18 +348,23 @@ impl SettingsSource for ChannelSettings {
     ) -> std::io::Result<()> {
         {
             let mut state = self.lock();
-            // The shell's own rules, applied to what this process shows: a
-            // write it would refuse is refused here, and one it takes shows
-            // as it will be stored.
+            // Shown at once as the shell will store it; a write the shell
+            // refuses is taken back when it answers ([`Self::answered`]).
             let shown = HostDocument::new(settings_document(&state.view), |_| Ok(()));
-            settings_store::app_scope::update_at(
-                &shown,
-                &self.app_id,
-                self.reach(),
-                name,
-                values.clone(),
-                origin,
-            )?;
+            let mut written = values.clone();
+            if settings_store::placement::per_app(name) {
+                for (app, keys) in &mut written {
+                    if let (Some(Value::Object(held)), Value::Object(new)) = (
+                        shown.load().get(name).and_then(|held| held.get(app)),
+                        &*keys,
+                    ) {
+                        let mut entry = held.clone();
+                        entry.extend(new.clone());
+                        *keys = Value::Object(entry);
+                    }
+                }
+            }
+            shown.update_section_by(name, written, origin)?;
             let delivery = state
                 .view
                 .get(settings_model::APP_DEVICE_LOCAL_SECTION)

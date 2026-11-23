@@ -2222,9 +2222,9 @@ mod tests {
         // device keeps, scoped to that app, and serves the person's dictionary
         // from the same document.
         {
-            let dir = tempfile::tempdir().expect("a profile of the test's own");
-            let records: std::sync::Arc<dyn settings_store::SettingsSource> =
-                std::sync::Arc::new(settings_store::Store::open(dir.path()).expect("a settings store"));
+            let records: std::sync::Arc<dyn settings_store::SettingsSource> = std::sync::Arc::new(
+                settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+            );
             let _scoped = settings_store::scoped_source(Some(std::sync::Arc::clone(&records)));
 
             let settings = services(None)

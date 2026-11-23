@@ -14,7 +14,7 @@ left).
 
 Each such change passes when a ``[[change]]`` entry in
 ``tools/policy/record_conversions.toml`` names it by ``kind``, ``app`` and
-``change``, and says either where the data now goes (``conversion =
+``change`` (several kinds changed alike by ``kinds = [...]``), and says either where the data now goes (``conversion =
 "<path>:<fn>"``, a function that exists in this tree and moves what the old
 place held, or a tilolang package's ``migration action`` of that name in a
 ``.tl`` file) or what a person loses (``lost = "<what and why>"``). An entry
@@ -93,11 +93,14 @@ def changes(
 
 
 def recorded(root: Path) -> list[dict]:
-    """The ``[[change]]`` entries."""
+    """The ``[[change]]`` entries, one per kind: an entry naming several (``kinds``) says the
+    same of each."""
     file = root / CONVERSIONS
     if not file.is_file():
         return []
-    return tomllib.loads(file.read_text()).get("change", [])
+    entries = tomllib.loads(file.read_text()).get("change", [])
+    return [dict(entry, kind=kind) for entry in entries
+            for kind in entry.get("kinds", [entry.get("kind")])]
 
 
 def conversion_problem(root: Path, entry: dict) -> str | None:

@@ -25,12 +25,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
+use settings_sections::service::SettingsService;
 use tilo_compositor::InputEvent;
 use tilo_desktop_model::Layout;
 use tilo_session::parts::BINDINGS;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{AppSocket, Options, Session};
-use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
 
 /// What a key sends, evdev codes.
@@ -471,11 +471,11 @@ fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_
                 .clone(),
         )
         .expect("the menu opens");
-    until(&mut session, "draws the menu the session ships with", |session| {
-        session
-            .part_control("window-menu", "Full screen")
-            .is_some()
-    });
+    until(
+        &mut session,
+        "draws the menu the session ships with",
+        |session| session.part_control("window-menu", "Full screen").is_some(),
+    );
 
     // The package the person bound declares no view by that name: it is no view for the part, and
     // the session puts its own back rather than leaving the menu undrawn.
@@ -483,11 +483,7 @@ fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_
     until(
         &mut session,
         "draws the view the session ships with again",
-        |session| {
-            session
-                .part_control("window-menu", "Full screen")
-                .is_some()
-        },
+        |session| session.part_control("window-menu", "Full screen").is_some(),
     );
     assert!(
         session
@@ -612,9 +608,7 @@ fn the_window_menu_chord_draws_the_shells_view_and_the_keyboard_chooses() {
     // offers, each named as the reading names it.
     press_window_menu(&mut session);
     until(&mut session, "draws the menu the chord opened", |session| {
-        session
-            .part_control("window-menu", "Full screen")
-            .is_some()
+        session.part_control("window-menu", "Full screen").is_some()
     });
     let offered = rows(&session);
     assert!(
@@ -648,9 +642,7 @@ fn the_window_menu_chord_draws_the_shells_view_and_the_keyboard_chooses() {
     // offers: revealing a window already in front is refused, so the first choice is Full screen.
     press_window_menu(&mut session);
     until(&mut session, "draws the menu again", |session| {
-        session
-            .part_control("window-menu", "Full screen")
-            .is_some()
+        session.part_control("window-menu", "Full screen").is_some()
     });
     tap(&mut session, KEY_TAB);
     tap(&mut session, KEY_ENTER);

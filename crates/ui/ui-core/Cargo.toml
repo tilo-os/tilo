@@ -65,7 +65,7 @@ broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-process-services/test-support", "collaboration/test-support", "dep:tilo-test-env"]
+test-support = ["tilo-process-services/test-support", "collaboration/test-support", "dep:tilo-test-env", "runtime-collab/settings-host"]
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests
@@ -191,7 +191,7 @@ tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
-settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+settings-store = { version = "0.1.0", path = "../../desktop/settings" }
 settings-model = { version = "0.1.0", path = "../../sdk/settings-model" }
 # Dates, clocks and numbers as the person set them, without the toolkit, so a host
 # that has no toolkit answers the same as a window (tilo-formats).

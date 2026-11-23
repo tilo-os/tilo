@@ -1,0 +1,212 @@
+//! The desktop magnifier's persisted state in the `accessibility` section.
+//!
+//! Settings, the compositor's keyboard shortcuts and the frame that paints the magnifier all
+//! read and write the same keys; the zoom steps, their labels and the toggle's memory live
+//! here so the three cannot disagree about what "3×" or "zoom in" means.
+
+use serde_json::{Map, Value};
+
+pub const SECTION: &str = "accessibility";
+/// Current zoom factor; [`OFF`] means the magnifier is off.
+pub const ZOOM_KEY: &str = "magnifier_zoom";
+pub const LAST_ZOOM_KEY: &str = "magnifier_last_zoom";
+pub const VIEW_KEY: &str = "magnifier_view";
+
+/// Zoom factor meaning "off".
+pub const OFF: u8 = 1;
+pub const DEFAULT_ZOOM: u8 = 2;
+pub const MAX_ZOOM: u8 = 6;
+
+/// The label Settings shows for each zoom level, weakest first; [`OFF`] leads.
+pub const ZOOM_LABELS: [&str; 6] = ["Off", "2×", "3×", "4×", "5×", "6×"];
+
+pub fn zoom_levels() -> impl Iterator<Item = u8> {
+    OFF..=MAX_ZOOM
+}
+
+pub fn zoom_label(zoom: u8) -> &'static str {
+    let position = usize::from(zoom.clamp(OFF, MAX_ZOOM).saturating_sub(OFF));
+    ZOOM_LABELS.get(position).copied().unwrap_or("Off")
+}
+
+/// How the magnified image is shown. Persisted as [`Self::as_str`]; an unknown value reads
+/// as the lens.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MagnifierView {
+    /// A lens around the point of interest; the rest of the screen stays as it is.
+    #[default]
+    Lens,
+    /// The whole screen magnified, panning with the point of interest.
+    FullScreen,
+}
+
+impl MagnifierView {
+    pub const ALL: [Self; 2] = [Self::Lens, Self::FullScreen];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lens => "lens",
+            Self::FullScreen => "full_screen",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "full_screen" => Self::FullScreen,
+            _ => Self::Lens,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Lens => "Lens",
+            Self::FullScreen => "Full screen",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|view| view.label() == label)
+    }
+}
+
+impl crate::Labelled for MagnifierView {
+    const CHOICES: &'static [Self] = &Self::ALL;
+
+    fn label(self) -> &'static str {
+        Self::label(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MagnifierState {
+    pub zoom: u8,
+    pub view: MagnifierView,
+}
+
+impl MagnifierState {
+    pub fn from_section(section: &Map<String, Value>) -> Self {
+        Self {
+            zoom: zoom_in_section(section, ZOOM_KEY).unwrap_or(OFF),
+            view: section
+                .get(VIEW_KEY)
+                .and_then(Value::as_str)
+                .map(MagnifierView::parse)
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn is_on(self) -> bool {
+        self.zoom > OFF
+    }
+}
+
+fn zoom_in_section(section: &Map<String, Value>, key: &str) -> Option<u8> {
+    section
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|v| u8::try_from(v).ok())
+        .map(|zoom| zoom.clamp(OFF, MAX_ZOOM))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MagnifierStep {
+    Toggle,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl MagnifierStep {
+    pub const ALL: [Self; 3] = [Self::Toggle, Self::ZoomIn, Self::ZoomOut];
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggle",
+            Self::ZoomIn => "zoom-in",
+            Self::ZoomOut => "zoom-out",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|step| step.id() == id)
+    }
+
+    /// Whether holding the key keeps stepping: zooming does, while a toggle
+    /// would flicker on and off with every repeat.
+    pub const fn is_edge(self) -> bool {
+        !matches!(self, Self::Toggle)
+    }
+}
+
+/// `remembered` as a zoom the toggle can turn on at: off or nothing yet
+/// remembered turns on at [`DEFAULT_ZOOM`].
+pub fn remembered_zoom(remembered: u8) -> u8 {
+    if remembered > OFF {
+        remembered.min(MAX_ZOOM)
+    } else {
+        DEFAULT_ZOOM
+    }
+}
+
+pub fn step(zoom: u8, remembered: u8, step: MagnifierStep) -> (u8, u8) {
+    let zoom = zoom.clamp(OFF, MAX_ZOOM);
+    let remembered = remembered_zoom(remembered);
+    let next = match step {
+        MagnifierStep::Toggle if zoom > OFF => OFF,
+        MagnifierStep::Toggle => remembered,
+        MagnifierStep::ZoomIn => zoom.saturating_add(1).min(MAX_ZOOM),
+        MagnifierStep::ZoomOut => zoom.saturating_sub(1).max(OFF),
+    };
+    // Remember the last magnification actually in use, so turning off and on again returns to it.
+    let remembered = if next > OFF {
+        next
+    } else {
+        remembered.max(zoom)
+    };
+    (next, remembered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn the_magnifier_steps_labels_and_reads_its_zoom;
+
+        phase toggling_returns_to_the_last_zoom_in_use;
+        {
+            let (on, remembered) = step(OFF, OFF, MagnifierStep::Toggle);
+            assert_eq!(on, DEFAULT_ZOOM, "a first toggle turns on at 2×");
+            let (zoomed, remembered) = step(on, remembered, MagnifierStep::ZoomIn);
+            assert_eq!(zoomed, 3);
+            let (off, remembered) = step(zoomed, remembered, MagnifierStep::Toggle);
+            assert_eq!(off, OFF);
+            assert_eq!(step(off, remembered, MagnifierStep::Toggle).0, 3);
+        }
+
+        phase zoom_steps_stop_at_off_and_at_the_strongest_level;
+        {
+            assert_eq!(step(OFF, OFF, MagnifierStep::ZoomIn).0, 2);
+            assert_eq!(step(2, 2, MagnifierStep::ZoomOut).0, OFF);
+            assert_eq!(step(OFF, 4, MagnifierStep::ZoomOut), (OFF, 4));
+            assert_eq!(step(MAX_ZOOM, MAX_ZOOM, MagnifierStep::ZoomIn).0, MAX_ZOOM);
+        }
+
+        phase malformed_state_reads_as_off_in_a_lens;
+        {
+            let mut section = Map::new();
+            section.insert(ZOOM_KEY.into(), Value::from("big"));
+            section.insert(VIEW_KEY.into(), Value::from(7));
+            assert_eq!(
+                MagnifierState::from_section(&section),
+                MagnifierState {
+                    zoom: OFF,
+                    view: MagnifierView::Lens
+                }
+            );
+            section.insert(ZOOM_KEY.into(), Value::from(40));
+            assert_eq!(MagnifierState::from_section(&section).zoom, MAX_ZOOM);
+        }
+    }
+}

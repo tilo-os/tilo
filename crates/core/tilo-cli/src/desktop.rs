@@ -87,9 +87,38 @@ pub fn run_action(cmd: ActionCmd, json: bool, spelling: &Spelling) -> ExitCode {
     let sockets = sockets();
     with_io(|io| match cmd {
         ActionCmd::List { filter } => front::list(&sockets, &filter.join(" "), spelling, io),
-        ActionCmd::Run { action, args } => front::run(&sockets, &action, &args, json, spelling, io),
+        ActionCmd::Run { action, args } => match setter_here(&sockets, &action, &args) {
+            Some(Ok(())) => 0,
+            Some(Err(why)) => {
+                let _ = writeln!(io.err, "{why}");
+                1
+            }
+            None => front::run(&sockets, &action, &args, json, spelling, io),
+        },
         ActionCmd::Show { action } => front::show(&sockets, &action, spelling, io),
     })
+}
+
+/// A setting's setter (`settings/appearance#set-mode dark`) run on this device while its session
+/// is not running: kept for the session, and read at once by the device's processes. `None` for
+/// anything else, which the session answers.
+fn setter_here(
+    sockets: &[ControlSocket],
+    action: &str,
+    args: &[String],
+) -> Option<Result<(), String>> {
+    let (resource, verb) = action.split_once('#')?;
+    if !verb.starts_with("set-") || desktop_present(sockets) {
+        return None;
+    }
+    let [word] = args else {
+        return Some(Err(format!("{action} takes one value")));
+    };
+    let word = word.strip_prefix("value=").unwrap_or(word);
+    let value = serde_json::from_str(word).unwrap_or_else(|_| serde_json::Value::from(word));
+    Some(settings_store::outside::set_on_this_device(
+        resource, verb, &value,
+    ))
 }
 
 /// `tilo open APP [file|link…]` and `tilo app open …`.

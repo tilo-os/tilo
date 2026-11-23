@@ -1,0 +1,802 @@
+//! Where every setting lives: Settings' pages in sidebar order and the settings people look for by
+//! name, each on its page, with the words people use for them in every language Tilo speaks.
+//!
+//! This is the one list behind every way of finding a setting. A setting opens through its link,
+//! `settings://<page>#<setting>` ([`Setting::link`]). One that can be changed where it stands is
+//! changed by its section's own verb ([`At`]): the setter of its field, `set-<field>`, or a verb
+//! the section declares. Search finds that verb by the setting's name; there is no other way to it.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Page {
+    pub slug: &'static str,
+}
+
+/// The pages Settings has on the web, by slug: those that read and change
+/// what the person keeps (their devices among it, as their record on their
+/// host lists them), not the hardware of a Tilo device, which a page in a
+/// browser has none of.
+pub const WEB_PAGES: &[&str] = &[
+    "appearance",
+    "accessibility",
+    "region_formats",
+    "keyboard_shortcuts",
+    "devices_access",
+    "billing",
+    // The person's own accounts and model providers: the host that runs
+    // their workspace keeps them, and the page reads and changes them there.
+    "external_accounts",
+    "agent_models",
+];
+
+impl Page {
+    /// Whether Settings has this page where this build runs: every page on
+    /// a Tilo device, on the web only [`WEB_PAGES`].
+    #[must_use]
+    pub fn here(self) -> bool {
+        !tilo_platform_caps::WEB || WEB_PAGES.contains(&self.slug)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Setting {
+    pub id: &'static str,
+    pub page: &'static str,
+    /// The widget id of the control that changes it. One `*` stands for any
+    /// run of characters (one display's id among several); `|` separates the
+    /// ids of the controls the page may show instead (one layout's chooser
+    /// or the list of several).
+    pub control: &'static str,
+    /// The verb that changes it where it stands, where one does.
+    pub at: Option<At>,
+}
+
+/// The verb of a section that changes a setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct At {
+    /// The section of the settings (`power`), published where the settings keep it
+    /// ([`crate::placement::address`]).
+    pub section: &'static str,
+    pub change: Change,
+    /// The few values it holds, each by its name, where it holds one of a few: a yes-or-no
+    /// shown as two choices is one too.
+    pub options: &'static [ChoiceOption],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// The setter of this field of the section, `set-<field>`.
+    Field(&'static str),
+    /// A verb the section declares.
+    Verb(&'static str),
+}
+
+impl At {
+    /// The section's resource id, on the device `device` (its key in lowercase hex) for one of
+    /// the device's: `settings/power`, `devices/<device>/settings/display`.
+    #[must_use]
+    pub fn resource(self, device: &str) -> String {
+        crate::placement::address(self.section, None, device).id
+    }
+
+    /// The id of the verb.
+    #[must_use]
+    pub fn action(self) -> String {
+        match self.change {
+            Change::Field(field) => crate::workspace::verb(field),
+            Change::Verb(verb) => verb.to_owned(),
+        }
+    }
+}
+
+/// The setting the action `action` of the resource `resource` changes, where it is one's.
+#[must_use]
+pub fn changed_by(resource: &str, action: &str) -> Option<&'static Setting> {
+    let device = device_of(resource);
+    SETTINGS.iter().find(|setting| {
+        setting
+            .at
+            .is_some_and(|at| at.resource(device) == resource && at.action() == action)
+    })
+}
+
+/// The device a settings resource is kept for, by its key in lowercase hex: the `<device>` of
+/// `devices/<device>/settings/...`; empty for the person's.
+#[must_use]
+pub fn device_of(resource: &str) -> &str {
+    resource
+        .strip_prefix("devices/")
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(_, rest)| rest.starts_with("settings/"))
+        .map_or("", |(device, _)| device)
+}
+
+/// Whether `resource` is one of the settings' resources: a section of the person's
+/// (`settings/<section>`) or of a device's (`devices/<device>/settings/<section>`), or an app's
+/// preferences there.
+#[must_use]
+pub fn is_settings(resource: &str) -> bool {
+    resource.starts_with("settings/") || !device_of(resource).is_empty()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChoiceOption {
+    pub value: &'static str,
+    pub name: &'static str,
+}
+
+impl ChoiceOption {
+    #[must_use]
+    pub fn json(self) -> serde_json::Value {
+        serde_json::from_str(self.value).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl Page {
+    #[must_use]
+    pub fn title_key(self) -> String {
+        format!("settings-index-page-{}", key(self.slug))
+    }
+
+    #[must_use]
+    pub fn subtitle_key(self) -> String {
+        format!("settings-index-page-{}-subtitle", key(self.slug))
+    }
+
+    #[must_use]
+    pub fn words_key(self) -> String {
+        format!("settings-index-page-{}-words", key(self.slug))
+    }
+
+    #[must_use]
+    pub fn link(self) -> String {
+        format!("settings://{}", self.slug)
+    }
+
+    pub fn settings(self) -> impl Iterator<Item = &'static Setting> {
+        SETTINGS
+            .iter()
+            .filter(move |setting| setting.page == self.slug)
+    }
+}
+
+impl Setting {
+    #[must_use]
+    pub fn name_key(self) -> String {
+        format!("settings-index-setting-{}", key(self.id))
+    }
+
+    #[must_use]
+    pub fn words_key(self) -> String {
+        format!("settings-index-setting-{}-words", key(self.id))
+    }
+
+    #[must_use]
+    pub fn option_key(self, option: ChoiceOption) -> String {
+        format!(
+            "settings-index-setting-{}-{}",
+            key(self.id),
+            key(option.name)
+        )
+    }
+
+    #[must_use]
+    pub fn link(self) -> String {
+        format!("settings://{}#{}", self.page, self.id)
+    }
+
+    #[must_use]
+    pub fn search_words(self) -> Vec<String> {
+        let mut words = names_in_every_locale(&self.name_key());
+        let options = self
+            .at
+            .iter()
+            .flat_map(|at| at.options)
+            .flat_map(|option| names_in_every_locale(&self.option_key(*option)));
+        for word in words_in_every_locale(&self.words_key())
+            .into_iter()
+            .chain(options)
+        {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        words
+    }
+
+    #[must_use]
+    pub fn is_control(self, widget_id: &str) -> bool {
+        self.control
+            .split('|')
+            .any(|pattern| glob_matches(pattern, widget_id))
+    }
+}
+
+fn key(id: &str) -> String {
+    id.replace(['_', '.'], "-")
+}
+
+/// Whether `text` matches `pattern`, whose one `*` stands for any text that is not empty.
+#[must_use]
+pub fn glob_matches(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((prefix, suffix)) => text
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .is_some_and(|middle| !middle.is_empty()),
+    }
+}
+
+#[must_use]
+pub fn page(slug: &str) -> Option<Page> {
+    PAGES.iter().copied().find(|page| page.slug == slug)
+}
+
+#[must_use]
+pub fn setting(id: &str) -> Option<&'static Setting> {
+    SETTINGS.iter().find(|setting| setting.id == id)
+}
+
+pub const CATALOGUES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
+
+fn messages() -> &'static std::collections::HashMap<&'static str, Vec<&'static str>> {
+    static MESSAGES: std::sync::OnceLock<
+        std::collections::HashMap<&'static str, Vec<&'static str>>,
+    > = std::sync::OnceLock::new();
+    MESSAGES.get_or_init(|| {
+        let mut messages: std::collections::HashMap<&'static str, Vec<&'static str>> =
+            std::collections::HashMap::new();
+        for (_, catalogue) in CATALOGUES {
+            for line in catalogue.lines() {
+                if line.starts_with(char::is_whitespace) || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once(" = ") {
+                    messages.entry(key.trim()).or_default().push(value.trim());
+                }
+            }
+        }
+        messages
+    })
+}
+
+#[must_use]
+pub fn words_in_every_locale(key: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for value in messages().get(key).into_iter().flatten() {
+        for word in value.split(',') {
+            let word = word.trim().to_lowercase();
+            if !word.is_empty() && !words.contains(&word) {
+                words.push(word);
+            }
+        }
+    }
+    words
+}
+
+#[must_use]
+pub fn names_in_every_locale(key: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for value in messages().get(key).into_iter().flatten() {
+        let name = value.to_lowercase();
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+pub const PAGES: &[Page] = &[
+    Page { slug: "network" },
+    Page { slug: "bluetooth" },
+    Page {
+        slug: "devices_sync",
+    },
+    Page { slug: "appearance" },
+    Page {
+        slug: "accessibility",
+    },
+    Page {
+        slug: "notifications",
+    },
+    Page {
+        slug: "default-apps",
+    },
+    Page { slug: "spelling" },
+    Page {
+        slug: "region_formats",
+    },
+    Page { slug: "time_date" },
+    Page {
+        slug: "keyboard_shortcuts",
+    },
+    Page { slug: "displays" },
+    Page { slug: "sound" },
+    Page { slug: "speakers" },
+    Page { slug: "keyboard" },
+    Page { slug: "pointing" },
+    Page { slug: "printers" },
+    Page { slug: "power" },
+    Page {
+        slug: "devices_access",
+    },
+    Page { slug: "users" },
+    Page { slug: "billing" },
+    Page {
+        slug: "external_accounts",
+    },
+    Page {
+        slug: "agent_models",
+    },
+    Page {
+        slug: "permissions",
+    },
+    Page { slug: "storage" },
+    Page { slug: "updates" },
+    Page { slug: "about" },
+];
+
+const fn s(id: &'static str, page: &'static str, control: &'static str) -> Setting {
+    Setting {
+        id,
+        page,
+        control,
+        at: None,
+    }
+}
+
+impl Setting {
+    const fn at(
+        self,
+        section: &'static str,
+        change: Change,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        Self {
+            at: Some(At {
+                section,
+                change,
+                options,
+            }),
+            ..self
+        }
+    }
+
+    const fn field(self, section: &'static str, field: &'static str) -> Self {
+        self.at(section, Change::Field(field), &[])
+    }
+
+    const fn verb(self, section: &'static str, verb: &'static str) -> Self {
+        self.at(section, Change::Verb(verb), &[])
+    }
+
+    const fn choice(
+        self,
+        section: &'static str,
+        field: &'static str,
+        options: &'static [ChoiceOption],
+    ) -> Self {
+        self.at(section, Change::Field(field), options)
+    }
+}
+
+pub const SETTINGS: &[Setting] = &[
+    s("network.wifi", "network", "network.wifi"),
+    s("network.wired", "network", "network.wired"),
+    s("network.airplane", "network", "network.airplane"),
+    s("network.hotspot", "network", "network.hotspot"),
+    s("network.mobile", "network", "network.mobile"),
+    s("bluetooth.enabled", "bluetooth", "bluetooth.toggle"),
+    s("display.placement", "displays", "display.placement"),
+    s("display.brightness", "displays", "display.brightness"),
+    s(
+        "display.auto_brightness",
+        "displays",
+        "display.auto_brightness",
+    ),
+    s("display.night_light", "displays", "display.night_light"),
+    s(
+        "display.night_light_warmth",
+        "displays",
+        "display.night_light_temperature",
+    ),
+    s(
+        "display.night_light_schedule",
+        "displays",
+        "display.night_light_schedule",
+    ),
+    s("display.scale", "displays", "display.output.*.scale"),
+    s("display.resolution", "displays", "display.output.*.mode"),
+    s(
+        "display.refresh_rate",
+        "displays",
+        "display.output.*.refresh",
+    ),
+    s("display.rotation", "displays", "display.output.*.rotation"),
+    s("display.hdr", "displays", "display.output.*.hdr"),
+    s("display.vrr", "displays", "display.output.*.vrr"),
+    s("display.mirroring", "displays", "display.output.*.mirror"),
+    s(
+        "display.colour_profile",
+        "displays",
+        "display.output.*.color_profile",
+    ),
+    s("sound.volume", "sound", "audio.volume"),
+    s("sound.output_device", "sound", "audio.output.*"),
+    s("sound.input_device", "sound", "audio.input.*"),
+    s("sound.input_level", "sound", "audio.input_volume"),
+    s("sound.mute", "sound", "audio.mute"),
+    s("sound.balance", "sound", "audio.balance"),
+    s("sound.mono", "sound", "audio.mono"),
+    s("sound.echo", "sound", "audio.echo_cancellation"),
+    s("sound.system_sounds", "sound", "audio.system_sounds"),
+    s(
+        "keyboard.layout",
+        "keyboard",
+        "input.source.replace|input.source.add_picker",
+    )
+    .verb("input", "choose-layout"),
+    s("keyboard.key_repeat", "keyboard", "input.key_repeat"),
+    s("keyboard.compose", "keyboard", "input.compose_key"),
+    s("keyboard.caps_lock", "keyboard", "input.caps_lock"),
+    s("pointing.touchpad", "pointing", "input.touchpad_enabled"),
+    s(
+        "pointing.touchpad_speed",
+        "pointing",
+        "input.touchpad_pointer_speed",
+    ),
+    s("pointing.tap_to_click", "pointing", "input.tap_click"),
+    s(
+        "pointing.natural_scrolling",
+        "pointing",
+        "input.touchpad_natural_scroll|input.mouse_natural_scroll",
+    ),
+    s(
+        "pointing.disable_while_typing",
+        "pointing",
+        "input.disable_while_typing",
+    ),
+    s(
+        "pointing.secondary_click",
+        "pointing",
+        "input.touchpad_click_method",
+    )
+    .choice(
+        "input",
+        "touchpad_click_method",
+        &[
+            ChoiceOption {
+                value: "\"default\"",
+                name: "default",
+            },
+            ChoiceOption {
+                value: "\"areas\"",
+                name: "areas",
+            },
+            ChoiceOption {
+                value: "\"clickfinger\"",
+                name: "clickfinger",
+            },
+        ],
+    ),
+    s(
+        "pointing.scroll_method",
+        "pointing",
+        "input.touchpad_scroll_method",
+    )
+    .choice(
+        "input",
+        "touchpad_scroll_method",
+        &[
+            ChoiceOption {
+                value: "\"two_finger\"",
+                name: "two_finger",
+            },
+            ChoiceOption {
+                value: "\"edge\"",
+                name: "edge",
+            },
+        ],
+    ),
+    s("pointing.gestures", "pointing", "input.touchpad_gestures"),
+    s(
+        "pointing.disable_with_mouse",
+        "pointing",
+        "input.touchpad_disabled_on_external_mouse",
+    ),
+    s(
+        "pointing.mouse_speed",
+        "pointing",
+        "input.mouse_pointer_speed",
+    ),
+    s("pointing.acceleration", "pointing", "input.accel_profile"),
+    s("pointing.left_handed", "pointing", "input.left_handed"),
+    s("pointing.scroll_speed", "pointing", "input.scroll_speed"),
+    s(
+        "pointing.middle_click",
+        "pointing",
+        "input.middle_emulation",
+    ),
+    s("shortcuts.vim", "keyboard_shortcuts", "shortcuts.vim_mode"),
+    s("power.profile", "power", "power.profile"),
+    s("power.charge_limit", "power", "power.charge_limit"),
+    s("power.auto_suspend", "power", "power.auto_suspend").field("power", "auto_suspend"),
+    s(
+        "power.suspend_after",
+        "power",
+        "power.suspend|power.suspend_battery|power.profile_suspend",
+    ),
+    s("power.blank", "power", "power.blank").field("power", "blank_minutes"),
+    s("power.lock_after", "power", "power.lock").field("power", "lock_minutes"),
+    s("power.lock_on_sleep", "power", "power.lock_on_sleep").field("power", "lock_on_sleep"),
+    s("power.lid", "power", "power.lid"),
+    s("power.power_key", "power", "power.power_key"),
+    s("power.critical", "power", "power.critical"),
+    s("appearance.style", "appearance", "appearance.mode").choice(
+        "appearance",
+        "mode",
+        &[
+            ChoiceOption {
+                value: "\"light\"",
+                name: "light",
+            },
+            ChoiceOption {
+                value: "\"dark\"",
+                name: "dark",
+            },
+            ChoiceOption {
+                value: "\"automatic\"",
+                name: "automatic",
+            },
+        ],
+    ),
+    s("appearance.schedule", "appearance", "appearance.schedule"),
+    s(
+        "appearance.wallpaper",
+        "appearance",
+        "appearance.wallpaper.*",
+    ),
+    s("appearance.ui_scale", "appearance", "appearance.ui_scale"),
+    s(
+        "appearance.hide_top_bar",
+        "appearance",
+        "appearance.hide_top_bar",
+    ),
+    s("appearance.text_size", "accessibility", "a11y.text_size"),
+    s(
+        "appearance.high_contrast",
+        "accessibility",
+        "a11y.high_contrast",
+    )
+    .field("appearance", "high_contrast"),
+    s(
+        "appearance.reduce_motion",
+        "accessibility",
+        "a11y.reduce_motion",
+    )
+    .field("appearance", "reduce_motion"),
+    s("a11y.screen_reader", "accessibility", "a11y.screen_reader"),
+    s(
+        "a11y.on_screen_keyboard",
+        "accessibility",
+        "a11y.on_screen_keyboard",
+    ),
+    s("a11y.large_cursor", "accessibility", "a11y.large_cursor")
+        .field("accessibility", "large_cursor"),
+    s("a11y.cursor_size", "accessibility", "a11y.cursor_size"),
+    s("a11y.cursor_theme", "accessibility", "a11y.cursor_theme"),
+    s("a11y.magnifier", "accessibility", "a11y.magnifier"),
+    s("a11y.colour_filter", "accessibility", "a11y.color_filter"),
+    s("a11y.sticky_keys", "accessibility", "a11y.sticky_keys")
+        .field("accessibility", "sticky_keys"),
+    s("a11y.slow_keys", "accessibility", "a11y.slow_keys").field("accessibility", "slow_keys"),
+    s("a11y.bounce_keys", "accessibility", "a11y.bounce_keys")
+        .field("accessibility", "bounce_keys"),
+    s("a11y.mouse_keys", "accessibility", "a11y.mouse_keys").field("accessibility", "mouse_keys"),
+    s("a11y.visual_alerts", "accessibility", "a11y.visual_alerts")
+        .field("accessibility", "visual_alerts"),
+    s(
+        "a11y.switch_control",
+        "accessibility",
+        "a11y.switch_control",
+    )
+    .field("accessibility", "switch_control"),
+    s(
+        "a11y.dictation_language",
+        "accessibility",
+        "a11y.dictation_language",
+    ),
+    s("notifications.dnd", "notifications", "notifications.dnd")
+        .field("notifications", "do_not_disturb"),
+    s(
+        "notifications.banners",
+        "notifications",
+        "notifications.banners",
+    )
+    .field("notifications", "show_banners"),
+    s(
+        "notifications.previews",
+        "notifications",
+        "notifications.previews",
+    )
+    .choice(
+        "notifications",
+        "show_previews",
+        &[
+            ChoiceOption {
+                value: "true",
+                name: "shown",
+            },
+            ChoiceOption {
+                value: "false",
+                name: "hidden",
+            },
+        ],
+    ),
+    s(
+        "notifications.lock_screen",
+        "notifications",
+        "notifications.lock_screen",
+    )
+    .field("notifications", "show_on_lock_screen"),
+    s(
+        "notifications.sounds",
+        "notifications",
+        "notifications.sounds",
+    )
+    .field("notifications", "play_sounds"),
+    s(
+        "notifications.badges",
+        "notifications",
+        "notifications.badges",
+    )
+    .field("notifications", "show_badges"),
+    s(
+        "notifications.quiet_hours",
+        "notifications",
+        "notifications.focus.enabled",
+    ),
+    s("spelling.check", "spelling", "text.check_spelling")
+        .field("text_assistance", "check_spelling"),
+    s("spelling.autocorrect", "spelling", "text.auto_correct")
+        .field("text_assistance", "auto_correct"),
+    s("spelling.language", "spelling", "text.spelling_language"),
+    s("spelling.dictionary", "spelling", "dictionary.word"),
+    s("region.language", "region_formats", "region.language"),
+    s("region.currency", "region_formats", "region.currency"),
+    s("region.date", "region_formats", "region.date"),
+    s("region.time", "region_formats", "region.time"),
+    s("region.first_day", "region_formats", "region.first_day"),
+    s("region.measurement", "region_formats", "region.measurement"),
+    s("region.numbers", "region_formats", "region.number_style"),
+    s("region.zone", "region_formats", "region.zone"),
+    s("time.automatic", "time_date", "time.auto"),
+    s("time.zone", "time_date", "time.timezone"),
+    s("storage.cache", "storage", "storage.cache-size"),
+    s("storage.clean", "storage", "storage.clean"),
+    s("updates.automatic", "updates", "updates.auto"),
+    s("updates.metered", "updates", "updates.metered"),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeSet, HashSet};
+
+    fn messages(catalogue: &str) -> BTreeSet<&str> {
+        catalogue
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.starts_with(char::is_whitespace))
+            .filter_map(|line| line.split_once(" = ").map(|(key, _)| key.trim()))
+            .collect()
+    }
+
+    tilo_test_env::scenario! {
+        fn the_index_is_complete_and_consistent_in_every_language;
+
+        phase every_page_and_setting_is_named_in_every_language;
+        {
+            let mut wanted = BTreeSet::new();
+            for page in PAGES {
+                wanted.insert(page.title_key());
+                wanted.insert(page.subtitle_key());
+                wanted.insert(page.words_key());
+            }
+            for setting in SETTINGS {
+                wanted.insert(setting.name_key());
+                wanted.insert(setting.words_key());
+                for option in setting.at.iter().flat_map(|at| at.options) {
+                    wanted.insert(setting.option_key(*option));
+                }
+            }
+            for (locale, catalogue) in CATALOGUES {
+                let have: BTreeSet<String> =
+                    messages(catalogue).into_iter().map(str::to_owned).collect();
+                let missing: Vec<_> = wanted.difference(&have).collect();
+                let extra: Vec<_> = have.difference(&wanted).collect();
+                assert!(missing.is_empty(), "{locale} lacks {missing:?}");
+                assert!(extra.is_empty(), "{locale} holds unused {extra:?}");
+            }
+        }
+
+        phase each_setting_is_found_again_by_the_address_of_its_verb;
+        {
+            let device = "ab".repeat(32);
+            for setting in SETTINGS {
+                let Some(at) = setting.at else {
+                    continue;
+                };
+                let resource = at.resource(&device);
+                assert!(is_settings(&resource), "{resource}");
+                assert_eq!(
+                    changed_by(&resource, &at.action()).map(|found| found.id),
+                    Some(setting.id),
+                    "{resource}#{}",
+                    at.action()
+                );
+            }
+            assert_eq!(
+                SETTINGS
+                    .iter()
+                    .find(|setting| setting.id == "power.lock_after")
+                    .and_then(|setting| setting.at)
+                    .map(|at| (at.resource(&device), at.action())),
+                Some((format!("devices/{device}/settings/power"), "set-lock-minutes".to_owned()))
+            );
+            assert_eq!(device_of("settings/appearance"), "");
+            assert!(!is_settings("devices/ab/files/power"));
+        }
+
+        phase ids_are_unique_and_every_setting_is_on_a_listed_page;
+        {
+            let mut pages = HashSet::new();
+            for page in PAGES {
+                assert!(pages.insert(page.slug), "page {} twice", page.slug);
+            }
+            let mut ids = HashSet::new();
+            for setting in SETTINGS {
+                assert!(ids.insert(setting.id), "setting {} twice", setting.id);
+                assert!(
+                    pages.contains(setting.page),
+                    "{} is on unknown page {}",
+                    setting.id,
+                    setting.page
+                );
+                assert!(
+                    !setting.control.is_empty(),
+                    "{} names no control",
+                    setting.id
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_setting_is_found_with_its_link_names_and_words;
+
+        phase a_setting_links_to_its_page_and_knows_its_controls;
+        {
+            let scale = setting("display.scale").expect("indexed");
+            assert_eq!(scale.link(), "settings://displays#display.scale");
+            assert!(scale.is_control("display.output.eDP-1.scale"));
+            assert!(!scale.is_control("display.output.eDP-1.scale_milli"));
+            assert!(!scale.is_control("display.brightness"));
+            let layout = setting("keyboard.layout").expect("indexed");
+            assert!(layout.is_control("input.source.replace"));
+            assert!(layout.is_control("input.source.add_picker"));
+            assert!(!layout.is_control("input.source"));
+        }
+
+        phase names_come_from_every_language;
+        {
+            let zone = setting("time.zone").expect("indexed");
+            assert_eq!(
+                names_in_every_locale(&zone.name_key()),
+                vec!["time zone".to_owned(), "zeitzone".to_owned()]
+            );
+        }
+    }
+}

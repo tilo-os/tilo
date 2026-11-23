@@ -1,10 +1,11 @@
 //! Field edits on another record than the app's own: a settings section and
 //! the person's own record, bound by path in a view of their own, published
-//! beside the app's resource with their field edits and verbs, changed only
-//! by their person whatever their role in the workspace, checked by the model's
-//! invariants and recorded in the record's history. A host without a window
-//! (the session) holds an app's settings sections and changes them through
-//! the same field edits.
+//! beside the app's resource with their verbs (a section with a setter of each
+//! field, `set-<field>`, and no generic edit; the person's record with its
+//! field edits), changed only by their person whatever their role in the
+//! workspace, checked by the model's invariants and recorded in the record's
+//! history. A host without a window (the session) holds an app's settings
+//! sections and changes them through the same setters.
 
 use serde::{Deserialize, Serialize};
 use tilo_app::Role;
@@ -189,23 +190,32 @@ tilo_test_env::scenario! {
         app.settle();
         assert!(app.settings::<Display>().get().high_contrast);
 
-        // Its field edits and verbs are published beside the app's resource.
+        // Its verbs and a setter of each field are published beside the app's
+        // resource, and nothing that sets any field at all: a grant names the
+        // setting it allows.
         let actions = published(&mut app, "settings:test.display");
+        for setter in ["set-high-contrast", "set-scale", "reset-scale"] {
+            assert!(actions.iter().any(|action| action == setter), "{actions:?}");
+        }
+        for generic in ["field-edit", "apply", "group"] {
+            assert!(!actions.iter().any(|action| action == generic), "{actions:?}");
+        }
         assert!(
-            actions.iter().any(|action| action == "field-edit"),
-            "{actions:?}"
-        );
-        assert!(
-            actions.iter().any(|action| action == "reset-scale"),
-            "{actions:?}"
+            app.call_on(
+                "settings:test.display",
+                "field-edit",
+                serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 2.0 } }),
+            )
+            .is_err(),
+            "no generic edit reaches a section"
         );
 
-        // An agent edits it by path, through the API; the model's invariant
-        // holds on every way in.
+        // An agent sets a field through the API, whole or by an edit inside
+        // it; the model's invariant holds on every way in.
         app.call_on(
             "settings:test.display",
-            "field-edit",
-            serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 2.0 } }),
+            "set-scale",
+            serde_json::json!({ "value": 2.0 }),
         )
         .unwrap();
         assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
@@ -214,11 +224,16 @@ tilo_test_env::scenario! {
         assert!(
             app.call_on(
                 "settings:test.display",
-                "field-edit",
-                serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 9.0 } }),
+                "set-scale",
+                serde_json::json!({ "edit": { "path": [], "op": "set", "value": 9.0 } }),
             )
             .is_err(),
             "the check refuses a scale out of range"
+        );
+        assert!(
+            app.call_on("settings:test.display", "set-scale", serde_json::json!({}))
+                .is_err(),
+            "a setter is given the value or an edit"
         );
         app.call_on(
             "settings:test.display",
@@ -262,7 +277,7 @@ tilo_test_env::scenario! {
         assert!(app.settings::<Display>().get().high_contrast);
     }
 
-    phase a_control_built_by_hand_binds_a_sections_field_edit;
+    phase a_control_built_by_hand_binds_a_sections_setter;
     {
         let mut app = TestApp::<BindingApp>::new().unwrap();
         app.harness().click_named("contrast").unwrap();
@@ -284,13 +299,13 @@ tilo_test_env::scenario! {
                 .get()
                 .minutes
         };
-        let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
+        let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "set-minutes");
         let invoker = tilo_app::tilo_actions::ActionInvoker::person("ada");
 
         let records = tilo_app::framework::SettingsResources::new(LockApp::ID, LockApp::resources);
         let resources = records.resources();
         let spec = tilo_app::tilo_actions::api::resolve(&resources, &address)
-            .expect("the section's field edit is published");
+            .expect("the field's setter is published");
         assert_eq!(
             spec.confirmation_for_json(&edit(1)),
             tilo_app::tilo_actions::ConfirmationPolicy::None,
@@ -301,13 +316,28 @@ tilo_test_env::scenario! {
             tilo_app::tilo_actions::ConfirmationPolicy::Confirm,
             "never locking asks first"
         );
+        // Whoever reads only the inert contract (a broker) asks too.
+        let never = format!(
+            "{}{}",
+            tilo_app::tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(edit(0))
+        );
+        assert_eq!(
+            spec.contract.confirmation_for_argument(Some(&never)),
+            tilo_app::tilo_actions::ConfirmationPolicy::Confirm,
+            "the inert contract asks before the lock weakens"
+        );
+        assert!(
+            spec.params().iter().all(|param| param.name != "edit"),
+            "a field that may weaken the lock is set whole"
+        );
 
         records
-            .invoke(&address, &edit(1), None, &invoker, None)
+            .invoke(&address, &edit(1), None, &invoker)
             .unwrap();
         assert_eq!(stored(), 1);
         assert_eq!(
-            records.invoke(&address, &edit(0), None, &invoker, None),
+            records.invoke(&address, &edit(0), None, &invoker),
             Err(tilo_app::tilo_actions::ApiError::ConfirmationRequired),
             "never locking runs only once confirmed"
         );
@@ -322,7 +352,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             records
-                .invoke(&address, &edit(90), Some(&approval), &invoker, None)
+                .invoke(&address, &edit(90), Some(&approval), &invoker)
                 .is_err(),
             "the model's check refuses"
         );
@@ -355,25 +385,25 @@ tilo_test_env::scenario! {
         app.settle();
         assert!(
             app.settings::<Display>().get().high_contrast,
-            "the click ran the host's field edit"
+            "the click ran the host's setter"
         );
         for kept in ["settings:test.display", "settings:test.lock"] {
             assert_eq!(published(&mut app, kept), Vec::<String>::new(), "{kept}");
         }
 
-        app.call_on("settings:test.lock", "field-edit", edit(1).into())
+        app.call_on("settings:test.lock", "set-minutes", edit(1).into())
             .unwrap();
         assert_eq!(app.settings::<Lock>().get().minutes, 1);
         assert_eq!(
-            app.call_on("settings:test.lock", "field-edit", edit(0).into()),
+            app.call_on("settings:test.lock", "set-minutes", edit(0).into()),
             Err(tilo_app::tilo_actions::ApiError::ConfirmationRequired),
             "never locking asks first, here as at the host"
         );
-        app.call_confirmed_on("settings:test.lock", "field-edit", edit(0).into())
+        app.call_confirmed_on("settings:test.lock", "set-minutes", edit(0).into())
             .unwrap();
         assert_eq!(app.settings::<Lock>().get().minutes, 0);
         assert!(
-            app.call_confirmed_on("settings:test.lock", "field-edit", edit(90).into())
+            app.call_confirmed_on("settings:test.lock", "set-minutes", edit(90).into())
                 .is_err(),
             "the host's model refuses"
         );
@@ -500,8 +530,8 @@ tilo_test_env::scenario! {
         assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
         app.call_on(
             "settings:test.display",
-            "field-edit",
-            serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
+            "set-high-contrast",
+            serde_json::json!({ "value": true }),
         )
         .unwrap();
         assert_eq!(app.open_person_resources(), 1, "a write keeps no record");
@@ -752,11 +782,9 @@ impl ResourceApp for LockApp {
     }
 }
 
+/// The arguments of the lock's setter setting it to `minutes`.
 fn edit(minutes: u32) -> serde_json::Map<String, serde_json::Value> {
-    serde_json::from_value(
-        serde_json::json!({ "edit": { "path": [{ "field": "minutes" }], "op": "set", "value": minutes } }),
-    )
-    .unwrap()
+    serde_json::from_value(serde_json::json!({ "value": minutes })).unwrap()
 }
 
 /// Settings sections the host keeps: the window shows them and binds its

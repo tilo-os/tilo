@@ -133,10 +133,14 @@ mod tests {
     use super::*;
     use settings_store::SettingsSource as _;
     #[test]
-    fn lockdown_policy_is_persistent_and_not_dbus_settable() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = settings_store::Store::open(dir.path()).unwrap();
-        let _scoped = settings_store::scoped_source(Some(store));
+    fn lockdown_policy_is_a_setting_and_not_dbus_settable() {
+        let store = std::sync::Arc::new(settings_store::HostDocument::new(
+            serde_json::Map::new(),
+            |_| Ok(()),
+        ));
+        let _scoped = settings_store::scoped_source(Some(
+            store.clone() as std::sync::Arc<dyn settings_store::SettingsSource>
+        ));
         let backend = LockdownBackend::for_session();
         assert_eq!(backend.policy(), LockdownPolicy::default());
         backend
@@ -166,12 +170,10 @@ mod tests {
             backend.set_disable_camera(false).is_err(),
             "D-Bus must not weaken the policy"
         );
-        settings_store::flush_pending_writes();
-        let reopened = settings_store::Store::follow(dir.path()).unwrap();
         assert_eq!(
-            reopened.load()["lockdown"]["policy"]["disable_microphone"],
+            store.load()["lockdown"]["policy"]["disable_microphone"],
             serde_json::json!(true),
-            "the policy persisted"
+            "the policy is kept in the settings"
         );
     }
 }

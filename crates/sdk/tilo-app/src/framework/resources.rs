@@ -83,6 +83,9 @@ pub struct Held<P: Resource> {
     published: RefCell<Option<(Published, tilo_actions::ResourceSpec)>>,
     /// [`Self::publish_head`] as last built, as `published` is.
     published_head: RefCell<Option<(Published, tilo_actions::ResourceSpec)>>,
+    /// What the record publishes of what its type publishes, where that is
+    /// not all of it ([`Self::publishing`]).
+    publishes: Option<Box<dyn Fn(tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec>>,
 }
 
 /// The record's revision and loads ([`Live::loads`]), the locale's
@@ -110,7 +113,19 @@ impl<P: Resource> Held<P> {
             read: None,
             published: RefCell::new(None),
             published_head: RefCell::new(None),
+            publishes: None,
         }
+    }
+
+    /// The record publishing `publishes` of what its type publishes: a
+    /// settings section, set field by field by its setters and by no
+    /// generic edit.
+    pub(crate) fn publishing(
+        mut self,
+        publishes: impl Fn(tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec + 'static,
+    ) -> Self {
+        self.publishes = Some(Box::new(publishes));
+        self
     }
 
     /// The record, whose committed document `document` lends, read as every
@@ -227,8 +242,18 @@ impl<P: Resource> Held<P> {
         )
     }
 
-    /// The publication as its resource type builds it, before it is routed here.
+    /// The publication as its resource type builds it, and as the record
+    /// publishes it, before it is routed here.
     fn build(&self) -> tilo_actions::ResourceSpec {
+        let built = self.built();
+        match &self.publishes {
+            Some(publishes) => publishes(built),
+            None => built,
+        }
+    }
+
+    /// The publication as its resource type builds it.
+    fn built(&self) -> tilo_actions::ResourceSpec {
         if let Some(state) = self.live.get_checked() {
             tilo_resource::publish::<P>(&self.id, &self.label, &state)
         } else {
@@ -342,6 +367,11 @@ pub(crate) trait ResourceApi {
     /// Whether it is one person's own, which only they change; what the workspace's grants
     /// decide instead answers whoever they admit.
     fn own(&self) -> bool {
+        true
+    }
+    /// Whether `action` is one of this record's: where two records share one id (two types
+    /// of settings kept in one place), each takes its own type's actions.
+    fn takes(&self, _action: &EncodedAction) -> bool {
         true
     }
     /// Increases whenever what the record holds changed, read now.
@@ -543,7 +573,7 @@ pub(crate) fn answer(
         tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
     let api = apis
         .iter()
-        .find(|api| api.id() == request.record)
+        .find(|api| api.id() == request.record && api.takes(&request.action))
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     if !api.own() {
         // Whoever asks: the workspace's grants decide it where the document applies it.
@@ -864,6 +894,9 @@ impl<'a> Resources<'a> {
         let Some(storage) = self.storage else {
             return self;
         };
+        if self.provider.is_some() {
+            super::controls::kept_section(T::KIND);
+        }
         let settings = storage.storage().settings::<T>();
         let api = storage.section(&settings);
         if let Some(provider) = self.provider {

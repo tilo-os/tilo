@@ -37,6 +37,7 @@ use device_vpn::tunnel::{
     ALPN, Authority, ClientError, Decision, Ended, Exit, ExitDevices, Refusal, client,
 };
 use iroh::{Endpoint, EndpointAddr, EndpointId};
+use settings_sections::service::SettingsService;
 use settings_store::device_vpn::{
     ClientState, DeviceVpnStatus, EXIT, PROFILE_KILL_SWITCHES, ProfileBlockStatus,
     ProfileKillSwitch, Refusal as ShownRefusal, Routes, STOP, StopRequest, THROUGH, Through,
@@ -52,7 +53,6 @@ use tilo_session::platform::fabric::{
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session, Vpn};
-use tilo_settings_service::SettingsService;
 
 const PROFILE: &str = "9b1c6f42-7c0a-4b0f-9a1c-2d3e4f5a6b7c";
 /// The network the other device is on.
@@ -974,16 +974,14 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     let cleared = settings_changes()
         .into_iter()
         .skip(before)
-        .find(|change| change["action"] == serde_json::json!("settings.device-vpn/route-through"))
-        .expect("the laptop's choice came off through the action that made it");
+        .find(|change| change.verb == settings_store::workspace::verb(THROUGH.name()))
+        .expect("the laptop's choice came off through its setter");
     assert_eq!(
-        cleared["actor"],
-        serde_json::json!(
-            serde_json::to_string(&tilo_actions::Actor::Member(
-                tilo_actions::MemberId::person(PERSON)
-            ))
-            .expect("an actor serializes")
-        ),
+        cleared.invoker,
+        serde_json::to_string(&tilo_actions::Actor::Member(
+            tilo_actions::MemberId::person(PERSON)
+        ))
+        .expect("an actor serializes"),
         "the person's own change, not a file written behind their back"
     );
     assert_eq!(
@@ -997,9 +995,10 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     });
 }
 
-/// The settings document's history, oldest first.
-fn settings_changes() -> Vec<serde_json::Value> {
-    settings_store::local()
+/// The changes of the VPN settings, oldest first.
+fn settings_changes() -> Vec<tilo_resource_store::Stamp> {
+    settings_store::source()
         .expect("the person's settings")
-        .change_log()
+        .stamps(settings_store::device_vpn::SECTION)
+        .expect("the session keeps their history")
 }

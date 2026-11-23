@@ -1909,8 +1909,9 @@ impl Host {
     /// ([`AppBrokerState::action_invoke_local_person`]), as it does for the palette's actions, so
     /// what the person may do here is what the person may do anywhere.
     /// Only this device's own control sockets call it — the owner's socket, whose peer is the account
-    /// whose desktop this is ([`crate::test_control::owner_decision`]), and the development
-    /// test-control socket, which drives it as the person at this device. An agent, or a person over
+    /// whose desktop this is ([`crate::test_control::owner_decision`]), the API socket of this
+    /// login's programs ([`crate::api_server`]), and the development test-control socket, which
+    /// drives it as the person at this device. An agent, or a person over
     /// a network, MCP or app connection, invokes as itself through [`ActionProvider::invoke`], and the
     /// broker's per-action and per-role permissions decide; the broker refuses ownership to anything
     /// but the person at this device.
@@ -2359,7 +2360,10 @@ fn published_reading(
 ) -> Option<serde_json::Value> {
     published_root(app, resource).then(|| {
         services
-            .read(resource)
+            .read(&tilolang_tilo::platform_apps::on_device(
+                resource,
+                &tilo_app::framework::settings_device(),
+            ))
             .unwrap_or_else(|| serde_json::json!({}))
     })
 }

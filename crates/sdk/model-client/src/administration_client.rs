@@ -1,8 +1,11 @@
-//! Administration uses the same authenticated RPC channel as inference.
+//! Administration: the descriptions are settings, read and set in this
+//! process's settings (`agent_provider_config::management`); what only the
+//! gateway can answer, a provider's model list, uses the same authenticated
+//! RPC channel as inference.
 use crate::{Request, Response, transport::Transport};
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig,
-    management::{AdminFuture, ProviderAdmin, ProviderSnapshot},
+    management::{self, AdminFuture, ProviderAdmin, ProviderSnapshot},
     protocol::{ErrorKind, ModelError},
 };
 
@@ -37,17 +40,17 @@ impl<T: Transport> AdministrationClient<T> {
 }
 impl<T: Transport> ProviderAdmin for AdministrationClient<T> {
     fn get_config(&self) -> AdminFuture<'_, ProviderSnapshot> {
-        Box::pin(self.read(Request::GetProviderConfig))
+        Box::pin(std::future::ready(management::snapshot()))
     }
     fn set_config(
         &self,
         expected_revision: String,
         config: ProviderConfig,
     ) -> AdminFuture<'_, ProviderSnapshot> {
-        Box::pin(self.read(Request::SetProviderConfig {
-            expected_revision,
+        Box::pin(std::future::ready(management::replace(
+            &expected_revision,
             config,
-        }))
+        )))
     }
     fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>> {
         Box::pin(self.read(Request::ListModels { profile_id }))

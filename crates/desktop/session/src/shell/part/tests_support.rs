@@ -5,7 +5,7 @@ use tilo_session_core::surface::KeyModifiers;
 /// device serves: a view reads an absent sound, battery or connection as none.
 pub(super) fn publish_platform_roots(link: &SessionLink) {
     for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
-        link.publish_reading(resource, &ty, serde_json::json!({}));
+        link.publish_reading(&resource, &ty, serde_json::json!({}));
     }
     publish_time(link, "4:28 PM");
     publish_styles(link, &shipped_styles());

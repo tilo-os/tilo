@@ -45,7 +45,7 @@ bounded-command = { path = "../../platform/bounded-command" }
 rand.workspace = true
 zeroize.workspace = true
 rustix = { workspace = true, features = ["process"] }
-settings-store = { path = "../../system/settings-store", features = ["watch"] }
+settings-store = { path = "../../desktop/settings", features = ["watch"] }
 # The theme the legacy toolkits' appearance keys are projected from.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 futures-util.workspace = true

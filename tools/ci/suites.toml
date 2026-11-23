@@ -836,8 +836,8 @@ readers = [
 [[cargo]]
 package = "tilolang-tilo"
 # The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
-# The platform apps embed the device's published surface and Settings' committed one, and a
-# task's session holds a native app's package from its surface.
+# The platform apps embed the device's published surface, Settings' committed one and the settings
+# sections', and a task's session holds a native app's package from its surface.
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
@@ -846,8 +846,8 @@ inputs = [
   "crates/lang/tilolang/tests/fixtures/",
   "crates/desktop/session/device-surface.json",
   "apps/settings/surface.toml",
-  "crates/session/settings-service/agent-models-surface.json",
-  "crates/session/settings-service/agent-providers-surface.json",
+  "crates/desktop/settings-sections/published.toml",
+  "apps/contacts/surface.toml",
   "crates/services/vision/surface.json",
   "crates/session/settings-service/shortcuts-surface.json",
   "crates/integrations/tilo-contact-directory/surface.json",
@@ -1545,13 +1545,17 @@ inputs = [
   # The catalogues the locale-leak test reads words of: the toolkit's, which
   # every window carries, and the Settings index's, which every window offers.
   "crates/ui/ui-core/locales/en-US.ftl",
-  "crates/system/settings-store/locales/en-US.ftl",
-  "crates/system/settings-store/locales/de-DE.ftl",
+  "crates/desktop/settings/locales/en-US.ftl",
+  "crates/desktop/settings/locales/de-DE.ftl",
   # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
   "crates/engines/paint-stream/tests/fixtures/layers.top.json",
+  # The settings sections' committed surface, which the session's own API types their
+  # setters by.
+  "crates/desktop/settings-sections/published.toml",
 ]
 readers = [
   "crates/desktop/session/tests/no_locale_leaks.rs",
+  "crates/desktop/session/tests/own_api.rs",
   "crates/desktop/session/src/page_track.rs",
   "crates/desktop/session/src/window_share/tests/page.rs",
   "crates/desktop/session/src/window_share/tests/watching.rs",

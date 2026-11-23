@@ -55,7 +55,7 @@ tilo-content = { version = "0.1.0", path = "../content", default-features = fals
 runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
 # `net` (the Unix-socket transport) is added for non-WASM targets below.
 tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
-settings-store = { version = "0.1.0", path = "../../system/settings-store", optional = true }
+settings-store = { version = "0.1.0", path = "../../desktop/settings", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 # A call's pictures travel in the local media queue's JSON as base64.

@@ -279,32 +279,11 @@ pub fn loopback_url() -> String {
         .to_string()
 }
 
-/// Make the profile with these homes (`config_home` and `data_home`) relay through this machine's
-/// loopback relay: what a session started on that profile reads as its device's relays, instead of
-/// the person's own out on the internet.
-///
-/// The settings a session reads live in the device document store at its data home, which is the
-/// store written here, not the configuration directory a profile's other files sit in.
-///
-/// The profile is named by its roots, never by this process's environment: identity lookups on
-/// other threads read the environment, and a profile written by rewriting it would answer those
-/// threads the child's paths.
-pub fn relay_through_loopback_in(config_home: &std::path::Path, data_home: &std::path::Path) {
-    use settings_store::SettingsSource as _;
-
-    let store = settings_store::Store::open_device_in(data_home, &config_home.join("tilo"))
-        .expect("the device's settings");
-    settings_store::relay::RELAY
-        .set_in(
-            store.as_ref(),
-            settings_store::relay::Relays::Own(loopback_url()),
-        )
-        .expect("the device's relay setting");
-    // Writes are saved by a writer of its own, and a store dropped before it runs loses them:
-    // the session that starts on this profile reads the setting, so it is on disk before this
-    // returns.
-    store.flush_pending();
-    drop(store);
+/// What a device started for a test is given in its environment to relay through this machine's
+/// loopback relay, instead of the person's own out on the internet: the variable and its value.
+#[must_use]
+pub fn loopback_relay() -> (&'static str, String) {
+    (settings_store::relay::ENV, loopback_url())
 }
 
 /// The trust this crate's endpoints bind with: the system's, and the certificate the address
@@ -501,57 +480,7 @@ impl Host {
 mod tests {
     use std::time::Duration;
 
-    use super::{endpoint, endpoint_key, loopback_url, relay_through_loopback_in};
-
-    /// A profile seeded with this machine's relay reads it back as its device's relays: what a
-    /// session started on that profile binds with.
-    #[test]
-    fn a_seeded_profile_relays_through_this_machines_loopback() {
-        let home = tempfile::tempdir().expect("a device's home");
-        let (config, data) = (home.path().join("config"), home.path().join("data"));
-        std::fs::create_dir_all(&config).expect("the configuration directory");
-        std::fs::create_dir_all(&data).expect("the data directory");
-        relay_through_loopback_in(&config, &data);
-        let store = settings_store::Store::open_device_in(&data, &config.join("tilo"))
-            .expect("the device's settings");
-        assert_eq!(
-            settings_store::relay::RELAY.get_in(store.as_ref()),
-            settings_store::relay::Relays::Own(loopback_url())
-        );
-    }
-
-    /// Seeding a profile writes its settings and changes nothing this process reads: another
-    /// profile's lookups, on any thread, keep answering this process's own identity.
-    #[test]
-    fn seeding_a_profile_leaves_the_process_environment_alone() {
-        let home = tempfile::tempdir().expect("a device's home");
-        let (config, data) = (home.path().join("config"), home.path().join("data"));
-        std::fs::create_dir_all(&config).expect("the configuration directory");
-        std::fs::create_dir_all(&data).expect("the data directory");
-        let before: Vec<_> = [
-            "HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "TILO_IDENTITY_ROOT",
-        ]
-        .into_iter()
-        .map(std::env::var_os)
-        .collect();
-        relay_through_loopback_in(&config, &data);
-        let after: Vec<_> = [
-            "HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "TILO_IDENTITY_ROOT",
-        ]
-        .into_iter()
-        .map(std::env::var_os)
-        .collect();
-        assert_eq!(
-            before, after,
-            "seeding a profile leaves the environment alone"
-        );
-    }
+    use super::{endpoint, endpoint_key, loopback_url};
 
     /// An endpoint picks this machine's relay as its home at once, because the address discovery
     /// service answers where the relay sees it from: without one it waits out the probe first.

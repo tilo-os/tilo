@@ -205,14 +205,10 @@ fn launchable(
         .iter()
         .filter(|app| app.has_gui)
         .map(|app| LaunchableApplication {
-            capabilities: if settings_store::app_scope::SYSTEM_SETTINGS_APPS
-                .contains(&app.app_id.as_str())
-            {
+            capabilities: if app.app_id.as_str() == tilo_app_id::apps::SETTINGS {
                 app.declared_capabilities()
                     .into_iter()
-                    .filter(|capability| {
-                        capability == settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY
-                    })
+                    .filter(|capability| capability == settings_store::workspace::SET_EVERY_SETTING)
                     .collect()
             } else {
                 Vec::new()

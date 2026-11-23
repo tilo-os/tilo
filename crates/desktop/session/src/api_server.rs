@@ -59,8 +59,12 @@ impl tilo_api::session::Here for Desktop {
         {
             return Err("no such workspace".into());
         }
+        // The socket is this login's alone, as the owner's socket is: what comes through it is
+        // the person at this device, and the broker keeps the device's certificate as the owner
+        // of each step, as it does for the person's clicks.
         let api = SessionApi::new(Some(Arc::clone(&self.broker)), Arc::clone(&self.services))
-            .with_session_actions(self.services.actions());
+            .with_session_actions(self.services.actions())
+            .for_local_person();
         Ok(tilo_api::session::Reached {
             provider: Arc::new(api),
             person: self.services.person().to_owned(),

@@ -1568,11 +1568,9 @@ mod tests {
         }
         assert_eq!(app.settings::<PowerPrefs>().get().lock_minutes, 1);
         app.call_confirmed_on(
-            &format!("settings:{}", crate::testing::POWER),
-            "field-edit",
-            serde_json::json!({
-                "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": 0 }
-            }),
+            &crate::testing::section(crate::testing::POWER),
+            "set-lock-minutes",
+            serde_json::json!({ "value": 0 }),
         )
         .unwrap();
         edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();

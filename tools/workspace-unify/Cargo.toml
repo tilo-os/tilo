@@ -960,8 +960,8 @@ doc = false
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../apps/settings", default-features = false, features = ["default", "tilo-os"] }
 "settings-model" = { path = "../../crates/sdk/settings-model", default-features = false, features = [] }
-"settings-sections" = { path = "../../crates/system/settings-sections", default-features = false, features = [] }
-"settings-store" = { path = "../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
+"settings-sections" = { path = "../../crates/desktop/settings-sections", default-features = false, features = [] }
+"settings-store" = { path = "../../crates/desktop/settings", default-features = false, features = ["model", "test-support", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }
@@ -1087,7 +1087,7 @@ doc = false
 "tilo-app-launch" = { path = "../../crates/desktop/app-launch", default-features = false, features = ["test-support"] }
 "tilo-app-module" = { path = "../../crates/lang/tilo-app-module", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = ["watch"] }
+"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = [] }
 "tilo-app-template-smoke" = { path = "../../tools/tilo-app-template-smoke", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../crates/sdk/tilo-app-window", default-features = false, features = [] }
 "tilo-appearance" = { path = "../../crates/platform/tilo-appearance", default-features = false, features = [] }
@@ -1281,7 +1281,6 @@ doc = false
 "tilo-session-core" = { path = "../../crates/desktop/session-core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../crates/desktop/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../crates/os/power-service", default-features = false, features = ["default", "service"] }
-"tilo-settings-service" = { path = "../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheet" = { path = "../../crates/engines/tilo-sheet", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../crates/desktop/sheets", default-features = false, features = [] }
 "tilo-shm" = { path = "../../crates/platform/tilo-shm", default-features = false, features = [] }
@@ -2382,7 +2381,7 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
 "settings-model" = { path = "../../crates/sdk/settings-model", default-features = false, features = [] }
-"settings-store" = { path = "../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
+"settings-store" = { path = "../../crates/desktop/settings", default-features = false, features = ["model", "test-support", "watch"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }
 "sha1-0_10_6" = { package = "sha1", version = "^0.10.6", default-features = false, features = ["default", "oid", "std"] }
@@ -2485,7 +2484,7 @@ doc = false
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-module" = { path = "../../crates/lang/tilo-app-module", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = ["watch"] }
+"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../crates/sdk/tilo-app-window", default-features = false, features = [] }
 "tilo-appearance" = { path = "../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-automation" = { path = "../../crates/core/automation", default-features = false, features = ["model"] }
@@ -3751,8 +3750,8 @@ doc = false
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../apps/settings", default-features = false, features = ["default", "tilo-os"] }
-"settings-sections" = { path = "../../crates/system/settings-sections", default-features = false, features = [] }
-"settings-store" = { path = "../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
+"settings-sections" = { path = "../../crates/desktop/settings-sections", default-features = false, features = [] }
+"settings-store" = { path = "../../crates/desktop/settings", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }
@@ -4062,7 +4061,6 @@ doc = false
 "tilo-session-core" = { path = "../../crates/desktop/session-core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../crates/desktop/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../crates/os/power-service", default-features = false, features = ["default", "service"] }
-"tilo-settings-service" = { path = "../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../crates/desktop/sheets", default-features = false, features = [] }
 "tilo-socket" = { path = "../../crates/platform/tilo-socket", default-features = false, features = [] }
 "tilo-sort" = { path = "../../crates/platform/tilo-sort", default-features = false, features = [] }
@@ -5056,7 +5054,7 @@ doc = false
 "serde_with_macros-3_21_0" = { package = "serde_with_macros", version = "^3.21.0", default-features = false, features = [] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
-"settings-store" = { path = "../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
+"settings-store" = { path = "../../crates/desktop/settings", default-features = false, features = ["model", "watch"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }
 "sha1-0_10_6" = { package = "sha1", version = "^0.10.6", default-features = false, features = ["default", "oid", "std"] }

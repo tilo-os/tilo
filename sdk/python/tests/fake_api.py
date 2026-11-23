@@ -622,6 +622,11 @@ class FakeApi:
             return self.done(
                 f"{path}#group", {"applied": len(members)}, [path], link_to(path)
             )
+        if action.startswith("set-") and "value" in args:
+            # A settings section's setter: its field takes the whole value.
+            field = action.removeprefix("set-").replace("-", "_")
+            self.apply_edit(path, {"path": [{"field": field}], "op": "set", "value": args["value"]})
+            return self.done(at, {"set": field}, [path])
         if action == "field-edit":
             self.apply_edit(path, args.get("edit") or {})
             self.ran[at] = self.ran.get(at, 0) + 1

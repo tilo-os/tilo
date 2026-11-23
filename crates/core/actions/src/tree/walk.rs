@@ -315,14 +315,28 @@ pub fn is_chain(id: &str) -> bool {
         .is_some_and(|document| !document.is_empty())
 }
 
-/// The child of the workspace root a path starts with, as it was written (`browser@4711`).
+/// The child of the workspace root a path starts with, as it was written (`browser@4711`). A
+/// device's settings section (`devices/<id>/settings/power`) is the settings app's, as a person's
+/// (`settings/appearance`) is: no app is called `devices`.
 #[must_use]
 pub fn app_of(parsed: &Address) -> String {
+    if device_section(parsed) {
+        return tilo_app_id::apps::SETTINGS.to_owned();
+    }
     parsed
         .segments
         .first()
         .map(Segment::written)
         .unwrap_or_default()
+}
+
+/// Whether `parsed` names a device's settings section, which its app finds by its whole address.
+fn device_section(parsed: &Address) -> bool {
+    parsed
+        .segments
+        .first()
+        .is_some_and(|first| first.written() == "devices")
+        && crate::remote::settings_resources::is_section(&parsed.resource())
 }
 
 /// The segments of a path below the child of the root it starts with.
@@ -1469,7 +1483,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         // What an action answered is a path the next call takes as it is:
         // `tasks.tracker/issues/7` names one resource whole, where its parts
         // named one at a time would name every kind that shares a word.
-        if type_address(&app_of(parsed)).is_some() {
+        if type_address(&app_of(parsed)).is_some() || device_section(parsed) {
             let address = parsed.resource();
             if let Some(found) = self
                 .by_item_address(&app_id, &provider, &address, levels)

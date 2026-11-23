@@ -26,7 +26,6 @@ use crate::protocol::{self, MAX_PROFILE_SERVERS, ProfileBlock, Request, Response
 use settings_store::device_vpn::{
     self as settings, ProfileBlockStatus, ProfileIntent, ProfileKillSwitch, ProfileRelease,
 };
-use settings_store::live::LiveSettings;
 use tilo_nm::{ActiveState, VpnReading, VpnWatch};
 use tokio::sync::watch;
 
@@ -122,31 +121,35 @@ impl Choices {
 
 /// Follow the person's VPN profiles and their kill switches from now on,
 /// telling `publish` what blocks whenever that changes.
-pub fn start(live: &LiveSettings, publish: impl Fn(ProfileBlockStatus) + Send + 'static) {
-    start_with(live, publish, Sources::system());
+pub fn start(publish: impl Fn(ProfileBlockStatus) + Send + 'static) {
+    start_with(publish, Sources::system());
 }
 
 /// [`start`], against `sources` instead of the machine's own helper and
 /// `NetworkManager`.
-pub fn start_with(
-    live: &LiveSettings,
-    publish: impl Fn(ProfileBlockStatus) + Send + 'static,
-    sources: Sources,
-) {
-    let section = live.section(settings::SECTION);
+pub fn start_with(publish: impl Fn(ProfileBlockStatus) + Send + 'static, sources: Sources) {
+    let section = vpn_section();
     let kept = settings::PROFILE_INTENT.from_section(&section);
     let (sender, choices) = watch::channel(Choices::read(&section));
-    let settings = live.clone();
-    let following = std::thread::Builder::new()
-        .name("tilo-vpn-kill-switch-settings".into())
-        .spawn(move || follow_settings(&settings, &sender));
-    if let Err(error) = following {
-        tracing::warn!(%error, "could not follow the VPN kill switch settings");
-        return;
+    // The choices are sent on whenever the settings change; nothing wakes between changes.
+    let listener: std::sync::Arc<settings_store::Listener> = std::sync::Arc::new(move || {
+        let choices = Choices::read(&vpn_section());
+        sender.send_if_modified(|current| {
+            let changed = *current != choices;
+            if changed {
+                *current = choices;
+            }
+            changed
+        });
+    });
+    if let Some(source) = settings_store::source() {
+        source.changes().listen(&listener);
     }
     let started = std::thread::Builder::new()
         .name("tilo-vpn-kill-switch".into())
         .spawn(move || {
+            // Followed for as long as the kill switch runs.
+            let _listener = listener;
             match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -162,24 +165,11 @@ pub fn start_with(
     }
 }
 
-/// Send the choices on whenever the settings document changes; nothing
-/// wakes between changes.
-fn follow_settings(live: &LiveSettings, sender: &watch::Sender<Choices>) {
-    let mut seen = live.snapshot().generation;
-    loop {
-        let snapshot = live.wait_for_next(seen);
-        seen = snapshot.generation;
-        let choices = Choices::read(&snapshot.section(settings::SECTION));
-        sender.send_if_modified(|current| {
-            let changed = *current != choices;
-            if changed {
-                *current = choices;
-            }
-            changed
-        });
-        if sender.is_closed() {
-            return;
-        }
+/// The VPN section of the settings as they are now.
+fn vpn_section() -> serde_json::Map<String, serde_json::Value> {
+    match settings_store::load().remove(settings::SECTION) {
+        Some(serde_json::Value::Object(section)) => section,
+        _ => serde_json::Map::new(),
     }
 }
 

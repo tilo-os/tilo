@@ -340,9 +340,11 @@ name = "agent-provider-config"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "serde",
  "serde_json",
  "settings-store",
+ "sha2 0.11.0",
  "tempfile",
  "tilo-paths",
  "tilo-resource",
@@ -14445,6 +14447,7 @@ dependencies = [
 name = "settings-sections"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "agent-provider-config",
  "desktop-policy",
  "jiff",
@@ -14453,11 +14456,16 @@ dependencies = [
  "settings-model",
  "settings-store",
  "tilo-accessibility-settings",
+ "tilo-actions",
  "tilo-app",
  "tilo-app-id",
  "tilo-automerge-fork",
  "tilo-locale",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-test-env",
  "tilo-wallpapers",
+ "tilolang-tilo",
  "workspace-hack",
 ]
 
@@ -14466,27 +14474,27 @@ name = "settings-store"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "durable-store",
+ "collab-types",
  "serde",
  "serde_json",
  "settings-model",
  "tempfile",
+ "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-id",
- "tilo-app-state",
- "tilo-automerge",
- "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-control",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
  "tilo-platform-caps",
  "tilo-process",
  "tilo-resource",
- "tilo-rt",
+ "tilo-resource-store",
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -16151,6 +16159,7 @@ name = "tilo-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-fleet",
  "base64 0.22.1",
  "blake3",
  "collab-types",
@@ -16288,12 +16297,12 @@ dependencies = [
  "tilo-app",
  "tilo-app-id",
  "tilo-app-package",
- "tilo-canonical-json",
  "tilo-caps",
  "tilo-files",
  "tilo-headless-schema",
  "tilo-history",
  "tilo-paths",
+ "tilo-resource",
  "tilo-test-env",
  "tilo-ui-graph",
  "tilolang-cli",
@@ -19926,6 +19935,7 @@ dependencies = [
  "tilo-app-id",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-canonical-json",
  "tilo-clock",
  "tilo-content",
  "tilo-failure",
@@ -20718,7 +20728,6 @@ dependencies = [
  "tilo-session-core",
  "tilo-session-logging",
  "tilo-session-power",
- "tilo-settings-service",
  "tilo-sheets",
  "tilo-speaker-service",
  "tilo-startup-metrics",
@@ -20945,24 +20954,6 @@ dependencies = [
  "tilo-pc-keyboard-geometry",
  "tilo-wallpapers",
  "tilo-zone-globe",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-settings-service"
-version = "0.1.0"
-dependencies = [
- "accounts",
- "agent-provider-config",
- "serde",
- "serde_json",
- "settings-sections",
- "settings-store",
- "tilo-actions",
- "tilo-app",
- "tilo-resource",
- "tilo-service",
- "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -22223,7 +22214,6 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
- "settings-model",
  "settings-store",
  "sha2 0.11.0",
  "tempfile",
@@ -27947,7 +27937,6 @@ dependencies = [
  "tilo-session-core",
  "tilo-session-logging",
  "tilo-session-power",
- "tilo-settings-service",
  "tilo-sheet",
  "tilo-sheets",
  "tilo-shm",

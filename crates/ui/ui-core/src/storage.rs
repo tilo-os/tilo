@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 /// Whether this thread may wait on storage.
 pub use durable_store::waiting;
 use settings_model::{DeviceClass, Scope, SettingsSchema};
-pub use settings_store::{ChangeOrigin, InvokingAction, made_by};
+pub use settings_store::ChangeOrigin;
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -176,66 +176,25 @@ impl SettingsDocument {
         SettingsRevision(self.version())
     }
 
-    /// Change the document holding section `name` itself through `edit`, as one change
-    /// made by `origin`: what a change reading the document's history makes (a section's
-    /// undo). `edit` refused, the write failed, or this process holds only the values of
-    /// the settings (an app's channel to the session's), not the document.
-    pub fn edit_document(
-        &self,
-        name: &str,
-        origin: &settings_store::ChangeOrigin,
-        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-    ) -> std::io::Result<()> {
-        let source = self
-            .source()
-            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
-        let store = source.store().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "the settings' history is kept by the session",
-            )
-        })?;
-        store.edit_document(name, origin, edit)
-    }
-
-    /// Change the whole document through `edit`, as one change made by `origin`: one step,
-    /// undone together, for a choice spanning sections (which model the agent answers with).
-    /// `edit` refused, the write failed, or this process holds only the values of the settings.
-    pub fn edit_documents(
-        &self,
-        origin: &settings_store::ChangeOrigin,
-        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-    ) -> std::io::Result<()> {
-        let source = self
-            .source()
-            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
-        let store = source.store().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "the settings' history is kept by the session",
-            )
-        })?;
-        store.edit_documents(origin, edit)
-    }
-
     /// Merge `sections` into the document as one change made by `origin`: a choice whose
-    /// leaves are held by this device's document and the person's both (which model the
+    /// leaves are held by this device's sections and the person's both (which model the
     /// agent answers with) is one step history takes back together.
     pub fn update_sections(
         &self,
         sections: Vec<(String, Map<String, Value>)>,
         origin: &settings_store::ChangeOrigin,
     ) -> std::io::Result<()> {
-        let source = self
-            .source()
-            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
-        let store = source.store().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "the settings' history is kept by the session",
-            )
-        })?;
-        store.update_sections(sections, origin)
+        self.source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?
+            .update_sections(sections, origin)
+    }
+
+    /// Take back (`undo`) or bring back the last step any of `invokers` took on section `name`.
+    /// Whether there was one. Only where the settings' history is kept: the session's.
+    pub fn step(&self, name: &str, undo: bool, invokers: &[String]) -> std::io::Result<bool> {
+        self.source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?
+            .step(name, undo, invokers)
     }
 }
 

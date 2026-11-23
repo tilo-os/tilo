@@ -384,9 +384,9 @@ pub(crate) struct Shared {
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what a layout action that is not their own waits for.
     pub(crate) underway: Rc<Cell<tilo_session_core::layout::Busy>>,
-    /// The person's settings, kept in step with their other devices.
+    /// The person's and the device's settings, kept as resources of their workspaces.
     #[cfg(target_os = "linux")]
-    pub(crate) settings: crate::person_settings::PersonSettings,
+    pub(crate) settings: crate::session_settings::SessionSettings,
     /// Whether the overview is the surface up: the shell's surfaces turn it as they open and close
     /// it, and the control socket's state reads it.
     pub(crate) overview: Rc<Cell<bool>>,

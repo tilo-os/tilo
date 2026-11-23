@@ -150,24 +150,6 @@ async fn cleanup(
         .unwrap();
 }
 
-async fn send(client: &mut tokio::net::UnixStream, value: Request) {
-    FRAMING
-        .write_async(
-            client,
-            &serde_json::to_vec(&Frame {
-                version: RPC_VERSION,
-                value,
-            })
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-}
-
-async fn receive(client: &mut tokio::net::UnixStream) -> Response {
-    serde_json::from_slice(&FRAMING.read_async(client).await.unwrap().unwrap()).unwrap()
-}
-
 async fn signed_metadata_stays_owned_by_provisioner(admin: &dyn ProviderAdmin) {
     let mut profile = ProviderProfile::local_vllm();
     profile.id = "signed-profile".into();
@@ -200,87 +182,20 @@ async fn signed_metadata_stays_owned_by_provisioner(admin: &dyn ProviderAdmin) {
         .unwrap();
 }
 
-async fn mutation_stop_waits_for_commit() {
-    let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
-    HANDOFF_FRAMING
-        .write_async(
-            &mut client,
-            &serde_json::to_vec(&serde_json::json!({"protocol":1,"app_id":SETTINGS_APP})).unwrap(),
-        )
-        .await
-        .unwrap();
-    let server = tokio::spawn(async move {
-        serve_connection(peer, &provider_client().unwrap()).await;
-    });
-    send(&mut client, Request::CancellationSupported).await;
-    assert_eq!(
-        receive(&mut client).await.output.as_deref(),
-        Some("cancel-v1")
-    );
-    let (held, acquired) = tokio::sync::oneshot::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    let holder = std::thread::spawn(move || {
-        let _serial = management_write().unwrap();
-        held.send(()).unwrap();
-        released.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-    });
-    acquired.await.unwrap();
-    let mut profile = ProviderProfile::local_vllm();
-    profile.id = "committed-profile".into();
-    let config = ProviderConfig {
-        profiles: vec![profile],
-        default_profile: None,
-        ..Default::default()
-    };
-    send(
-        &mut client,
-        Request::Cancellable {
-            id: 7,
-            request: Box::new(Request::SetProviderConfig {
-                expected_revision: provider_snapshot(ProviderConfig::default())
-                    .unwrap()
-                    .revision,
-                config: config.clone(),
-            }),
-        },
-    )
-    .await;
-    send(&mut client, Request::Cancel { id: 7 }).await;
-    // The commit is held until released below: a premature answer to the
-    // stopped mutation would be the first frame read after the release.
-    release.send(()).unwrap();
-    let committed = receive(&mut client).await;
-    assert!(committed.ok, "{:?}", committed.error);
-    assert_eq!(
-        serde_json::from_str::<agent_provider_config::management::ProviderSnapshot>(
-            committed.output.as_deref().unwrap()
-        )
-        .unwrap()
-        .config,
-        config
-    );
-    assert_eq!(
-        receive(&mut client).await.output.as_deref(),
-        Some("cancelled:7")
-    );
-    assert_eq!(ProviderConfig::load(), config);
-    holder.join().unwrap();
-    drop(client);
-    server.await.unwrap();
-}
-
 async fn child_fd() {
+    // The descriptions are the settings this process reads, which the gateway
+    // in it reads too.
+    settings_store::install_source(Some(Arc::new(settings_store::HostDocument::new(
+        serde_json::Map::new(),
+        |_| Ok(()),
+    ))));
     for app in [AGENT_APP, CHAT_APP] {
         within(format!("{app} being refused administration"), async {
             let (transport, server) = fd(app);
             let denied = AdministrationClient::new(transport);
             assert_eq!(
-                denied.get_config().await.unwrap_err().kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
                 denied
-                    .set_config("stale".into(), ProviderConfig::default())
+                    .list_models("test-provider".into())
                     .await
                     .unwrap_err()
                     .kind,
@@ -293,19 +208,11 @@ async fn child_fd() {
     let (management, server) = fd(SETTINGS_APP);
     lifecycle(&AdministrationClient::new(management)).await;
     server.abort();
-    within(
-        "a stopped edit waiting for its commit",
-        mutation_stop_waits_for_commit(),
-    )
-    .await;
 }
 
-/// Run the end-to-end administration test `name` over `kind` (`fd`
-/// `fd`) in a process of its own, with disposable configuration. Each step
-/// of it is bounded as a hang on its own ([`within`]): the test is a long
-/// chain of durable settings writes, each syncing its directories,
-/// and on a contended disk the chain as a whole takes minutes while every
-/// step still moves.
+/// Run the end-to-end administration test `name` over `kind` (`fd`) in a
+/// process of its own, with disposable configuration. Each step of it is
+/// bounded as a hang on its own ([`within`]).
 fn administration_end_to_end(name: &str, kind: &str) {
     const MARKER: &str = "PROVIDER_ADMIN_TEST_CHILD";
     if std::env::var_os(MARKER).is_some() {

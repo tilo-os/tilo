@@ -819,6 +819,19 @@ pub mod machines;
 pub mod settings_resources {
     /// The provider that answers the person's settings.
     pub const PROVIDER: &str = "tilo.settings";
+    /// The surface every section is typed by, whichever app shows it.
+    pub const SURFACE_APP: &str = "so.tilo.settings.sections";
+
+    /// Whether `path` (a resource, or an action of one) is a section of the person's settings
+    /// (`settings/<section>`) or a device's (`devices/<id>/settings/<section>`).
+    #[must_use]
+    pub fn is_section(path: &str) -> bool {
+        let resource = path.split('#').next().unwrap_or_default();
+        let parts: Vec<&str> = resource.split('/').collect();
+        matches!(parts.as_slice(), ["settings", section] if !section.is_empty())
+            || matches!(parts.as_slice(), ["devices", device, "settings", section]
+                if !device.is_empty() && !section.is_empty())
+    }
 }
 
 /// A device's migrations: another product's data brought into the workspace by

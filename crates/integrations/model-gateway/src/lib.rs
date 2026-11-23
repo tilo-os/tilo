@@ -8,17 +8,3 @@ pub mod pricing;
 pub mod service;
 #[cfg(all(unix, feature = "host-backend"))]
 pub use service::host_backend;
-
-/// Read the person's settings as the session holds them, never holding them
-/// itself: the gateway may start before the session, which must still be
-/// the one that holds them. Its writes go to the session.
-#[cfg(all(unix, feature = "server"))]
-pub(crate) fn follow_session_settings() {
-    let Some(root) = settings_store::config_root() else {
-        return;
-    };
-    match settings_store::Store::follow(&root) {
-        Ok(store) => settings_store::install_source(Some(store)),
-        Err(error) => eprintln!("tilo-model-gateway: settings unreadable: {error}"),
-    }
-}

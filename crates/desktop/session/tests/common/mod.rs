@@ -1068,6 +1068,18 @@ pub fn api_request(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value, String> {
+    api_request_typed(socket, method, path, body, None)
+}
+
+/// [`api_request`] as a generated SDK sends it: its `Tilo-Surface` header names `surface`, the
+/// surface its types were written for.
+pub fn api_request_typed(
+    socket: &Path,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    surface: Option<&str>,
+) -> Result<Value, String> {
     use std::io::{Read as _, Write as _};
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|error| format!("the session's API socket {}: {error}", socket.display()))?;
@@ -1075,9 +1087,12 @@ pub fn api_request(
         .set_read_timeout(Some(Duration::from_secs(120)))
         .map_err(|error| format!("the session's API socket: {error}"))?;
     let body = body.map(ToString::to_string).unwrap_or_default();
+    let surface = surface.map_or_else(String::new, |surface| {
+        format!("Tilo-Surface: {surface}\r\n")
+    });
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+         {surface}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream
@@ -1215,13 +1230,19 @@ impl Api {
     /// `resources/search/actions/find`), posting `body` when there
     /// is one, and answer nothing here: [`Asked::answer`] waits for it.
     pub fn send(&self, route: &str, body: Option<Value>) -> Asked {
+        self.send_typed(route, body, None)
+    }
+
+    /// [`Self::send`] with types written for `surface` ([`api_request_typed`]).
+    pub fn send_typed(&self, route: &str, body: Option<Value>, surface: Option<String>) -> Asked {
         let socket = self.socket.clone();
         let path = format!("/v1/workspaces/{}/{route}", self.workspace);
         let answered = std::sync::Arc::new(std::sync::OnceLock::new());
         let answer = std::sync::Arc::clone(&answered);
         std::thread::spawn(move || {
             let method = if body.is_some() { "POST" } else { "GET" };
-            let asked = api_request(&socket, method, &path, body.as_ref());
+            let asked =
+                api_request_typed(&socket, method, &path, body.as_ref(), surface.as_deref());
             let _ = answer.set(asked);
         });
         Asked(answered)

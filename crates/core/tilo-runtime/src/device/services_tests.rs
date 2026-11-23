@@ -313,9 +313,10 @@ pub(crate) fn isolated_command(test: &str, root: &Path) -> std::process::Command
     std::fs::create_dir_all(&data).unwrap();
     // The device this child serves relays through this machine's loopback
     // relay: no test reaches a relay, or a directory, out on the internet.
-    test_server::relay_through_loopback_in(&config, &data);
+    let (relay, loopback) = test_server::loopback_relay();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
+        .env(relay, loopback)
         .args(["--exact", test, "--nocapture"])
         .env(PROCESS_ROOT, root.join("profile"))
         .env("HOME", environment.join("home"))

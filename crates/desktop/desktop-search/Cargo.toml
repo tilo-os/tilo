@@ -38,7 +38,7 @@ tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # member uses.
 collaboration = { version = "0.1.0", path = "../../core/collaboration" }
 app-catalogue = { version = "0.1.0", path = "../../core/app-catalogue", optional = true }
-settings-store = { version = "0.1.0", path = "../../system/settings-store", optional = true }
+settings-store = { version = "0.1.0", path = "../../desktop/settings", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }

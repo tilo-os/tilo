@@ -368,7 +368,15 @@ impl ServiceSessions {
                 origin: cfg.origin.clone(),
             })),
             member: cfg.member.clone(),
-            surfaces: Arc::clone(&cfg.surfaces),
+            surfaces: {
+                // The settings are resources of every workspace that keeps a person's or a
+                // device's: each section's kind and setters are declared on every holder alike.
+                cfg.surfaces.register_built_in(
+                    settings_store::workspace::SURFACE_APP,
+                    settings_store::workspace::surface_json(),
+                );
+                Arc::clone(&cfg.surfaces)
+            },
             apps,
             fetch_grants: self.handler.fetch_grants.clone(),
         }

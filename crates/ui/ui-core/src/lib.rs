@@ -264,6 +264,12 @@ pub mod query_text;
 pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
 pub mod storage;
+/// Where each settings section is kept, and so published: `settings/<section>` for the person's,
+/// `devices/<device>/settings/<section>` for the device's.
+pub use settings_store::placement as settings_placement;
+/// The verb a setting is set by, `set-<field>`: each field of a settings section has its own.
+pub use settings_store::workspace::verb as setting_verb;
+pub mod settings_device;
 pub mod workspace_sync;
 /// The shell's keyboard shortcut table (actions, their chords and the defaults) as the settings
 /// document keeps it: what every shell host resolves a key press through, the native shell and a

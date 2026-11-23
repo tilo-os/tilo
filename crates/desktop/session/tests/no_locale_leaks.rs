@@ -22,11 +22,11 @@ const TOOLKIT_EN: &str = include_str!(concat!(
 /// The Settings index: every window offers the same settings, in the same words.
 const INDEX_EN: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../system/settings-store/locales/en-US.ftl"
+    "/../../desktop/settings/locales/en-US.ftl"
 ));
 const INDEX_DE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../system/settings-store/locales/de-DE.ftl"
+    "/../../desktop/settings/locales/de-DE.ftl"
 ));
 
 /// The index as the desktop loads it.

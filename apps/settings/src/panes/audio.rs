@@ -2221,7 +2221,7 @@ mod tests {
                     matches!(
                         &binding.kind,
                         ui::widget::ControlBindingKind::Action(address)
-                            if address.resource == format!("settings:{AUDIO}")
+                            if address.resource == crate::testing::section(AUDIO)
                     )
                 })
                 .map(|binding| binding.control_id)

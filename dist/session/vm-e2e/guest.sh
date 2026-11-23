@@ -417,7 +417,9 @@ step_files() {
 }
 
 step_settings() {
-    as_user tilo settings dump 2>/dev/null || true
+    as_user tilo-control raw '{"op":"settings"}' 2>/dev/null \
+        | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin).get("answer") or {}))' \
+        || true
 }
 
 compositor_pid() {
@@ -463,7 +465,6 @@ step_collect() {
     coredumpctl --no-pager info /usr/bin/tilo-session >"$out/coredump-tilo-session.txt" 2>&1 || true
     cp -r "$home/.local/state/tilo/session-logs" "$out/" 2>/dev/null || true
     cp -r "$home/.cache/tilo/crashes" "$out/" 2>/dev/null || true
-    as_user tilo settings dump >"$out/settings.json" 2>/dev/null || true
     ps -eo pid,ppid,user,etimes,args --forest >"$out/processes.txt" 2>&1 || true
     rpm -q tilo-session tilo-session-apps sddm gnome-keyring kernel-core mesa-vulkan-drivers \
         >"$out/packages.txt" 2>&1 || true

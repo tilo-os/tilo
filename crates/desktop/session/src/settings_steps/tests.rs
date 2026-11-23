@@ -18,10 +18,10 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_user_identity::DeviceCert;
 
-const APPEARANCE: &str = "settings:settings.appearance";
-const POWER: &str = "settings:settings.power";
-const INPUT: &str = "settings:settings.input";
-const NIGHT_LIGHT: &str = "settings:settings.night-light";
+const APPEARANCE: &str = "settings.appearance";
+const POWER: &str = "settings.power";
+const INPUT: &str = "settings.input";
+const NIGHT_LIGHT: &str = "settings.night-light";
 /// The workspace this desktop hosts, as the shell names it.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
@@ -115,7 +115,7 @@ fn serving(fixture: &Fixture, app_wire: &Path) -> crate::Session {
     let mut session = crate::Session::headless(
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(tilo_settings_service::SettingsService::new())],
+            services: vec![Box::new(settings_sections::service::SettingsService::new())],
             person: person_id(&fixture.cert.user_public_key),
             collab: false,
             state: Some(fixture.state.clone()),
@@ -157,19 +157,22 @@ fn answered<T: Send + 'static>(
     })
 }
 
+/// The section of kind `kind`, where the session publishes it.
+fn section(kind: &str) -> String {
+    settings_sections::address(kind).expect("a section the session keeps")
+}
+
 /// The invocation Settings' window sends when the control bound to the field `field` of the
-/// section `section` is pressed: the provider's field edit of that section, with the edit the
-/// control fixes.
-fn field_edit(section: &str, field: &str, value: &Value, confirmed: bool) -> InvokeRequest {
-    let edit = json!({ "path": [{ "field": field }], "op": "set", "value": value });
+/// section of kind `kind` is pressed: the setter of that field, with the value the control fixes.
+fn field_edit(kind: &str, field: &str, value: &Value, confirmed: bool) -> InvokeRequest {
     InvokeRequest {
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: settings_resources::PROVIDER.to_owned(),
-            address: ActionAddress::new(section, "field-edit"),
+            address: ActionAddress::new(section(kind), ui::setting_verb(field)),
         },
-        argument: InvokeArgument::Json(Map::from_iter([("edit".to_owned(), edit)])),
+        argument: InvokeArgument::Json(Map::from_iter([("value".to_owned(), value.clone())])),
         context: None,
         confirmation: confirmed.then_some(Confirmation::Confirmed),
         revision: None,
@@ -179,13 +182,16 @@ fn field_edit(section: &str, field: &str, value: &Value, confirmed: bool) -> Inv
     }
 }
 
-/// The setting `section` holds now, as the session publishes it.
-fn stored(session: &crate::Session, section: &str, field: &str) -> Value {
-    session.read(section).expect("the section is published")[field].clone()
+/// The setting the section of kind `kind` holds now, as the session publishes it.
+fn stored(session: &crate::Session, kind: &str, field: &str) -> Value {
+    session
+        .read(&section(kind))
+        .expect("the section is published")[field]
+        .clone()
 }
 
 /// Every control of Settings' window changes the setting it shows: the provider the window names
-/// offers each section's field edit, and pressing one changes the settings the session publishes,
+/// offers each section's setters, and pressing one changes the settings the session publishes,
 /// whichever section it is of.
 #[test]
 fn settings_controls_change_the_settings_the_session_keeps() {
@@ -204,7 +210,7 @@ fn settings_controls_change_the_settings_the_session_keeps() {
     let person = local_person(&session);
 
     // The sections Settings' panes show stand under the provider its controls name, each with the
-    // field edit they bind to: the same resources, and the same action, as the settings the
+    // setters they bind to: the same resources, and the same action, as the settings the
     // session keeps.
     let page = answered(&mut session, || {
         broker.action_query(
@@ -217,14 +223,21 @@ fn settings_controls_change_the_settings_the_session_keeps() {
         )
     })
     .expect("the person sees the settings' catalogue");
-    for section in [APPEARANCE, POWER, INPUT, NIGHT_LIGHT] {
+    for (kind, field) in [
+        (APPEARANCE, "mode"),
+        (POWER, "lock_minutes"),
+        (INPUT, "pointer_speed"),
+        (NIGHT_LIGHT, "night_light"),
+    ] {
+        let section = section(kind);
+        let setter = ui::setting_verb(field);
         assert!(
             page.rows
                 .iter()
                 .any(|row| row.action.as_ref().is_some_and(|action| {
-                    action.address.resource == section && action.address.action == "field-edit"
+                    action.address.resource == section && action.address.action == setter
                 })),
-            "{section} offers the field edit its controls bind to: {:?}",
+            "{section} offers the setter {setter} its control binds to: {:?}",
             page.rows
                 .iter()
                 .filter_map(|row| row.action.as_ref())

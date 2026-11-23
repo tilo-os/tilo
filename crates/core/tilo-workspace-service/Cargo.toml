@@ -173,7 +173,7 @@ tilo-environment = { path = "../../vm/environment", optional = true }
 agent-provider-config = { path = "../../integrations/provider-config" }
 # Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
 wire-frame = { path = "../../platform/wire-frame" }
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a
 # provider's own page leaves a person's account signed in with.
@@ -191,10 +191,9 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host",
 tilo-resource = { path = "../tilo-resource" }
 tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
 # The workspace resources the person's shell changes through their typed actions: a
-# workspace's emoji and contact directory, and the person's settings.
+# workspace's emoji and contact directory.
 tilo-workspace-emoji = { path = "../../sdk/tilo-workspace-emoji" }
 tilo-contact-directory = { path = "../../integrations/tilo-contact-directory" }
-settings-model = { path = "../../sdk/settings-model" }
 # A person's region and formats, kept as the `locale` settings section reads them.
 tilo-formats = { path = "../../ui/tilo-formats" }
 # The agents a device runs ([features] agents): what people ask them (the

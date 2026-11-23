@@ -642,7 +642,7 @@ The copies:
 | Document sync protocols | `tilo-server/1` deltas with co-edit and anti-entropy; `tilo-peer-state-direct/3`; `tilo-personal-store/1`; `tilo-server-sibling/1` |
 | Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `collaboration::resource::store`; `tilolang-tilo` `TiloStore` |
 | Brokers | `collaboration` `broker*.rs` (13,813); `collab_app_broker` (65,255) |
-| Settings | `settings-store` (19,419), two Automerge documents behind its own `settings.sock`; the host's `person_settings` |
+| Settings | the host's `person_settings` (the person's and the device's sections are resources of the workspace, read through `settings-store`'s typed readers) |
 | File tree | `fs` `tree_sync.rs` (the workspace service, the standalone runtime, and the fs daemon through the session's `files-tree` socket), with one tree writer since a60e81727f2 |
 | File bytes and keys | `fs` `FileArea` with iroh-blobs and its own ALPNs (`tilo-fs/session-link/1`, `tilo-fs/file-keys/1`, `tilo/fs/certify/1`, `tilo-fs-workspace-authority/1`); `tilo-content` (4,004) with `content-device` (706); `runtime-fs` blobs |
 | File presentation | FUSE in `fs/src/fs/fuse.rs`; native Btrfs and fanotify in `fs-native` (10,340); the mirror folder `sync_folder`; `runtime-fs` (14,011) |
@@ -741,7 +741,7 @@ and screen share only, never documents, and stays as it is.
   device's settings (displays, power, hardware, network) are records at
   `devices/<id>/settings/<section>` in its owner's own workspace, read and
   changed by others through ordinary grants. Each section is one resource
-  with a typed action per key (`settings/appearance#set_theme`), so a grant
+  with a typed action per key (`settings/appearance#set-theme`), so a grant
   can name one setting and search finds each field at its own address; an
   app's preferences are one resource per app. There is no generic
   `set(key, value)`. A write that must not overwrite a newer one (a display
@@ -758,7 +758,6 @@ and screen share only, never documents, and stays as it is.
 | `tilo-personal-store/1` and `tilo-server-sibling/1` | ~1,500 |
 | The tilolang redb index and the `TiloStore` mirror, keeping the pager | ~15,000 |
 | The overlap in `collab_app_broker` | ~30,000 |
-| `settings-store`'s document layer and socket, keeping the typed readers | ~8,000 |
 | `tilo_fs::sync` and the fs ALPNs | ~2,000 |
 | `fs` `kept_documents`, `runtime-fs` blobs, `content-device` | ~3,000 |
 | `app-state` `FsStore` once every document is a replica scope | ~10,000 |
@@ -916,7 +915,6 @@ Per-person stores still on `main`:
 | Store | Code | Size |
 |---|---|---|
 | Personal records `(app, personal)` | `tilo-peer-state` `state/personal/`, `tilo-workspace-service` `apps/personal.rs`, `session` `personal.rs` | ~6,000 with tests |
-| The person's roaming settings | `settings-store` person document | part of 19,419 |
 | Connections under the person's root | `tilo-workspace-service` `connections` | 5,661 |
 | A person's servers | the home-peer registry file, and again as the Servers workspace (`workspaces/servers.rs`) | 4,060 |
 
@@ -968,7 +966,6 @@ workspace vault, despite their names.
 | `tilo-api` grant file, `WorkspaceGrant`, `apps/workspace_memberships` | ~3,000 |
 | `PersonalStore` and `tilo-personal-store/1` | ~6,000 |
 | The second workspace list | ~2,000 |
-| The person document of `settings-store` | ~4,000 |
 | The home-peer registry file (the Servers workspace holds a person's servers) | to be measured |
 | The duplicate `Workspace` structs | to be measured |
 | `fs` `workspace_authority` ACL and its ALPN | ~1,100 |
@@ -1284,7 +1281,7 @@ session whose push comes out net positive stops and asks before pushing.
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
 | Devices, identity | nearby pairing and Settings' old add-a-device flow, the browser root | the build server signed in from the laptop's root; Settings adds a device with a ticket and nearby pairing goes (−2.4k); the tilo.sh page checks approve with `tilo device add` and the page's login-code path goes in the same push; `page.mjs` imports `device-key.mjs`. `tilo device add` and `tilo login` are daemon ticket actions, and first boot, onboarding and the imager carry no identity of their own since eb928484901 (−6.6k); the boot key is an ordinary device certificate since 3ec9b6ef0b1; `threshold-identity` and `tilo-enrollment` go: a root is a plain key in the same stored record, certification moves into `tilo-server-client`, the imager certifies an image's device with the person's root and writes it where a ticket's login keeps it, Add a device shows a ticket where no web host keeps the workspace, and the page reads device keys through `device-key.mjs` (−8.8k) | One identity |
-| Sync | session document writes still arriving as envelopes until they move onto actions, the old layout's one-time move into the device store (goes once the company move has run), the file path's tail (the Files daemon's keys from the identity service; `kept_documents`; `runtime-fs` blobs and `content-device`, after apps read content through the broker), broker overlap, `settings-store` document layer, `app-state` `FsStore`, `tilo-server/1` | session document writes onto actions with the envelopes deleted; the file path's tail. One store per device since cb6fcf6f9fc (−44.0k); one file path since c4f20cecac1 (−15.1k); one tree writer since a60e81727f2 | One engine |
+| Sync | session document writes still arriving as envelopes until they move onto actions, the old layout's one-time move into the device store (goes once the company move has run), the file path's tail (the Files daemon's keys from the identity service; `kept_documents`; `runtime-fs` blobs and `content-device`, after apps read content through the broker), broker overlap, `app-state` `FsStore`, `tilo-server/1` | session document writes onto actions with the envelopes deleted; the file path's tail. One store per device since cb6fcf6f9fc (−44.0k); one file path since c4f20cecac1 (−15.1k); one tree writer since a60e81727f2; the settings' Automerge documents, `settings.sock` and their holder are gone, each section a resource with a setter per field | One engine |
 | tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25); the host fields under `workspace.` (`workspace_field`, `Imp::WorkspaceMembers`), the host-declared `workspace` resource with `leases`, and `invoker.device` (6f60017184b) | the costs first, then the pager into resource-store; tilolang reads `workspace/members` as the ordinary published resource, and the host fields, the `workspace` resource, its `leases` and `invoker.device` are deleted; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path and the in-Tilo imager app; the installer stays: a polished program for Linux, Windows and macOS that writes hand-tailored images, installs straight to a disk, or on Linux installs just the desktop, running before Tilo exists and writing no identity. To bring the old computer's things over it signs in as a device of the workspace with a `tilo device add` ticket and shows `so.tilo.migrate`, whose sources read the old computer before anything is installed over it; the installer's own capture, prepared setup, prepared media and first-boot import are gone | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |

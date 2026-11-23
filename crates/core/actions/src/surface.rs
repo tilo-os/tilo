@@ -81,6 +81,11 @@ pub struct Surface {
     /// the view that shows it then; `None` for a kind that never is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<LiveSurface>,
+    /// Each of its fields is written by its own setter, `set-<field>`, and
+    /// by no field edit: the setters follow from the fields
+    /// ([`Self::with_setters`]), as a settings section publishes them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub setters: bool,
 }
 
 /// When a resource of a kind is live, as the resource index keeps it: what its type says
@@ -283,6 +288,7 @@ pub fn of_resource(spec: &crate::ResourceSpec) -> Surface {
         types: Vec::new(),
         shows: Vec::new(),
         live: None,
+        setters: false,
     }
 }
 
@@ -320,6 +326,10 @@ pub fn nest_arguments(
 
 /// One stored field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one mark a committed surface file writes for the field, read on its own"
+)]
 pub struct FieldSurface {
     /// Where it is: stored keys from the root, `*` for every item of a
     /// collection (`snippets.*.title`).
@@ -347,16 +357,73 @@ pub struct FieldSurface {
     pub unit: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub label: bool,
+    /// Set only whole: a change inside it could weaken the person's security,
+    /// so its setter takes no edit inside it ([`Surface::with_setters`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
     /// The schema of the field's own operations, for a type with its own
     /// vocabulary (rich text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ops: Option<serde_json::Value>,
 }
 
+/// The verb that sets the field `key` whole: `set-<key>`, in kebab case.
+#[must_use]
+pub fn setter_id(key: &str) -> String {
+    format!("set-{}", key.replace('_', "-"))
+}
+
 /// What a receiver without the app reads from its surface: each verb's kind
 /// and tree field, which paths offer field edits, and which storage units
 /// an action may write (`*` for any item).
 impl Surface {
+    /// This surface with a setter of each of its own fields that is not read
+    /// only and has no declared verb of the setter's id, as a settings section
+    /// publishes them: [`setter_id`], taking the field's whole new `value` (not
+    /// for a collection or a keyed map, which change item by item) and, unless
+    /// the field is set only [`FieldSurface::whole`], an `edit` inside it.
+    #[must_use]
+    pub fn with_setters(mut self) -> Self {
+        let setters: Vec<VerbSurface> = self
+            .fields
+            .iter()
+            .filter(|field| !field.readonly && !field.path.contains('.'))
+            .map(|field| (setter_id(&field.path), field))
+            .filter(|(id, _)| !self.verbs.iter().any(|verb| verb.id == *id))
+            .map(|(id, field)| {
+                let param = |name: &str, ty: FieldType| ParamSurface {
+                    name: name.to_owned(),
+                    required: false,
+                    schema: serde_json::Value::Null,
+                    ty,
+                    within: None,
+                };
+                let mut params = Vec::new();
+                if !matches!(field.stored.as_str(), "collection" | "keyed") {
+                    params.push(param("value", field.ty.clone()));
+                }
+                if !field.whole {
+                    params.push(param("edit", FieldType::Any));
+                }
+                VerbSurface {
+                    id,
+                    name: String::new(),
+                    label: format!("Set {}", field.path.replace('_', " ")),
+                    description: None,
+                    kind: ActionKind::Undoable,
+                    destructive: false,
+                    incoming_message: false,
+                    params,
+                    returns: None,
+                    writes: vec![RESOURCE_UNIT.to_owned()],
+                    field: None,
+                }
+            })
+            .collect();
+        self.verbs.extend(setters);
+        self
+    }
+
     /// The named type `name` of [`Self::types`].
     #[must_use]
     pub fn named(&self, name: &str) -> Option<&NamedType> {

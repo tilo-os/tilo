@@ -1010,9 +1010,6 @@ impl Person {
             tilo_identity::provisioning::clear_founding_mark(&root.join("config/tilo/identity"))
                 .expect("a later device of the person's founds nothing");
         }
-        // This device relays through this machine's loopback relay, as the site does: no session
-        // of a test reaches the person's relays or their directory out on the internet.
-        test_server::relay_through_loopback_in(&root.join("config"), &root.join("data"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {
@@ -1497,6 +1494,9 @@ impl Device {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("TILO_IDENTITY_ROOT", root.join("identity"))
+            // This device relays through this machine's loopback relay, as the site does: no
+            // session of a test reaches the person's relays or their directory out on the internet.
+            .env(test_server::loopback_relay().0, test_server::loopback_relay().1)
             // This device's files daemon serves beside the session in its own runtime directory,
             // where the session finds the daemon's link to the network (`fs::net`).
             .env("TILO_FS_BLOB_SOCKET", root.join("runtime/fs-blobs.sock"))
@@ -1656,6 +1656,11 @@ impl Device {
     /// and its chrome.
     pub fn state(&self) -> Value {
         self.ask(&json!({"op": "state_dump"}))
+    }
+
+    /// The person's and the device's settings as this device's session reads them.
+    pub fn settings(&self) -> Value {
+        self.ask(&json!({"op": "settings"}))["answer"].take()
     }
 
     /// The workspaces this device keeps, by id: a workspace it joined is one of them.
@@ -2460,24 +2465,22 @@ pub fn shows_window(device: &Device, app: &str) -> bool {
         .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
 }
 
-/// The settings section `section` (`appearance`, `power`), as the settings service publishes it:
-/// the resource whose `field-edit` action a control, a script or an agent runs.
-pub fn setting_section(section: &str) -> String {
-    format!("settings:settings.{section}")
+/// The settings section `section` (`appearance`, `power`) as `device`'s settings service
+/// publishes it: the resource whose setters a control, a script or an agent runs,
+/// `settings/appearance` for the person's, `devices/<device>/settings/power` for the device's.
+pub fn setting_section(device: &Device, section: &str) -> String {
+    settings_store::placement::address(section, None, &hex::encode(device.cert.device_public_key))
+        .id
 }
 
-/// The `field-edit` of the settings section `section`, as Settings and Quick Settings run it.
-pub fn setting(section: &str) -> RemoteActionTarget {
+/// The setter of `field` in the settings section `section` on `device`, as Settings and Quick
+/// Settings run it.
+pub fn setting(device: &Device, section: &str, field: &str) -> RemoteActionTarget {
     at(
         tilo_actions::remote::settings_resources::PROVIDER,
-        &setting_section(section),
-        "field-edit",
+        &setting_section(device, section),
+        &settings_store::workspace::verb(field),
     )
-}
-
-/// What a field edit of the settings section `section` asks for: setting `field` to `value`.
-pub fn setting_edit(field: &str, value: &Value) -> Value {
-    json!({"edit": {"path": [{"field": field}], "op": "set", "value": value}})
 }
 
 /// Set `field` of `section` to `value` on `device`, as the person does in Settings, once it
@@ -2486,14 +2489,14 @@ pub fn setting_edit(field: &str, value: &Value) -> Value {
 /// The sections are resources of the person's own workspace, so the edit is not offered until
 /// this session reads it there: the set is asked again until it is.
 pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
-    let target = setting(section);
-    let edit = setting_edit(field, value);
+    let target = setting(device, section, field);
+    let edit = json!({"value": value});
     let until = tilo_test_env::hang_deadline();
     let mut answer = device.act_wait(&target, &edit);
     while answer["err"]["code"].as_str() == Some("unknown_action") {
         assert!(
             Instant::now() < until,
-            "{} is never offered {section}'s field edit: {answer}\n{}",
+            "{} is never offered {section}'s setter of {field}: {answer}\n{}",
             device.label,
             device.diagnostic()
         );

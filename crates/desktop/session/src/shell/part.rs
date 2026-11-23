@@ -259,8 +259,12 @@ impl SessionLink {
     }
 
     /// The shell asks `ask` of the session's API: run on the session's next turn
-    /// ([`Self::serve`]).
-    pub fn ask(&self, ask: Ask) {
+    /// ([`Self::serve`]). One of the device's settings a view names is this device's.
+    pub fn ask(&self, mut ask: Ask) {
+        ask.resource = tilolang_tilo::platform_apps::on_device(
+            &ask.resource,
+            &ui::settings_device::settings_device(),
+        );
         self.asked.borrow_mut().push_back(ask);
         self.handed.set(self.handed.get().wrapping_add(1));
     }

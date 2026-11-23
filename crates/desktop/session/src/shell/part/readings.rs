@@ -341,9 +341,24 @@ impl SessionOrigin {
                 continue;
             };
             let reading = own.unwrap_or_else(|| held.clone());
-            let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
-                tracing::error!(id, "a place names no resource id");
-                continue;
+            // A root the platform publishes is named by its whole address, as the runtime names
+            // the root (`devices/{device}/settings/display`): read as a document and an item, one
+            // of the device's settings would be `devices/display`, which no root reads.
+            let root = tilolang_tilo::platform_apps::platform_roots()
+                .iter()
+                .any(|(published, _)| *published == id);
+            let target = if root {
+                ResourceRef {
+                    doc: id.clone(),
+                    item: None,
+                    ty: ty.clone(),
+                }
+            } else {
+                let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
+                    tracing::error!(id, "a place names no resource id");
+                    continue;
+                };
+                target
             };
             match cx.host.runtime().set_reading(&target, &reading.to_string()) {
                 Ok(changed) => moved |= changed,
@@ -496,14 +511,23 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
         use tilolang_tilo::runtime::delegate::{Invocation, Invoked};
         let ask = match invocation {
             Invocation::Action {
+                app,
                 name,
                 target: Some(target),
                 from,
                 ..
             } => Ask {
-                resource: target.id_string(),
-                // As the resource's app publishes it.
-                action: name.clone(),
+                // As a press: the session's own address, never the flattened reference, and one of
+                // the device's settings on this device.
+                resource: ui::settings_device::on_this_device(
+                    &self
+                        .link
+                        .published_address(&target.id_string())
+                        .unwrap_or_else(|| target.id_string()),
+                ),
+                // As the resource's app publishes it: the verb, never the id its package names
+                // it by among others' ([`tilolang_tilo::catalogue::action_id`]).
+                action: tilolang_tilo::catalogue::published_verb(app.as_str(), name).to_owned(),
                 arguments: invocation.api_arguments().into_iter().collect(),
                 from: from
                     .as_ref()
@@ -549,11 +573,14 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     _ => tilolang_tilo::action::EDIT_TEXT_ACTION,
                 };
                 Ask {
-                    // As a press: the session's own address, never the flattened reference.
-                    resource: self
-                        .link
-                        .published_address(&target.id_string())
-                        .unwrap_or_else(|| target.id_string()),
+                    // As a press: the session's own address, never the flattened reference, and one
+                    // of the device's settings on this device.
+                    resource: ui::settings_device::on_this_device(
+                        &self
+                            .link
+                            .published_address(&target.id_string())
+                            .unwrap_or_else(|| target.id_string()),
+                    ),
                     action: action.to_owned(),
                     arguments: BTreeMap::from([
                         ("field".to_owned(), field.clone().into()),

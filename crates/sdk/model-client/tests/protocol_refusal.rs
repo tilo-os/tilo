@@ -26,7 +26,9 @@ fn cancellation_envelope_keeps_rpc3_wire_format() {
         version: RPC_VERSION,
         value: Request::Cancellable {
             id: 7,
-            request: Box::new(Request::GetProviderConfig),
+            request: Box::new(Request::ListModels {
+                profile_id: "local".into(),
+            }),
         },
     };
     let wire = serde_json::to_string(&frame).unwrap();
@@ -36,7 +38,7 @@ fn cancellation_envelope_keeps_rpc3_wire_format() {
     );
     let decoded: Frame<Request> = serde_json::from_str(&wire).unwrap();
     assert!(
-        matches!(decoded.value, Request::Cancellable { id: 7, request } if matches!(*request, Request::GetProviderConfig))
+        matches!(decoded.value, Request::Cancellable { id: 7, request } if matches!(*request, Request::ListModels { .. }))
     );
 }
 
@@ -90,7 +92,7 @@ async fn administration_refusal_and_inference_share_connection_without_sharing_a
             };
             assert_eq!(actual, id);
             if id == 1 {
-                assert!(matches!(*request, Request::GetProviderConfig));
+                assert!(matches!(*request, Request::ListModels { .. }));
                 send(
                     &mut peer,
                     Response::failure(agent_provider_config::protocol::ModelError::new(
@@ -128,7 +130,11 @@ async fn administration_refusal_and_inference_share_connection_without_sharing_a
     };
     let client = async {
         assert_eq!(
-            administration.get_config().await.unwrap_err().kind,
+            administration
+                .list_models("local".into())
+                .await
+                .unwrap_err()
+                .kind,
             ErrorKind::PermissionDenied
         );
         let request = Conversation::new("system", "question").request(vec![], 64);

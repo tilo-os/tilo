@@ -35,7 +35,7 @@ bounded-command = { path = "../../platform/bounded-command" }
 greetd-client = { path = "../greetd-client" }
 console-control = { path = "../console-control" }
 serde_json.workspace = true
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 wayland-client.workspace = true
 wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 rustix = { workspace = true, features = ["event"] }

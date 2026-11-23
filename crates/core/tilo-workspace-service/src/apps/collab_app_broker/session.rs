@@ -332,8 +332,10 @@ pub(super) fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    // An app that administers the model providers sets them only as their own rules allow.
+    let providers = app_id == tilo_app_id::apps::MODEL_PROVIDERS;
     let display = private_display_control(state, &route, &identity);
-    let reach = settings_reach(state, &route, &identity);
+    let grants = settings_grants(state, &route, &identity);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate = Arc::new(move || {
         state
@@ -341,41 +343,46 @@ pub(super) fn app_settings_capability(
             .map(|_| ())
             .map_err(|error| error.to_string())
     });
-    Ok(
-        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
-            .with_reach(reach)
-            .with_display(display),
-    )
+    let server = runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
+        .with_grants(grants)
+        .with_display(display);
+    Ok(if providers {
+        server.with_check(Arc::new(agent_provider_config::management::check_write))
+    } else {
+        server
+    })
 }
 
-/// What the app `route` certifies reaches of the settings: every section
-/// for the device's settings app, when its signed manifest asks
-/// (`settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY`) and the image
-/// grants it ([`settings_store::app_scope::SYSTEM_SETTINGS_APPS`]); its own
-/// entries otherwise. An agent working in an app never gets more than the
-/// app's own entries.
-pub(super) fn settings_reach(
+/// The setters of the settings the app `route` certifies may invoke: every one for the device's
+/// settings app, when its signed manifest asks for them (`settings.system`) and the image grants
+/// it them (the launcher lists the capability for that package alone); the model providers' for
+/// Model Providers; none otherwise. An agent working in an app never sets more than the app's own
+/// preferences.
+pub(super) fn settings_grants(
     state: &Arc<AppBrokerState>,
     route: &CrdtRoute,
     identity: &AdmittedJoinIdentity,
-) -> settings_store::app_scope::Reach {
-    use settings_store::app_scope::Reach;
-    if identity.agent_id.is_some() {
-        return Reach::App;
-    }
-    state
-        .services
-        .launcher
-        .as_ref()
-        .and_then(|launcher| {
-            launcher
-                .applications()
-                .into_iter()
-                .find(|app| app.package_id == route.app_id && !app.unconfined)
-        })
-        .map_or(Reach::App, |app| {
-            Reach::of(&route.app_id, &app.capabilities)
-        })
+) -> Vec<String> {
+    let installed = |granted: &dyn Fn(&[String]) -> bool| {
+        identity.agent_id.is_none()
+            && state.services.launcher.as_ref().is_some_and(|launcher| {
+                launcher.applications().into_iter().any(|app| {
+                    app.package_id == route.app_id && !app.unconfined && granted(&app.capabilities)
+                })
+            })
+    };
+    let setters: &[&str] = if installed(&|capabilities| {
+        capabilities
+            .iter()
+            .any(|capability| capability == settings_store::workspace::SET_EVERY_SETTING)
+    }) {
+        settings_store::workspace::EVERY_SETTER
+    } else if route.app_id == tilo_app_id::apps::MODEL_PROVIDERS && installed(&|_| true) {
+        agent_provider_config::management::SETTERS
+    } else {
+        &[]
+    };
+    setters.iter().map(|&grant| grant.to_owned()).collect()
 }
 
 pub(super) fn private_display_control(

@@ -62,25 +62,22 @@ async fn received(peer: &mut tokio::net::UnixStream) -> u64 {
 
 #[tokio::test(flavor = "current_thread")]
 async fn abandoned_administration_drains_committed_response_and_cancel_barrier() {
-    use agent_provider_config::management::{ProviderAdmin, ProviderSnapshot};
-    let snapshot = ProviderSnapshot {
-        config: agent_provider_config::ProviderConfig::default(),
-        revision: "after".into(),
-    };
+    use agent_provider_config::management::ProviderAdmin;
+    let listed = vec![agent_provider_config::ModelDescriptor::new("listed")];
     let (_original, transport, mut peer) = pair();
     let admin = crate::transport::AdministrationClient::new(transport);
     let (started, received) = tokio::sync::oneshot::channel();
     let server = async {
         let (_, request) = received_request(&mut peer).await;
-        assert!(matches!(request, Request::SetProviderConfig { .. }));
+        assert!(matches!(request, Request::ListModels { .. }));
         started.send(()).unwrap();
         let body = crate::FRAMING.read_async(&mut peer).await.unwrap().unwrap();
         let frame: crate::Frame<Request> = serde_json::from_slice(&body).unwrap();
         let Request::Cancel { id } = frame.value else {
             panic!("missing Stop")
         };
-        // A durable write finishes before the barrier; its abandoned success
-        // must not become the next configuration read's response.
+        // An answer that finishes before the barrier must not become the next
+        // read's response.
         for output in ["committed".to_string(), format!("cancelled:{id}")] {
             crate::FRAMING
                 .write_async(
@@ -91,8 +88,8 @@ async fn abandoned_administration_drains_committed_response_and_cancel_barrier()
                 .unwrap();
         }
         let (_, request) = received_request(&mut peer).await;
-        assert!(matches!(request, Request::GetProviderConfig));
-        let read = serde_json::to_string(&snapshot).unwrap();
+        assert!(matches!(request, Request::ListModels { .. }));
+        let read = serde_json::to_string(&listed).unwrap();
         crate::FRAMING
             .write_async(
                 &mut peer,
@@ -102,16 +99,13 @@ async fn abandoned_administration_drains_committed_response_and_cancel_barrier()
             .unwrap();
     };
     let client = async {
-        let mut operation = admin.set_config(
-            "before".into(),
-            agent_provider_config::ProviderConfig::default(),
-        );
+        let mut operation = admin.list_models("first".into());
         tokio::select! {
             result = &mut operation => panic!("completed before Stop: {result:?}"),
             result = received => result.unwrap(),
         }
         drop(operation);
-        assert_eq!(admin.get_config().await.unwrap(), snapshot);
+        assert_eq!(admin.list_models("second".into()).await.unwrap(), listed);
     };
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         tokio::join!(server, client);

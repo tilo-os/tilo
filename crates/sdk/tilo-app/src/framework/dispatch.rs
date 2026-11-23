@@ -1466,9 +1466,15 @@ impl<R: Resource> Dispatcher<R> {
             self.core.refuse(invoke.id, refusal.to_owned());
             return;
         }
-        self.invoke_at(
-            ActionAddress::new(actions.resource_id(), invoke.id),
+        // A field edit of a settings section is the setter of its field.
+        let table = actions.table();
+        let (key, arguments) = table.as_published(
+            tilo_resource::ActionKey::new(T::APP_ID, T::KIND, invoke.id),
             invoke.arguments,
+        );
+        self.invoke_at(
+            ActionAddress::new(actions.resource_id(), key.action),
+            arguments,
         );
     }
 

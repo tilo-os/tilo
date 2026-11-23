@@ -210,7 +210,7 @@ impl tilo_workspace_service::apps::services::HostedWorkspaces for DaemonHosts {
 }
 
 /// `command` of `app`'s resources in `workspace`, answered by the daemon as the device's person.
-async fn daemon_resource_command(
+pub(crate) async fn daemon_resource_command(
     shell: &tilo_session_client::daemon_documents::DaemonShell,
     workspace: String,
     app: String,

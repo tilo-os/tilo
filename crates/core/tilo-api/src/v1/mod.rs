@@ -91,6 +91,20 @@ pub fn surface_version(app: &str, surface: &str) -> String {
     format!("{app}@{}", digest.get(..16).unwrap_or(&digest))
 }
 
+/// Refuse a call made through types written for `sent` when the workspace publishes `published`.
+fn changed(sent: &str, published: &str, workspace: &str) -> Result<(), ApiError> {
+    if published == sent {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        "surface_changed",
+        format!("these types were made for {sent}; the workspace's app publishes {published}"),
+    )
+    .next(format!(
+        "write the types again: tilo sdk gen -w {workspace}"
+    )))
+}
+
 /// One request to the API.
 pub struct Request<'a> {
     pub method: &'a Method,
@@ -673,14 +687,19 @@ impl<'a> Caller<'a> {
         if !sent.contains('@') {
             return Err(ApiError::invalid("Tilo-Surface is <app>@<digest>"));
         }
+        let path = self.params.get("path");
+        if tilo_actions::remote::settings_resources::is_section(path) {
+            // A section of the settings is typed by the surface the sections publish, which
+            // every device compiles in, whichever app shows it.
+            let app = tilo_actions::remote::settings_resources::SURFACE_APP;
+            let published = app_fleet::surface(app)
+                .and_then(|file| collab_types::surface::SurfaceFile::kept(file.as_bytes()).ok())
+                .map(|(_, kept)| surface_version(app, &kept))
+                .unwrap_or_default();
+            return changed(sent, &published, workspace);
+        }
         // The app is the path's first part, as the workspace names it.
-        let app = self
-            .params
-            .get("path")
-            .split('/')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
+        let app = path.split('/').next().unwrap_or_default().to_owned();
         let id = (workspace.to_owned(), app.clone());
         let known = crate::lock(&self.server.v1.surfaces).get(&id).cloned();
         if known.as_deref() == Some(sent) {
@@ -706,16 +725,7 @@ impl<'a> Caller<'a> {
         };
         let published = surface_version(id_of_app, surface);
         crate::lock(&self.server.v1.surfaces).insert(id, published.clone());
-        if published == sent {
-            return Ok(());
-        }
-        Err(ApiError::new(
-            "surface_changed",
-            format!("these types were made for {sent}; the workspace's app publishes {published}"),
-        )
-        .next(format!(
-            "write the types again: tilo sdk gen -w {workspace}"
-        )))
+        changed(sent, &published, workspace)
     }
 
     /// The bytes of `content`, sent as each piece of them arrives: a file of

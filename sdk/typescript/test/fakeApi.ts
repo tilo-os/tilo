@@ -522,6 +522,12 @@ export class FakeApi {
         link: linkTo(path),
       });
     }
+    if (action.startsWith("set-") && "value" in args) {
+      // A settings section's setter: its field takes the whole value.
+      const field = action.slice("set-".length).replaceAll("-", "_");
+      this.applyEdit(path, { path: [{ field }], op: "set", value: args.value });
+      return this.json({ status: "ok", invocation, path: whole, result: { set: field }, resources: [path] });
+    }
     if (action === "undo") {
       return this.json({ status: "ok", invocation, path: whole, result: { undone: args.steps ?? 1 } });
     }

@@ -5,8 +5,7 @@
 the settings document. A section name typed out at the call site fails
 silently when it is misspelt, and a value of the wrong type is stored without
 complaint: the reader falls back to its default and the setting seems to do
-nothing. Production code names a setting through ``settings_store::Key`` (one
-leaf) or ``settings_store::SectionWrite`` (several leaves of one section), or,
+nothing. Production code names a setting through ``settings_store::Key``, or,
 for a writer that owns a whole section, through the schema's own constant.
 
 This check refuses a string literal as the section argument of the raw writes
@@ -31,7 +30,7 @@ from rust_source import is_test_file, line_number, production_source, skip_strin
 ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("crates"), Path("tools"), Path("apps"))
 # The crate that defines the raw write, its keys and its tests.
-ALLOWED = (Path("crates/system/settings-store"),)
+ALLOWED = (Path("crates/desktop/settings"),)
 
 # Writes whose first argument is the section.
 SECTION_FIRST = ("update_section", "update_section_by", "compare_update_section")
@@ -50,7 +49,7 @@ class Violation:
     def __str__(self) -> str:
         return (
             f"{self.path}:{self.line}: {self.call}(...) names its section with a string "
-            "literal; write through a settings_store::Key or SectionWrite, or the "
+            "literal; write through a settings_store::Key or the "
             "schema's section constant"
         )
 

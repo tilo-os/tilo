@@ -67,7 +67,7 @@ libc.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-settings-store = { path = "../../crates/system/settings-store" }
+settings-store = { path = "../../crates/desktop/settings" }
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.
 xkbcommon = "0.8"

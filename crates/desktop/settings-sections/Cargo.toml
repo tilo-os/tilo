@@ -1,0 +1,49 @@
+[package]
+name = "settings-sections"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The person's and the device's settings sections: their resource models, and the session's service that publishes each and sets it field by field"
+
+[lib]
+name = "settings_sections"
+path = "src/lib.rs"
+
+[dependencies]
+agent-provider-config = { path = "../../integrations/provider-config", features = ["model"] }
+# The providers' keys, kept in this device's sealed vault: what a key is
+# written to and read from, never part of the settings document.
+accounts = { path = "../../integrations/accounts" }
+automerge.workspace = true
+# The calendar a data period is counted by.
+jiff.workspace = true
+desktop-policy = { path = "../../desktop/default-apps" }
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../settings", features = ["model"] }
+settings-model = { path = "../../sdk/settings-model" }
+tilo-accessibility-settings = { path = "../../desktop/tilo-accessibility-settings", features = ["model"] }
+tilo-app-id.workspace = true
+tilo-locale = { path = "../../platform/tilo-locale" }
+# The shipped wallpapers a wallpaper choice is checked against.
+tilo-wallpapers = { version = "0.1.0", path = "../../desktop/tilo-wallpapers" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+# The session's settings service: each section published with a setter per field.
+tilo-actions = { path = "../../core/actions" }
+tilo-resource = { path = "../../core/tilo-resource" }
+tilo-service = { path = "../../desktop/service" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# The settings over the person's and the device owner's workspaces in memory, with their history.
+settings-store = { path = "../settings", features = ["model", "test-support"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+# A view of another language reading the sections and setting them through their setters.
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+
+[lints]
+workspace = true

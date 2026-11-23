@@ -83,7 +83,12 @@ fn person() -> Person {
     // that device keeps.
     let now = tilo_clock::unix_now_ns();
     let other_device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-    let other_cert = other_device_cert(&profile, "The phone", other_device.verifying_key().to_bytes(), now);
+    let other_cert = other_device_cert(
+        &profile,
+        "The phone",
+        other_device.verifying_key().to_bytes(),
+        now,
+    );
     let keys = Keys {
         root: cert.user_public_key,
         device,
@@ -605,7 +610,7 @@ fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_jso
                 unconfined: false,
                 offers: Vec::new(),
                 capabilities: if *asks {
-                    vec![settings_store::app_scope::SYSTEM_SETTINGS_CAPABILITY.to_owned()]
+                    vec![settings_store::workspace::SET_EVERY_SETTING.to_owned()]
                 } else {
                     Vec::new()
                 },

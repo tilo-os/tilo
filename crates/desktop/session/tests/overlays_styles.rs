@@ -40,7 +40,7 @@ const KEY_BACKSPACE: u32 = 14;
 fn options() -> Options {
     Options {
         presentation: ui::headless::fixture_runner_inputs,
-        services: vec![Box::new(tilo_settings_service::SettingsService::new())],
+        services: vec![Box::new(settings_sections::service::SettingsService::new())],
         // This device's apps, as the launcher reads them: the store `common::app_store` built and
         // pinned for the run, read once here as a device's store is.
         lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
@@ -51,10 +51,8 @@ fn options() -> Options {
 /// A session as the shell of a device daemon of the test's own: the styles it lists are the ones
 /// the daemon publishes from the device's store.
 fn session() -> Session {
-    let mut session = crate::common::on_its_daemon(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        options(),
-    );
+    let mut session =
+        crate::common::on_its_daemon(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options());
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(1),
         rate: 0,
@@ -85,7 +83,7 @@ fn press(session: &mut Session, name: &str) {
 /// The person's appearance mode, as the settings' own section publishes it.
 fn appearance_mode(session: &Session) -> Value {
     session
-        .read("settings:settings.appearance")
+        .read("settings/appearance")
         .map(|section| section["mode"].clone())
         .unwrap_or_default()
 }

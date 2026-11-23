@@ -226,7 +226,7 @@ struct Device {
     shell_socket: PathBuf,
     daemon_socket: PathBuf,
     workspace: String,
-    _settings: Arc<settings_store::Store>,
+    _settings: Arc<settings_store::HostDocument>,
     /// The daemon's shell links.
     links: Arc<ShellLinks>,
     /// How many connections reached the device's processes.
@@ -301,8 +301,10 @@ async fn device_with_both(linked: bool) -> Device {
     let shell_socket = dir.path().join("shell.sock");
     let shell_launched = Arc::new(Launched::default());
     shell_launched.record(std::process::id(), APP, &id);
-    std::fs::create_dir_all(dir.path().join("settings")).unwrap();
-    let settings = settings_store::Store::open(&dir.path().join("settings")).unwrap();
+    let settings = Arc::new(settings_store::HostDocument::new(
+        serde_json::Map::new(),
+        |_| Ok(()),
+    ));
     let shell = crate::apps::collab_broker::spawn_with_test_services(
         shell_socket.clone(),
         Some(membership.authority()),

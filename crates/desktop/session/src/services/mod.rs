@@ -631,7 +631,11 @@ mod data_usage {
         pub(super) fn count(&self, services: &mut Services) {
             while let Ok(due) = self.due.try_recv() {
                 let arguments = arguments(&due.readings, self.boot.as_deref(), due.at, due.offset);
-                let counted = services.invoke(&format!("settings:{SECTION}"), COUNT, &arguments);
+                let counted = services.invoke(
+                    &settings_sections::address(SECTION).unwrap_or_default(),
+                    COUNT,
+                    &arguments,
+                );
                 match counted {
                     Some(Ok(_)) => {}
                     Some(Err(error)) => {

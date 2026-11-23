@@ -184,7 +184,7 @@ async fn an_agent_reads_and_follows_resources_over_the_shell_link() {
     };
     let _ = workspaces.own_route_keys(&route, true).await.unwrap();
     workspaces
-        .own_resource_command(&workspace, APP, put("i-1", "First"))
+        .own_resource_command(&workspace, APP, put("i-1", "First"), Vec::new())
         .await
         .unwrap();
 
@@ -222,7 +222,7 @@ async fn an_agent_reads_and_follows_resources_over_the_shell_link() {
     let first = pages.recv().await.expect("the first page");
     assert_eq!(titles(&first), [Value::Text("First".into())]);
     workspaces
-        .own_resource_command(&workspace, APP, put("i-1", "Renamed"))
+        .own_resource_command(&workspace, APP, put("i-1", "Renamed"), Vec::new())
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(10), pages.recv())

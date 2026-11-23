@@ -82,6 +82,25 @@ thread_local! {
     /// while a surface report collects them.
     pub(super) static OPENED: std::cell::RefCell<Option<Vec<tilo_resource::Surface>>> =
         const { std::cell::RefCell::new(None) };
+    /// The settings sections another provider keeps for the app
+    /// ([`Resources::kept_by`](super::Resources::kept_by)): theirs to publish
+    /// and describe, so no report of the app's lists them.
+    static KEPT: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The settings section of kind `kind` is kept by another provider: the
+/// app's surface leaves it out, as that provider describes it.
+pub(crate) fn kept_section(kind: &'static str) {
+    KEPT.with_borrow_mut(|kept| {
+        if !kept.contains(&kind) {
+            kept.push(kind);
+        }
+    });
+    OPENED.with(|opened| {
+        if let Some(opened) = opened.borrow_mut().as_mut() {
+            opened.retain(|surface| surface.kind != kind);
+        }
+    });
 }
 
 /// A view opened a settings section of `P`, which lives in the person's own
@@ -102,6 +121,9 @@ pub(crate) fn opened_resource<P: Resource>() {
 }
 
 fn resource_opened<P: Resource>(person: bool) {
+    if KEPT.with_borrow(|kept| kept.contains(&P::KIND)) {
+        return;
+    }
     OPENED.with(|opened| {
         if let Some(opened) = opened.borrow_mut().as_mut()
             && !opened.iter().any(|surface| surface.kind == P::KIND)
@@ -124,6 +146,52 @@ pub(crate) fn unbound<R: Resource>(what: &str, why: &str) {
 
 /// [`unbound`] for a resource of kind `kind`.
 ///
+/// The record's field an edit at `segments` is inside: its first step.
+fn field_of(segments: &[tilo_resource::Segment]) -> Option<&str> {
+    match segments.first() {
+        Some(tilo_resource::Segment::Field(field)) => Some(field),
+        _ => None,
+    }
+}
+
+/// The setter and its arguments a field edit `edit` (`{path, op, ...}`, its
+/// path from the record's root) is on a record that sets each field by its
+/// own verb (a settings section): setting the field whole gives the
+/// setter's `value`, any other edit its `edit`, the path from the field.
+/// `None` for an edit that names no field.
+pub(crate) fn setter_call(
+    edit: &serde_json::Value,
+) -> Option<(String, serde_json::Map<String, serde_json::Value>)> {
+    let mut edit = edit.as_object()?.clone();
+    let Some(serde_json::Value::Array(mut path)) = edit.remove("path") else {
+        return None;
+    };
+    if path.is_empty() {
+        return None;
+    }
+    let field = path.remove(0);
+    let field = field.get("field")?.as_str()?;
+    let setter = ui_core::setting_verb(field);
+    let whole =
+        path.is_empty() && edit.get("op").and_then(serde_json::Value::as_str) == Some("set");
+    let arguments = match edit.remove("value") {
+        Some(value) if whole && edit.len() == 1 => {
+            serde_json::Map::from_iter([(super::section::SETTER_VALUE.to_owned(), value)])
+        }
+        value => {
+            if let Some(value) = value {
+                edit.insert("value".to_owned(), value);
+            }
+            edit.insert("path".to_owned(), serde_json::Value::Array(path));
+            serde_json::Map::from_iter([(
+                tilo_resource::EDIT_PARAM.to_owned(),
+                serde_json::Value::Object(edit),
+            )])
+        }
+    };
+    Some((setter, arguments))
+}
+
 /// # Panics
 /// Panics where bindings are strict (`testing::strict_bindings`).
 pub(crate) fn unbound_of(kind: &str, what: &str, why: &str) {
@@ -243,6 +311,35 @@ impl ActionTable {
         ActionKey::new(self.app, self.kind, id)
     }
 
+    /// The action `key` invoked with `arguments`, as this record takes it:
+    /// a field edit of a record that publishes none, but a setter of each
+    /// field in its place (a settings section), is the setter of the field
+    /// it edits.
+    pub(crate) fn as_published(
+        &self,
+        key: ActionKey,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> (ActionKey, serde_json::Map<String, serde_json::Value>) {
+        if key.action != tilo_resource::FIELD_EDIT
+            || self
+                .resource
+                .borrow()
+                .base
+                .actions
+                .iter()
+                .any(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        {
+            return (key, arguments);
+        }
+        match arguments
+            .get(tilo_resource::EDIT_PARAM)
+            .and_then(setter_call)
+        {
+            Some((setter, arguments)) => (ActionKey::new(key.app, key.kind, setter), arguments),
+            None => (key, arguments),
+        }
+    }
+
     /// The published spec of the action `key` names, read as a control opened
     /// in the app `opened_in` names it: a window drawing another app's record
     /// binds it under the app id it publishes that record by, which
@@ -302,6 +399,7 @@ impl ActionTable {
         if let Some(refusal) = refusal {
             return Err((key, refusal.to_owned()));
         }
+        let (key, arguments) = self.as_published(key, arguments);
         let spec = self
             .spec_of(&key, opened_in)
             .map_err(|why| (key.clone(), why))?;
@@ -328,13 +426,16 @@ impl ActionTable {
             .ok()
     }
 
-    /// The binding of the field edit described as `what` for a control with
-    /// input `I`, each committed input becoming the edit `edit` makes;
-    /// `None`, and a failure in tests, when the resource has no field edits
-    /// (`edits`) or the field is read-only.
+    /// The binding of the field edit described as `what`, inside the record's
+    /// field `field`, for a control with input `I`, each committed input
+    /// becoming the edit `edit` makes; `None`, and a failure in tests, when
+    /// the resource has no field edits (`edits`) or the field is read-only.
+    /// A record that publishes no generic edit but a setter of each field
+    /// (a settings section) is edited through the field's setter.
     fn edit_binding<I: 'static, T: Resource>(
         &self,
         what: &str,
+        field: Option<&str>,
         edits: bool,
         readonly: bool,
         edit: Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync>,
@@ -354,21 +455,38 @@ impl ActionTable {
         // A field edit is the record's own action, under whatever app the
         // control that binds it names it by
         // ([`Self::control_binding_in`]).
-        let spec = match self.spec_of(&self.key(tilo_resource::FIELD_EDIT), T::APP_ID) {
-            Ok(spec) => spec,
+        let (spec, arguments): (_, Arguments<I>) = match self
+            .spec_of(&self.key(tilo_resource::FIELD_EDIT), T::APP_ID)
+        {
+            Ok(spec) => (
+                spec,
+                Box::new(move |input| {
+                    let edit = edit(input)?;
+                    Ok(serde_json::Map::from_iter([(
+                        tilo_resource::EDIT_PARAM.to_owned(),
+                        edit,
+                    )]))
+                }),
+            ),
             Err(why) => {
-                unbound_of(self.kind, what, &why);
-                return None;
+                let setter = field
+                    .map(|field| self.spec_of(&self.key(&ui_core::setting_verb(field)), T::APP_ID));
+                let Some(Ok(spec)) = setter else {
+                    unbound_of(self.kind, what, &why);
+                    return None;
+                };
+                (
+                    spec,
+                    Box::new(move |input| {
+                        let edit = edit(input)?;
+                        setter_call(&edit)
+                            .map(|(_, arguments)| arguments)
+                            .ok_or_else(|| "an edit names the field it sets".to_owned())
+                    }),
+                )
             }
         };
         let published = self.exporting(spec.clone());
-        let arguments: Arguments<I> = Box::new(move |input| {
-            let edit = edit(input)?;
-            Ok(serde_json::Map::from_iter([(
-                tilo_resource::EDIT_PARAM.to_owned(),
-                edit,
-            )]))
-        });
         ActionBinding::fallible(&published, &spec, arguments)
             .map_err(|error| unbound_of(self.kind, what, &error.to_string()))
             .ok()
@@ -388,6 +506,7 @@ impl ActionTable {
         let path = serde_json::to_value(segments).unwrap_or_default();
         self.edit_binding::<I, T>(
             what,
+            field_of(segments),
             edits,
             readonly,
             Box::new(move |input| {
@@ -526,13 +645,18 @@ impl<R: Resource> Actions<R> {
         let spec = super::resources::route_spec(tilo_resource::declaration_spec(decl), record);
         Some(match self.table.kept_by {
             // The provider keeping the record runs the action this one
-            // invokes of it.
+            // invokes of it, as the record publishes it.
             Some(provider) => spec.run_as(tilo_actions::RunBy {
                 provider: provider.to_owned(),
                 resource: Some(record.to_owned()),
                 invokes: AsRef::<tilo_resource::Declaration>::as_ref(decl)
                     .invokes
-                    .clone(),
+                    .clone()
+                    .map(|(action, arguments)| {
+                        let (key, arguments) =
+                            self.table.as_published(self.table.key(&action), arguments);
+                        (key.action, arguments)
+                    }),
             }),
             None => spec,
         })
@@ -682,8 +806,10 @@ impl<R: Resource> Actions<R> {
     ) -> Option<ActionBinding<I>> {
         let what = format!("the field {path:?}");
         let readonly = R::shape().is_some_and(|shape| shape.readonly_at(path.segments()));
+        let field = field_of(path.segments()).map(str::to_owned);
         self.table.edit_binding::<I, R>(
             &what,
+            field.as_deref(),
             R::EDITS,
             readonly,
             Box::new(move |input| {

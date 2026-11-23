@@ -653,12 +653,7 @@ impl ViewStorage {
     }
 
     pub(crate) fn resource_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = self
-            .person
-            .as_ref()
-            .map(super::person::PersonState::resources)
-            .unwrap_or_default();
-        resources.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
+        let mut resources = self.own_resources();
         resources.extend(self.chains.apis().iter().map(|api| api.publish()));
         resources.extend(self.workspace_apis().iter().map(|api| api.publish()));
         let kept_by = self.kept_by.borrow();
@@ -672,6 +667,26 @@ impl ViewStorage {
         resources
     }
 
+    /// The person's records and the settings sections the views opened, published: sections
+    /// of two types the settings keep in one place are one resource there.
+    fn own_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let mut resources = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::resources)
+            .unwrap_or_default();
+        resources.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
+        let sections = self.sections.borrow();
+        // The same kind whichever order the sections were opened in.
+        super::section::one_per_place(resources, |id| {
+            sections
+                .values()
+                .filter(|api| api.id() == id)
+                .map(|api| api.place_kind())
+                .min()
+        })
+    }
+
     /// [`Self::resource_resources`] as shared trees: a chain's items are the nodes its last
     /// publication carried wherever its parts are unchanged.
     pub(crate) fn resource_resources_shared(&self) -> Vec<ui_core::published::SharedResource> {
@@ -680,20 +695,8 @@ impl ViewStorage {
             let owner = resource.id.as_str().to_owned();
             ui_core::published::SharedResource::from_resource(self.kept_where(&owner, resource))
         };
-        let mut resources: Vec<ui_core::published::SharedResource> = self
-            .person
-            .as_ref()
-            .map(super::person::PersonState::resources)
-            .unwrap_or_default()
-            .into_iter()
-            .map(owned)
-            .collect();
-        resources.extend(
-            self.section_apis
-                .borrow()
-                .iter()
-                .map(|api| owned(api.publish())),
-        );
+        let mut resources: Vec<ui_core::published::SharedResource> =
+            self.own_resources().into_iter().map(owned).collect();
         resources.extend(self.chains.apis().iter().map(|api| {
             // A chain run by another provider names it on every action, so it is built whole.
             if kept_by.contains_key(api.id()) {

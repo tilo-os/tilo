@@ -4,7 +4,7 @@
 //! The headless session's whole screen is the tilolang shell, with the seeded
 //! notes and mail apps published and a note and the inbox placed on the canvas.
 //! The theme changes the way Settings and Quick Settings change it: the person's
-//! appearance section's own published `field-edit` action on the settings
+//! appearance section's own published setters (`set-mode`) on the settings
 //! service the session hosts — never a theme poked straight into a host.
 //!
 //! Across the five looks, on both sides (Tilo dark, Paper light, Moss dark, Dusk
@@ -44,8 +44,8 @@ use crate::common::{MAIL, NOTES};
 
 const PERSON: &str = "Pat";
 /// The person's appearance section, as the settings service publishes it: the resource whose
-/// `field-edit` action the theme is chosen through, and whose stored fields say what it holds.
-const APPEARANCE: &str = "settings:settings.appearance";
+/// setters the theme is chosen through, and whose stored fields say what it holds.
+const APPEARANCE: &str = "settings/appearance";
 
 /// A node the shell lays out for assistive technology: what it is, what it says,
 /// and where it stands, logical `(x0, y0, x1, y1)`.
@@ -121,7 +121,7 @@ impl Theme {
 /// appearance section the theme is chosen through.
 fn session() -> Session {
     let mut services = crate::common::seeded_apps();
-    services.push(Box::new(tilo_settings_service::SettingsService::new()));
+    services.push(Box::new(settings_sections::service::SettingsService::new()));
     crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: false,
@@ -142,18 +142,20 @@ fn reached(session: &mut Session, mut done: impl FnMut(&Session) -> bool) -> boo
     crate::common::reached(session, |session| done(session))
 }
 
-/// Set the field `field` of the appearance section to `value` through the section's own published
-/// `field-edit` : what Settings' Appearance page and Quick Settings' Dark mode tile run, and what
-/// an agent or a script runs.
+/// Set the field `field` of the appearance section to `value` through the field's own published
+/// setter: what Settings' Appearance page and Quick Settings' Dark mode tile run, and what an
+/// agent or a script runs.
 fn set_field(session: &mut Session, field: &str, value: &Value) {
-    let arguments: Map<String, Value> = json!({
-        "edit": {"path": [{"field": field}], "op": "set", "value": value}
-    })
-    .as_object()
-    .expect("an object")
-    .clone();
+    let arguments: Map<String, Value> = json!({ "value": value })
+        .as_object()
+        .expect("an object")
+        .clone();
     session
-        .invoke(APPEARANCE, "field-edit", &arguments)
+        .invoke(
+            APPEARANCE,
+            &settings_store::workspace::verb(field),
+            &arguments,
+        )
         .unwrap_or_else(|error| panic!("set {field}: {error:?}"));
 }
 

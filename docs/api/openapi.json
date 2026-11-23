@@ -15929,30 +15929,6 @@
         "required": [],
         "description": ""
       },
-      "settings.root.discover-thunderbird-accounts.Arguments": {
-        "type": "object",
-        "properties": {
-          "prefs": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "prefs"
-        ],
-        "description": ""
-      },
-      "settings.root.choose-thunderbird-metadata.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "settings.root.inspect-thunderbird-import.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "settings.root.inspect-calendar-choices.Arguments": {
         "type": "object",
         "properties": {},
@@ -16456,18 +16432,6 @@
         ],
         "description": ""
       },
-      "settings.notifications.set-do-not-disturb.Arguments": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "description": ""
-      },
       "settings.notifications.mute-app.Arguments": {
         "type": "object",
         "properties": {
@@ -16556,6 +16520,16 @@
         ],
         "description": ""
       },
+      "settings.display-person.arrange-displays.Arguments": {
+        "type": "object",
+        "properties": {
+          "placement": {}
+        },
+        "required": [
+          "placement"
+        ],
+        "description": ""
+      },
       "settings.continuity.allow-continuity.Arguments": {
         "type": "object",
         "properties": {
@@ -16580,6 +16554,18 @@
         },
         "required": [
           "capability",
+          "on"
+        ],
+        "description": ""
+      },
+      "settings.continuity.set-automatic-display-input.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
           "on"
         ],
         "description": ""
@@ -16721,25 +16707,13 @@
         ],
         "description": ""
       },
-      "settings.display-placement.arrange-displays.Arguments": {
+      "settings.display-change.request.Arguments": {
         "type": "object",
         "properties": {
-          "placement": {}
+          "change": {}
         },
         "required": [
-          "placement"
-        ],
-        "description": ""
-      },
-      "settings.automatic-display.set-automatic-display-input.Arguments": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
+          "change"
         ],
         "description": ""
       },
@@ -16918,6 +16892,178 @@
             ]
           }
         },
+        "required": [],
+        "description": ""
+      },
+      "settings.agent-models.use-model.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "description": ""
+      },
+      "settings.agent-models.undo-model.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "settings.agent-models.redo-model.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "settings.agent-provider-setup.add-provider.Arguments": {
+        "type": "object",
+        "properties": {
+          "preset": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.remove-provider.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.set-provider-enabled.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider",
+          "on"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.set-provider-details.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "label",
+          "endpoint"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.set-provider-protocol.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "protocol"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.set-provider-model.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.set-default-provider.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.set-key.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "key"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.clear-key.Arguments": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "description": ""
+      },
+      "settings.agent-provider-setup.refresh-providers.Arguments": {
+        "type": "object",
+        "properties": {},
         "required": [],
         "description": ""
       },
@@ -39835,24 +39981,6 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
-      "action": "discover-thunderbird-accounts",
-      "arguments": "#/components/schemas/settings.root.discover-thunderbird-accounts.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
-      "action": "choose-thunderbird-metadata",
-      "arguments": "#/components/schemas/settings.root.choose-thunderbird-metadata.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
-      "action": "inspect-thunderbird-import",
-      "arguments": "#/components/schemas/settings.root.inspect-thunderbird-import.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.root",
       "action": "inspect-calendar-choices",
       "arguments": "#/components/schemas/settings.root.inspect-calendar-choices.Arguments"
     },
@@ -39863,274 +39991,442 @@
       "arguments": "#/components/schemas/settings.root.inspect-display-configuration.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "choose-theme",
       "arguments": "#/components/schemas/settings.appearance.choose-theme.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "set-dark-mode",
       "arguments": "#/components/schemas/settings.appearance.set-dark-mode.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "use-theme",
       "arguments": "#/components/schemas/settings.appearance.use-theme.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "new-theme",
       "arguments": "#/components/schemas/settings.appearance.new-theme.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "import-theme",
       "arguments": "#/components/schemas/settings.appearance.import-theme.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "reset-theme",
       "arguments": "#/components/schemas/settings.appearance.reset-theme.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "delete-theme",
       "arguments": "#/components/schemas/settings.appearance.delete-theme.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.appearance",
       "action": "switch-polarity",
       "arguments": "#/components/schemas/settings.appearance.switch-polarity.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.accessibility",
       "action": "step-magnifier",
       "arguments": "#/components/schemas/settings.accessibility.step-magnifier.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.accessibility",
       "action": "set-screen-reader",
       "arguments": "#/components/schemas/settings.accessibility.set-screen-reader.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input",
       "action": "set-key-repeat",
       "arguments": "#/components/schemas/settings.input.set-key-repeat.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input",
       "action": "choose-layout",
       "arguments": "#/components/schemas/settings.input.choose-layout.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input",
       "action": "set-layouts",
       "arguments": "#/components/schemas/settings.input.set-layouts.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input",
       "action": "set-paste-shortcut",
       "arguments": "#/components/schemas/settings.input.set-paste-shortcut.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-keyboard-layouts",
       "arguments": "#/components/schemas/settings.input-device.set-keyboard-layouts.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "use-shared-layouts",
       "arguments": "#/components/schemas/settings.input-device.use-shared-layouts.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-keyboard-model",
       "arguments": "#/components/schemas/settings.input-device.set-keyboard-model.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "show-keyboard-layout",
       "arguments": "#/components/schemas/settings.input-device.show-keyboard-layout.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "inspect-keyboard",
       "arguments": "#/components/schemas/settings.input-device.inspect-keyboard.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-tablet-output",
       "arguments": "#/components/schemas/settings.input-device.set-tablet-output.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-tablet-keep-aspect",
       "arguments": "#/components/schemas/settings.input-device.set-tablet-keep-aspect.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-tablet-left-handed",
       "arguments": "#/components/schemas/settings.input-device.set-tablet-left-handed.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-tablet-tip-feel",
       "arguments": "#/components/schemas/settings.input-device.set-tablet-tip-feel.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-tablet-button",
       "arguments": "#/components/schemas/settings.input-device.set-tablet-button.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-tablet-eraser",
       "arguments": "#/components/schemas/settings.input-device.set-tablet-eraser.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-pad-button",
       "arguments": "#/components/schemas/settings.input-device.set-pad-button.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.input-device",
       "action": "set-pad-dial",
       "arguments": "#/components/schemas/settings.input-device.set-pad-dial.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.power",
       "action": "set-suspend-plugged-in",
       "arguments": "#/components/schemas/settings.power.set-suspend-plugged-in.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.power",
       "action": "set-suspend-on-battery",
       "arguments": "#/components/schemas/settings.power.set-suspend-on-battery.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.updates",
       "action": "record-automatic-updates",
       "arguments": "#/components/schemas/settings.updates.record-automatic-updates.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.updates",
       "action": "record-update-check",
       "arguments": "#/components/schemas/settings.updates.record-update-check.Arguments"
     },
     {
-      "app": "so.tilo.settings",
-      "resource": "settings.notifications",
-      "action": "set-do-not-disturb",
-      "arguments": "#/components/schemas/settings.notifications.set-do-not-disturb.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.notifications",
       "action": "mute-app",
       "arguments": "#/components/schemas/settings.notifications.mute-app.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.audio",
       "action": "set-mono-output",
       "arguments": "#/components/schemas/settings.audio.set-mono-output.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.audio",
       "action": "set-echo-cancellation",
       "arguments": "#/components/schemas/settings.audio.set-echo-cancellation.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.audio-device",
       "action": "remember-output-device",
       "arguments": "#/components/schemas/settings.audio-device.remember-output-device.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.audio-device",
       "action": "remember-input-device",
       "arguments": "#/components/schemas/settings.audio-device.remember-input-device.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.display",
       "action": "set-automatic-brightness",
       "arguments": "#/components/schemas/settings.display.set-automatic-brightness.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.display",
       "action": "set-rotation-lock",
       "arguments": "#/components/schemas/settings.display.set-rotation-lock.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.display-person",
+      "action": "arrange-displays",
+      "arguments": "#/components/schemas/settings.display-person.arrange-displays.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
       "resource": "settings.continuity",
       "action": "allow-continuity",
       "arguments": "#/components/schemas/settings.continuity.allow-continuity.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.continuity",
       "action": "allow-capability",
       "arguments": "#/components/schemas/settings.continuity.allow-capability.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.continuity",
+      "action": "set-automatic-display-input",
+      "arguments": "#/components/schemas/settings.continuity.set-automatic-display-input.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
       "resource": "settings.shortcuts",
       "action": "rebind",
       "arguments": "#/components/schemas/settings.shortcuts.rebind.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.shortcuts",
       "action": "reset",
       "arguments": "#/components/schemas/settings.shortcuts.reset.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.shortcuts",
       "action": "reset-all",
       "arguments": "#/components/schemas/settings.shortcuts.reset-all.Arguments"
     },
     {
-      "app": "so.tilo.settings",
+      "app": "so.tilo.settings.sections",
       "resource": "settings.shortcuts",
       "action": "set-action-chords",
       "arguments": "#/components/schemas/settings.shortcuts.set-action-chords.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-providers",
+      "action": "set-providers",
+      "arguments": "#/components/schemas/settings.agent-providers.set-providers.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-providers",
+      "action": "follow-local-models",
+      "arguments": "#/components/schemas/settings.agent-providers.follow-local-models.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.hosted-agent-providers",
+      "action": "set-providers",
+      "arguments": "#/components/schemas/settings.hosted-agent-providers.set-providers.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.default-apps",
+      "action": "set-default-app-handler",
+      "arguments": "#/components/schemas/settings.default-apps.set-default-app-handler.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.display-change",
+      "action": "request",
+      "arguments": "#/components/schemas/settings.display-change.request.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "set-layouts",
+      "arguments": "#/components/schemas/settings.osk-sources.set-layouts.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.device-vpn",
+      "action": "route-through",
+      "arguments": "#/components/schemas/settings.device-vpn.route-through.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.device-vpn",
+      "action": "set-kill-switch",
+      "arguments": "#/components/schemas/settings.device-vpn.set-kill-switch.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.device-vpn",
+      "action": "stop",
+      "arguments": "#/components/schemas/settings.device-vpn.stop.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.device-vpn",
+      "action": "set-profile-kill-switch",
+      "arguments": "#/components/schemas/settings.device-vpn.set-profile-kill-switch.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.device-vpn",
+      "action": "release-profile",
+      "arguments": "#/components/schemas/settings.device-vpn.release-profile.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.network-usage",
+      "action": "count-data-used",
+      "arguments": "#/components/schemas/settings.network-usage.count-data-used.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.network-usage",
+      "action": "reset-data-used",
+      "arguments": "#/components/schemas/settings.network-usage.reset-data-used.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.network-usage",
+      "action": "forget-data-used",
+      "arguments": "#/components/schemas/settings.network-usage.forget-data-used.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-models",
+      "action": "use-model",
+      "arguments": "#/components/schemas/settings.agent-models.use-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-models",
+      "action": "undo-model",
+      "arguments": "#/components/schemas/settings.agent-models.undo-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-models",
+      "action": "redo-model",
+      "arguments": "#/components/schemas/settings.agent-models.redo-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "add-provider",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.add-provider.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "remove-provider",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.remove-provider.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "set-provider-enabled",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-enabled.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "set-provider-details",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-details.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "set-provider-protocol",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-protocol.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "set-provider-model",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "set-default-provider",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.set-default-provider.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "set-key",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.set-key.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "clear-key",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.clear-key.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.agent-provider-setup",
+      "action": "refresh-providers",
+      "arguments": "#/components/schemas/settings.agent-provider-setup.refresh-providers.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -40143,96 +40439,6 @@
       "resource": "shell-views",
       "action": "reset",
       "arguments": "#/components/schemas/shell-views.reset.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.agent-providers",
-      "action": "set-providers",
-      "arguments": "#/components/schemas/settings.agent-providers.set-providers.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.agent-providers",
-      "action": "follow-local-models",
-      "arguments": "#/components/schemas/settings.agent-providers.follow-local-models.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.hosted-agent-providers",
-      "action": "set-providers",
-      "arguments": "#/components/schemas/settings.hosted-agent-providers.set-providers.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.default-apps",
-      "action": "set-default-app-handler",
-      "arguments": "#/components/schemas/settings.default-apps.set-default-app-handler.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.display-placement",
-      "action": "arrange-displays",
-      "arguments": "#/components/schemas/settings.display-placement.arrange-displays.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.automatic-display",
-      "action": "set-automatic-display-input",
-      "arguments": "#/components/schemas/settings.automatic-display.set-automatic-display-input.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.osk-sources",
-      "action": "set-layouts",
-      "arguments": "#/components/schemas/settings.osk-sources.set-layouts.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.device-vpn",
-      "action": "route-through",
-      "arguments": "#/components/schemas/settings.device-vpn.route-through.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.device-vpn",
-      "action": "set-kill-switch",
-      "arguments": "#/components/schemas/settings.device-vpn.set-kill-switch.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.device-vpn",
-      "action": "stop",
-      "arguments": "#/components/schemas/settings.device-vpn.stop.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.device-vpn",
-      "action": "set-profile-kill-switch",
-      "arguments": "#/components/schemas/settings.device-vpn.set-profile-kill-switch.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.device-vpn",
-      "action": "release-profile",
-      "arguments": "#/components/schemas/settings.device-vpn.release-profile.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.network-usage",
-      "action": "count-data-used",
-      "arguments": "#/components/schemas/settings.network-usage.count-data-used.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.network-usage",
-      "action": "reset-data-used",
-      "arguments": "#/components/schemas/settings.network-usage.reset-data-used.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "settings.network-usage",
-      "action": "forget-data-used",
-      "arguments": "#/components/schemas/settings.network-usage.forget-data-used.Arguments"
     },
     {
       "app": "so.tilo.settings",

@@ -1178,7 +1178,7 @@ impl ProviderConfig {
 
     /// The configuration `document` holds: this device's providers and the
     /// person's hosted ones.
-    fn from_document(document: &Map<String, Value>) -> Self {
+    pub(crate) fn from_document(document: &Map<String, Value>) -> Self {
         let leaf = |section: &str, key: &str| {
             document
                 .get(section)
@@ -1253,40 +1253,21 @@ impl ProviderConfig {
     /// Other Settings panes retain their sections, and no secret can enter the
     /// document because `ProviderProfile` exposes a reference only.
     pub fn save(&self) -> std::io::Result<()> {
-        let (local, hosted) = self.sections()?;
-        settings_store::update_section(SETTINGS_SECTION, local)?;
-        settings_store::update_section(HOSTED_SECTION, hosted)
-    }
-
-    /// Atomically save only if the currently stored descriptions still equal
-    /// `expected`.
-    pub fn compare_save(&self, expected: &Self) -> std::io::Result<bool> {
         let source = settings_store::source()
-            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
-        let document = source.load();
-        if Self::from_document(&document) != *expected {
-            return Ok(false);
-        }
-        let (local, hosted) = self.sections()?;
-        let read = |section: &str| match document.get(section) {
-            Some(Value::Object(section)) => section.clone(),
-            _ => Map::new(),
-        };
-        // This device's providers decide: the hosted ones follow them.
-        let result =
-            source.compare_update_section(SETTINGS_SECTION, &read(SETTINGS_SECTION), local)?;
-        if matches!(result, settings_store::ConditionalUpdate::Superseded) {
-            return Ok(false);
-        }
-        source.update_section(HOSTED_SECTION, hosted)?;
-        Ok(true)
+            .ok_or_else(|| std::io::Error::other("no settings in this process"))?;
+        self.save_in(source.as_ref())
     }
 
     /// Save this configuration to `source`: another profile's settings.
     pub fn save_in(&self, source: &dyn settings_store::SettingsSource) -> std::io::Result<()> {
         let (local, hosted) = self.sections()?;
-        source.update_section(SETTINGS_SECTION, local)?;
-        source.update_section(HOSTED_SECTION, hosted)
+        source.update_sections(
+            vec![
+                (SETTINGS_SECTION.to_owned(), local),
+                (HOSTED_SECTION.to_owned(), hosted),
+            ],
+            &settings_store::ChangeOrigin::default(),
+        )
     }
 
     /// Validate storage and runtime-safe invariants, returning user-facing

@@ -820,7 +820,7 @@ pub struct ProcessServices {
     /// The person's apps Files lists, which tell its certified route when they change
     /// (`applicationsChanged`); without it its Applications place asks on a timer.
     pub applications: Option<Arc<dyn ApplicationServices>>,
-    /// The session's settings (`settings_store::app_scope`); without it apps have none beyond
+    /// The session's settings, which apps reach through their channel; without it apps have none beyond
     /// their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
     pub display_control: Option<Arc<dyn DisplayControlServices>>,

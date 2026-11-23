@@ -280,6 +280,11 @@ def fleet(root: pathlib.Path, tilolang: pathlib.Path) -> tuple[list[dict], list[
             claimed[app_id] = package["id"]
     apps = [package for package in packages if package["listed"]]
     surfaced = [package for package in packages if package["surface"]]
+    # Each settings section is a resource of the workspace whichever app shows it, typed by the
+    # surface the sections publish.
+    sections = root / "crates/desktop/settings-sections/published.toml"
+    surfaced.append(dict(id="so.tilo.settings.sections", name="Settings sections",
+                         surface=sections.read_text(encoding="utf-8")))
     return apps, surfaced
 
 

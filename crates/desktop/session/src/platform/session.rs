@@ -656,6 +656,9 @@ impl Session {
         // Where this device's own workspace service is installed, and what its roles read from:
         // every role here reads what its workspaces hold through it.
         let workspace_service = tilo_workspace_service::service::ServiceSlot::default();
+        // The settings everything in this process reads: the workspace's, once the daemon holds
+        // the person's.
+        let settings = crate::session_settings::SessionSettings::install();
         // A write the daemon takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(daemon_writes.clone());
         let engine = crate::options::open_engine(&options, &handle);
@@ -733,10 +736,11 @@ impl Session {
         // What is live in the workspaces the service holds, on this device or on one the peer
         // network reaches: what the shell shows in the bar, quick settings and on the lock screen,
         // from the moment the service opens.
-        let live_rows = sync.as_ref().map_or_else(
-            tilo_workspace_service::live::LiveRows::default,
-            |sync| sync.live_rows(),
-        );
+        let live_rows = sync
+            .as_ref()
+            .map_or_else(tilo_workspace_service::live::LiveRows::default, |sync| {
+                sync.live_rows()
+            });
         tilo_rt::app().handle().spawn({
             let slot = workspace_service.clone();
             let rows = live_rows.clone();
@@ -1487,6 +1491,12 @@ impl Session {
                 }
             }
         }
+        // The device's settings are published where this device's are kept, under its key.
+        if let Some(engine) = &engine {
+            tilo_app::framework::read_settings_on(&hex::encode(
+                engine.identity().device_cert.device_public_key,
+            ));
+        }
         // A service that records who changed what records the person's, not
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
@@ -1838,7 +1848,7 @@ impl Session {
             clipboard,
             layout,
             underway: busy,
-            settings: crate::person_settings::PersonSettings::default(),
+            settings,
             overview,
             dictation,
             emoji,

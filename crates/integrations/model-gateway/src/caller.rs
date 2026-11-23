@@ -83,8 +83,6 @@ mod tests {
             })
             .collect();
         forbidden.extend(default_forbidden);
-        forbidden.push(serde_json::json!({"verb":"get_provider_config"}));
-        forbidden.push(serde_json::json!({"verb":"set_provider_config", "expected_revision":"stale", "config":{}}));
         let http = crate::service::provider_client().unwrap();
         for value in forbidden {
             let request = serde_json::from_value(value.clone()).unwrap();
@@ -98,9 +96,7 @@ mod tests {
             let expected = match value["verb"].as_str().unwrap() {
                 "cluster_faces" => "only Photos may request fixed local face clustering",
                 "analyze_image" => "only Photos may request fixed local image analysis",
-                "complete" | "complete_default" | "get_provider_config" | "set_provider_config" => {
-                    "Provider permission denied"
-                }
+                "complete" | "complete_default" => "Provider permission denied",
                 _ => "not authorized",
             };
             assert!(response.error.unwrap().contains(expected), "{value}");

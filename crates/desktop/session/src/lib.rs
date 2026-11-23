@@ -166,7 +166,6 @@ mod device_actions;
 mod device_lists;
 #[cfg(target_os = "linux")]
 mod device_shell;
-mod live_list;
 #[cfg(target_os = "linux")]
 mod device_state;
 #[cfg(target_os = "linux")]
@@ -228,6 +227,7 @@ mod here;
 mod host_shell;
 #[cfg(target_os = "linux")]
 mod listings;
+mod live_list;
 // What the session publishes for the quick settings to draw: the Devices section's rows, the
 // clipboard's copies and the notification centre.
 #[cfg(target_os = "linux")]
@@ -315,8 +315,6 @@ pub mod parts;
 mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
-mod person_settings;
-#[cfg(target_os = "linux")]
 mod person_store;
 #[cfg(target_os = "linux")]
 pub(crate) use tilo_workspace_service::workspaces::PersonResources;
@@ -367,6 +365,8 @@ mod service_sessions;
 mod services;
 #[cfg(target_os = "linux")]
 pub mod session_package;
+#[cfg(target_os = "linux")]
+mod session_settings;
 #[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]

@@ -6,8 +6,9 @@
 //! its changes with [`AppSettingsHandle::read`], and writes its own entries
 //! with [`AppSettingsHandle::update`]. With the `settings-host` feature,
 //! [`host::AppSettingsServer`] answers them from a
-//! `settings_store::SettingsSource`; what an app sees and may write is
-//! `settings_store::app_scope`'s.
+//! `settings_store::SettingsSource`: an app sees and writes its own preferences, reads the
+//! sections every app's toolkit follows, and sets a setting of the person's or the device's only
+//! where it holds a grant for that setting's setter ([`host::AppSettingsServer::with_grants`]).
 
 use runtime_portal::NotAvailable;
 
@@ -130,13 +131,21 @@ pub mod host {
 
     use serde_json::{Map, Value};
     use settings_store::SettingsSource;
-    use settings_store::app_scope::{Reach, update_at, view_at};
+    use settings_store::placement::{
+        APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES,
+    };
 
     use super::MAX_SETTINGS_WIRE_BYTES;
 
     /// Asked before every call; an error refuses it (the channel's
     /// admission was withdrawn).
     pub type Revalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+    /// What the host asks of a granted write before it is made: the settings as they are, the
+    /// section and what is written to it; an error refuses the write with it.
+    pub type Check = Arc<
+        dyn Fn(&Map<String, Value>, &str, &Map<String, Value>) -> Result<(), String> + Send + Sync,
+    >;
 
     /// An independently admitted typed display delegate; the caller's identity
     /// is captured by the broker, never read from the request.
@@ -146,8 +155,11 @@ pub mod host {
     /// One app's `AppSettings` capability over `source`.
     pub struct AppSettingsServer {
         app_id: String,
-        /// What the app reaches of the document.
-        reach: Reach,
+        /// The setters of the person's and the device's settings the app may invoke, as patterns
+        /// over their addresses (`settings_store::workspace::EVERY_SETTER`); an app holds none unless granted.
+        grants: Vec<String>,
+        /// What a granted write must also pass.
+        check: Option<Check>,
         display: Option<DisplayControl>,
         source: Arc<dyn SettingsSource>,
         revalidate: Revalidate,
@@ -173,7 +185,8 @@ pub mod host {
             source.changes().listen(&listener);
             Self {
                 app_id: app_id.into(),
-                reach: Reach::App,
+                grants: Vec::new(),
+                check: None,
                 display: None,
                 source,
                 revalidate,
@@ -183,16 +196,21 @@ pub mod host {
             }
         }
 
-        /// Let the app reach `reach` of the document: [`Reach::System`] for
-        /// the device's settings app the host granted it to.
+        /// Let the app invoke the setters `grants` cover, and read the sections they name.
         #[must_use]
-        pub fn with_reach(mut self, reach: Reach) -> Self {
-            self.reach = reach;
+        pub fn with_grants(mut self, grants: Vec<String>) -> Self {
+            self.grants = grants;
             self
         }
 
-        /// Attach the broker's independent display authority, without extending
-        /// generic settings write permissions.
+        /// Hold every granted write to `check` as well.
+        #[must_use]
+        pub fn with_check(mut self, check: Check) -> Self {
+            self.check = Some(check);
+            self
+        }
+
+        /// Let the device's settings app reach the displays' own transactions.
         #[must_use]
         pub fn with_display(mut self, display: Option<DisplayControl>) -> Self {
             self.display = display;
@@ -201,9 +219,15 @@ pub mod host {
 
         /// The current view, with a revision that changes exactly when the
         /// view does.
-        fn current(&self) -> (u64, Map<String, Value>) {
+        #[must_use]
+        pub fn view(&self) -> (u64, Map<String, Value>) {
             let document = self.source.load();
-            let mut view = view_at(&document, &self.app_id, self.reach);
+            let mut view = app_view(&document, &self.app_id);
+            for (section, values) in &document {
+                if !view.contains_key(section) && granted(&self.grants, section, None) {
+                    view.insert(section.clone(), values.clone());
+                }
+            }
             settings_store::personal_dictionary::delivery::project(
                 &document,
                 &self.app_id,
@@ -216,6 +240,110 @@ pub mod host {
             }
             answered.clone()
         }
+    }
+
+    /// The shared sections every app reads: how text, motion and colour look to the person.
+    pub const APP_READABLE_SECTIONS: &[&str] = &[
+        "locale",
+        "text_assistance",
+        "accessibility",
+        "appearance",
+        settings_store::appearance::DEVICE_SECTION,
+        settings_store::identity::SECTION,
+    ];
+
+    /// Whether one of `grants` covers the setter of `field` in `section` (`None`: any setter of
+    /// the section, for reading it). A grant is the setter's address with `*` standing for any
+    /// part of one segment; the device a device's section names is the one in front, matched by
+    /// `*` alone.
+    fn granted(grants: &[String], section: &str, field: Option<&str>) -> bool {
+        if settings_store::placement::per_app(section) {
+            return false;
+        }
+        let id = settings_store::placement::address(section, None, "*").id;
+        let verb = field.map_or_else(|| "set-*".to_owned(), settings_store::workspace::verb);
+        let address = format!("{id}#{verb}");
+        grants.iter().any(|grant| matches(grant, &address))
+    }
+
+    /// Whether `pattern` matches `address` segment by segment, `*` in a pattern's segment
+    /// standing for any text within it.
+    fn matches(pattern: &str, address: &str) -> bool {
+        let (pattern, address): (Vec<_>, Vec<_>) = (
+            pattern.split(['/', '#']).collect(),
+            address.split(['/', '#']).collect(),
+        );
+        pattern.len() == address.len()
+            && pattern
+                .iter()
+                .zip(&address)
+                .all(|(pattern, part)| settings_store::index::glob_matches(pattern, part))
+    }
+
+    /// The largest preferences an app keeps on the device alone.
+    const MAX_DEVICE_LOCAL_VALUE_BYTES: usize = 256 * 1024;
+
+    /// What app `app_id` reads of `document`: its own preferences and the shared sections.
+    #[must_use]
+    pub fn app_view(document: &Map<String, Value>, app_id: &str) -> Map<String, Value> {
+        let mut view = Map::new();
+        for section in [APP_PERSONAL_SECTION, APP_DEVICE_LOCAL_SECTION] {
+            if let Some(entry @ Value::Object(_)) =
+                document.get(section).and_then(|held| held.get(app_id))
+            {
+                view.insert(
+                    section.to_owned(),
+                    Value::Object(Map::from_iter([(app_id.to_owned(), entry.clone())])),
+                );
+            }
+        }
+        for section in APP_READABLE_SECTIONS {
+            if let Some(value @ Value::Object(_)) = document.get(*section) {
+                view.insert((*section).to_owned(), value.clone());
+            }
+        }
+        view
+    }
+
+    /// Write `values` to `section` as app `app_id`: only its own preferences, whole, under its
+    /// own id.
+    fn update_for_app(
+        source: &dyn SettingsSource,
+        app_id: &str,
+        section: &str,
+        values: Map<String, Value>,
+        origin: &settings_store::ChangeOrigin,
+    ) -> Result<(), String> {
+        let limit = match section {
+            APP_PERSONAL_SECTION => MAX_PERSONAL_VALUE_BYTES,
+            APP_DEVICE_LOCAL_SECTION => MAX_DEVICE_LOCAL_VALUE_BYTES,
+            _ => return Err(format!("{app_id} may not write the {section} settings")),
+        };
+        let mut entries = values.into_iter();
+        let (Some((entry, Value::Object(keys))), None) = (entries.next(), entries.next()) else {
+            return Err(format!("{app_id} writes one object under its own id"));
+        };
+        if app_id.is_empty() || entry != app_id {
+            return Err(format!("{app_id} may not write the settings of {entry}"));
+        }
+        let mut stored = match source.load().get(section).and_then(|held| held.get(app_id)) {
+            Some(Value::Object(stored)) => stored.clone(),
+            _ => Map::new(),
+        };
+        stored.extend(keys);
+        let size = serde_json::to_vec(&stored).map_or(usize::MAX, |bytes| bytes.len());
+        if size > limit {
+            return Err(format!(
+                "{app_id}'s {section} settings would be {size} bytes, more than {limit}"
+            ));
+        }
+        source
+            .update_section_by(
+                section,
+                Map::from_iter([(app_id.to_owned(), Value::Object(stored))]),
+                origin,
+            )
+            .map_err(|error| error.to_string())
     }
 
     fn encode(view: &Map<String, Value>) -> Result<Vec<u8>, String> {
@@ -241,7 +369,7 @@ pub mod host {
                 let changed = self.changed.notified();
                 tokio::pin!(changed);
                 changed.as_mut().enable();
-                let (revision, view) = self.current();
+                let (revision, view) = self.view();
                 if revision != after {
                     return Ok((revision, encode(&view)?));
                 }
@@ -292,7 +420,6 @@ pub mod host {
                     .filter(|action| !action.is_empty())
                     .map(str::to_owned),
                 actor: None,
-                invoked_by: None,
             };
             if settings_store::personal_dictionary::delivery::command(
                 self.source.as_ref(),
@@ -302,22 +429,28 @@ pub mod host {
             )
             .map_err(|e| e.to_string())?
             {
-                let (revision, view) = self.current();
+                let (revision, view) = self.view();
                 return Ok((revision, encode(&view)?));
             }
             if section == settings_store::personal_dictionary::SECTION {
                 return Err("the personal dictionary is edited through its own command".to_owned());
             }
-            update_at(
-                self.source.as_ref(),
-                &self.app_id,
-                self.reach,
-                section,
-                values,
-                &origin,
-            )
-            .map_err(|e| e.to_string())?;
-            let (revision, view) = self.current();
+            if !values.is_empty()
+                && values
+                    .keys()
+                    .all(|field| granted(&self.grants, section, Some(field)))
+            {
+                if let Some(check) = &self.check {
+                    check(&self.source.load(), section, &values)?;
+                }
+                // Each field is set by its own setter, which the store records it under.
+                self.source
+                    .update_section_by(section, values, &origin)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                update_for_app(self.source.as_ref(), &self.app_id, section, values, &origin)?;
+            }
+            let (revision, view) = self.view();
             Ok((revision, encode(&view)?))
         }
     }

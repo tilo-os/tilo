@@ -607,6 +607,7 @@ fn field_surfaces(
             readonly: false,
             unit: false,
             label: false,
+            whole: false,
             ops: None,
         });
         if let Some((inner, items)) = nested {
@@ -710,6 +711,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
             types: types.into_types(),
             shows: Vec::new(),
             live,
+            setters: false,
         });
     }
     let mut types = TypeSet::new();
@@ -729,6 +731,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         types: types.into_types(),
         shows: Vec::new(),
         live: None,
+        setters: false,
     });
     surfaces
 }
@@ -748,6 +751,7 @@ pub fn host_surface() -> Surface {
         types: Vec::new(),
         shows: Vec::new(),
         live: None,
+        setters: false,
     }
 }
 
@@ -787,6 +791,7 @@ pub fn personal_surface() -> Surface {
         types: Vec::new(),
         shows: Vec::new(),
         live: None,
+        setters: false,
     }
 }
 

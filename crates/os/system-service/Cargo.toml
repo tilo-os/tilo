@@ -15,7 +15,7 @@ os-actions = { path = "../os-actions" }
 tilo-ntfs-mount = { path = "../ntfs-mount", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 tilo-actions = { path = "../../core/actions" }
 # What is booted, staged and rolled back to, as the deployment status socket lists it.
 tilo-deployment-status = { path = "../deployment-status" }

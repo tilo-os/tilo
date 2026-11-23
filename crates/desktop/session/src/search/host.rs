@@ -119,14 +119,15 @@ impl Shared {
     }
 
     /// Keep what changed of search's history in its settings section,
-    /// through the section's field edits; without a settings service it
+    /// through the setters of its fields; without a settings service it
     /// lasts as long as the session.
     pub(crate) fn keep_history(&self) {
-        for edit in self.search.take_unkept() {
+        let history = search::history();
+        for (setter, arguments) in self.search.take_unkept() {
             let kept = self
                 .services
                 .borrow_mut()
-                .invoke(search::HISTORY, "field-edit", &edit);
+                .invoke(&history, &setter, &arguments);
             if let Some(Err(error)) = kept {
                 tracing::warn!(%error, "search history not kept");
             }
@@ -138,7 +139,7 @@ impl Shared {
         self.handle.set_search_host(
             Rc::clone(&self.search) as Rc<dyn tilo_session_core::desktop::state::SearchHost>
         );
-        if let Some(kept) = self.services.borrow().read(search::HISTORY) {
+        if let Some(kept) = self.services.borrow().read(&search::history()) {
             self.search.restore(&kept);
         }
         self.observe();

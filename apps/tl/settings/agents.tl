@@ -8,7 +8,7 @@ view agent_models_pane() {
     state key_provider: Text = ""
     state key_text: Text = ""
     let m = settings.agent_models
-    let p = settings.agent_providers
+    let p = settings.agent_provider_setup
     ui.Section("Agents answer with") {
         if m.in_use.provider != "" {
             ui.ListRow(
@@ -61,7 +61,7 @@ view agent_models_pane() {
                             },
                         ) {
                             on choose: settings.set_provider_enabled(
-                                settings.agent_providers,
+                                settings.agent_provider_setup,
                                 provider.id,
                                 not provider.enabled,
                             )
@@ -69,7 +69,7 @@ view agent_models_pane() {
                         if provider.enabled and not provider.in_use {
                             ui.MenuItem("Make it the default") {
                                 on choose: settings.set_default_provider(
-                                    settings.agent_providers,
+                                    settings.agent_provider_setup,
                                     provider.id,
                                 )
                             }
@@ -87,7 +87,7 @@ view agent_models_pane() {
                             if provider.key == "stored" {
                                 ui.MenuItem("Forget the key", destructive: true) {
                                     on choose: settings.clear_key(
-                                        settings.agent_providers,
+                                        settings.agent_provider_setup,
                                         provider.id,
                                     )
                                 }
@@ -95,7 +95,7 @@ view agent_models_pane() {
                         }
                         ui.MenuItem("Remove", destructive: true) {
                             on choose: settings.remove_provider(
-                                settings.agent_providers,
+                                settings.agent_provider_setup,
                                 provider.id,
                             )
                         }
@@ -114,7 +114,7 @@ view agent_models_pane() {
                     icon: .sparkles,
                 ) {
                     on activate: settings.set_provider_model(
-                        settings.agent_providers,
+                        settings.agent_provider_setup,
                         provider.id,
                         model.id,
                     )
@@ -135,7 +135,7 @@ view agent_models_pane() {
                 secret: true,
             ) {
                 on submit: settings.set_key(
-                    settings.agent_providers,
+                    settings.agent_provider_setup,
                     key_provider,
                     key_text,
                 ).then(set(key_text, "")).then(set(key_provider, ""))
@@ -143,7 +143,7 @@ view agent_models_pane() {
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Keep the key", role: .primary, enabled: key_text != "") {
                     on press: settings.set_key(
-                        settings.agent_providers,
+                        settings.agent_provider_setup,
                         key_provider,
                         key_text,
                     ).then(set(key_text, "")).then(set(key_provider, ""))
@@ -163,7 +163,7 @@ view agent_models_pane() {
         ui.MenuButton("Add a provider", icon: .plus) {
             for preset in p.presets {
                 ui.MenuItem(preset.label) {
-                    on choose: settings.add_provider(settings.agent_providers, preset.slug)
+                    on choose: settings.add_provider(settings.agent_provider_setup, preset.slug)
                 }
             }
         }

@@ -428,7 +428,9 @@ pub use root::{reserved_action_ids, with_surface};
 pub use rows::{Application, ContentHandoff, LiveRow, apply_row_statuses, apply_statuses};
 pub use saves::Saves;
 pub use scenario::{Fixture, RunMode};
-pub use section::SettingsResources;
+pub use section::{
+    SETTER_VALUE, SettingsResources, app_preferences, section_address, section_surface,
+};
 pub use settings::Setting;
 pub use share_link::host_link;
 pub use stage::{stage, time_frames};
@@ -436,6 +438,7 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::resource::{chain_of_resource_id, chain_resource_id};
+pub use ui_core::settings_device::{read_settings_on, settings_device};
 pub use upkeep::Upkeep;
 pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use window_bar::{Binding, Choice, WindowBar};

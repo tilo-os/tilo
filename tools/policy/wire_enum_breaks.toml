@@ -99,7 +99,7 @@ enum = "Answer"
 reason = "one line of JSON per answer between the compositor and its liveness prober (`serde_json::from_str`, `rename_all = snake_case`), both in the same binary, so a variant is named and its place carries no bytes"
 
 [[break]]
-file = "crates/system/settings-store/src/hardware.rs"
+file = "crates/desktop/settings/src/hardware.rs"
 enum = "ShortcutAction"
 reason = "read and written through a JSON name (`read_through_json_value!`, `rename_all = snake_case`) in the settings the store keeps, so a shortcut added mid-enum takes a name and moves nothing"
 

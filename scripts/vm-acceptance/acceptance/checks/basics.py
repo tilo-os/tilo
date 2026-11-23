@@ -138,7 +138,7 @@ def bluetooth(ctx, res):
     expect(not live, f"Bluetooth actions offered as available with no adapter: {live}")
 
 
-OUTPUT = "settings:settings.input"
+OUTPUT = "settings/input"
 LAYOUTS = core.action(OUTPUT, "set-layouts")
 
 

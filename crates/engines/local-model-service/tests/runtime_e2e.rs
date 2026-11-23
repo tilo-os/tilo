@@ -326,8 +326,8 @@ fn gateway(work: &Path, url: &str, model: &str) -> (Child, PathBuf) {
     profile.endpoint = url.into();
     profile.location = EndpointLocation::ThisDevice;
     profile.models = vec![ModelDescriptor::new(model)];
-    // Written and let go before the gateway starts, which follows them.
-    let settings = settings_store::Store::open(&work.join("config/tilo")).unwrap();
+    // Left where the gateway reads them, as the session leaves them.
+    let settings = settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(()));
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
@@ -335,8 +335,12 @@ fn gateway(work: &Path, url: &str, model: &str) -> (Child, PathBuf) {
     }
     .save_in(&settings)
     .unwrap();
-    settings_store::SettingsSource::flush_pending(&settings);
-    drop(settings);
+    settings_store::outside::publish_at(
+        &work.join("config/tilo").join(settings_store::outside::FILE),
+        "",
+        &settings_store::SettingsSource::load(&settings),
+    )
+    .unwrap();
     let socket = work.join("gateway.sock");
     let child = Command::new(env_path("TILO_E2E_GATEWAY"))
         .arg("serve")

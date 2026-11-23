@@ -1,8 +1,8 @@
 //! A person's settings follow them between their devices: what they choose on one is on the
 //! other, also when both change something at the same moment, and what a machine keeps of its
 //! own stays on it. Two real sessions of one person, each changing its settings through the
-//! settings' own published `field-edit` (what Settings and Quick Settings run), and each read
-//! back as any app beside the session reads them.
+//! settings' own published setters (what Settings and Quick Settings run), and each read back
+//! as its session reads them, and a step the person took on one is taken back on both.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -14,26 +14,27 @@
               sessions end"
 )]
 
-use std::sync::Arc;
-
-use serde_json::json;
+use serde_json::{Value, json};
 use settings_store::{appearance, power};
 
 use crate::common::people::{
-    Device, set_setting, setting, setting_edit, two_devices_of_one_person, waited,
+    Device, at, set_setting, setting, setting_section, two_devices_of_one_person, waited,
 };
 
-/// The settings `device` 's session holds, as an app beside it follows them.
-fn settings_of(device: &Device) -> Arc<settings_store::Store> {
-    let home = device.directory();
-    settings_store::Store::open_device_in(&home.join("data"), &home.join("config/tilo"))
-        .unwrap_or_else(|error| panic!("{}'s settings: {error}", device.label))
+/// What `device`'s session reads of `key`.
+fn read<T: serde::de::DeserializeOwned + serde::Serialize>(
+    device: &Device,
+    key: &settings_store::Key<T>,
+) -> T {
+    let Value::Object(document) = device.settings() else {
+        panic!("{} answers its settings as an object", device.label)
+    };
+    key.get_in(&settings_store::HostDocument::new(document, |_| Ok(())))
 }
 
 #[test]
 fn a_persons_settings_follow_them_and_a_machines_stay_on_it() {
     let (site, _ada, laptop, phone) = two_devices_of_one_person();
-    let (on_laptop, on_phone) = (settings_of(&laptop), settings_of(&phone));
     let devices = [&laptop, &phone];
 
     // What the person chooses on one device is on the other; how soon this machine locks is its
@@ -44,33 +45,61 @@ fn a_persons_settings_follow_them_and_a_machines_stay_on_it() {
         "the laptop's dark mode is on the phone",
         &site,
         &devices,
-        || appearance::MODE.get_in(on_phone.as_ref()).as_deref() == Some("dark"),
+        || read(&phone, &appearance::MODE).as_deref() == Some("dark"),
     );
-    assert_eq!(power::LOCK_MINUTES.get_in(on_laptop.as_ref()), 1);
+    assert_eq!(read(&laptop, &power::LOCK_MINUTES), 1);
     assert_eq!(
-        power::LOCK_MINUTES.get_in(on_phone.as_ref()),
+        read(&phone, &power::LOCK_MINUTES),
         power::DEFAULT_LOCK_MINUTES,
         "how soon the laptop locks stays on the laptop"
     );
 
     // Both devices change a setting at the same moment, neither having heard of the other's:
     // both changes are on both, and what was there before stays.
-    let appearance = setting("appearance");
-    laptop.act(&appearance, &setting_edit("high_contrast", &json!(true)));
-    phone.act(&appearance, &setting_edit("translucency", &json!(0.25)));
+    laptop.act(
+        &setting(&laptop, "appearance", "high_contrast"),
+        &json!({"value": true}),
+    );
+    phone.act(
+        &setting(&phone, "appearance", "translucency"),
+        &json!({"value": 0.25}),
+    );
     waited("both changes are on both devices", &site, &devices, || {
-        [&on_laptop, &on_phone].iter().all(|settings| {
-            appearance::HIGH_CONTRAST.get_in(settings.as_ref())
-                && appearance::TRANSLUCENCY
-                    .get_in(settings.as_ref())
+        devices.iter().all(|device| {
+            read(device, &appearance::HIGH_CONTRAST)
+                && read(device, &appearance::TRANSLUCENCY)
                     .is_some_and(|value| (value - 0.25).abs() < f32::EPSILON)
         })
     });
-    for settings in [&on_laptop, &on_phone] {
+    for device in devices {
         assert_eq!(
-            appearance::MODE.get_in(settings.as_ref()).as_deref(),
+            read(device, &appearance::MODE).as_deref(),
             Some("dark"),
             "the earlier choice stays on both"
         );
     }
+
+    // The person takes back their last step, which they took on the laptop: the earlier choice
+    // is back on both devices, and what they set before it stays.
+    set_setting(&laptop, "appearance", "mode", &json!("light"));
+    let undone = laptop.act_wait(
+        &at(
+            tilo_actions::remote::settings_resources::PROVIDER,
+            &setting_section(&laptop, "appearance"),
+            "undo",
+        ),
+        &json!({}),
+    );
+    assert_eq!(undone["update"]["state"], json!("succeeded"), "{undone}");
+    waited(
+        "the laptop's undo is on both devices",
+        &site,
+        &devices,
+        || {
+            devices.iter().all(|device| {
+                read(device, &appearance::MODE).as_deref() == Some("dark")
+                    && read(device, &appearance::HIGH_CONTRAST)
+            })
+        },
+    );
 }

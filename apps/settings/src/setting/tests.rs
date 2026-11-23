@@ -276,9 +276,9 @@ fn a_setting_listed_by_name_says_what_its_pane_shows() {
         .lock_minutes;
     let sooner = if minutes == 1 { 2 } else { 1 };
     app.call_on(
-        "settings:settings.power",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": sooner } }),
+        &crate::testing::section(crate::testing::POWER),
+        "set-lock-minutes",
+        serde_json::json!({ "value": sooner }),
     )
     .expect("locking sooner asks nothing");
     settle(&mut app);
@@ -382,7 +382,10 @@ fn a_device_switch_found_by_search_runs_its_panes_action() {
 #[test]
 fn every_indexed_switch_names_the_field_its_row_shows() {
     for setting in index::SETTINGS {
-        let Some(switch) = setting.switch else {
+        let Some(at) = setting
+            .at
+            .filter(|at| at.options.is_empty() && matches!(at.change, index::Change::Field(_)))
+        else {
             continue;
         };
         assert!(
@@ -393,29 +396,26 @@ fn every_indexed_switch_names_the_field_its_row_shows() {
         let mut app = searching(&crate::i18n::t(&setting.name_key()));
         let left = content_left();
         let checked = |app: &mut TestApp<SettingsShell>| {
-            control(app.harness().root_widget(), setting, left)
-                .and_then(|(_, checked)| checked)
-                .unwrap_or_else(|| panic!("{}: its switch is found", setting.id))
+            control(app.harness().root_widget(), setting, left).and_then(|(_, checked)| checked)
         };
-        let before = checked(&mut app);
-        let path: Vec<serde_json::Value> = switch
-            .path()
-            .map(|field| serde_json::json!({ "field": field }))
-            .collect();
+        // A setting of a number or a word is no switch.
+        let Some(before) = checked(&mut app) else {
+            continue;
+        };
+        let section = at.resource(&ui::framework::settings_device());
         app.call_confirmed_on(
-            &format!("settings:{}", switch.section),
-            "field-edit",
-            serde_json::json!({ "edit": { "path": path, "op": "set", "value": !before } }),
+            &section,
+            &at.action(),
+            serde_json::json!({ "value": !before }),
         )
         .unwrap_or_else(|error| panic!("{}: {error}", setting.id));
         settle(&mut app);
         assert_eq!(
             checked(&mut app),
-            !before,
-            "{}: the row shows {}.{} as the palette changes it",
+            Some(!before),
+            "{}: the row shows {section}#{} as the palette changes it",
             setting.id,
-            switch.section,
-            switch.field
+            at.action()
         );
     }
 }
@@ -466,7 +466,7 @@ fn control_widget<'a>(
 #[test]
 fn every_indexed_choice_names_the_field_its_row_shows() {
     for setting in index::SETTINGS {
-        let Some(choice) = setting.choice else {
+        let Some(at) = setting.at.filter(|at| !at.options.is_empty()) else {
             continue;
         };
         assert!(
@@ -476,16 +476,13 @@ fn every_indexed_choice_names_the_field_its_row_shows() {
         );
         let mut app = searching(&crate::i18n::t(&setting.name_key()));
         let left = content_left();
-        let path: Vec<serde_json::Value> = choice
-            .path()
-            .map(|field| serde_json::json!({ "field": field }))
-            .collect();
+        let section = at.resource(&ui::framework::settings_device());
         let mut shown = std::collections::HashSet::new();
-        for option in choice.options {
+        for option in at.options {
             app.call_confirmed_on(
-                &format!("settings:{}", choice.section),
-                "field-edit",
-                serde_json::json!({ "edit": { "path": path, "op": "set", "value": option.json() } }),
+                &section,
+                &at.action(),
+                serde_json::json!({ "value": option.json() }),
             )
             .unwrap_or_else(|error| panic!("{} = {}: {error}", setting.id, option.value));
             settle(&mut app);

@@ -86,7 +86,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
     assert!(
         app.call_by(
             ui::tilo_actions::ActionInvoker::person("unrelated-member"),
-            &format!("settings:{APPEARANCE}"),
+            &crate::testing::section(APPEARANCE),
             "choose-theme",
             serde_json::json!({"theme":"Moss"})
         )
@@ -104,7 +104,9 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
             prefs.mode = "automatic".into();
             prefs.dark_theme = "custom:private-theme".into();
             prefs.light_theme = "tilo-light".into();
-            let mut own = ui::theme::ThemeRecord::draft(&ui::theme::Preset::Dark.document());
+            let mut own = ui::theme::ThemeRecord::draft(&ui::theme::PresetDesign::document(
+                ui::theme::Preset::Dark,
+            ));
             own.name = "never-export".into();
             prefs
                 .themes

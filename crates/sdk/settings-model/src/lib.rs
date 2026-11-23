@@ -6,13 +6,14 @@
 //! document, the toolkit reads and draws it.
 
 mod device_class;
-pub mod person;
 mod schema;
 pub mod text_assistance;
 pub mod theme;
 
 pub use device_class::DeviceClass;
-pub use schema::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, Scope, SettingsSchema};
+pub use schema::{
+    APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES, Scope, SettingsSchema,
+};
 
 #[doc(hidden)]
 pub use serde_json as __serde_json;

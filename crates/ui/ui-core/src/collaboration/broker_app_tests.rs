@@ -40,8 +40,10 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
     if !in_own_process("a_write_before_the_channel_connects_lands_after_it_connects_in_order") {
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
-    let records = settings_store::Store::open(dir.path()).unwrap();
+    let records = Arc::new(settings_store::HostDocument::new(
+        serde_json::Map::new(),
+        |_| Ok(()),
+    ));
     records
         .update_section(
             "app_personal",
@@ -105,8 +107,10 @@ fn an_apps_settings_reach_the_shells_records_and_follow_them() {
     if !in_own_process("an_apps_settings_reach_the_shells_records_and_follow_them") {
         return;
     }
-    let dir = tempfile::tempdir().unwrap();
-    let records = settings_store::Store::open(dir.path()).unwrap();
+    let records = Arc::new(settings_store::HostDocument::new(
+        serde_json::Map::new(),
+        |_| Ok(()),
+    ));
     records
         .update_section(
             "app_personal",

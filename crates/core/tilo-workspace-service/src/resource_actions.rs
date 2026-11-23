@@ -101,12 +101,6 @@ impl Declared {
                 tilo_app_id::apps::CONTACTS,
             ),
             Self {
-                app: Some(settings_model::person::APP),
-                id: settings_model::person::RESOURCE.to_owned(),
-                kind: settings_model::person::kind(),
-                founding: Founding::Typed,
-            },
-            Self {
                 app: Some(tilo_user_identity::workspace_list::APP),
                 id: tilo_user_identity::workspace_list::RESOURCE.to_owned(),
                 kind: tilo_user_identity::workspace_list::kind(),

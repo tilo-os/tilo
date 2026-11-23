@@ -109,7 +109,7 @@ fn session(calls: &Rc<RefCell<Vec<Press>>>) -> Session {
         Options {
             person: "Pat".to_owned(),
             services: vec![
-                Box::new(tilo_settings_service::SettingsService::new()),
+                Box::new(settings_sections::service::SettingsService::new()),
                 Box::new(Devices {
                     reading: reading(),
                     calls: Rc::clone(calls),
@@ -118,7 +118,11 @@ fn session(calls: &Rc<RefCell<Vec<Press>>>) -> Session {
             collab: false,
             ..Options::default()
         },
-        &[tilo_compositor::OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            WIDTH,
+            TALL,
+        )],
     )
     .expect("session");
     session.compositor().set_key_repeat(KeyRepeat {
@@ -131,10 +135,11 @@ fn session(calls: &Rc<RefCell<Vec<Press>>>) -> Session {
 /// Open the panel through the action its shortcut runs, and settle it.
 fn open_quick_settings(session: &mut Session) {
     session
-        .invoke(OVERLAYS, "open-surface", &Map::from_iter([(
-            "part".to_owned(),
-            json!("quick-settings"),
-        )]))
+        .invoke(
+            OVERLAYS,
+            "open-surface",
+            &Map::from_iter([("part".to_owned(), json!("quick-settings"))]),
+        )
         .expect("quick settings opens");
     crate::common::wait_for(session, "the panel to show the devices", |session| {
         session.settle_services();
@@ -159,23 +164,19 @@ fn press(session: &mut Session, name: &str) {
 /// The presses `calls` took, once the last one is `part` on `row`.
 #[track_caller]
 fn until_pressed(session: &mut Session, calls: &Rc<RefCell<Vec<Press>>>, row: &str, part: &str) {
-    crate::common::wait_for(
-        session,
-        format!("a press of {part} on {row}"),
-        |session| {
-            session.settle_services();
-            session.step(REFRESH).expect("step");
-            calls
-                .borrow()
-                .iter()
-                .any(|(action, arguments)| {
-                    action == "press"
-                        && arguments.get("row").and_then(Value::as_str) == Some(row)
-                        && arguments.get("part").and_then(Value::as_str) == Some(part)
-                })
-                .then_some(())
-        },
-    );
+    crate::common::wait_for(session, format!("a press of {part} on {row}"), |session| {
+        session.settle_services();
+        session.step(REFRESH).expect("step");
+        calls
+            .borrow()
+            .iter()
+            .any(|(action, arguments)| {
+                action == "press"
+                    && arguments.get("row").and_then(Value::as_str) == Some(row)
+                    && arguments.get("part").and_then(Value::as_str) == Some(part)
+            })
+            .then_some(())
+    });
 }
 
 /// Whether the shell says `words` anywhere: what a screen reader hears.
@@ -283,10 +284,7 @@ fn quick_settings_stands_beside_the_caret_that_asked_for_it() {
             "open-surface",
             &Map::from_iter([
                 ("part".to_owned(), json!("quick-settings")),
-                (
-                    "anchor".to_owned(),
-                    json!("beside:600,300,602,320,6"),
-                ),
+                ("anchor".to_owned(), json!("beside:600,300,602,320,6")),
             ]),
         )
         .expect("quick settings opens beside the caret");
@@ -371,11 +369,13 @@ fn the_clipboard_pastes_a_copy_and_the_keyboard_chooses_one() {
     crate::common::wait_for(&mut session, "the copy in the history", |session| {
         session.settle_services();
         session.step(REFRESH).expect("step");
-        session
-            .read("session:clipboard")
-            .and_then(|reading| reading["copies"].as_array()?.iter().find(|copy| {
-                copy["text"].as_str() == Some(copied)
-            }).cloned())
+        session.read("session:clipboard").and_then(|reading| {
+            reading["copies"]
+                .as_array()?
+                .iter()
+                .find(|copy| copy["text"].as_str() == Some(copied))
+                .cloned()
+        })
     });
 
     // Super+V opens the panel where the person types, and the copy stands first.
@@ -390,11 +390,15 @@ fn the_clipboard_pastes_a_copy_and_the_keyboard_chooses_one() {
     press(&mut session, copied);
     // Choosing it pastes it: the panel goes down so the paste lands in the field it was opened
     // for.
-    crate::common::wait_for(&mut session, "the paste to take the panel down", |session| {
-        session.settle_services();
-        session.step(REFRESH).expect("step");
-        (here(session) != "quick-settings").then_some(())
-    });
+    crate::common::wait_for(
+        &mut session,
+        "the paste to take the panel down",
+        |session| {
+            session.settle_services();
+            session.step(REFRESH).expect("step");
+            (here(session) != "quick-settings").then_some(())
+        },
+    );
 
     // Opened again, the keyboard reaches the same copy and Enter chooses it.
     press_paste(&mut session);

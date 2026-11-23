@@ -286,6 +286,9 @@ mod tests {
     #[test]
     fn a_change_the_compositor_keeps_at_once_is_applied() {
         let _home = tilo_test_env::TestHome::new().unwrap();
+        // The session's settings, which the step stages its change in and the compositor
+        // answers in.
+        let _settings = settings_store::in_memory::installed();
         let (publisher_pid, publisher_start_ticks) =
             settings_store::hardware::publisher_identity().unwrap();
         DisplayHardwareSnapshot {

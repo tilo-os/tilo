@@ -22,9 +22,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use crate::common::people::{
-    CONFIRMATION_REQUIRED, Device, Person, new_workspace, setting, setting_edit,
-};
+use crate::common::people::{CONFIRMATION_REQUIRED, Device, Person, new_workspace, setting};
 
 /// The settings that follow the person: their appearance, as their own workspace keeps it.
 const SETTINGS: (&str, &str) = ("so.tilo.settings", "person");
@@ -80,8 +78,8 @@ fn wait_for_record(device: &Device, workspace: &str, route: (&str, &str), wanted
     }
 }
 
-/// Choose `mode` for the appearance on `device`, as a person does in Settings: the field edit of
-/// the section, once the session offers it, which it does once it reads the person's sections.
+/// Choose `mode` for the appearance on `device`, as a person does in Settings: the setter of the
+/// section's mode, once the session offers it, which it does once it reads the person's sections.
 ///
 /// The edit is followed only as far as the session admits it: what proves it took is the
 /// workspace holding it ([`wait_for_record`]).
@@ -89,15 +87,15 @@ fn wait_for_record(device: &Device, workspace: &str, route: (&str, &str), wanted
 /// The mode is `light`, never the `dark` a computer starts with: a field set to what the section
 /// already reads as is no change, and is kept nowhere.
 fn choose_mode(device: &Device, mode: &str) {
-    let target = setting("appearance");
-    let edit = setting_edit("mode", &json!(mode));
+    let target = setting(device, "appearance", "mode");
+    let edit = json!({ "value": mode });
     let until = tilo_test_env::hang_deadline();
     loop {
         let answer = device.act(&target, &edit);
         match answer["err"]["code"].as_str() {
             Some("unknown_action") => assert!(
                 Instant::now() < until,
-                "{} is never offered appearance's field edit: {answer}\n{}",
+                "{} is never offered appearance's setter of its mode: {answer}\n{}",
                 device.label,
                 device.diagnostic()
             ),

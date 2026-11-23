@@ -39,6 +39,8 @@ tilo-server-protocol = { path = "../tilo-server-protocol" }
 # HTTPS to the server and the site, as every client of the server makes its requests.
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-mcp = { path = "../tilo-mcp" }
+# The sections' surface, compiled in, which a call on a settings section is typed by.
+app-fleet = { path = "../../desktop/app-fleet", features = ["surfaces"] }
 # A workspace one of the person's devices keeps is asked of that device over its action
 # service (`actions::RemoteDevice`), signed by the key.
 tilo-peer-state = { path = "../tilo-peer-state" }

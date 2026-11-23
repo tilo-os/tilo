@@ -97,7 +97,7 @@ tilo-system-stats = { path = "../../os/system-stats" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../desktop/desktop-entry" }
 # The interface language a host entry is named in: the person's, as every
 # surface resolves it, not the machine's locale.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 # The identity wire an app's identity client reads: the launcher writes the
 # per-app handshake in it before the sandbox can use the service.
 tilo-identity-client = { path = "../tilo-identity-client" }

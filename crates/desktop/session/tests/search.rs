@@ -24,13 +24,15 @@ use tilo_actions::remote::{
 use tilo_actions::{ApiError, ResourceSpec};
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
-use tilo_session_core::desktop::verbs::{LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id};
-use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session};
+use tilo_session_core::desktop::verbs::{
+    LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id,
+};
+use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 
 /// The platform search action every window and the shell publish: what a window's search control, its
 /// toolbar's magnifier and Ctrl+K run (`tilo_ui::search::SearchRequest`).
@@ -1013,7 +1015,7 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
 /// person switched off, as the shell reads that when it starts.
 fn session_with_settings() -> Session {
     crate::common::headless(Options {
-        services: vec![Box::new(tilo_settings_service::SettingsService::new())],
+        services: vec![Box::new(settings_sections::service::SettingsService::new())],
         search: SearchOptions {
             preferences: tilo_desktop_search::SearchPreferences::from_values(
                 &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
@@ -1044,7 +1046,7 @@ fn choose(session: &mut Session, query: &str, title: &str) {
 /// The field `field` of the settings section `kind` as stored.
 fn stored(session: &Session, kind: &str, field: &str) -> serde_json::Value {
     session
-        .read(&format!("settings:{kind}"))
+        .read(&settings_sections::address(kind).expect("a section the session keeps"))
         .map(|section| section[field].clone())
         .unwrap_or_default()
 }

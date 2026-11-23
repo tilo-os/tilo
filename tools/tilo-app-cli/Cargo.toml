@@ -31,6 +31,7 @@ tilo-app-id.workspace = true
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 # The Android APK packs the app's tilolang packages, compiled by the tilolang tool.
 tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
+tilo-resource = { path = "../../crates/core/tilo-resource" }
 # Inside a Tilo session, `dev` hands the app the shell's file chooser the
 # way the launcher does.
 launcher = { path = "../../crates/core/launcher" }
@@ -46,7 +47,6 @@ sha2.workspace = true
 registry-types = { path = "../../crates/core/registry-types" }
 app-registry = { path = "../../crates/core/app-registry" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
-tilo-canonical-json = { path = "../../crates/platform/tilo-canonical-json" }
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
 bounded-command = { path = "../../crates/platform/bounded-command" }
 # The capability evidence table deserializes into typed entries.

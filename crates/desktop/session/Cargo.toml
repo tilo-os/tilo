@@ -93,7 +93,7 @@ tilo-broker-core = { path = "../../core/broker-core" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 settings-model = { path = "../../sdk/settings-model" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -359,7 +359,7 @@ tilo-window-share = { path = "../window-share" }
 os-actions = { path = "../../os/os-actions" }
 # The person's `network-usage` section, which this device's traffic totals are
 # counted into, and the readings its verb takes.
-settings-sections = { path = "../../system/settings-sections" }
+settings-sections = { path = "../../desktop/settings-sections" }
 # The calls an app joins: which channel, who is in it, and this device's
 # own call as presence carries it.
 tilo-native-media = { path = "../native-media" }
@@ -405,7 +405,6 @@ compat-service = { path = "../../compat/compat-service" }
 block-devices = { path = "../../os/block-devices" }
 tilo-connectivity-service = { path = "../../os/connectivity-service" }
 tilo-system-service = { path = "../../os/system-service" }
-tilo-settings-service = { path = "../../session/settings-service" }
 # The sound resource's specs and system sound cues, for the audio service the session starts.
 tilo-audio-service = { path = "../../os/audio-service", default-features = false, features = ["sounds"] }
 # The desktop services the session starts on the buses; screen shares
@@ -457,7 +456,7 @@ tilo-automerge-isolate.workspace = true
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
 # What an installed app's signed manifest offers while it is closed, which search finds.
 tilo-app-package = { path = "../../core/tilo-app-package" }
-settings-store = { path = "../../system/settings-store", features = ["watch"] }
+settings-store = { path = "../../desktop/settings", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]

@@ -226,6 +226,8 @@ class ResourceImpl {
   readonly #pending: Promise<unknown>[] = [];
   /** The action names the generated types declare, reachable before a read. */
   readonly #actions: Set<string>;
+  /** Each field is written by its own setter, `set-<field>`, not by a field edit. */
+  readonly #setters: boolean;
   #answer: Record<string, unknown> | null = null;
   /** The proxy that fronts this implementation, which reads answer. */
   self: unknown = null;
@@ -235,11 +237,13 @@ class ResourceImpl {
     path: string,
     surface: string | null = null,
     actions: readonly string[] = [],
+    setters = false,
   ) {
     this.workspace = workspace;
     this.path = path;
     this.surface = surface;
     this.#actions = new Set(actions);
+    this.#setters = setters;
   }
 
   get kind(): string {
@@ -351,6 +355,20 @@ class ResourceImpl {
   }
 
   async edit(steps: Step[], value: unknown, op = "set"): Promise<unknown> {
+    const [field] = steps;
+    if (this.#setters && typeof field === "string") {
+      // The field's own setter takes its whole value, or an edit inside it whose path starts
+      // below the field.
+      const args =
+        steps.length === 1 && op === "set"
+          ? { value }
+          : { edit: { path: segments(steps).slice(1), op, value } };
+      return this.workspace.call(
+        `${this.path}#set-${field.replaceAll("_", "-")}`,
+        args,
+        this.surface,
+      );
+    }
     return this.workspace.call(
       `${this.path}#field-edit`,
       { edit: { path: segments(steps), op, value } },
@@ -432,9 +450,10 @@ export function resourceProxy(
   path: string,
   surface: Surface = null,
   actions: readonly string[] = [],
+  setters = false,
 ): Resource {
   const named = typeof surface === "string" ? surface : (surface?.surface ?? null);
-  const impl = new ResourceImpl(workspace, path, named === "" ? null : named, actions);
+  const impl = new ResourceImpl(workspace, path, named === "" ? null : named, actions, setters);
   const proxy = new Proxy(impl, {
     get(target, property, receiver) {
       if (typeof property === "symbol") {

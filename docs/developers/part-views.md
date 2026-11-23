@@ -175,4 +175,4 @@ elsewhere: a view someone else wrote must not be able to ask for a password
 and look like the machine asking. The settings resource refuses those parts.
 
 More: [Build an app](../app-development.md) and the
-[resource that binds a part](../../crates/system/settings-sections/src/shell_views.rs).
+[resource that binds a part](../../crates/desktop/settings-sections/src/shell_views.rs).

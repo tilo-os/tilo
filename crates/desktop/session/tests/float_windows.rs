@@ -24,9 +24,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_compositor::InputEvent;
-use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::layout::StripReading;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 
@@ -40,9 +40,9 @@ const REFRESH: Duration = Duration::from_millis(16);
 const CHAT: &str = "so.tilo.chat";
 const MAIL: &str = "so.tilo.mail";
 const NOTES: &str = "so.tilo.notes";
-/// The person's appearance section: the theme is chosen through its own published `field-edit` , as
+/// The person's appearance section: the theme is chosen through its own published setters, as
 /// Settings does.
-const APPEARANCE: &str = "settings:settings.appearance";
+const APPEARANCE: &str = "settings/appearance";
 /// The left button of a two-and-more button pointer.
 const BTN_LEFT: u32 = 0x110;
 /// What a key sends, evdev codes.
@@ -54,7 +54,7 @@ const KEY_LEFT_META: u32 = 125;
 /// published, and the appearance section beside them.
 fn session() -> Session {
     let mut services = crate::common::seeded_apps();
-    services.push(Box::new(tilo_settings_service::SettingsService::new()));
+    services.push(Box::new(settings_sections::service::SettingsService::new()));
     crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
         // A device that holds its workspaces: the layout and its steps are theirs.
@@ -335,16 +335,14 @@ fn choose(session: &mut Session, row: &str) {
     step(session);
 }
 
-/// Set the field `field` of the appearance section to `value` through the section's own published
-/// `field-edit` , as Settings does.
+/// Set the field `field` of the appearance section to `value` through the field's own published
+/// setter, as Settings does.
 fn set_field(session: &mut Session, field: &str, value: &Value) {
-    let arguments = json!({
-        "edit": {"path": [{"field": field}], "op": "set", "value": value}
-    });
+    let arguments = json!({ "value": value });
     session
         .invoke(
             APPEARANCE,
-            "field-edit",
+            &settings_store::workspace::verb(field),
             arguments.as_object().expect("an object"),
         )
         .unwrap_or_else(|error| panic!("set {field}: {error:?}"));

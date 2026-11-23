@@ -94,6 +94,18 @@ class ResourcePlacementTests(unittest.TestCase):
         )
         self.assertEqual(placement.against("main", root), [])
 
+    def test_one_entry_names_several_kinds_changed_alike(self):
+        root = self.repository({"a": ["a.one", "a.two", "a.three"]})
+        self.surfaces(root, {"a": []})
+        self.entries(
+            root,
+            '[[change]]\nkinds = ["a.one", "a.two"]\napp = "a"\nchange = "removed"\n'
+            'lost = "the document they were kept in is gone"\n',
+        )
+        found = placement.against("main", root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("'a.three' is removed", found[0])
+
     def test_an_entry_needs_a_conversion_or_a_loss(self):
         root = self.repository({"a": ["a.thing"]})
         self.entries(root, '[[change]]\nkind = "a.thing"\napp = "a"\nchange = "removed"\n')

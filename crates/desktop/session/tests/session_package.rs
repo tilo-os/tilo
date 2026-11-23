@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
         for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
             let described: Vec<&String> = addresses
                 .iter()
-                .filter(|(_, address)| address.as_str() == published)
+                .filter(|(_, address)| **address == published)
                 .map(|(action, _)| action)
                 .collect();
             assert!(

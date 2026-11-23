@@ -57,7 +57,7 @@ tilo-webview = { path = "../../engines/tilo-webview" }
 tilo-app = { path = "../tilo-app" }
 # Desktop policy and control-surface vocabulary shared by the toolkit and the
 # apps that configure the desktop.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../desktop/settings" }
 desktop-policy = { path = "../../desktop/default-apps" }
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 collab-types = { path = "../../core/collab-types" }
