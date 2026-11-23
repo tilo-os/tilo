@@ -1,8 +1,10 @@
-//! The workspace's vault and mail accounts, asked from a computer that holds
-//! a person's identity (`tilo login --new-identity`) as that person.
+//! The workspace's vault, mail accounts and model providers, asked from a
+//! computer that holds a person's identity (`tilo login --new-identity`) as
+//! that person.
 //!
-//! The workspace's vault (`workspace/vault`) and its mail accounts
-//! (`workspace/mail-accounts`) are kept on the host that runs the workspace,
+//! The workspace's vault (`workspace/vault`), its mail accounts
+//! (`workspace/mail-accounts`) and the model providers its agents run on
+//! (`workspace/models`) are kept on the host that runs the workspace,
 //! and the host answers them as the workspace's policy decides for whoever
 //! asks. A computer that holds the person's root can certify any device of
 //! theirs and approve any key, so it asks as their page does: over a session
@@ -18,7 +20,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{RemoteActionTarget, person_accounts, person_vault};
+use tilo_actions::remote::{RemoteActionTarget, person_accounts, person_models, person_vault};
 use tilo_session_client::device::Device;
 
 use crate::login;
@@ -27,9 +29,13 @@ use crate::login;
 const MAIL_ACCOUNTS: &str = "workspace/mail-accounts";
 /// The workspace's vault, as `tilo do` names it.
 const VAULT: &str = "workspace/vault";
+/// The workspace's model providers and the model each kind of work runs on, as `tilo do`
+/// names them: `workspace/models#add-provider`, `#set-key`, `#add-model`,
+/// `#set-assignments` and the rest of [`person_models`].
+const MODELS: &str = "workspace/models";
 
 /// The host's action `path` (`workspace/vault#keep-entry`) names, when it names
-/// one of the workspace's vault or mail accounts.
+/// one of the workspace's vault, mail accounts or model providers.
 fn target(path: &str) -> Option<RemoteActionTarget> {
     let (resource, action) = path.rsplit_once('#')?;
     match resource {
@@ -39,6 +45,7 @@ fn target(path: &str) -> Option<RemoteActionTarget> {
         }
         MAIL_ACCOUNTS => Some(person_accounts::target(action)),
         VAULT => Some(person_vault::target(action)),
+        MODELS => Some(person_models::target(action)),
         _ => None,
     }
 }
@@ -59,7 +66,9 @@ pub fn answers(path: &str, keyed: bool) -> bool {
 /// the workspace is none of theirs, or the host refused.
 pub fn act(workspace: &str, path: &str, args: Map<String, Value>) -> Result<Value> {
     let Some(target) = target(path) else {
-        bail!("{path} is none of the person's own actions: {MAIL_ACCOUNTS}#… or {VAULT}#…");
+        bail!(
+            "{path} is none of the person's own actions: {MAIL_ACCOUNTS}#…, {VAULT}#… or {MODELS}#…"
+        );
     };
     let person = crate::identity::held()?
         .ok_or_else(|| anyhow!("this computer holds no identity: tilo login --new-identity"))?;
@@ -146,6 +155,10 @@ mod tests {
         assert_eq!(
             target("workspace/mail-accounts#add"),
             Some(person_accounts::target(person_accounts::ADD_MAIL))
+        );
+        assert_eq!(
+            target("workspace/models#add-provider"),
+            Some(person_models::target(person_models::ADD_PROVIDER))
         );
         assert_eq!(target("workspace/vault"), None);
         assert_eq!(target("notes/Notes#new-note"), None);
