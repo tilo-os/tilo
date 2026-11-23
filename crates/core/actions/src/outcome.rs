@@ -111,6 +111,22 @@ pub struct ActionFailure {
 
 read_through_json_value!(ActionFailure);
 
+impl ActionFailure {
+    /// The failure a run answers with when what it reached needs the person's yes: its caller
+    /// is refused for want of their answer, showing them `facts`
+    /// ([`crate::remote::ActionCallError::ConfirmationRequired`]), and their approve sends the
+    /// call again, which the handler reads ([`crate::remote::InvokeRequest::approval`]).
+    #[must_use]
+    pub fn asks(message: impl Into<String>, facts: &crate::remote::asked::AskedFacts) -> Self {
+        Self {
+            code: crate::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+            message: message.into(),
+            details: Some(facts.to_details()),
+            retryable: false,
+        }
+    }
+}
+
 /// Monotonic lifecycle of one invocation. A transport timeout is not a failed
 /// action: callers retain the invocation id and can resume observing it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1423,19 +1423,19 @@ pub(crate) fn outcome(
         }),
         ReceiptStatus::Rejected { error } => Some(InvocationUpdate::Failed {
             invocation,
-            error: tilo_actions::ActionFailure {
-                // An action that waits for the person's word is told apart
-                // from one that ran and was refused: what a person reads is
-                // that their answer is missing, not that it failed.
-                code: match error {
-                    ActionCallError::ConfirmationRequired { .. } => {
-                        tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned()
-                    }
-                    _ => String::from("refused"),
+            error: match error {
+                // An action that waits for the person's word is told apart from one that ran
+                // and was refused, and carries what they are shown: what a person reads is that
+                // their answer is missing, not that it failed.
+                ActionCallError::ConfirmationRequired(facts) => {
+                    tilo_actions::ActionFailure::asks(error.to_string(), facts)
+                }
+                _ => tilo_actions::ActionFailure {
+                    code: String::from("refused"),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
                 },
-                message: error.to_string(),
-                details: None,
-                retryable: false,
             },
         }),
         ReceiptStatus::Cancelled { message } => Some(InvocationUpdate::Cancelled {
@@ -1448,6 +1448,35 @@ pub(crate) fn outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call refused for want of the person's yes reaches whoever waits on it with what the
+    /// person is shown, and reads back as that refusal.
+    #[test]
+    fn a_refusal_for_the_persons_yes_keeps_what_they_are_shown() {
+        let facts = tilo_actions::remote::asked::AskedFacts {
+            words: "Send the release notes to the list".into(),
+            on: Some("notes:release".into()),
+            ..tilo_actions::remote::asked::AskedFacts::by(
+                tilo_actions::remote::asked::AskedBy::Agent(tilo_actions::remote::asked::Named {
+                    id: "alpha".into(),
+                    name: "Alpha".into(),
+                }),
+            )
+        }
+        .with_fact("To", "release@example.org");
+        let invocation = InvocationId::new();
+        let refused = ReceiptStatus::Rejected {
+            error: ActionCallError::ConfirmationRequired(Box::new(facts.clone())),
+        };
+        let Some(InvocationUpdate::Failed { error, .. }) = outcome(invocation, &refused) else {
+            panic!("a refusal ends the call");
+        };
+        assert_eq!(error.code, tilo_actions::remote::CONFIRMATION_REQUIRED_CODE);
+        assert_eq!(
+            tilo_actions::remote::asked::AskedFacts::from_details(error.details.as_ref()),
+            facts
+        );
+    }
 
     tilo_test_env::scenario! {
         fn a_surface_app_is_started_and_told_where_it_stands;

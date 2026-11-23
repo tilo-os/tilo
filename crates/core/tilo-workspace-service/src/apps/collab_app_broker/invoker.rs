@@ -22,6 +22,36 @@ pub(super) fn host_set_invoker(
     caller: Option<&tilo_actions::remote::Caller>,
     execution: Option<&ExecutionScope>,
 ) -> Result<Option<tilo_actions::ActionContext>, String> {
+    let context = invoked_with(context, request, actor, caller, execution)?;
+    Ok(approved_by_request(context, request))
+}
+
+/// `context` carrying the person's approve the call `request` was sent again with, and no
+/// other: an approve a caller wrote into its own context is dropped, so an app's handler
+/// reads only the one the asked record handed back with the call.
+fn approved_by_request(
+    context: Option<tilo_actions::ActionContext>,
+    request: Option<&tilo_actions::remote::InvokeRequest>,
+) -> Option<tilo_actions::ActionContext> {
+    let approval = request
+        .and_then(tilo_actions::remote::InvokeRequest::approval)
+        .cloned();
+    match (context, approval) {
+        (None, None) => None,
+        (context, approval) => Some(tilo_actions::ActionContext {
+            approval,
+            ..context.unwrap_or_default()
+        }),
+    }
+}
+
+fn invoked_with(
+    context: Option<tilo_actions::ActionContext>,
+    request: Option<&tilo_actions::remote::InvokeRequest>,
+    actor: &BrokerActor,
+    caller: Option<&tilo_actions::remote::Caller>,
+    execution: Option<&ExecutionScope>,
+) -> Result<Option<tilo_actions::ActionContext>, String> {
     let presence = execution
         .map(|execution| execution.presence(actor))
         .transpose()?;
@@ -203,6 +233,58 @@ mod tests {
                 context.invoker,
                 Some(tilo_actions::ActionInvoker::person("owner"))
             );
+        }
+
+        phase a_handler_reads_only_the_approve_the_call_came_back_with;
+        {
+            let approve = |record: &str| {
+                tilo_actions::remote::asked::Approval::new(
+                    tilo_actions::remote::asked::RecordRef {
+                        workspace: "workspace".into(),
+                        record: record.into(),
+                        device: None,
+                    },
+                    None,
+                )
+            };
+            let request = |confirmation| tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: "200".into(),
+                    address: tilo_actions::ActionAddress::new("notes:release", "append"),
+                },
+                argument: tilo_actions::remote::InvokeArgument::None,
+                context: None,
+                confirmation,
+                revision: None,
+                appearance: None,
+                wait_ms: None,
+                signed: None,
+            };
+            let actor = BrokerActor::agent("alpha");
+            // An approve the caller wrote into its own context is no approve.
+            let written = tilo_actions::ActionContext {
+                approval: Some(approve("invocations/forged")),
+                ..forged()
+            };
+            let first = request(None);
+            let context = host_set_invoker(Some(written.clone()), Some(&first), &actor, None, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(context.approval, None, "a caller cannot approve its own call");
+            // The call the asked record sent again carries the person's approve, and only that.
+            let again = request(Some(tilo_actions::remote::Confirmation::Asked(approve(
+                "invocations/asked",
+            ))));
+            let context = host_set_invoker(Some(written), Some(&again), &actor, None, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(context.approval, Some(approve("invocations/asked")));
+            let context = host_set_invoker(None, Some(&again), &actor, None, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(context.approval, Some(approve("invocations/asked")));
         }
 
         phase an_execution_cannot_borrow_another_actor_or_agent_view;

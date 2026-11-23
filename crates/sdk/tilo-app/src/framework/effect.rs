@@ -750,6 +750,13 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         })
     }
 
+    /// The person's approve this invocation was sent again with: `Some` once they approved
+    /// the call this effect refused for want of their yes
+    /// ([`tilo_actions::ActionFailure::asks`]), and then it runs.
+    pub fn approval(&self) -> Option<tilo_actions::remote::asked::Approval> {
+        ui_core::invocation_scope::delivered_approval()
+    }
+
     /// Submit one typed action, as [`Dispatcher::apply`].
     pub fn apply(&self, action: &R::Action) {
         self.env.dispatch.apply(action);

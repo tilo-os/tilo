@@ -28,7 +28,7 @@ impl App {
     /// hold it until that is so ([`Self::answer_held_invocations`]): the
     /// landing reply wakes the window for the sync that answers. Nothing
     /// blocks: the person's own frames go on meanwhile.
-    pub(super) fn hold_answer(&mut self, id: u64, update: tilo_actions::InvocationUpdate) {
+    pub(super) fn settle_reply(&mut self, id: u64, update: tilo_actions::InvocationUpdate) {
         let settled = self.actions.held_answers.is_empty()
             && self
                 .owing_scopes()
@@ -56,7 +56,7 @@ impl App {
     /// no reply landed since the previous sync ended, so this one took up
     /// every reply their invocations caused; otherwise the landing reply
     /// wakes the window for a later sync that asks again. Every sync marks
-    /// where the next begins, so [`Self::hold_answer`] can ask between them.
+    /// where the next begins, so [`Self::settle_reply`] can ask between them.
     pub(super) fn answer_held_invocations(&mut self) {
         let scopes = self.owing_scopes();
         let settled = scopes.iter().all(crate::wake::WakeHandle::settled);

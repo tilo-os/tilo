@@ -57,7 +57,7 @@ fn a_record_of_an_open_records_tree_syncs_on_its_own_route_from_a_snapshot() {
         "a route still opening is no publication failure"
     );
     let invocation = tilo_actions::InvocationId::new();
-    fixture.app.hold_answer(
+    fixture.app.settle_reply(
         7,
         tilo_actions::InvocationUpdate::Cancelled {
             invocation,

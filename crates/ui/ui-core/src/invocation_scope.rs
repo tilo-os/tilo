@@ -7,7 +7,7 @@ pub use runtime_collab::approved_checks::{
 #[cfg(feature = "broker-transport")]
 pub use ::collaboration::invocation_scope::ExternalModerationReply;
 pub use ::collaboration::invocation_scope::{
-    InvokerScope, current_invoker, current_presence, delivered_invocation,
+    InvokerScope, current_invoker, current_presence, delivered_approval, delivered_invocation,
 };
 
 /// A host moderation receipt, suitable for an existing action worker.

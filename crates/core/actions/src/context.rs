@@ -111,6 +111,12 @@ pub struct ActionContext {
     /// caller's are ignored and admission reads them from the arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shows: Vec<crate::remote::asked::Fact>,
+    /// The person's approve of the asked record this invocation waited in, when it is that
+    /// call sent again ([`crate::remote::InvokeRequest::approval`]): what an app's handler
+    /// reads to run what it refused for want of their yes. Set only by the host that
+    /// admitted the invocation, from the call itself, never from a caller's context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::remote::asked::Approval>,
 }
 
 read_through_json_value!(ActionContext);
@@ -169,6 +175,7 @@ impl Clone for ActionContext {
             gesture: self.gesture,
             change: self.change,
             shows: self.shows.clone(),
+            approval: self.approval.clone(),
         }
     }
 }
@@ -1314,6 +1321,7 @@ mod wire {
                 change: self.change,
                 shows: self.shows,
                 action,
+                approval: None,
             }
         }
     }

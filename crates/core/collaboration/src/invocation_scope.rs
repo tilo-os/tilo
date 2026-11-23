@@ -46,9 +46,16 @@ impl ExternalModerationReply {
 thread_local! {
     /// Each scope's invoker, with the broker invocation it was delivered
     /// under when it was one.
-    static CURRENT_INVOKERS: std::cell::RefCell<
-        Vec<(tilo_actions::ActionInvoker, Option<tilo_actions::InvocationId>)>,
-    > = const { std::cell::RefCell::new(Vec::new()) };
+    static CURRENT_INVOKERS: std::cell::RefCell<Vec<Invoked>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One scope's invoker, the broker invocation it was delivered under, and the person's
+/// approve that invocation was sent again with.
+struct Invoked {
+    invoker: tilo_actions::ActionInvoker,
+    invocation: Option<tilo_actions::InvocationId>,
+    approval: Option<tilo_actions::remote::asked::Approval>,
 }
 
 /// The invoker whose resource tree a delivered invocation resolves against,
@@ -63,18 +70,32 @@ thread_local! {
 pub struct InvokerScope(());
 impl InvokerScope {
     pub fn enter(invoker: tilo_actions::ActionInvoker) -> Self {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, None)));
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| {
+            invokers.push(Invoked {
+                invoker,
+                invocation: None,
+                approval: None,
+            });
+        });
         Self(())
     }
 
     /// Enter the invoker of `invocation`, which the broker delivered: a
     /// request the app makes for it meanwhile names it
-    /// ([`delivered_invocation`]).
+    /// ([`delivered_invocation`]). `approval` is the person's approve it was sent
+    /// again with, as the host that admitted it set it ([`delivered_approval`]).
     pub fn delivered(
         invoker: tilo_actions::ActionInvoker,
         invocation: tilo_actions::InvocationId,
+        approval: Option<tilo_actions::remote::asked::Approval>,
     ) -> Self {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, Some(invocation))));
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| {
+            invokers.push(Invoked {
+                invoker,
+                invocation: Some(invocation),
+                approval,
+            });
+        });
         Self(())
     }
 }
@@ -89,7 +110,7 @@ impl Drop for InvokerScope {
 /// The invoker of the delivered invocation being resolved on this thread.
 /// `None` outside any delivered invocation (the local person acting).
 pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
-    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().map(|(invoker, _)| invoker.clone()))
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().map(|invoked| invoked.invoker.clone()))
 }
 
 /// The broker invocation being dispatched on this thread, when the broker
@@ -97,7 +118,19 @@ pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
 /// another app) names, so the shell admits it as that invocation's caller.
 /// `None` for the local person acting, whose own press is the proof.
 pub fn delivered_invocation() -> Option<tilo_actions::InvocationId> {
-    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().and_then(|(_, invocation)| *invocation))
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().and_then(|invoked| invoked.invocation))
+}
+
+/// The person's approve of the asked record the delivered invocation being dispatched on this
+/// thread waited in: `Some` only for that call sent again once they approved it, as the host
+/// that admitted it says. What a handler that refused the call for want of their yes reads to
+/// run it now.
+pub fn delivered_approval() -> Option<tilo_actions::remote::asked::Approval> {
+    CURRENT_INVOKERS.with_borrow(|invokers| {
+        invokers
+            .last()
+            .and_then(|invoked| invoked.approval.clone())
+    })
 }
 
 /// The presence whose view the current resolution builds, if any.
@@ -105,6 +138,6 @@ pub fn current_presence() -> Option<tilo_actions::PresenceId> {
     CURRENT_INVOKERS.with_borrow(|invokers| {
         invokers
             .last()
-            .and_then(|(invoker, _)| invoker.presence.clone())
+            .and_then(|invoked| invoked.invoker.presence.clone())
     })
 }

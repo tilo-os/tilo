@@ -88,7 +88,7 @@ impl App {
             return true;
         };
         let update = continuation.settle(update);
-        self.hold_answer(wire_id, update);
+        self.settle_reply(wire_id, update);
         true
     }
 }

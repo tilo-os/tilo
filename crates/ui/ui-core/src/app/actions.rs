@@ -789,7 +789,11 @@ impl App {
                 deferred: None,
             },
         );
-        let invoker_scope = crate::invocation_scope::InvokerScope::delivered(invoker, invocation);
+        let invoker_scope = crate::invocation_scope::InvokerScope::delivered(
+            invoker,
+            invocation,
+            ambient_context.and_then(|context| context.approval.clone()),
+        );
         let result = self.invoke_resource_action(
             ResourceInvocation::new(&address, actor)
                 .argument(argument)
@@ -2170,7 +2174,7 @@ impl App {
                 self.actions.directed_invocations.remove(&invocation);
                 self.actions.acting_for.remove(&invocation);
                 // As a direct answer, it waits for what it caused to land.
-                self.hold_answer(pending.wire_id, update);
+                self.settle_reply(pending.wire_id, update);
             } else {
                 self.collaboration
                     .manager

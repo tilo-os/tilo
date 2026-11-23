@@ -7023,6 +7023,10 @@ impl FrameHarness {
                 let _invoker = crate::invocation_scope::InvokerScope::delivered(
                     continuation.invoker.clone(),
                     invocation,
+                    continuation
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.approval.clone()),
                 );
                 let actor = continuation.invoker.acting.by.clone();
                 self.invoke_bound_action_for(
