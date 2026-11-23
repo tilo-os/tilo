@@ -288,7 +288,7 @@ const MEMBER: &str = "member";
 const REDIAL: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a write waits for the member copy's link before it is refused:
 /// the write is undone, as one the owner could not take is.
-#[cfg(any(feature = "apps", test))]
+#[cfg(any(feature = "apps", feature = "agents", test))]
 const REACHED_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The device a member copy acts as: the person's own, whose key the
@@ -1162,7 +1162,7 @@ impl Workspaces {
 
     /// Waits until the member copy's link is up, for a write that must reach the device serving
     /// it: the workspaces that write resources ask it, and so do the tests of the link itself.
-    #[cfg(any(feature = "apps", test))]
+    #[cfg(any(feature = "apps", feature = "agents", test))]
     pub(super) async fn wait_member_link(&self, workspace_id: WorkspaceId) -> Result<(), String> {
         let mut up = self.member_up(workspace_id)?;
         tokio::time::timeout(REACHED_WITHIN, up.wait_for(|up| *up))
@@ -1466,7 +1466,7 @@ impl Workspaces {
 
     /// Ticks true when `workspace`'s member copy is linked to the device
     /// serving it, and false when that link ends.
-    #[cfg(any(feature = "apps", test))]
+    #[cfg(any(feature = "apps", feature = "agents", test))]
     fn member_up(
         &self,
         workspace: WorkspaceId,
