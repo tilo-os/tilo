@@ -318,3 +318,46 @@ fn the_grain_is_faint_whole_pixels_inside_the_canvas_at_every_scale() {
         }
     }
 }
+
+/// A map of the world draws back until the whole world fits, and its pins keep the size the
+/// view gave them at every zoom, standing centred on the places they name.
+#[test]
+fn a_world_map_draws_back_to_the_world_with_its_pins_screen_sized() {
+    let mut map = Map::from_props(
+        "places",
+        MapProps {
+            name: Some("Places".into()),
+            world: true,
+            latitude: Some(52.52),
+            longitude: Some(13.405),
+            pins: vec![MapPinProps {
+                key: "photo".into(),
+                name: Some("Photo".into()),
+                latitude: Some(48.8566),
+                longitude: Some(2.3522),
+                width: Some(96),
+                height: Some(96),
+                ..MapPinProps::default()
+            }],
+            ..MapProps::default()
+        },
+    );
+    laid(&mut map);
+    assert!(
+        (map.camera.zoom - MAP_ZOOM_WORLD_MIN).abs() < 1e-12,
+        "a map of the world opens showing the whole world: {}",
+        map.camera.zoom
+    );
+    let drawn = map.laid.borrow()["photo"];
+    assert!(
+        (drawn.width() - 96.0).abs() < 0.5 && (drawn.height() - 96.0).abs() < 0.5,
+        "a world pin keeps the size its view gave it on screen, not the camera's scale: {drawn:?}"
+    );
+    let at = mercator_project(48.8566, 2.3522);
+    let on_screen = map.shown.get().to_screen(Point::ORIGIN, at);
+    assert!(
+        (drawn.center().x - on_screen.x).abs() < 0.5
+            && (drawn.center().y - on_screen.y).abs() < 0.5,
+        "its middle stands on its place: {drawn:?} against {on_screen:?}"
+    );
+}
