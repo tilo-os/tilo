@@ -1,6 +1,9 @@
 //! Pure validation of public transport metadata; no metadata grants source access.
 
-use prepared_setup_model::{ApplicationsExpectation, BrowserExpectation, HomeExpectation, Limits};
+use prepared_setup_model::{
+    ApplicationsExpectation, BrowserExpectation, HomeExpectation, Limits,
+    stored::{StoredApplicationsExpectation, StoredBrowserExpectation, StoredHomeExpectation},
+};
 use serde_json::Value;
 
 use super::Result;
@@ -182,10 +185,11 @@ fn check_signed_and_sealed(
 pub fn expectation(value: &Value, kind: &str) -> Result<PayloadExpectation> {
     match kind {
         "home" => {
-            let parsed: HomeExpectation = serde_json::from_value(value.clone())
-                .map_err(|_| invalid("portable Home receipt differs"))?;
+            let parsed = serde_json::from_value::<StoredHomeExpectation>(value.clone())
+                .map_err(|_| invalid("portable Home receipt differs"))?
+                .0;
             parsed
-                .validate()
+                .validate_installer()
                 .map_err(|_| invalid("portable Home receipt is invalid"))?;
             check_signed_and_sealed(
                 parsed.sealed_bytes,
@@ -200,10 +204,11 @@ pub fn expectation(value: &Value, kind: &str) -> Result<PayloadExpectation> {
             Ok(PayloadExpectation::Home(parsed))
         }
         "applications" => {
-            let parsed: ApplicationsExpectation = serde_json::from_value(value.clone())
-                .map_err(|_| invalid("portable applications receipt differs"))?;
+            let parsed = serde_json::from_value::<StoredApplicationsExpectation>(value.clone())
+                .map_err(|_| invalid("portable applications receipt differs"))?
+                .0;
             parsed
-                .validate()
+                .validate_installer()
                 .map_err(|_| invalid("portable applications receipt is invalid"))?;
             check_signed_and_sealed(
                 parsed.sealed_bytes,
@@ -214,10 +219,11 @@ pub fn expectation(value: &Value, kind: &str) -> Result<PayloadExpectation> {
             Ok(PayloadExpectation::Applications(parsed))
         }
         "browser" => {
-            let parsed: BrowserExpectation = serde_json::from_value(value.clone())
-                .map_err(|_| invalid("portable browser receipt differs"))?;
+            let parsed = serde_json::from_value::<StoredBrowserExpectation>(value.clone())
+                .map_err(|_| invalid("portable browser receipt differs"))?
+                .0;
             parsed
-                .validate()
+                .validate_installer()
                 .map_err(|_| invalid("portable browser receipt is invalid"))?;
             check_signed_and_sealed(
                 parsed.sealed_bytes,
@@ -497,7 +503,7 @@ mod tests {
         serde_json::to_value(HomeExpectation {
             filename: HomeExpectation::filename(&operation).unwrap(),
             operation,
-            setup_binding: "é".repeat(128),
+            setup_binding: "é".repeat(256),
             sealed_bytes: 48,
             plaintext_bytes: 1,
             entries: 1,
@@ -515,16 +521,16 @@ mod tests {
     tilo_test_env::scenario! {
         fn receipts_and_envelopes_are_closed_and_bounded;
 
-        phase portable_receipt_preserves_types_closed_fields_and_byte_bound;
+        phase portable_receipt_preserves_types_closed_fields_and_character_bound;
         {
             let value = home();
-            assert!(expectation(&value, "home").is_ok());
+            let parsed_home = expectation(&value, "home").unwrap();
             for (key, replacement) in [
                 ("sealed_bytes", json!(47)),
                 ("sealed_bytes", json!(48.0)),
                 ("entries", json!(-1)),
                 ("ciphertext_sha256", json!(vec![256; 32])),
-                ("setup_binding", json!("é".repeat(129))),
+                ("setup_binding", json!("é".repeat(257))),
                 ("kind", json!({"runtime_sockets": 2})),
                 ("kind", json!({"runtime_sockets": 0, "extra": 1})),
             ] {
@@ -532,25 +538,40 @@ mod tests {
                 bad[key] = replacement;
                 assert!(expectation(&bad, "home").is_err(), "{key}");
             }
+            let mut next_line = value.clone();
+            next_line["setup_binding"] = json!("before\u{85}after");
+            assert!(expectation(&next_line, "home").is_ok());
+
             let mut extra = value.clone();
             extra["extra"] = Value::Null;
             assert!(expectation(&extra, "home").is_err());
             assert!(expectation(&value, "unsupported").is_err());
 
-            // The retired flat shape is refused by the extractor.
-            let flat_home = json!({
+            // Earlier flat shape is accepted and decodes to the same expectation as kind.
+            let mut flat_home = json!({
                 "schema": 1, "operation": "portable-home", "purpose": "home",
-                "filename": "home-portable-home.sealed", "setup_binding": "binding",
+                "filename": "home-portable-home.sealed", "setup_binding": "é".repeat(256),
                 "sealed_bytes": 48, "plaintext_bytes": 1, "entries": 1,
                 "ciphertext_sha256": vec![0; 32], "runtime_sockets": 0,
                 "limits": {"plaintext_bytes": 1, "entries": 1, "metadata_bytes": 1}
             });
+            assert_eq!(expectation(&flat_home, "home").unwrap(), parsed_home);
+            for (key, replacement) in [
+                ("schema", json!(true)),
+                ("runtime_sockets", json!(2)),
+                ("setup_binding", json!("é".repeat(257))),
+            ] {
+                let mut bad = flat_home.clone();
+                bad[key] = replacement;
+                assert!(expectation(&bad, "home").is_err(), "flat {key}");
+            }
+            flat_home["extra"] = Value::Null;
             assert!(expectation(&flat_home, "home").is_err());
 
             let app_op = "11111111-1111-4111-8111-111111111111".to_owned();
             let mut apps = ApplicationsExpectation {
                 filename: ApplicationsExpectation::filename(&app_op).unwrap(),
-                operation: app_op,
+                operation: app_op.clone(),
                 setup_binding: "binding".into(),
                 sealed_bytes: 48,
                 plaintext_bytes: 1,
@@ -562,10 +583,26 @@ mod tests {
                     metadata_bytes: 1,
                 },
                 kind: Applications {
-                    consumer_protocol: 2,
+                    consumer_protocol: 1,
                     manifest_sha256: [1; 32],
                 },
             };
+            let parsed_apps_v1 =
+                expectation(&serde_json::to_value(&apps).unwrap(), "applications").unwrap();
+            let mut flat_apps = json!({
+                "schema": 1, "operation": app_op, "purpose": "flatpak_applications",
+                "filename": apps.filename, "setup_binding": "binding",
+                "sealed_bytes": 48, "plaintext_bytes": 1, "entries": 1,
+                "ciphertext_sha256": vec![0; 32], "manifest_sha256": vec![1; 32],
+                "limits": {"plaintext_bytes": 1, "entries": 1, "metadata_bytes": 1}
+            });
+            assert_eq!(
+                expectation(&flat_apps, "applications").unwrap(),
+                parsed_apps_v1
+            );
+            flat_apps["consumer_protocol"] = json!(2);
+            assert!(expectation(&flat_apps, "applications").is_err());
+            apps.kind.consumer_protocol = 2;
             assert!(expectation(&serde_json::to_value(&apps).unwrap(), "applications").is_ok());
             apps.kind.consumer_protocol = 3;
             assert!(expectation(&serde_json::to_value(&apps).unwrap(), "applications").is_err());
@@ -573,7 +610,7 @@ mod tests {
             let browser_op = "22222222-2222-4222-8222-222222222222".to_owned();
             let mut browser = BrowserExpectation {
                 filename: BrowserExpectation::filename(&browser_op).unwrap(),
-                operation: browser_op,
+                operation: browser_op.clone(),
                 setup_binding: "binding".into(),
                 sealed_bytes: 48,
                 plaintext_bytes: 1,
@@ -588,7 +625,16 @@ mod tests {
                     plan_sha256: [2; 32],
                 },
             };
-            assert!(expectation(&serde_json::to_value(&browser).unwrap(), "browser").is_ok());
+            let parsed_browser =
+                expectation(&serde_json::to_value(&browser).unwrap(), "browser").unwrap();
+            let flat_browser = json!({
+                "schema": 1, "operation": browser_op, "purpose": "browser_profiles",
+                "filename": browser.filename, "setup_binding": "binding",
+                "sealed_bytes": 48, "plaintext_bytes": 1, "entries": 1,
+                "ciphertext_sha256": vec![0; 32], "plan_sha256": vec![2; 32],
+                "limits": {"plaintext_bytes": 1, "entries": 1, "metadata_bytes": 1}
+            });
+            assert_eq!(expectation(&flat_browser, "browser").unwrap(), parsed_browser);
             browser.limits.entries = 129;
             assert!(expectation(&serde_json::to_value(&browser).unwrap(), "browser").is_err());
         }

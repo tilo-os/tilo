@@ -297,6 +297,24 @@ pub fn required(expected: &validate::PayloadExpectation) -> Result<u128> {
         .and_then(|total| total.checked_add(16 * 1024 * 1024))
         .ok_or_else(invalid)
 }
+fn publish_expectation(
+    destination: &File,
+    expected: &validate::PayloadExpectation,
+    kind: &str,
+    uid: u32,
+    gid: u32,
+) -> Result<Value> {
+    let expected_json = expected.to_value()?;
+    if fs::exists(destination, "expectation.json")? {
+        let existing = fs::json_required(destination, "expectation.json", 32768, Some(uid), true)?;
+        if validate::expectation(&existing, kind)? != *expected {
+            return Err(invalid());
+        }
+        return Ok(expected_json);
+    }
+    fs::publish_json(destination, "expectation.json", &expected_json, uid, gid)?;
+    Ok(expected_json)
+}
 pub fn retain(source: &str, target: &str, kind: &str) -> Result<()> {
     let Some(staged) = staged(source, kind)? else {
         return Ok(());
@@ -321,14 +339,8 @@ pub fn retain(source: &str, target: &str, kind: &str) -> Result<()> {
         temp.publish(filename)?;
     }
     fs::verify_chain(target, &components, &destination, fs::uid())?;
-    let expected_json = expected.to_value()?;
-    fs::publish_json(
-        &destination,
-        "expectation.json",
-        &expected_json,
-        fs::uid(),
-        fs::gid(),
-    )
+    publish_expectation(&destination, expected, kind, fs::uid(), fs::gid())?;
+    Ok(())
 }
 pub fn deliver_to(source: &str, home: &str, uid: u32, gid: u32, kind: &str) -> Result<Value> {
     let (_, _, ownership) = names(kind)?;
@@ -368,8 +380,7 @@ pub fn deliver_to(source: &str, home: &str, uid: u32, gid: u32, kind: &str) -> R
         fd.sync_all()?;
     }
     fs::verify_chain(home, &components, &destination, uid)?;
-    let expected_json = expected.to_value()?;
-    fs::publish_json(&destination, "expectation.json", &expected_json, uid, gid)?;
+    let expected_json = publish_expectation(&destination, &expected, kind, uid, gid)?;
     let (fd, m) = package(&destination, &expected, Some(uid))?;
     stream(&fd, &m, &expected, None)?;
     destination.sync_all()?;
