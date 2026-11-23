@@ -732,27 +732,20 @@ struct Attempt {
 /// Publishes the attempt's tree itself under the requested name, then removes its now empty
 /// container. Existing names are never overwritten.
 fn publish_root(attempt: &Attempt, cancel: &AtomicBool) -> io::Result<()> {
-    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+    use std::os::{
+        fd::{AsFd, AsRawFd},
+        unix::ffi::OsStrExt,
+    };
     check_cancel(cancel)?;
     attempt.home.validate_destination()?;
     attempt.container.validate_destination()?;
     attempt.parent.validate_destination()?;
-    let target = std::ffi::CString::new(attempt.target.as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: both names are single components and terminated; the held
-    // container and parent remain live. NOREPLACE refuses a concurrently
-    // appearing destination.
-    let result = unsafe {
-        libc::renameat2(
-            attempt.container.file.as_raw_fd(),
-            c"home".as_ptr(),
-            attempt.parent.file.as_raw_fd(),
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    host_fs::rename_noreplace_at(
+        attempt.container.file.as_fd(),
+        std::ffi::OsStr::new("home"),
+        attempt.parent.file.as_fd(),
+        attempt.target.as_os_str(),
+    )?;
     durability::sync_directory(&attempt.container.file)?;
     durability::sync_directory(&attempt.parent.file)?;
     let published =
@@ -787,26 +780,16 @@ fn publish_import(
     name: &std::ffi::OsStr,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
-    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+    use std::os::fd::AsFd;
     check_cancel(cancel)?;
     container.validate_destination()?;
     parent.validate_destination()?;
-    let attempt = std::ffi::CString::new(attempt).map_err(io::Error::other)?;
-    let name_c = std::ffi::CString::new(name.as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: both names are single components and terminated; the held parent
-    // remains live. NOREPLACE refuses a concurrently appearing destination.
-    let result = unsafe {
-        libc::renameat2(
-            parent.file.as_raw_fd(),
-            attempt.as_ptr(),
-            parent.file.as_raw_fd(),
-            name_c.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
+    host_fs::rename_noreplace_at(
+        parent.file.as_fd(),
+        std::ffi::OsStr::new(attempt),
+        parent.file.as_fd(),
+        name,
+    )?;
     durability::sync_directory(&parent.file)?;
     let published = super::nofollow::metadata_nofollow(&parent.file, Path::new(name))?;
     if !published.is_dir()
