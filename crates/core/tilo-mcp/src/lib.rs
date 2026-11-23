@@ -2368,7 +2368,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             started = self.start(request.clone(), wait, record).await;
         }
         let settling = timing_start();
-        let mut value = match started? {
+        let value = match started? {
             Admission::Unanswered(patience) => unanswered_admission(invocation, patience),
             Admission::Answered(Some(output)) if self.observed(invocation).await.is_none() => {
                 let update = tilo_actions::InvocationUpdate::Succeeded { invocation, output };

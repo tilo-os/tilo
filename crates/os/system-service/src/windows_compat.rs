@@ -6,7 +6,6 @@
 //! has been shown.
 
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::offer;
 use tilo_system_resources::windows_compat::{
     WINDOWS_COMPAT, WindowsCompat, WindowsCompatAction, WindowsState,

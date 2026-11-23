@@ -14,7 +14,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// disk takes seconds. It is waited for as long as the call waits for
     /// its outcome, and at least [`HOST_ANSWER_WAIT`]; an admission still
     /// unanswered then goes on without this call, which says so.
-    async fn start(
+    pub(crate) async fn start(
         &self,
         request: InvokeRequest,
         wait: crate::Hold,

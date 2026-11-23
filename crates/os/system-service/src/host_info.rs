@@ -8,7 +8,6 @@
 use std::path::Path;
 
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::offer;
 use tilo_system_resources::host_info::{HOST_INFO, HostInfo, HostInfoAction};
 

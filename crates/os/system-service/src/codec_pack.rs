@@ -5,7 +5,6 @@
 //! again, so the reading follows an install as it runs.
 
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::offer;
 use tilo_system_resources::codec_pack::{
     CODEC_PACK, CodecPack, CodecPackAction, CodecState, HardwareVideo,

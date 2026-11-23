@@ -5,7 +5,6 @@
 //! policy authority, and nothing here passes force or downgrade flags.
 
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::offer;
 use tilo_system_resources::firmware::{
     FIRMWARE, Firmware, FirmwareAction, FirmwareHistoryEntry, FirmwareUpdate,

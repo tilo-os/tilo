@@ -15,7 +15,6 @@ use ntfs_mount::protocol::{
     RememberOffer as ProtocolRememberOffer, RememberedDrive, Request, Response,
 };
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::{offer, unavailable};
 use tilo_system_resources::drives::{
     DRIVES, Drive as DriveReading, DriveMode, Drives, DrivesAction, Mounted,

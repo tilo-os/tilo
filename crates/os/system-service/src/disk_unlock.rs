@@ -12,7 +12,6 @@ use std::time::Duration;
 use bounded_command::Output;
 use serde::Deserialize;
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::offer;
 use tilo_system_resources::disk_unlock::{
     DISK_UNLOCK, DiskUnlock, DiskUnlockAction, Sealing, UnlockVolume,

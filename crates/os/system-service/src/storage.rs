@@ -9,7 +9,6 @@ use std::path::PathBuf;
 
 use desktop_policy::{StorageCategory, StorageRoots};
 use tilo_actions::ResourceSpec;
-use tilo_resource::Effect as _;
 use tilo_service::offer;
 use tilo_system_resources::storage::{
     CategoryUsage, DiskUsage, STORAGE, Storage, StorageAction, StoredItem,
