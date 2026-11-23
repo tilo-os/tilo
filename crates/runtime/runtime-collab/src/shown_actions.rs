@@ -1,20 +1,19 @@
-//! Records a window shows that another workspace holds, and what that workspace says of the
-//! changes the person at the window may make to them.
+//! The actions a window shows, and what the device's daemon says of each for the person at the
+//! window.
 //!
-//! A person's profile record is held in their own workspace, whatever workspace the window
-//! showing it is open in, and that workspace decides its changes. The app never holds another
-//! workspace's policy: it names each action of such a record to the host, and the host, which
-//! holds that workspace's grants, answers a [`HeldDecision`] for each, and answers again whenever
-//! those grants change. The decisions only say how the window shows its controls; running an
-//! action is admitted by the host against the holding workspace as it is then.
+//! A window decides no permission itself. It names the actions of the records it shows to its
+//! host; the host decides each with the ordinary check in the workspace holding the record (the
+//! window's own, or another: a person's profile record is held in their own workspace wherever it
+//! is shown), and answers again whenever those grants change. The verdicts only say how the window
+//! shows its controls; running an action is admitted by the host when it is called.
 
 use serde::{Deserialize, Serialize};
 
-/// One action of a record held in a workspace other than the window's: what the host decides.
+/// One action of a record a window shows: what the host decides.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct HeldRecord {
-    /// The workspace holding the record, which decides its changes.
-    pub workspace: String,
+pub struct ShownAction {
+    /// The workspace holding the record when it is not the window's.
+    pub workspace: Option<String>,
     /// The app publishing the record.
     pub app: String,
     /// The record's resource kind.
@@ -32,18 +31,18 @@ pub struct HeldRecord {
     pub privileged: bool,
 }
 
-impl HeldRecord {
+impl ShownAction {
     /// The action `action` of the record `resource` (of kind `kind`) that the app `app`
-    /// publishes, held in `workspace`, which `need` describes.
+    /// publishes, held in `workspace` when that is not the window's, which `need` describes.
     #[must_use]
     pub fn new(
-        workspace: &str,
+        workspace: Option<&str>,
         app: &str,
         (kind, resource, action): (&str, &str, &str),
         need: &tilo_actions::ActionNeed,
     ) -> Self {
         Self {
-            workspace: workspace.to_owned(),
+            workspace: workspace.map(str::to_owned),
             app: app.to_owned(),
             kind: kind.to_owned(),
             resource: resource.to_owned(),
@@ -65,9 +64,9 @@ impl HeldRecord {
     }
 }
 
-/// What the holding workspace says of one [`HeldRecord`] now.
+/// What the host says of one [`ShownAction`] now.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HeldVerdict {
+pub enum ActionVerdict {
     /// The person may run it.
     Allowed,
     /// The person may run it once they confirm it.
@@ -77,9 +76,9 @@ pub enum HeldVerdict {
     Refused(String),
 }
 
-/// A [`HeldRecord`] and what its workspace says of it.
+/// A [`ShownAction`] and what the host says of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeldDecision {
-    pub record: HeldRecord,
-    pub verdict: HeldVerdict,
+pub struct ActionDecision {
+    pub action: ShownAction,
+    pub verdict: ActionVerdict,
 }

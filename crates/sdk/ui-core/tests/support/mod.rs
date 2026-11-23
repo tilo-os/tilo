@@ -190,7 +190,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ResourceCommand { .. }
             | CollabRequest::OpenResources { .. }
             | CollabRequest::CloseResources { .. }
-            | CollabRequest::DecideHeldElsewhere { .. } => {
+            | CollabRequest::DecideShownActions { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.
             }

@@ -1045,7 +1045,7 @@ impl App {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ResourcePage { .. }
-            | CollabEvent::HeldElsewhereVerdicts { .. }
+            | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged

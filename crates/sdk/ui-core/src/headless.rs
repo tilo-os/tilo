@@ -371,10 +371,10 @@ pub type ServedProvider = Box<
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError>,
 >;
 
-/// What decides in a harness, in place of the workspace broker, the actions of records the window
-/// shows that another workspace holds ([`FrameHarness::decide_held_elsewhere`]).
-pub type HeldHost = Box<
-    dyn FnMut(&[crate::held_elsewhere::HeldRecord]) -> Vec<crate::held_elsewhere::HeldDecision>,
+/// What decides in a harness, in place of the device's daemon, the actions the window shows
+/// ([`FrameHarness::decide_shown_actions`]).
+pub type ShownHost = Box<
+    dyn FnMut(&[crate::shown_actions::ShownAction]) -> Vec<crate::shown_actions::ActionDecision>,
 >;
 
 /// One invocation of another provider's action ([`FrameHarness::serve_provider`]).
@@ -631,9 +631,13 @@ pub struct FrameHarness {
     /// What takes the place of the providers whose actions the app's controls are bound to
     /// ([`Self::serve_provider`]), by provider.
     providers: HashMap<String, ServedProvider>,
-    /// What decides the actions of records another workspace holds
-    /// ([`Self::decide_held_elsewhere`]), and the records the window last asked it about.
-    held_host: Option<(HeldHost, Vec<crate::held_elsewhere::HeldRecord>)>,
+    /// What decides the actions the window shows ([`Self::decide_shown_actions`]): the host, the
+    /// actions the window last asked it about, and the permissions revision it last decided at.
+    shown_host: Option<(
+        ShownHost,
+        Vec<crate::shown_actions::ShownAction>,
+        Option<u64>,
+    )>,
     /// What the widget tree asked of the transport that a harness host did not answer, until it is
     /// taken ([`Self::take_collaboration_requests`]).
     kept_requests: Vec<crate::collaboration::CollabRequest>,
@@ -1548,7 +1552,7 @@ impl FrameHarness {
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             providers: HashMap::new(),
-            held_host: None,
+            shown_host: None,
             kept_requests: Vec::new(),
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
@@ -1703,56 +1707,64 @@ impl FrameHarness {
     /// What the widget tree asked of the transport since the last call, as a live window's host takes
     /// it: the other half of [`Self::handle_collaboration_event`].
     pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        self.answer_held_elsewhere();
+        self.answer_shown_actions();
         let mut requests = std::mem::take(&mut self.kept_requests);
         requests.extend(crate::widget::take_collab_requests(self.root.as_mut()));
         requests
     }
 
-    /// Decide with `host`, as the workspace broker does, the actions of records the window shows
-    /// that another workspace holds: what the window asks of them is answered in each frame, and
-    /// asked again before each invocation, which is admitted as the holding workspace says then.
-    pub fn decide_held_elsewhere(&mut self, host: HeldHost) {
+    /// Decide with `host`, as the device's daemon does, the actions the window shows: what the
+    /// window asks of them is answered in each frame and again whenever permissions change, and
+    /// asked again before each invocation, which is admitted as the host says then.
+    pub fn decide_shown_actions(&mut self, host: ShownHost) {
         self.invalidate_local();
-        self.held_host = Some((host, Vec::new()));
+        self.shown_host = Some((host, Vec::new(), None));
     }
 
-    /// Answer what the window asked of the records other workspaces hold, keeping the rest of its
-    /// requests for whoever takes them. Whether it answered anything.
-    fn answer_held_elsewhere(&mut self) -> bool {
-        if self.held_host.is_none() {
+    /// Answer what the window asked of the actions it shows, and again when permissions changed
+    /// since, keeping the rest of its requests for whoever takes them. Whether it answered
+    /// anything.
+    fn answer_shown_actions(&mut self) -> bool {
+        if self.shown_host.is_none() {
             return false;
         }
         let mut asked = None;
         for request in crate::widget::take_collab_requests(self.root.as_mut()) {
             match request {
-                crate::collaboration::CollabRequest::DecideHeldElsewhere { records } => {
-                    asked = Some(records);
+                crate::collaboration::CollabRequest::DecideShownActions { actions } => {
+                    asked = Some(actions);
                 }
                 other => self.kept_requests.push(other),
             }
         }
-        let (Some(records), Some((_, held))) = (asked, self.held_host.as_mut()) else {
+        let Some((_, shown, decided)) = self.shown_host.as_mut() else {
             return false;
         };
-        *held = records;
-        self.decide_held_again()
-    }
-
-    /// Decide the records the window last asked about again, as they stand now, and tell it.
-    fn decide_held_again(&mut self) -> bool {
-        let Some((host, held)) = self.held_host.as_mut() else {
-            return false;
-        };
-        if held.is_empty() {
+        if let Some(actions) = asked {
+            *shown = actions;
+        } else if *decided == Some(crate::permissions::shared_revision()) {
             return false;
         }
-        let verdicts = host(held);
+        self.decide_shown_again()
+    }
+
+    /// Decide the actions the window last asked about again, as they stand now, and tell it.
+    fn decide_shown_again(&mut self) -> bool {
+        let Some((host, shown, _)) = self.shown_host.as_mut() else {
+            return false;
+        };
+        if shown.is_empty() {
+            return false;
+        }
+        let verdicts = host(shown);
         self.invalidate_local();
         crate::widget::handle_collab_event(
             self.root.as_mut(),
-            &crate::collaboration::CollabEvent::HeldElsewhereVerdicts { verdicts },
+            &crate::collaboration::CollabEvent::ActionVerdicts { verdicts },
         );
+        if let Some((_, _, decided)) = self.shown_host.as_mut() {
+            *decided = Some(crate::permissions::shared_revision());
+        }
         true
     }
 
@@ -3160,8 +3172,8 @@ impl FrameHarness {
         if let Err(error) = self.try_relayout_following_search() {
             self.skip_own_frame(&error);
         }
-        // What the frame asked of records other workspaces hold is answered, and drawn.
-        if self.answer_held_elsewhere()
+        // What the frame asked of the actions it shows is answered, and drawn.
+        if self.answer_shown_actions()
             && let Err(error) = self.try_relayout_following_search()
         {
             self.skip_own_frame(&error);
@@ -7250,8 +7262,8 @@ impl FrameHarness {
         delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
-        // A record another workspace holds is admitted as that workspace says now.
-        self.decide_held_again();
+        // An action is admitted as the host says now.
+        self.decide_shown_again();
         let (invocation, actor) =
             delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
         let author = tilo_actions::Actor::Member(self.author.clone());

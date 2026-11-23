@@ -267,19 +267,20 @@ impl JoinedChannel {
         Ok(service.open(&context, query))
     }
 
-    /// What the workspaces holding `records` say of their actions, as the person this channel
-    /// was admitted for would run them: now, and again on each change.
-    pub(super) fn held_elsewhere(
+    /// What this host says of the `actions` the window shows, as the person this channel was
+    /// admitted for would run them: now, and again on each change.
+    pub(super) fn shown_actions(
         &self,
-        records: Vec<runtime_collab::held_elsewhere::HeldRecord>,
-    ) -> Result<super::wire::Feed<Vec<runtime_collab::held_elsewhere::HeldDecision>>, BrokerError>
+        actions: Vec<runtime_collab::shown_actions::ShownAction>,
+    ) -> Result<super::wire::Feed<Vec<runtime_collab::shown_actions::ActionDecision>>, BrokerError>
     {
+        let route = self.route();
         let current = self
             .state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
+            .revalidate_admission(&route, &self.verified_identity)?;
         Ok(self
             .state
-            .subscribe_held_elsewhere(current.broker_actor(), records))
+            .subscribe_shown_actions(current.broker_actor(), route.cluster_id, actions))
     }
 
     pub(super) fn realtime_context(

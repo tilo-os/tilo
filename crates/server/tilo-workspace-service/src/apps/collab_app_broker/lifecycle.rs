@@ -759,7 +759,7 @@ impl AppBrokerState {
                 catalogue_refresh: surface_publication::CatalogueRefresh::new(state.clone()),
                 channels: Mutex::new(HashMap::new()),
                 committed_waits: Mutex::new(HashMap::new()),
-                held_elsewhere: Mutex::new(Vec::new()),
+                shown_actions: Mutex::new(Vec::new()),
                 lifecycle: RwLock::new(()),
                 accepting: AtomicBool::new(true),
                 stopped: AtomicBool::new(false),

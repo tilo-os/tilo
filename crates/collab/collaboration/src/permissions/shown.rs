@@ -1,78 +1,83 @@
-//! What the workspaces holding records a window shows, other than the window's own, say of
-//! those records' actions: a person's profile record is held in their own workspace, which
-//! decides its changes wherever it is shown.
+//! What the host says of the actions a window shows.
 //!
-//! The window holds no other workspace's policy. Its host decides each such action and pushes
-//! the verdicts here ([`runtime_collab::held_elsewhere`]); they only say how the window shows its
-//! controls. Running one is admitted by the host against the holding workspace as it is then.
+//! The window decides none of them. Its host decides each with the ordinary check in the
+//! workspace holding the record and pushes the verdicts here ([`runtime_collab::shown_actions`]);
+//! they only say how the window shows its controls. Running one is admitted by the host when it
+//! is called.
 
 use std::collections::BTreeMap;
 
-use runtime_collab::held_elsewhere::{HeldDecision, HeldRecord, HeldVerdict};
+use runtime_collab::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
 use tilo_action_policy::Answer;
 
-/// What a person reads at a control of such a record while its verdict is on its way.
-pub const CHECKING: &str = "Checking with the workspace that keeps this.";
+/// What a person reads at a control while its verdict is on its way.
+pub const CHECKING: &str = "Checking whether you can do this.";
 
-/// The actions of the records held elsewhere that a window asked its host about, each with the
-/// verdict the host last sent, or none yet.
+/// The actions a window asked its host about, each with the verdict the host last sent, or none
+/// yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HeldVerdicts {
+pub struct ShownVerdicts {
     /// By resource and action.
-    verdicts: BTreeMap<(String, String), (HeldRecord, Option<HeldVerdict>)>,
+    verdicts: BTreeMap<(String, String), (ShownAction, Option<ActionVerdict>)>,
 }
 
-impl HeldVerdicts {
-    /// The actions `records` names, each keeping the verdict it had when it is asked about as
+impl ShownVerdicts {
+    /// The `actions` asked about, each keeping the verdict it had when it is asked about as
     /// before, and none yet otherwise.
     #[must_use]
-    pub fn asking(&self, records: &[HeldRecord]) -> Self {
-        let verdicts = records
+    pub fn asking(&self, actions: &[ShownAction]) -> Self {
+        let verdicts = actions
             .iter()
-            .map(|record| {
-                let key = (record.resource.clone(), record.action.clone());
+            .map(|action| {
+                let key = (action.resource.clone(), action.action.clone());
                 let verdict = self
                     .verdicts
                     .get(&key)
-                    .filter(|(asked, _)| asked == record)
+                    .filter(|(asked, _)| asked == action)
                     .and_then(|(_, verdict)| verdict.clone());
-                (key, (record.clone(), verdict))
+                (key, (action.clone(), verdict))
             })
             .collect();
         Self { verdicts }
     }
 
     /// Take the host's `decisions`: those of actions asked about as they are now.
-    pub fn decide(&mut self, decisions: &[HeldDecision]) {
+    pub fn decide(&mut self, decisions: &[ActionDecision]) {
         for decision in decisions {
             let key = (
-                decision.record.resource.clone(),
-                decision.record.action.clone(),
+                decision.action.resource.clone(),
+                decision.action.action.clone(),
             );
             if let Some((asked, verdict)) = self.verdicts.get_mut(&key)
-                && *asked == decision.record
+                && *asked == decision.action
             {
                 *verdict = Some(decision.verdict.clone());
             }
         }
     }
 
-    /// The records asked about.
-    pub fn records(&self) -> impl Iterator<Item = &HeldRecord> {
-        self.verdicts.values().map(|(record, _)| record)
+    /// Whether nothing was asked about.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.verdicts.is_empty()
     }
 
-    /// What the window shows of `action` on `resource`, when the record is held elsewhere and it
-    /// was asked about: refused until its verdict arrives.
+    /// The actions asked about.
+    pub fn actions(&self) -> impl Iterator<Item = &ShownAction> {
+        self.verdicts.values().map(|(action, _)| action)
+    }
+
+    /// What the window shows of `action` on `resource`, when it was asked about: refused until
+    /// its verdict arrives.
     #[must_use]
     pub fn answer(&self, resource: &str, action: &str) -> Option<Answer> {
         let (_, verdict) = self
             .verdicts
             .get(&(resource.to_owned(), action.to_owned()))?;
         Some(match verdict {
-            Some(HeldVerdict::Allowed) => Answer::Allow,
-            Some(HeldVerdict::AsksFirst) => Answer::Ask,
-            Some(HeldVerdict::Refused(_)) | None => Answer::Deny,
+            Some(ActionVerdict::Allowed) => Answer::Allow,
+            Some(ActionVerdict::AsksFirst) => Answer::Ask,
+            Some(ActionVerdict::Refused(_)) | None => Answer::Deny,
         })
     }
 
@@ -85,7 +90,7 @@ impl HeldVerdicts {
             .get(&(resource.to_owned(), action.to_owned()))?
         {
             (_, None) => Some(CHECKING),
-            (_, Some(HeldVerdict::Refused(why))) => Some(why),
+            (_, Some(ActionVerdict::Refused(why))) => Some(why),
             (_, Some(_)) => None,
         }
     }
@@ -97,19 +102,19 @@ mod tests {
     use crate::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
     use tilo_actions::{ActionKind, ActionSpec, OperationKind, ResourceSpec};
 
-    /// A board's viewer sees their own record's change refused until their own workspace's
-    /// verdict arrives, then as it says, and keeps it when their role on the board changes.
+    /// A viewer's window shows an action as its host says once it asked about it, refused while
+    /// the verdict is on its way, and keeps the host's verdict when the window's own access
+    /// changes: only the host changes it.
     #[test]
-    fn a_record_held_elsewhere_is_shown_as_its_workspace_says() {
+    fn a_shown_action_is_shown_as_the_host_says() {
         let person = MemberId::person("ad".repeat(32));
         let mut mute =
             ActionSpec::operation("mute", "Mute", OperationKind::Effect, "t.mute", &()).unwrap();
         mute.type_mut().contract.kind = ActionKind::Undoable;
-        let mut playback = ResourceSpec::new("person:test.playback", "test.playback", "Playback")
+        let playback = ResourceSpec::new("person:test.playback", "test.playback", "Playback")
             .with_action(mute.clone());
-        playback.workspace = Some("own".into());
-        let record = HeldRecord::new(
-            "own",
+        let action = ShownAction::new(
+            None,
             "board",
             ("test.playback", "person:test.playback", "mute"),
             &mute.contract.need(),
@@ -120,9 +125,7 @@ mod tests {
                 .borrow()
                 .invocation_answer("board", &playback, &mute, None, None)
         };
-        // Not asked yet, and asked but not answered: refused, saying it is being checked.
-        assert_eq!(answer(&shared), Answer::Deny);
-        shared.update(|context| context.ask_held(std::slice::from_ref(&record)));
+        shared.update(|context| context.ask_shown(std::slice::from_ref(&action)));
         assert_eq!(answer(&shared), Answer::Deny);
         assert!(
             shared
@@ -130,15 +133,15 @@ mod tests {
                 .permitted_resource("board", playback.clone())
                 .is_none()
         );
-        let refused = shared.borrow().held_refusal(&playback, &mute);
+        let refused = shared.borrow().shown_refusal(&playback, &mute);
         assert!(
             matches!(&refused, Some(tilo_actions::ApiError::Unavailable { reason, .. }) if reason == CHECKING),
             "{refused:?}"
         );
         shared.update(|context| {
-            context.decide_held(&[HeldDecision {
-                record: record.clone(),
-                verdict: HeldVerdict::Allowed,
+            context.decide_shown(&[ActionDecision {
+                action: action.clone(),
+                verdict: ActionVerdict::Allowed,
             }]);
         });
         assert_eq!(answer(&shared), Answer::Allow);
@@ -147,15 +150,19 @@ mod tests {
             "person:test.playback",
             &mute
         ));
-        // The board's roles change; what the person's own workspace said stays.
         shared.set(PermissionContext::member(&person, Role::Commenter));
         assert_eq!(answer(&shared), Answer::Allow);
         shared.update(|context| {
-            context.decide_held(&[HeldDecision {
-                record,
-                verdict: HeldVerdict::Refused("no".into()),
+            context.decide_shown(&[ActionDecision {
+                action,
+                verdict: ActionVerdict::Refused("no".into()),
             }]);
         });
         assert_eq!(answer(&shared), Answer::Deny);
+        let refused = shared.borrow().shown_refusal(&playback, &mute);
+        assert!(
+            matches!(&refused, Some(tilo_actions::ApiError::Unavailable { reason, .. }) if reason == "no"),
+            "{refused:?}"
+        );
     }
 }

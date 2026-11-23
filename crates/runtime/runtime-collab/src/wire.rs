@@ -416,9 +416,9 @@ pub enum Topic {
     /// A query of the app's resources held open (`tilo_resource_store::Query`,
     /// JSON): its first page, then each page a change makes different.
     Resources(Vec<u8>),
-    /// What the workspaces holding these records say of their actions, as the person at this
-    /// endpoint would run them: all of them, then all again whenever one changes.
-    HeldElsewhere(Vec<crate::held_elsewhere::HeldRecord>),
+    /// What the host says of these actions a window shows, as the person at this endpoint would
+    /// run them: all of them, then all again whenever one changes.
+    ShownActions(Vec<crate::shown_actions::ShownAction>),
 }
 
 /// The host's answer to a call that succeeded.
@@ -526,8 +526,8 @@ pub enum Event {
     /// A page of a query held open ([`Topic::Resources`]), as
     /// `tilo_resource_store::Page` JSON.
     Resources(Vec<u8>),
-    /// What the holding workspaces say of the records a [`Topic::HeldElsewhere`] names.
-    HeldElsewhere(Vec<crate::held_elsewhere::HeldDecision>),
+    /// What the host says of the actions a [`Topic::ShownActions`] names.
+    ShownActions(Vec<crate::shown_actions::ActionDecision>),
 }
 
 /// One change of a channel's context.

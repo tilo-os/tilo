@@ -36,7 +36,7 @@ use runtime_portal::NotAvailable;
 
 pub mod approved_checks;
 pub mod external_moderation;
-pub mod held_elsewhere;
+pub mod shown_actions;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -462,18 +462,20 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
                 .insert(71, table);
 
             let actor = caller.admitted.broker_actor();
-            let record = runtime_collab::held_elsewhere::HeldRecord::new(
-                &holding.to_string(),
+            let record = runtime_collab::shown_actions::ShownAction::new(
+                Some(&holding.to_string()),
                 &fixture.route.app_id,
                 (&action.resource_kind, &action.resource, &action.action),
                 &action.contract.need(),
             );
-            let mut verdicts = fixture
-                .state
-                .subscribe_held_elsewhere(actor.clone(), vec![record]);
+            let mut verdicts = fixture.state.subscribe_shown_actions(
+                actor.clone(),
+                fixture.route.cluster_id.clone(),
+                vec![record],
+            );
             assert_eq!(
                 verdicts.next().await.unwrap().unwrap()[0].verdict,
-                runtime_collab::held_elsewhere::HeldVerdict::Allowed,
+                runtime_collab::shown_actions::ActionVerdict::Allowed,
                 "an editor of the holding workspace may run it, though they only read the board"
             );
             admit(&mut fixture, &caller);

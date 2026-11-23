@@ -19,8 +19,8 @@ mod socket;
 pub(super) use directory::*;
 mod authority;
 mod catalogue;
-mod held_elsewhere;
 mod routing;
+mod shown_actions;
 use tilo_actions::remote::argument_digest;
 use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
 use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
@@ -362,9 +362,9 @@ pub struct AppBrokerState {
     /// `channel_id`: a write fanned out on a channel's route changes what
     /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
     committed_waits: Mutex<HashMap<String, Vec<committed_document::LandedWake>>>,
-    /// Each window's records held in other workspaces, decided again on every policy change
-    /// ([`held_elsewhere`]).
-    held_elsewhere: Mutex<Vec<held_elsewhere::HeldSubscription>>,
+    /// Each window's shown actions, decided again on every policy change
+    /// ([`shown_actions`]).
+    shown_actions: Mutex<Vec<shown_actions::ShownSubscription>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.

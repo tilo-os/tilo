@@ -4615,8 +4615,8 @@ struct SdkRoute {
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     /// The queries the app holds open in the device's store: each one's task carrying its pages.
     resource_queries: std::collections::HashMap<u64, tokio::task::AbortHandle>,
-    /// The task carrying what the holding workspaces say of the records the app last named.
-    held_elsewhere: Option<tokio::task::AbortHandle>,
+    /// The task carrying what the host says of the actions the window last named.
+    shown_actions: Option<tokio::task::AbortHandle>,
     committed: bool,
 }
 
@@ -7117,40 +7117,40 @@ async fn dispatch_sdk_request(
                 }
             }
         }
-        CollabRequest::DecideHeldElsewhere { records } => {
-            if let Some(earlier) = route.held_elsewhere.take() {
+        CollabRequest::DecideShownActions { actions } => {
+            if let Some(earlier) = route.shown_actions.take() {
                 earlier.abort();
             }
-            if records.is_empty() {
+            if actions.is_empty() {
                 return true;
             }
-            match route.channel.held_elsewhere(records.clone()).await {
+            match route.channel.shown_actions(actions.clone()).await {
                 Ok(verdicts) => {
                     let tx = inbound_tx.clone();
                     let task = tokio::task::spawn_local(async move {
                         while let Ok(verdicts) = verdicts.read().await {
                             if !tx
-                                .send_durable(CollabEvent::HeldElsewhereVerdicts { verdicts })
+                                .send_durable(CollabEvent::ActionVerdicts { verdicts })
                                 .await
                             {
                                 break;
                             }
                         }
                     });
-                    route.held_elsewhere = Some(task.abort_handle());
+                    route.shown_actions = Some(task.abort_handle());
                 }
                 Err(error) => {
                     let reason = format!("The host couldn't be asked about this: {error}");
-                    let verdicts = records
+                    let verdicts = actions
                         .into_iter()
-                        .map(|record| runtime_collab::held_elsewhere::HeldDecision {
-                            record,
-                            verdict: runtime_collab::held_elsewhere::HeldVerdict::Refused(
+                        .map(|action| runtime_collab::shown_actions::ActionDecision {
+                            action,
+                            verdict: runtime_collab::shown_actions::ActionVerdict::Refused(
                                 reason.clone(),
                             ),
                         })
                         .collect();
-                    let _ = inbound_tx.send_reply(CollabEvent::HeldElsewhereVerdicts { verdicts });
+                    let _ = inbound_tx.send_reply(CollabEvent::ActionVerdicts { verdicts });
                 }
             }
         }

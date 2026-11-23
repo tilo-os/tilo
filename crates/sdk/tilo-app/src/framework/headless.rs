@@ -287,17 +287,17 @@ fn decide_each_record_where_it_is_kept(harness: &mut FrameHarness, author: &str)
         workspace.policy = tilo_actions::policy::WorkspacePolicy::new(id.clone(), author);
         Some((id, workspace))
     });
-    harness.decide_held_elsewhere(Box::new(move |records| {
+    harness.decide_shown_actions(Box::new(move |actions| {
         let now = ui_core::time::unix_now();
-        records
+        actions
             .iter()
-            .map(|record| ui_core::held_elsewhere::HeldDecision {
-                record: record.clone(),
-                verdict: actor.held_verdict(
+            .map(|action| ui_core::shown_actions::ActionDecision {
+                action: action.clone(),
+                verdict: actor.shown_verdict(
                     own.as_ref()
-                        .filter(|(id, _)| *id == record.workspace)
+                        .filter(|(id, _)| action.workspace.as_ref() == Some(id))
                         .map(|(_, workspace)| workspace),
-                    record,
+                    action,
                     now,
                 ),
             })

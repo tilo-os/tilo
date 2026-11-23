@@ -183,7 +183,7 @@ impl AppBrokerState {
         };
         // A record another workspace holds (a person's profile record) is
         // admitted by that workspace, wherever the window showing it is open.
-        let held = self.held_workspace(peer_id, &offered.1.resource);
+        let held = self.keeping_workspace(peer_id, &offered.1.resource);
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
@@ -196,7 +196,7 @@ impl AppBrokerState {
                 |workspace| {
                     let Some(workspace) = workspace else {
                         return Err(if held.is_some() {
-                            super::held_elsewhere::NOT_HELD.to_owned()
+                            super::shown_actions::NOT_HERE.to_owned()
                         } else {
                             "workspace no longer hosted".to_owned()
                         });
@@ -211,7 +211,7 @@ impl AppBrokerState {
                         &answered
                     };
                     if held.is_some() {
-                        actor.admit_held_in(workspace, now, (&offered.0, &offered.1))
+                        actor.admit_kept_elsewhere_in(workspace, now, (&offered.0, &offered.1))
                     } else {
                         actor.admit_published_in(workspace, now, (&offered.0, &offered.1))
                     }
