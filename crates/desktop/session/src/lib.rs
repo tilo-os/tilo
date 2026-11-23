@@ -47,6 +47,17 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 mod daemon_fixture;
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+pub mod shell_session;
+/// The heap by allocation site, for the compositor's memory report: a development build's
+/// (`dev-overrides`), and only while `TILO_ALLOC_SITES` asks.
+#[cfg(all(target_os = "linux", feature = "dev-overrides"))]
+pub mod dev_alloc_sites;
+/// The session's allocator: the allocation-site probe's in a development build, the system's
+/// otherwise (a release build carries no wrapper at all).
+#[cfg(all(target_os = "linux", feature = "dev-overrides"))]
+#[global_allocator]
+static SESSION_ALLOCATOR: dev_alloc_sites::Allocator = dev_alloc_sites::Allocator;
 pub mod host_actions;
 pub mod power_menu;
 pub mod records;

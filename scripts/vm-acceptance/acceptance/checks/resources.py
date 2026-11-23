@@ -654,10 +654,21 @@ def record_shell_parts(ctx, report: dict, variant: str = "") -> None:
         ctx.record(f"memory.shell_threads{suffix}", "count", [threads], what="compositor threads")
 
 
+def alloc_sites(report: dict, n: int = 5) -> list[str]:
+    """The largest live allocations by call site, largest first: `54 MiB 15× <a frame> < …`.
+    A development image's session reports them (`TILO_ALLOC_SITES`); one that does not recorded
+    nothing and the list is empty."""
+    sites = ((report.get("alloc_sites") or {}).get("sites") or [])[:n]
+    return [f"{s.get('live_kib', 0) // 1024} MiB {s.get('live_count', 0)}× "
+            + " < ".join((s.get("stack") or [])[:8])
+            for s in sites]
+
+
 def describe_shell_parts(report: dict, n: int = 6) -> str:
     """The compositor's memory by kind, for a failure text: glibc's heap in use and free
     (free heap still counts as resident until it is trimmed), then the largest mapping
-    classes. A failed check keeps no files, so this is what says where an over-budget
+    classes, then the largest live allocations by call site where the session recorded
+    them. A failed check keeps no files, so this is what says where an over-budget
     compositor's memory is."""
     parts = shell_parts_mib(report)
     heap = [f"{k.replace('malloc_', 'heap ').replace('_', ' ')} {parts.pop(k)} MiB"
@@ -665,7 +676,9 @@ def describe_shell_parts(report: dict, n: int = 6) -> str:
     rest = [f"{k} {v} MiB" for k, v in list(parts.items())[:n]]
     peak = (report.get("status_kib") or {}).get("VmHWM")
     peak_text = [f"peak RSS {round(peak / 1024)} MiB"] if peak else []
-    return ", ".join(heap + rest + peak_text)
+    sites = alloc_sites(report)
+    sites_text = ["held by: " + "; ".join(sites)] if sites else []
+    return ", ".join(heap + rest + peak_text + sites_text)
 
 
 HEAP_MILESTONE = re.compile(r"HEAP-MILESTONE what=(\S+) in_use_mib=(\d+) free_mib=(\d+)")

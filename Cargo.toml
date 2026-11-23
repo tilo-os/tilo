@@ -909,6 +909,10 @@ strip = false
 # of its own so that the session's tests, which link the compositor, don't keep theirs.
 [profile.test.package.tilo-session-logging]
 strip = false
+# The session's allocation-site test names the function that holds a block from the test's own
+# symbol table (src/dev_alloc_sites.rs), as the dev image's release session does.
+[profile.test.package.tilo-session]
+strip = false
 
 # Keep the renderer's math, scene encoding and GPU command processing optimised
 # even when application code is unoptimised. These run for every interactive

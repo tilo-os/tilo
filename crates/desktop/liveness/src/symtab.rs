@@ -143,10 +143,11 @@ fn executable_names(addresses: &[u64]) -> HashMap<u64, String> {
     names
 }
 
-/// `  N: name` lines for `stacks` (each innermost frame first), as
-/// `std::backtrace` numbers them: names from the executable's symbol table,
-/// `object+offset` for frames in other objects.
-pub(crate) fn render_all(stacks: &[&[usize]]) -> Vec<String> {
+/// One name per address of each stack (each innermost frame first): the executable's symbol
+/// table names its own frames, and a frame in another object is named by that object and its
+/// offset. What the compositor's allocation-site report prints.
+#[must_use]
+pub fn names_of(stacks: &[&[usize]]) -> Vec<Vec<String>> {
     let modules = modules();
     let executable = modules.first();
     // A return address is the instruction after the call: look the call up.
@@ -167,39 +168,47 @@ pub(crate) fn render_all(stacks: &[&[usize]]) -> Vec<String> {
     stacks
         .iter()
         .map(|stack| {
+            stack
+                .iter()
+                .map(|&ip| {
+                    let found = modules.iter().position(|module| module.contains(call(ip)));
+                    let module = found.and_then(|at| modules.get(at));
+                    let symbol = (found == Some(0))
+                        .then(|| module.map_or(0, |module| module.bias))
+                        .and_then(|bias| u64::try_from(call(ip).saturating_sub(bias)).ok())
+                        .and_then(|address| names.get(&address));
+                    match (symbol, module) {
+                        (Some(name), _) => name.clone(),
+                        (None, Some(module)) => {
+                            // The loader names the executable "": name its file,
+                            // which `addr2line -e` takes.
+                            let path = if module.path.is_empty() {
+                                executable_path.as_str()
+                            } else {
+                                module.path.as_str()
+                            };
+                            let offset = ip.saturating_sub(module.bias);
+                            match &module.build_id {
+                                Some(id) => format!("<unknown> {path}+{offset:#x} (build-id {id})"),
+                                None => format!("<unknown> {path}+{offset:#x}"),
+                            }
+                        }
+                        (None, None) => format!("<unknown> {ip:#x}"),
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `  N: name` lines for `stacks`, as `std::backtrace` numbers them, from [`names_of`].
+pub(crate) fn render_all(stacks: &[&[usize]]) -> Vec<String> {
+    names_of(stacks)
+        .into_iter()
+        .map(|frames| {
             let mut out = String::new();
-            for (index, &ip) in stack.iter().enumerate() {
-                let found = modules.iter().position(|module| module.contains(call(ip)));
-                let module = found.and_then(|at| modules.get(at));
-                let symbol = (found == Some(0))
-                    .then(|| module.map_or(0, |module| module.bias))
-                    .and_then(|bias| u64::try_from(call(ip).saturating_sub(bias)).ok())
-                    .and_then(|address| names.get(&address));
-                match (symbol, module) {
-                    (Some(name), _) => {
-                        let _ = writeln!(out, "{index:>4}: {name}");
-                    }
-                    (None, Some(module)) => {
-                        // The loader names the executable "": name its file,
-                        // which `addr2line -e` takes.
-                        let path = if module.path.is_empty() {
-                            executable_path.as_str()
-                        } else {
-                            module.path.as_str()
-                        };
-                        let offset = ip.saturating_sub(module.bias);
-                        let _ = match &module.build_id {
-                            Some(id) => writeln!(
-                                out,
-                                "{index:>4}: <unknown> {path}+{offset:#x} (build-id {id})"
-                            ),
-                            None => writeln!(out, "{index:>4}: <unknown> {path}+{offset:#x}"),
-                        };
-                    }
-                    (None, None) => {
-                        let _ = writeln!(out, "{index:>4}: <unknown> {ip:#x}");
-                    }
-                }
+            for (index, name) in frames.iter().enumerate() {
+                let _ = writeln!(out, "{index:>4}: {name}");
             }
             out
         })
