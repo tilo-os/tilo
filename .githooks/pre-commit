@@ -535,7 +535,9 @@ for line in sys.stdin:
     if message.get("reason") == "compiler-artifact" and message.get("executable"):
         print(message["executable"])' \
         | tail -n 1
-      )
+      ) || tl_fmt=""
+      # A build that failed, or was cancelled, leaves no formatter: the note below says so and
+      # the commit goes on, rather than `set -e` ending the hook with no word of why.
       if [ -z "$tl_fmt" ]; then
         # A front end that answers no artifact messages still names the target
         # directory it builds in; the default profile's binary is the one the
@@ -545,7 +547,7 @@ for line in sys.stdin:
 try:
     print(json.load(sys.stdin)["target_directory"])
 except ValueError:
-    pass' 2>/dev/null | tail -n 1)
+    pass' 2>/dev/null | tail -n 1) || tl_target=""
         if [ -n "$tl_target" ] && [ -x "$tl_target/debug/tilolang" ]; then
           tl_fmt="$tl_target/debug/tilolang"
         fi
