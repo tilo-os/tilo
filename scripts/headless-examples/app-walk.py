@@ -49,6 +49,7 @@ import argparse
 import base64
 import contextlib
 import functools
+import grp
 import json
 import os
 import re
@@ -254,6 +255,16 @@ def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
     return until(what, check, deadline, step)
 
 
+def device_identity_gid(account) -> int:
+    """The group a device shares its provisioned device key with (`tilo-identity`), else the
+    session account's own: the machine's daemon reads the key as its owner root, the session as
+    a member of this group."""
+    try:
+        return grp.getgrnam("tilo-identity").gr_gid
+    except KeyError:
+        return account.pw_gid
+
+
 class MachineFiles:
     """The machine's files daemon, started the way a device's service starts it.
 
@@ -340,7 +351,7 @@ class MachineFiles:
             time.sleep(0.1)
         key = self.state / "identity/device-private/keypair.bin"
         if key.is_file():
-            os.chown(key, 0, self.account.pw_gid)
+            os.chown(key, 0, device_identity_gid(self.account))
             os.chmod(key, 0o640)
 
     def _launch(self) -> None:
