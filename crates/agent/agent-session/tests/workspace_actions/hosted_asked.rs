@@ -693,17 +693,17 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_only_where_nobody_else_rea
         turn.request
     );
 
-    // Bo joins the workspace, and may read her direct conversation: what she asks there now
-    // is not hers and Scout's alone.
+    // Bo joins the workspace and reads its channels: what she asks Scout there is not hers and
+    // Scout's alone, and is told nothing it learned about her.
     let (bo_root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
     let bo = enrol(&bo_root, "bo-browser", DeviceCapabilities::member());
     admit(&workspaces, &host, &workspace, &bo).await;
     model_asked.lock().unwrap().clear();
-    write_in_direct(
+    mention_in_channel(
         &workspaces,
         &workspace,
         &person,
-        "what do you know about me?",
+        " what do you know about me?",
     )
     .await;
     let turn = answered_one(&agents, &workspace).await;
