@@ -212,9 +212,12 @@ fn a_folder_put_is_one_run_and_one_write_per_chunk() {
         let list = put(&session, &workspace, &serde_json::to_vec(&inline).unwrap()).await;
         files(&session, &workspace, "open", json!({"files": list})).await;
 
+        // Each open lands its chunks one after another, so the folder is whole only once every
+        // file is in it, not once the last one listed is.
         let tree = kept_when(&host, &workspace, |tree| {
-            crate::files_support::file_at(tree, "repo/src", &format!("f{}.txt", FILES - 1))
-                .is_some()
+            names
+                .iter()
+                .all(|name| crate::files_support::file_at(tree, "repo/src", name).is_some())
         })
         .await;
         for name in &names {
