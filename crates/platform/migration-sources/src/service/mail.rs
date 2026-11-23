@@ -34,6 +34,8 @@ pub fn connect(
         username: email.clone(),
         ..AccountConfig::default()
     };
+    // The address alone names the provider's servers, or its own `imap.` and
+    // `smtp.` names for a domain no provider is known by.
     let known = config.autofill_from_email();
     let server = address.server.trim();
     if !server.is_empty() {
@@ -44,10 +46,6 @@ pub fn connect(
         if !known {
             config.smtp_host = server.replacen("imap.", "smtp.", 1);
         }
-    }
-    if config.imap_host.is_empty() {
-        config.imap_host = format!("imap.{domain}");
-        config.smtp_host = format!("smtp.{domain}");
     }
     if config.auth == AuthMethod::OAuth {
         // Gmail and Outlook refuse a password; their sign-in is Mail's own.

@@ -57,12 +57,9 @@ pub struct ThunderbirdProfile {
     pub calendars: Vec<ThunderbirdCalendar>,
 }
 
-/// One sender identity in a profile's `prefs.js`: a display name and an address.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThunderbirdIdentity {
-    pub name: String,
-    pub email: String,
-}
+/// One sender identity in a profile's `prefs.js`: a display name and an
+/// address, as the metadata reader names it.
+pub use accounts::thunderbird::Identity as ThunderbirdIdentity;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThunderbirdAccount {
@@ -692,7 +689,6 @@ fn discover_profile(
         .map_err(|_| invalid("Thunderbird preferences are not UTF-8"))?;
     let parsed = metadata::parse_profile(text)
         .map_err(|_| invalid("Thunderbird preferences are malformed"))?;
-    let parsed_prefs = preferences(text);
     let profile_id = opaque(
         "thunderbird-profile",
         &[label, &relative.join("/"), &prefs_fingerprint(&prefs)],
@@ -711,7 +707,7 @@ fn discover_profile(
         problems: Vec::new(),
     };
     for account in &parsed.accounts {
-        let identities = identities(&parsed_prefs, account);
+        let identities = account.identities.clone();
         let (inventory, reviewed) = account_inventory(
             &directory,
             profile_path,
@@ -1312,74 +1308,6 @@ fn sidecar_relative(
         }
     }
     None
-}
-
-/// The string preferences of `prefs.js`, parsed as data: a key and its value,
-/// never an evaluated expression.
-fn preferences(text: &str) -> Vec<(String, String)> {
-    let mut prefs = Vec::new();
-    for line in text.lines() {
-        let Some(body) = line.trim().strip_prefix("user_pref(") else {
-            continue;
-        };
-        let Some(body) = body.trim_end().strip_suffix(");") else {
-            continue;
-        };
-        let body = body.trim();
-        let mut stream = serde_json::Deserializer::from_str(body).into_iter::<String>();
-        let Some(Ok(key)) = stream.next() else {
-            continue;
-        };
-        let Some(rest) = body.get(stream.byte_offset()..) else {
-            continue;
-        };
-        let Some(value) = rest.trim_start().strip_prefix(',').map(str::trim) else {
-            continue;
-        };
-        if let Ok(serde_json::Value::String(value)) =
-            serde_json::from_str::<serde_json::Value>(value)
-        {
-            prefs.push((key, value));
-        }
-        if prefs.len() > 65_536 {
-            break;
-        }
-    }
-    prefs
-}
-
-fn preference<'a>(prefs: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    prefs
-        .iter()
-        .find(|(name, _)| name == key)
-        .map(|(_, value)| value.as_str())
-}
-
-/// Every identity the account sends as, from `mail.account.<id>.identities`.
-fn identities(
-    prefs: &[(String, String)],
-    account: &metadata::AccountMetadata,
-) -> Vec<ThunderbirdIdentity> {
-    let Some(list) = preference(
-        prefs,
-        &format!("mail.account.{}.identities", account.source_account),
-    ) else {
-        return Vec::new();
-    };
-    list.split(',')
-        .map(str::trim)
-        .filter(|id| !id.is_empty() && id.len() <= 64)
-        .filter_map(|id| {
-            let email = preference(prefs, &format!("mail.identity.{id}.useremail"))?;
-            let name =
-                preference(prefs, &format!("mail.identity.{id}.fullName")).unwrap_or_default();
-            Some(ThunderbirdIdentity {
-                name: name.chars().take(256).collect(),
-                email: email.chars().take(320).collect(),
-            })
-        })
-        .take(64)
-        .collect()
 }
 
 fn prefs_fingerprint(bytes: &[u8]) -> String {
