@@ -313,10 +313,9 @@ mod tests {
                 assert!(report_of(locator).is_none(), "{locator}");
             }
         }
-    }
 
-    #[test]
-    fn destination_resume_sources_are_canonical_and_bearer_free() {
+        phase destination_resume_sources_are_canonical_and_bearer_free;
+    {
         assert_eq!(
             resume_uri(&ResumeSource::LocalFile(PathBuf::from(
                 "/home/alice/My Film.mp4"
@@ -335,5 +334,6 @@ mod tests {
             ))
             .is_none()
         );
+    }
     }
 }

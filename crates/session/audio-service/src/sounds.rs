@@ -124,11 +124,12 @@ mod tests {
             );
         }
 
-        phase do_not_disturb_and_focus_hold_a_device_sound_back;
+        phase do_not_disturb_focus_the_persons_switches_and_the_volume_decide;
         {
             let event = SystemSoundEvent::DeviceConnected;
-            assert!(plays(event, &prefs(), QuietState::default()));
-            for quiet in [
+            let quiet = QuietState::default();
+            assert!(plays(event, &prefs(), quiet));
+            for held in [
                 QuietState {
                     do_not_disturb: true,
                     ..QuietState::default()
@@ -142,13 +143,9 @@ mod tests {
                     ..QuietState::default()
                 },
             ] {
-                assert!(!plays(event, &prefs(), quiet), "{quiet:?}");
+                assert!(!plays(event, &prefs(), held), "{held:?}");
             }
-        }
 
-        phase the_persons_switches_and_the_volume_decide;
-        {
-            let quiet = QuietState::default();
             let mut off = prefs();
             off.enabled = false;
             assert!(!plays(SystemSoundEvent::DeviceConnected, &off, quiet));

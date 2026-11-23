@@ -514,25 +514,13 @@ mod tests {
             );
             assert_eq!(table.players(now)[0].status, Status::Paused);
 
-            assert!(
-                table
-                    .apply(
-                        PlayerEvent::Vanished {
-                            bus_name: PLAYER.into()
-                        },
-                        now
-                    )
-                    .changed
+            // Resumed, the playhead extrapolates between signals, a seek
+            // resets it, and it advances at the signalled rate.
+            table.apply(
+                changed(OWNER, "PlaybackStatus", value("Playing".to_string())),
+                now,
             );
-            assert!(table.players(now).is_empty());
-        }
-
-        phase position_extrapolates_and_seeked_resets;
-        {
-            let start = Instant::now();
-            let mut table = PlayerTable::default();
-            table.apply(appeared(PLAYER, OWNER, None, "Playing"), start);
-            let later = start + Duration::from_secs(2);
+            let later = now + Duration::from_secs(2);
             let at = |table: &PlayerTable, when| table.players(when)[0].position_us;
             assert_eq!(
                 at(&table, later),
@@ -568,6 +556,18 @@ mod tests {
                 "pausing freezes the playhead where it was"
             );
             assert_eq!(table.players(later)[0].length_us, Some(9_000_000));
+
+            assert!(
+                table
+                    .apply(
+                        PlayerEvent::Vanished {
+                            bus_name: PLAYER.into()
+                        },
+                        now
+                    )
+                    .changed
+            );
+            assert!(table.players(now).is_empty());
         }
 
         phase players_are_verified_once_per_owner;
@@ -686,39 +686,26 @@ mod tests {
             assert_eq!(web.length_us, None);
         }
 
-        phase active_player_prefers_playing;
+        phase active_player_prefers_playing_and_the_keys_follow_what_last_played;
         {
             let now = Instant::now();
             let mut table = PlayerTable::default();
             assert_eq!(table.active_player(), None);
-            table.apply(
-                appeared("org.mpris.MediaPlayer2.a", ":1.1", None, "Paused"),
-                now,
-            );
-            assert_eq!(
-                table.active_player(),
-                Some(("org.mpris.MediaPlayer2.a".to_string(), false))
-            );
-            table.apply(
-                appeared("org.mpris.MediaPlayer2.b", ":1.2", None, "Playing"),
-                now,
-            );
-            assert_eq!(
-                table.active_player(),
-                Some(("org.mpris.MediaPlayer2.b".to_string(), true))
-            );
-        }
-
-        phase transport_keys_address_the_player_that_last_played;
-        {
-            let now = Instant::now();
-            let mut table = PlayerTable::default();
             let (browser, music) = (
                 "org.mpris.MediaPlayer2.chromium",
                 "org.mpris.MediaPlayer2.music",
             );
             table.apply(appeared(browser, ":1.1", None, "Paused"), now);
+            assert_eq!(
+                table.active_player(),
+                Some((browser.to_string(), false))
+            );
             table.apply(appeared(music, ":1.2", None, "Playing"), now);
+            assert_eq!(
+                table.active_player(),
+                Some((music.to_string(), true)),
+                "a player that plays takes the keys from a paused one"
+            );
             table.apply(
                 changed(":1.2", "PlaybackStatus", value("Paused".to_string())),
                 now,
