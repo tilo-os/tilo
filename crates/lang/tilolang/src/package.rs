@@ -1050,7 +1050,6 @@ pub fn compile_program_reading(
             invokes: false,
             carries: false,
             outside: Vec::new(),
-            search: None,
             opens: Vec::new(),
         }],
         ..PackageMeta::default()
