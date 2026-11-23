@@ -14,11 +14,11 @@ use cap_primitives::fs::{FollowSymlinks, MetadataExt, OpenOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    ffi::{CString, OsStr},
+    ffi::OsStr,
     fs::File,
     io::{self, BufRead, Read, Seek, Write},
     os::{
-        fd::AsRawFd,
+        fd::AsFd,
         unix::{ffi::OsStrExt, fs::PermissionsExt},
     },
     path::{Component, Path, PathBuf},
@@ -642,23 +642,12 @@ fn process(
             }
             writable.set_permissions(std::fs::Permissions::from_mode(entry.parent_mode | 0o700))?;
             durable::sync_directory(&source.file)?;
-            let name = CString::new(name.as_bytes()).map_err(io::Error::other)?;
-            // SAFETY: both pinned parents are live, name is terminated, and
-            // RENAME_NOREPLACE makes an existing target an atomic refusal.
-            let moved = unsafe {
-                libc::renameat2(
-                    source.file.as_raw_fd(),
-                    name.as_ptr(),
-                    destination.file.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
-            };
-            let result = if moved == 0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            };
+            let result = host_fs::rename_noreplace_at(
+                source.file.as_fd(),
+                name,
+                destination.file.as_fd(),
+                name,
+            );
             let restored = restore_parent(&source, entry.parent_mode);
             durable::sync_directory(&source.file)?;
             durable::sync_directory(&destination.file)?;
@@ -1136,23 +1125,12 @@ fn publish_temporary(
 ) -> io::Result<()> {
     parent.validate_destination()?;
     temporary.validate()?;
-    let source = CString::new(temporary.name.as_bytes()).map_err(io::Error::other)?;
-    let destination = CString::new(destination.as_bytes()).map_err(io::Error::other)?;
-    // SAFETY: the retained parent is live, names are terminated, and the
-    // existing destination is atomically refused rather than overwritten.
-    let result = unsafe {
-        libc::renameat2(
-            parent.file.as_raw_fd(),
-            source.as_ptr(),
-            parent.file.as_raw_fd(),
-            destination.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if result != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    host_fs::rename_noreplace_at(
+        parent.file.as_fd(),
+        temporary.name.as_os_str(),
+        parent.file.as_fd(),
+        destination,
+    )
 }
 
 fn checkpoint_reserve(plan: &Plan) -> io::Result<u64> {
