@@ -13,10 +13,6 @@
 //! records hold every ask and every answer, so the host keeps nothing of its own: a host that
 //! restarts finds the same asks.
 //!
-//! A turn starts from the agent's triggers ([`triggered`]): a change one of them fires on
-//! invokes the agent's answer, and the engine takes the turn from that change alone
-//! ([`ServerAgents::run`]). Nothing scans the workspace for what is owed.
-//!
 //! An agent has one turn at a time in a conversation ([`going`]). What its person writes while
 //! it works reaches that turn at its next step: it is told it and goes on under it, where its
 //! answer then stands. What a cause asks waits until the turn ended. The person a turn is for
@@ -42,7 +38,7 @@
 //! turn costs is counted on the agent's record, and an agent whose daily limit is reached stops
 //! and says so.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -70,19 +66,18 @@ use tracing::Instrument as _;
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
+use events::{Authority, WorkspaceEvents};
+use initiative::Initiative;
+use tilo_actions::remote::workspace_events;
+use tilo_actions::remote::workspace_initiative;
 use turn_provider::TurnProvider;
 
 pub mod agent_keys;
 pub mod assistant;
-#[cfg(unix)]
-pub mod coding;
-pub mod connectors;
-#[cfg(feature = "apps")]
 pub mod events;
-#[cfg(feature = "apps")]
 pub mod initiative;
+pub mod kept;
 pub mod telling;
-pub mod triggered;
 
 mod across;
 mod answers;
@@ -93,8 +88,6 @@ mod calendars;
 mod carried;
 #[cfg(test)]
 mod device_turn_tests;
-#[cfg(unix)]
-mod endpoint;
 mod engine_actions;
 mod going;
 mod instructions;
@@ -146,6 +139,9 @@ const CHAT: &str = "so.tilo.chat";
 const AGENTS_OWNER: &str = tilo_workspace_agent::OWNER;
 /// The app that keeps the issues.
 const TASKS: &str = "so.tilo.tasks";
+/// The longest the server goes without looking at every workspace, whatever is written in
+/// between: what a missed wake costs.
+const IDLE: Duration = Duration::from_secs(60);
 /// The most times one look reads what a workspace owes: it reads again where a turn began or
 /// went on under what it read ([`going::Reading`]).
 const READINGS: usize = 3;
@@ -174,35 +170,134 @@ const KEEP_WORK: &str = "record-work";
 pub struct WorkspaceActionProvider {
     actions: EngineActions,
     workspace: WorkspaceId,
+    /// The events this device runs for its workspaces, where it runs any: what an agent sets up,
+    /// pauses, changes and removes for the person its turn is for.
+    events: Option<WorkspaceEvents>,
+    /// What the workspaces' assistants find to do on their own, where this server keeps it: the
+    /// look-round an agent reads, turns on and off for the person its turn is for.
+    initiative: Option<Initiative>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
     /// resources ([`TurnProvider`]).
     own: Vec<Arc<dyn TurnProvider>>,
     /// How the calls those took ended; `None` while it answers none of them.
     ended: Option<turn_provider::Ended>,
+    /// What its own services answered, for a caller that follows an invocation.
+    answered: OwnAnswers,
     /// What the person asked of the turn this serves, in their words: the purpose History
     /// keeps with each change the turn makes, so its agent session reads as what it was asked.
     purpose: Option<String>,
 }
 
+/// What the services answered here have said, kept for whoever follows the invocation. They
+/// answer with the receipt alone and the workspace's actions never hear of it, while a turn's
+/// tools read how an invocation ended by observing it: without this an action that was carried
+/// out is told to the model as one still pending.
+#[derive(Clone, Default)]
+struct OwnAnswers(Arc<Mutex<VecDeque<(InvocationId, Caller, InvocationUpdate)>>>);
+
+impl OwnAnswers {
+    /// The most answers kept. A turn's tools observe an invocation as soon as it is admitted,
+    /// so only the newest are ever asked for.
+    const KEPT: usize = 64;
+
+    /// Keep how `receipt` says `caller`'s invocation ended. One that admitted nothing, or
+    /// says nothing of the end yet, leaves nothing to follow.
+    fn keep(&self, caller: &Caller, receipt: &InvocationReceipt) {
+        let invocation = receipt.invocation;
+        let update = match &receipt.status {
+            ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded {
+                invocation,
+                output: output.clone(),
+            },
+            ReceiptStatus::Failed { error } => InvocationUpdate::Failed {
+                invocation,
+                error: error.clone(),
+            },
+            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                invocation,
+                message: message.clone(),
+            },
+            ReceiptStatus::Rejected { .. } | ReceiptStatus::Accepted => return,
+        };
+        let mut kept = self.0.lock_recover();
+        if kept.len() >= Self::KEPT {
+            kept.pop_front();
+        }
+        kept.push_back((invocation, caller.clone(), update));
+    }
+
+    /// How invocation `id` ended, for the `caller` that made it and nobody else.
+    fn of(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.0
+            .lock_recover()
+            .iter()
+            .rev()
+            .find(|(invocation, by, _)| invocation == id && by == caller)
+            .map(|(_, _, update)| InvocationState::new(*id, update.clone()))
+    }
+}
+
 impl WorkspaceActionProvider {
     #[must_use]
-    pub fn new(actions: EngineActions, workspace: WorkspaceId) -> Self {
+    pub fn new(actions: impl Into<EngineActions>, workspace: WorkspaceId) -> Self {
         Self {
-            actions,
+            actions: actions.into(),
             workspace,
+            events: None,
             own: Vec::new(),
             ended: None,
+            initiative: None,
+            answered: OwnAnswers::default(),
             purpose: None,
         }
     }
 
-    /// What `caller` is offered of the workspace's records, as the workspace's policy decides
-    /// it for a turn this server carries out for them.
+    /// Another's write landed in `route` of this workspace, as this server just read it in the
+    /// workspace's store: the next request made through this service acts on it
+    /// ([`EngineActions::landed`]).
+    pub fn landed(&self, route: DocumentRoute) {
+        self.actions.landed(self.workspace, route);
+    }
+
+    /// What `caller` is offered of the workspace's records, its events and
+    /// its assistant's initiative, as the workspace's policy decides it for a
+    /// turn this server carries out for them.
     async fn page(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Result<CataloguePage, ActionCallError> {
+        if let Some(events) = &self.events
+            && query.provider.as_deref() == Some(workspace_events::PROVIDER)
+        {
+            return Ok(events
+                .catalogue(self.workspace, caller, &Authority::Turn, &query)
+                .await);
+        }
+        if let Some(initiative) = &self.initiative
+            && query.provider.as_deref() == Some(workspace_initiative::PROVIDER)
+        {
+            return Ok(initiative
+                .catalogue(self.workspace, caller, &Authority::Turn, &query)
+                .await);
+        }
+        let initiative = match &self.initiative {
+            Some(initiative) if query.provider.is_none() => {
+                initiative
+                    .provider(self.workspace, caller, &Authority::Turn)
+                    .await
+            }
+            _ => None,
+        };
+        // A listing of everything names the events' provider beside the records'.
+        let events = match &self.events {
+            Some(events) if query.provider.is_none() => {
+                events
+                    .provider(self.workspace, caller, &Authority::Turn)
+                    .await
+            }
+            _ => None,
+        };
         // One provider id is answered by every provider of the turn's own that holds a
         // resource of it: their rows make one page.
         let own: Vec<_> = self
@@ -240,7 +335,9 @@ impl WorkspaceActionProvider {
         {
             Some(RemoteActionMessage::CatalogueResponse { result, .. }) => {
                 result.map(|mut page| {
+                    page.providers.extend(events);
                     page.providers.extend(offered);
+                    page.providers.extend(initiative);
                     page
                 })
             }
@@ -254,6 +351,22 @@ impl WorkspaceActionProvider {
     fn serving_ask(mut self, asked: &str) -> Self {
         let asked = asked.trim();
         self.purpose = (!asked.is_empty()).then(|| asked.to_owned());
+        self
+    }
+
+    /// This service, answering also for `initiative`: the server's own actions on what a
+    /// person's assistant finds to do on its own.
+    #[must_use]
+    pub fn offering_initiative(mut self, initiative: Option<Initiative>) -> Self {
+        self.initiative = initiative;
+        self
+    }
+
+    /// This service, answering also for `events`: this server's own actions on the workspace's
+    /// scheduled work and events, listed and taken beside its resources.
+    #[must_use]
+    pub fn offering(mut self, events: Option<WorkspaceEvents>) -> Self {
+        self.events = events;
         self
     }
 
@@ -286,12 +399,15 @@ impl WorkspaceActionProvider {
                 },
             }));
         }
-        let answer = self.actions.serve(caller, message).unwrap_or_else(|| {
-            Pending::ready(RemoteActionMessage::CatalogueResponse {
-                correlation: 0,
-                result: Err(unavailable()),
-            })
-        });
+        let answer = self
+            .actions
+            .serve(self.workspace, caller, message)
+            .unwrap_or_else(|| {
+                Pending::ready(RemoteActionMessage::CatalogueResponse {
+                    correlation: 0,
+                    result: Err(unavailable()),
+                })
+            });
         match asking {
             Some(asking) => asking.answered(answer),
             None => answer,
@@ -337,6 +453,38 @@ impl ActionProvider for WorkspaceActionProvider {
         if let Some(reason) = shares::refuses(caller, &request) {
             return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
+        if let Some(events) = &self.events
+            && request.target.provider == workspace_events::PROVIDER
+        {
+            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
+            let (answered, by) = (self.answered.clone(), caller.clone());
+            let (completer, answer) = pending();
+            events
+                .invoking(self.workspace, caller, Authority::Turn, request)
+                .then(move |receipt| {
+                    if let Some(receipt) = receipt {
+                        answered.keep(&by, &receipt);
+                        completer.complete(Ok(receipt));
+                    }
+                });
+            return answer;
+        }
+        if let Some(initiative) = &self.initiative
+            && request.target.provider == workspace_initiative::PROVIDER
+        {
+            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
+            let (answered, by) = (self.answered.clone(), caller.clone());
+            let (completer, answer) = pending();
+            initiative
+                .invoking(self.workspace, caller, Authority::Turn, request)
+                .then(move |receipt| {
+                    if let Some(receipt) = receipt {
+                        answered.keep(&by, &receipt);
+                        completer.complete(Ok(receipt));
+                    }
+                });
+            return answer;
+        }
         if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
             && let Some(ended) = &self.ended
         {
@@ -356,6 +504,7 @@ impl ActionProvider for WorkspaceActionProvider {
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
+            .or_else(|| self.answered.of(caller, id))
     }
 
     fn observed(&self, _caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
@@ -385,6 +534,7 @@ impl ActionProvider for WorkspaceActionProvider {
         // would come at once for ever.
         self.actions
             .serve(
+                self.workspace,
                 caller,
                 RemoteActionMessage::ChangedRequest {
                     correlation: 0,
@@ -495,22 +645,6 @@ pub async fn on_device(
     run_on_device(workspaces, actions).await;
 }
 
-/// What a device's own services act through on its broker `provider`: each call decided there
-/// as the person's own calls are, an agent's signed with the key this device made for it. None
-/// where the device's identity store is not open.
-#[must_use]
-pub fn device_actions(provider: Arc<dyn ActionProvider + Send + Sync>) -> Option<EngineActions> {
-    match agent_keys::FleetAgentKeys::from_env() {
-        Ok(keys) => Some(EngineActions::new(provider, Arc::new(keys))),
-        Err(error) => {
-            tracing::warn!(
-                "this device's agents sign nothing: its identity store is not open ({error})"
-            );
-            None
-        }
-    }
-}
-
 /// [`on_device`] for the service whose `workspaces` the device opened already.
 pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvider + Send + Sync>) {
     // The person's own device calls the model their workspace linked where it is, one on their
@@ -532,12 +666,10 @@ pub async fn run_on_device(workspaces: Workspaces, actions: Arc<dyn ActionProvid
         "this device runs its workspaces' agents, each on the model its workspace linked"
     );
     // The agents speak the language their person reads this computer in.
-    let agents = ServerAgents::on_device(workspaces, actions, keys)
-        .speaking(settings_store::appearance::preferred_language);
-    // The person's own computer: their coding agents' harnesses start here, as them.
-    #[cfg(unix)]
-    let agents = agents.with_coding(coding::Coders::here());
-    agents.run().await;
+    ServerAgents::on_device(workspaces, actions, keys)
+        .speaking(settings_store::appearance::preferred_language)
+        .run()
+        .await;
 }
 
 /// The language a host's agents speak, asked anew for each turn ([`ServerAgents::speaking`]).
@@ -557,9 +689,6 @@ pub enum Ask {
         message: String,
         attempt: u32,
     },
-    /// A change one of the agent's triggers fired on ([`triggered`]): the answer is written
-    /// where the change was made, a reply in its conversation or a comment on its task.
-    Triggered(triggered::Where),
     /// An issue given to the agent, or written in once it had it: the answer is the agent's
     /// comment in its thread.
     Issue {
@@ -570,9 +699,6 @@ pub enum Ask {
         cause: String,
     },
 }
-
-/// What a turn says when the event that asked for it told a waiting task to go on instead.
-const TASK_WENT_ON: &str = "The task that waited for this went on.";
 
 /// One turn the server owes an agent: who asks what, of whom.
 #[derive(Clone, Debug, PartialEq)]
@@ -717,25 +843,10 @@ async fn agent_caller(
 
 /// Which agents an engine acts as: on a host, those its roster approved a signing session for;
 /// on a person's device, those whose key the device makes from a root it holds. The agent's own
-/// record says whose it is. With them, the agents whose answer the engine takes.
+/// record says whose it is.
 struct EngineKeys {
     roster: Roster,
     workspaces: crate::workspaces::WeakWorkspaces,
-    /// The agents of the workspaces the engine runs, by id with their names, as it last read
-    /// them: each one's answer is what its triggers invoke.
-    answering: Arc<Mutex<Vec<(String, String)>>>,
-    /// Where a trigger's answer reaches the engine's own loop ([`ServerAgents::run`]).
-    answers: tokio::sync::mpsc::UnboundedSender<Answer>,
-}
-
-/// A turn a trigger asked of an agent, on its way to the engine's loop: what fired, the person
-/// whose trigger it was, and where to say whether the turn was taken.
-struct Answer {
-    workspace: String,
-    agent: String,
-    event: tilo_automation::dispatch::DocumentEvent,
-    saver: String,
-    started: tilo_actions::remote::Completer<Result<crate::work::Started, String>>,
 }
 
 impl crate::work::AgentEngine for EngineKeys {
@@ -763,60 +874,6 @@ impl crate::work::AgentEngine for EngineKeys {
             agent_caller(&self.roster, id, agent, [0; 32]).await.is_ok()
         })
     }
-
-    fn answering(&self) -> Vec<(String, String)> {
-        self.answering.lock_recover().clone()
-    }
-
-    fn answer(
-        &self,
-        workspace: String,
-        agent: String,
-        event: tilo_automation::dispatch::DocumentEvent,
-        saver: String,
-    ) -> Pending<Result<crate::work::Started, String>> {
-        let (started, answer) = pending();
-        let asked = Answer {
-            workspace,
-            agent,
-            event,
-            saver,
-            started,
-        };
-        if let Err(refused) = self.answers.send(asked) {
-            refused
-                .0
-                .started
-                .complete(Err("this device's agents stopped".to_owned()));
-        }
-        answer
-    }
-
-    fn sign_shortcut<'a>(
-        &'a self,
-        workspace: &'a str,
-        agent: &'a str,
-        acts_for: &'a [u8; 32],
-        shortcut: &'a mut tilo_automation::Shortcut,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
-        Box::pin(async move {
-            let workspace =
-                WorkspaceId::parse(workspace).ok_or("the shortcut is saved in no workspace")?;
-            match &self.roster {
-                Roster::Hosted(server, sessions) => {
-                    let device = server
-                        .session_device(sessions, workspace, agent, acts_for)
-                        .await
-                        .ok_or("the agent has no approved signing session for this workspace")?;
-                    sessions.sign_shortcut_as(&device, workspace, agent, shortcut)
-                }
-                Roster::Device(keys) => {
-                    let key = keys.grant(workspace, agent, agent, *acts_for)?;
-                    keys.sign_shortcut(workspace, &key, agent, shortcut)
-                }
-            }
-        })
-    }
 }
 
 /// The agents a host runs for the workspaces it governs.
@@ -835,13 +892,12 @@ pub struct ServerAgents {
     /// The turns going now: one for each agent in each conversation, with what reaches it
     /// while it works.
     going: Arc<going::Turns>,
+    /// The events this host runs for its people, which a turn's tools reach for its person.
+    events: Option<WorkspaceEvents>,
     /// What carries out the answers to what code of this server asked.
     carriers: asks::Carriers,
-    /// The agents whose answer the engine takes, as it last read its workspaces' records
-    /// ([`EngineKeys::answering`]).
-    answering: Arc<Mutex<Vec<(String, String)>>>,
-    /// What triggers asked of the agents, which [`Self::run`] takes.
-    answers: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Answer>>>>,
+    /// What the people's assistants find to do on their own, which a turn's tools reach too.
+    initiative: Option<Initiative>,
     /// The Browser windows this server places for its workspaces, where it places any: a
     /// turn's open of Browser has its window placed there ([`turn_browser`]), and a turn has
     /// a field of its workspace's page filled there from its person's vault.
@@ -853,10 +909,6 @@ pub struct ServerAgents {
     /// machine, per engine. `None` outside tests, where the tools reach the web.
     #[cfg(any(test, feature = "fixture-servers"))]
     web_routes: Option<Vec<(tilo_web_search::Engine, String)>>,
-    /// The coding harnesses this engine starts on its own computer, where it starts any: only
-    /// then does it take a coding agent's turn ([`coding`]).
-    #[cfg(unix)]
-    coding: Option<coding::Coders>,
 }
 
 impl ServerAgents {
@@ -865,11 +917,16 @@ impl ServerAgents {
     #[must_use]
     pub fn with_sessions(
         workspaces: Workspaces,
-        actions: EngineActions,
+        actions: impl Into<EngineActions>,
         devices: Arc<dyn SessionDevices>,
         sessions: tilo_agent_session::AgentSessions,
     ) -> Self {
-        Self::build(workspaces, actions, None, Roster::Hosted(devices, sessions))
+        Self::build(
+            workspaces,
+            actions.into(),
+            None,
+            Roster::Hosted(devices, sessions),
+        )
     }
 
     /// The agents a person's own device runs for the workspaces it holds: their turns' calls go
@@ -882,7 +939,7 @@ impl ServerAgents {
     ) -> Self {
         Self::build(
             workspaces,
-            EngineActions::new(actions, Arc::clone(&keys)),
+            EngineActions::Device(actions, Arc::clone(&keys)),
             None,
             Roster::Device(keys),
         )
@@ -895,13 +952,9 @@ impl ServerAgents {
         roster: Roster,
     ) -> Self {
         // The device takes the turns of its workspaces' agents that are its own from now on.
-        let answering = Arc::<Mutex<Vec<(String, String)>>>::default();
-        let (answers, asked) = tokio::sync::mpsc::unbounded_channel();
         workspaces.run_agents(Arc::new(EngineKeys {
             roster: roster.clone(),
             workspaces: workspaces.downgrade(),
-            answering: Arc::clone(&answering),
-            answers,
         }));
         let agents = Self {
             workspaces,
@@ -910,21 +963,21 @@ impl ServerAgents {
             model,
             language: None,
             going: Arc::default(),
+            events: None,
             carriers: Arc::default(),
-            answering,
-            answers: Arc::new(Mutex::new(Some(asked))),
+            initiative: None,
             browsers: None,
             placed: None,
             #[cfg(any(test, feature = "fixture-servers"))]
             web_routes: None,
-            #[cfg(unix)]
-            coding: None,
         };
         // What a person answers about a connection of theirs is carried out from the start.
         agents.carries(
             connections::WORD,
             connections::answers(&agents.workspaces, &agents.roster),
         );
+        // What a turn asks its person is put to them in its conversation.
+        agents.ask_in_conversations();
         agents.carry_sends();
         agents
     }
@@ -1022,6 +1075,14 @@ impl ServerAgents {
         self
     }
 
+    /// These agents, whose turns reach `initiative`: an agent reads its person's look-round and
+    /// turns it on and off through the server's own actions.
+    #[must_use]
+    pub fn with_initiative(mut self, initiative: Option<Initiative>) -> Self {
+        self.initiative = initiative;
+        self
+    }
+
     /// These agents, whose turns reach the Browser windows `browsers` places: a turn's open of
     /// Browser has its window placed in the turn's workspace, and a turn has a field of the
     /// page in its workspace's window filled from its person's vault by reference. With `None`
@@ -1032,200 +1093,64 @@ impl ServerAgents {
         self
     }
 
+    /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
+    /// events up, pauses, changes and removes them through the host's own actions.
+    #[must_use]
+    pub fn with_events(mut self, events: Option<WorkspaceEvents>) -> Self {
+        self.events = events;
+        self
+    }
+
     /// What lets a stopping server end these agents' work cleanly ([`Draining::finish`]).
     #[must_use]
     pub fn draining(&self) -> Draining {
         Draining(Arc::clone(&self.going))
     }
 
-    /// Take every turn the agents' triggers ask of them ([`triggered`]) until the host stops,
-    /// and keep the list of agents whose answer a trigger reaches as their workspaces' records
-    /// say.
+    /// Look at every governed workspace now, then again whenever a member writes to a record an
+    /// ask or an agent is kept in, and at every one of them once in each [`IDLE`] whatever was
+    /// written, until the host stops.
     pub async fn run(self) {
-        let Some(mut asked) = self.answers.lock_recover().take() else {
-            return;
-        };
         let mut writes = self.workspaces.document_writes();
-        let mut known = None;
-        self.read_answering(&mut known).await;
+        let mut due: BTreeSet<String> = self
+            .workspaces
+            .list()
+            .await
+            .into_iter()
+            .map(|summary| summary.workspace)
+            .collect();
+        let mut whole_at = next_whole();
         loop {
-            tokio::select! {
-                answer = asked.recv() => {
-                    let Some(Answer { workspace, agent, event, saver, started }) = answer else {
-                        return;
-                    };
-                    let agents = self.clone();
-                    tokio::spawn(async move {
-                        let taken = Box::pin(agents.triggered(&workspace, &agent, event, saver)).await;
-                        started.complete(taken);
-                    });
+            for workspace in std::mem::take(&mut due) {
+                if let Err(error) = self.look(&workspace).await {
+                    tracing::debug!(%workspace, %error, "the host's agents did not look at a workspace");
                 }
-                write = writes.recv() => match write {
-                    Ok(write) if write.app != AGENTS_OWNER => {}
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        self.read_answering(&mut known).await;
+            }
+            match woke(&mut writes, whole_at).await {
+                Woke::Write(write) => {
+                    if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
+                        due.insert(write.workspace);
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                },
+                }
+                Woke::Whole => {
+                    due.extend(
+                        self.workspaces
+                            .list()
+                            .await
+                            .into_iter()
+                            .map(|summary| summary.workspace),
+                    );
+                    whole_at = next_whole();
+                }
+                Woke::Closed => return,
+            }
+            // A burst of writes (a person typing, an agent's own steps) is read as one look.
+            while let Ok(write) = writes.try_recv() {
+                if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
+                    due.insert(write.workspace);
+                }
             }
         }
-    }
-
-    /// Read again which agents the workspaces here keep: each one's answer is what a trigger
-    /// reaches ([`EngineKeys::answering`]). `known` holds the agents each workspace kept at the
-    /// last read, `None` before the first: an agent this device's person made since comes with
-    /// its triggers, saved as theirs ([`triggered::triggers`]), and one retired or removed
-    /// since takes its triggers with it.
-    async fn read_answering(&self, known: &mut Option<BTreeMap<String, BTreeSet<String>>>) {
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let me = self.workspaces.serving_certificate().user_public_key;
-        let mut answering = Vec::new();
-        let mut now = BTreeMap::new();
-        for workspace in self.workspaces.described().await {
-            let id = workspace.id().to_string();
-            let Ok(Some(agents)) = self
-                .read::<WorkspaceAgents>(&id, AGENTS_OWNER, &record)
-                .await
-            else {
-                continue;
-            };
-            let answers = |agent: &&Agent| {
-                agent.state == tilo_workspace_agent::AgentState::Active
-                    && agent.mcp_client.is_none()
-                    && agent.sub.is_none()
-            };
-            let working: BTreeSet<String> = agents
-                .agents
-                .iter()
-                .filter(answers)
-                .map(|agent| agent.id.0.clone())
-                .collect();
-            if let Some(before) = known.as_ref().and_then(|known| known.get(&id)) {
-                let saved: BTreeSet<String> = workspace
-                    .shortcuts
-                    .iter()
-                    .map(|saved| saved.id().to_owned())
-                    .collect();
-                let mine = |agent: &Agent| {
-                    tilo_action_policy::PersonId::parse(&agent.acts_for)
-                        .is_ok_and(|person| person.root() == Some(me))
-                };
-                for agent in agents.agents.iter().filter(answers) {
-                    let shortcut = triggered::shortcut_id(&agent.id.0);
-                    if before.contains(&agent.id.0) || !mine(agent) || saved.contains(&shortcut) {
-                        continue;
-                    }
-                    let save = tilo_automation::ShortcutChange::Save(Box::new(
-                        triggered::triggers(&agent.id.0, &agent.name),
-                    ));
-                    if let Err(error) = self.workspaces.change_own_shortcuts(&id, save).await {
-                        tracing::warn!(workspace = %id, agent = %agent.id.0, %error, "a new agent's triggers were not saved");
-                    }
-                }
-                for gone in before.difference(&working) {
-                    let shortcut = triggered::shortcut_id(gone);
-                    if !saved.contains(&shortcut) {
-                        continue;
-                    }
-                    let delete = tilo_automation::ShortcutChange::Delete(shortcut);
-                    if let Err(error) = self.workspaces.change_own_shortcuts(&id, delete).await {
-                        tracing::warn!(workspace = %id, agent = %gone, %error, "a retired agent's triggers were not removed");
-                    }
-                }
-            }
-            answering.extend(
-                agents
-                    .agents
-                    .iter()
-                    .filter(answers)
-                    .map(|agent| (agent.id.0.clone(), agent.name.clone())),
-            );
-            now.insert(id, working);
-        }
-        *known = Some(now);
-        answering.sort();
-        answering.dedup_by(|a, b| a.0 == b.0);
-        *self.answering.lock_recover() = answering;
-    }
-
-    /// Start `agent`'s turn in `workspace` on `event`, the change a trigger `saver` keeps fired
-    /// on ([`triggered`]): whether this device took it. The turn is named by the agent and the
-    /// item the change made, so every device that saw it names one turn and one device takes it
-    /// ([`crate::work::takes_turn`]). The person it is for is whoever made the change; for a
-    /// change made for nobody who is a member (a message a service carried in from outside),
-    /// the person whose trigger fired, so the turn may do no more than they may.
-    ///
-    /// # Errors
-    /// The change is nothing an agent answers, or the agent is none of the workspace's.
-    pub async fn triggered(
-        &self,
-        workspace: &str,
-        agent: &str,
-        event: tilo_automation::dispatch::DocumentEvent,
-        saver: String,
-    ) -> Result<crate::work::Started, String> {
-        let place = triggered::Where::of(&event)
-            .ok_or("the change is no message or task an agent answers")?;
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let roster = self
-            .read::<WorkspaceAgents>(workspace, AGENTS_OWNER, &record)
-            .await?
-            .ok_or("the workspace keeps no list of its agents")?;
-        let agent = roster
-            .agents
-            .iter()
-            .find(|its| its.id.0 == agent)
-            .cloned()
-            .ok_or_else(|| format!("the workspace has no agent `{agent}`"))?;
-        let request = triggered::said(&event);
-        let turn = Turn {
-            agent,
-            person: triggered::asker(&event).unwrap_or(saver),
-            conversation: format!("{}/{}", place.app, place.record),
-            cause: event.change.clone(),
-            asked: request.chars().take(120).collect(),
-            request,
-            ask: Ask::Triggered(place.clone()),
-            history: Vec::new(),
-            fold: None,
-            typed: true,
-            line: None,
-        };
-        let ask = triggered::answer_at(&turn.agent.id.0, &place);
-        let Some(claim) = self.claim(workspace, &turn).await else {
-            return Ok(crate::work::Started::Elsewhere(
-                "another device takes this turn, or took it".to_owned(),
-            ));
-        };
-        let going = match self.going.enter(workspace, &turn) {
-            going::Entered::Began(going) => going,
-            going::Entered::Goes(going) => {
-                // What was written while the agent works there reaches the turn that goes.
-                let _ = going.reach_read(turn, self.going.reading());
-                return Ok(crate::work::Started::Taken);
-            }
-            going::Entered::Closed => return Err("this device's agents are stopping".to_owned()),
-        };
-        let agents = self.clone();
-        let workspace = workspace.to_owned();
-        tokio::spawn(async move {
-            let (_, ended, summary) =
-                Box::pin(agents.answer_going(&workspace, &turn, &going, Arc::clone(&claim))).await;
-            if let Err(error) = &ended {
-                tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent's turn did not finish");
-            }
-            drop(going);
-            let done = json!({"answered": ended.is_ok()});
-            if let Err(error) =
-                crate::work::keep_done(&agents.workspaces, &workspace, &ask, done).await
-            {
-                tracing::warn!(%workspace, %error, "an agent's turn is not kept as done");
-            }
-            if let Some(summary) = summary {
-                Box::pin(agents.keep_summary(summary)).await;
-            }
-        });
-        Ok(crate::work::Started::Taken)
     }
 
     /// Start every turn `workspace` owes its host's agents that is not going yet.
@@ -1397,38 +1322,17 @@ impl ServerAgents {
     /// the device that has it, and a claim stays until it goes unwritten for a minute, so the
     /// device that answered in a conversation answers what is written there next.
     async fn claim(&self, workspace: &str, turn: &Turn) -> Option<Arc<crate::work::Claim>> {
-        #[cfg(unix)]
-        if !self.works(&turn.agent) {
-            return None;
-        }
-        // An agent answers only for a keeper it names by their root; which device takes its
-        // turn is the turn's own rule (`work::takes_turn`, by `AgentEngine::acts_as`).
-        let keeper = tilo_action_policy::PersonId::parse(&turn.agent.acts_for)
-            .map_err(|error| error.to_string())
-            .and_then(|keeper| keeper.root().ok_or_else(|| "no root".to_owned()));
-        if let Err(error) = keeper {
-            tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent names no keeper by their root, and nobody answers for it");
-            return None;
-        }
-        let agent = &turn.agent.id.0;
-        let ask = match &turn.ask {
-            // A triggered turn starts on the device whose trigger fired.
-            Ask::Triggered(place) => triggered::started_here(&self.workspaces, agent, place),
-            Ask::Message { part: record, .. } | Ask::Issue { record, .. } => {
-                let app = if matches!(turn.ask, Ask::Message { .. }) {
-                    CHAT
-                } else {
-                    TASKS
-                };
-                let (_, _, place) = going::place(workspace, turn);
-                crate::work::Turn::once(
-                    format!("agents.agent:{agent}#answer"),
-                    json!({ "place": place }),
-                )
-                .acting_as(crate::work::Actor::Agent(agent.clone()))
-                .about(app, record.clone())
-            }
+        let (app, record) = match &turn.ask {
+            Ask::Message { part, .. } => (CHAT, part),
+            Ask::Issue { record, .. } => (TASKS, record),
         };
+        let (_, agent, place) = going::place(workspace, turn);
+        let ask = crate::work::Turn::once(
+            format!("agents.agent:{agent}#answer"),
+            json!({ "place": place }),
+        )
+        .acting_as(crate::work::Actor::Agent(agent.clone()))
+        .about(app, record.clone());
         match crate::work::takes_turn(&self.workspaces, workspace, &ask).await {
             Ok(claim) => Some(Arc::new(claim)),
             Err(not_taken) => {
@@ -1519,7 +1423,7 @@ impl ServerAgents {
             .workspaces
             .prepare_application(
                 workspace,
-                self.workspaces.device_cert(),
+                self.workspaces.governor(),
                 &catalogue,
                 TASKS,
                 &tracker,
@@ -1797,6 +1701,8 @@ impl ServerAgents {
         let agent = self.agent_caller(workspace_id, &turn.agent, person).await?;
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
+                .offering(self.events.clone())
+                .offering_initiative(self.initiative.clone())
                 .serving_ask(&turn.request),
             agent,
             person,
@@ -1905,10 +1811,6 @@ impl ServerAgents {
     /// # Errors
     /// What the workspace owes could not be read.
     async fn owed_now(&self, workspace: &str, turn: &Turn) -> Result<Option<Turn>, String> {
-        // A triggered turn is owed by the change that fired it, and by nothing read here.
-        if matches!(turn.ask, Ask::Triggered(_)) {
-            return Ok(Some(turn.clone()));
-        }
         let same = |now: &Turn| now.agent.id.0 == turn.agent.id.0 && now.ask == turn.ask;
         let owed = Box::pin(self.asks(workspace)).await?.turns;
         if let Some(owed) = owed.into_iter().find(same) {
@@ -1953,6 +1855,7 @@ impl ServerAgents {
             let ended = reply.finished(&left).await;
             crate::agents::telling::turn_ended(
                 &self.workspaces,
+                self.events.as_ref(),
                 &scope.person,
                 workspace,
                 &turn,
@@ -1961,37 +1864,6 @@ impl ServerAgents {
             .await;
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended, None);
-        }
-        // A firing of the person's own event that a task of theirs waits for tells that task to
-        // go on, and asks no model.
-        if let Some(key) = telling::firing(&self.workspaces, workspace, &turn).await
-            && let Some(automation) = tilo_automation::fired_shortcut(&key)
-        {
-            match task_waits::go_on(
-                &self.workspaces,
-                workspace,
-                &turn.person,
-                automation,
-                &turn.request,
-            )
-            .await
-            {
-                Ok(0) => {}
-                Ok(_) => {
-                    let ended = reply
-                        .finished(&Outcome::Answered(TASK_WENT_ON.to_owned()))
-                        .await;
-                    return (turn.ask, ended, None);
-                }
-                Err(error) => {
-                    tracing::warn!(%workspace, %automation, %error, "the tasks that wait for an automation are not read");
-                }
-            }
-        }
-        #[cfg(unix)]
-        if coding::codes(&turn.agent) {
-            return Box::pin(self.answer_by_harness(workspace, (scope, turn, reply, began), going))
-                .await;
         }
         Box::pin(self.answer_by_model(workspace, (scope, turn, reply, began), going)).await
     }
@@ -2082,6 +1954,7 @@ impl ServerAgents {
         let ended = reply.finished_with(&outcome, cost, &usage).await;
         crate::agents::telling::turn_ended(
             &self.workspaces,
+            self.events.as_ref(),
             &scope.person,
             workspace,
             &turn,
@@ -2123,7 +1996,7 @@ impl ServerAgents {
                 issue,
                 ..
             } => (document.clone(), issue.clone()),
-            Ask::Message { .. } | Ask::Triggered(_) => return Ok(None),
+            Ask::Message { .. } => return Ok(None),
         };
         let id = tilo_resource::Id::from_raw(issue.clone());
         // Only what a session needs of the issue is taken from its document: an issue's rich
@@ -2206,16 +2079,9 @@ impl ServerAgents {
                 });
             // A turn a look of its person's look-round started counts on the
             // look-round's own day as well, and stops where that day's limit is reached.
-            #[cfg(feature = "apps")]
-            let look_round = initiative::day_of_turn(
-                &self.workspaces,
-                &workspace_id.to_string(),
-                &turn.person,
-                &turn.cause,
-                day,
-            );
-            #[cfg(not(feature = "apps"))]
-            let look_round: Option<Spender> = None;
+            let look_round = self.initiative.as_ref().and_then(|initiative| {
+                initiative.day_of_turn(&workspace_id.to_string(), &turn.person, &turn.cause, day)
+            });
             match look_round {
                 Some(look_round) => theirs.spending_as(look_round),
                 None => theirs,
@@ -2279,7 +2145,7 @@ pub async fn count_spend(
     workspaces
         .author_application(
             workspace,
-            workspaces.device_cert(),
+            workspaces.governor(),
             &tilo_agent_session::AppCatalogue::native(),
             AGENTS_OWNER,
             &record,
@@ -2482,7 +2348,7 @@ impl Reply {
     async fn doing(&self, did: &str) {
         let _ = match &self.ask {
             Ask::Message { .. } => self.work(json!({"state": "doing", "did": did}), None).await,
-            Ask::Issue { .. } | Ask::Triggered(_) => self.kept().await,
+            Ask::Issue { .. } => self.kept().await,
         };
     }
 
@@ -2604,22 +2470,6 @@ impl Reply {
                     Ok(()) => Ok(()),
                     Err(error) => Err(self.unfinished(&error).await),
                 }
-            }
-            Ask::Triggered(place) => {
-                self.kept().await?;
-                let words = match outcome {
-                    Outcome::Answered(words) | Outcome::Stopped(words) | Outcome::Failed(words) => {
-                        words.trim()
-                    }
-                    Outcome::Cancelled => "I was stopped.",
-                };
-                let words = if words.is_empty() {
-                    "I finished without saying what I did; look at the history for my changes."
-                } else {
-                    words
-                };
-                triggered::write_answer(&self.provider, &self.caller, &self.workspace, place, words)
-                    .await
             }
             Ask::Issue { record, issue, .. } => {
                 self.kept().await?;
@@ -2881,28 +2731,6 @@ pub async fn invoke_named(
     invoke_at(provider, caller, target, InvokeArgument::Json(arguments)).await
 }
 
-/// [`invoke_named`] as the invocation `invocation`: one taken again, as a step handed over again
-/// after a restart takes it, is answered once.
-///
-/// # Errors
-/// The provider refused or failed the action, or it did not end in time.
-pub async fn invoke_once(
-    provider: &WorkspaceActionProvider,
-    caller: &Caller,
-    route: &DocumentRoute,
-    resource: &str,
-    action: &str,
-    arguments: Map<String, Value>,
-    invocation: InvocationId,
-) -> Result<Value, String> {
-    let target = target_named(route, resource, action);
-    let request = InvokeRequest {
-        invocation,
-        ..invocation_of(target, InvokeArgument::Json(arguments))
-    };
-    invoke_request(provider, caller, request).await
-}
-
 /// `action` on `resource` of what is kept at `route`, as what an invocation names.
 fn target_named(route: &DocumentRoute, resource: &str, action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
@@ -2940,15 +2768,7 @@ async fn invoke_at(
     target: RemoteActionTarget,
     argument: InvokeArgument,
 ) -> Result<Value, String> {
-    invoke_request(provider, caller, invocation_of(target, argument)).await
-}
-
-/// Invoke `request` as `caller`, and wait for it to end.
-async fn invoke_request(
-    provider: &WorkspaceActionProvider,
-    caller: &Caller,
-    request: InvokeRequest,
-) -> Result<Value, String> {
+    let request = invocation_of(target, argument);
     let (provider, caller) = (provider.clone(), caller.clone());
     tokio::task::spawn_blocking(move || {
         let invocation = request.invocation;
@@ -3379,4 +3199,99 @@ fn money(micros: u64) -> String {
         micros / 1_000_000,
         (micros % 1_000_000) / 10_000
     )
+}
+
+/// What ended the wait between two looks.
+enum Woke<T> {
+    /// A member wrote this.
+    Write(T),
+    /// Every workspace is due: the time for it came, or writes were missed.
+    Whole,
+    /// Nobody is left to write.
+    Closed,
+}
+
+/// When every workspace is looked at next, counted from now.
+fn next_whole() -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(IDLE).unwrap_or(now)
+}
+
+/// Wait for the next of `writes`, and no longer than until `whole_at`, when every workspace is
+/// looked at again. That time is moved on only by a look at all of them and never by a write,
+/// and it is read before the writes are: on a server where something is written all the time, as
+/// on a silent one, a turn whose wake was missed is found within [`IDLE`] and one pass over the
+/// workspaces.
+async fn woke<T: Clone + Send>(
+    writes: &mut tokio::sync::broadcast::Receiver<T>,
+    whole_at: tokio::time::Instant,
+) -> Woke<T> {
+    if tokio::time::Instant::now() >= whole_at {
+        return Woke::Whole;
+    }
+    match tokio::time::timeout_at(whole_at, writes.recv()).await {
+        Ok(Ok(write)) => Woke::Write(write),
+        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) | Err(_) => Woke::Whole,
+        Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => Woke::Closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server where something is written all the time still looks at every workspace once in
+    /// each [`IDLE`]: a write that is there before each wait begins never puts that look off, and
+    /// no write is lost to it. With nothing written the wait ends when the time has come, and
+    /// with nobody left to write it says so.
+    #[tokio::test(start_paused = true)]
+    async fn every_workspace_is_looked_at_in_time_whatever_is_written() {
+        let written = tokio::sync::broadcast::Sender::new(8);
+        let mut writes = written.subscribe();
+        let began = tokio::time::Instant::now();
+        let mut whole_at = next_whole();
+        let mut wholes = Vec::new();
+        let mut taken = Vec::new();
+        // Five minutes with a write every ten seconds.
+        for _ in 0..30 {
+            assert!(written.send(()).is_ok(), "the wait reads what is written");
+            tokio::time::advance(Duration::from_secs(10)).await;
+            loop {
+                match woke(&mut writes, whole_at).await {
+                    Woke::Write(()) => {
+                        taken.push(began.elapsed());
+                        break;
+                    }
+                    Woke::Whole => {
+                        wholes.push(began.elapsed());
+                        whole_at = next_whole();
+                    }
+                    Woke::Closed => break,
+                }
+            }
+        }
+        assert_eq!(
+            taken.len(),
+            30,
+            "no write is lost to a look at every workspace"
+        );
+        assert_eq!(
+            wholes,
+            [60, 120, 180, 240, 300].map(Duration::from_secs),
+            "every workspace is looked at once a minute while the writes keep coming"
+        );
+
+        let silent = tokio::time::Instant::now();
+        assert!(matches!(woke(&mut writes, next_whole()).await, Woke::Whole));
+        assert_eq!(
+            silent.elapsed(),
+            IDLE,
+            "with nothing written, when its time came"
+        );
+        drop(written);
+        assert!(matches!(
+            woke(&mut writes, next_whole()).await,
+            Woke::Closed
+        ));
+    }
 }
