@@ -232,7 +232,7 @@ pub(crate) fn mint_local_report(
     exact_intent: &Value,
 ) -> Result<AdmissionEvidence, String> {
     let mut seed = b"tilo-local-report-private-salt-v1\0".to_vec();
-    seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)?)?);
+    seed.extend(signing_bytes(&facts, &intent_digest(exact_intent)));
     let (_, signature) = crate::apps::evidence_signer::sign(&facts.workspace, &seed)?;
     mint_with_nonce(
         facts,
@@ -263,8 +263,8 @@ fn mint_with_nonce(
 ) -> Result<AdmissionEvidence, String> {
     let opening = IntentOpening {
         nonce,
-        intent_digest: intent_digest(exact_intent)?,
-        retained_digest: retained_digest(exact_intent)?,
+        intent_digest: intent_digest(exact_intent),
+        retained_digest: retained_digest(exact_intent),
         request: Some(RequestBinding {
             digest: exact_intent
                 .get("request")
@@ -272,7 +272,7 @@ fn mint_with_nonce(
         }),
     };
     let intent_commitment = opening.commitment();
-    let bytes = signing_bytes(&facts, &intent_commitment)?;
+    let bytes = signing_bytes(&facts, &intent_commitment);
     let (certificate, signature) = signer(&facts.workspace, &bytes)?;
     let evidence = AdmissionEvidence {
         receipt: AdmissionReceipt {
@@ -309,7 +309,7 @@ pub fn verify(receipt: &AdmissionReceipt, expected_facts: &AdmissionFacts) -> Re
     let signature = Signature::from_slice(&receipt.signature)
         .map_err(|_| "invalid admission signature length")?;
     key.verify_strict(
-        &signing_bytes(&receipt.facts, &receipt.intent_commitment)?,
+        &signing_bytes(&receipt.facts, &receipt.intent_commitment),
         &signature,
     )
     .map_err(|_| "invalid admission signature".into())
@@ -347,7 +347,7 @@ impl AdmissionEvidence {
     }
 
     pub(crate) fn validate_retained(&self, retained: &Value) -> Result<(), String> {
-        if retained_digest(retained)? != self.opening.retained_digest {
+        if retained_digest(retained) != self.opening.retained_digest {
             return Err("retained admission intent differs from signed intent".into());
         }
         Ok(())
@@ -380,7 +380,7 @@ impl IntentOpening {
     /// Also call [`verify`] with independently expected facts and trust policy;
     /// a commitment check alone does not authenticate the receipt.
     pub fn verify(&self, receipt: &AdmissionReceipt, exact_intent: &Value) -> Result<(), String> {
-        if intent_digest(exact_intent)? != self.intent_digest {
+        if intent_digest(exact_intent) != self.intent_digest {
             return Err("admission intent does not match".into());
         }
         self.validate_commitment(receipt)
@@ -415,11 +415,7 @@ impl IntentOpening {
     }
 }
 
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "preserves the existing private signature checked by pinning tests"
-)]
-fn signing_bytes(facts: &AdmissionFacts, commitment: &[u8; 32]) -> Result<Vec<u8>, String> {
+fn signing_bytes(facts: &AdmissionFacts, commitment: &[u8; 32]) -> Vec<u8> {
     let mut bytes = SIGN_DOMAIN.to_vec();
     tilo_canonical_json::append_vec(
         &mut bytes,
@@ -428,14 +424,10 @@ fn signing_bytes(facts: &AdmissionFacts, commitment: &[u8; 32]) -> Result<Vec<u8
             "intent_commitment": commitment,
         }),
     );
-    Ok(bytes)
+    bytes
 }
 
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "preserves the existing private signature checked by pinning tests"
-)]
-fn retained_digest(intent: &Value) -> Result<[u8; 32], String> {
+fn retained_digest(intent: &Value) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_derive_key("tilo semantic admission retained intent v1");
     if intent
         .as_object()
@@ -453,20 +445,16 @@ fn retained_digest(intent: &Value) -> Result<[u8; 32], String> {
             hash.update(chunk);
         });
     }
-    Ok(*hash.finalize().as_bytes())
+    *hash.finalize().as_bytes()
 }
 
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "preserves the existing private signature checked by pinning tests"
-)]
-fn intent_digest(intent: &Value) -> Result<[u8; 32], String> {
+fn intent_digest(intent: &Value) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(INTENT_DOMAIN);
     tilo_canonical_json::write_bytes(intent, |chunk| {
         hash.update(chunk);
     });
-    Ok(*hash.finalize().as_bytes())
+    *hash.finalize().as_bytes()
 }
 
 #[cfg(test)]
@@ -664,7 +652,7 @@ mod tests {
             hash.update(&evidence.opening.retained_digest);
             let commitment = *hash.finalize().as_bytes();
             let signature = SigningKey::from_bytes(&[12; 32])
-                .sign(&signing_bytes(&facts(), &commitment).unwrap())
+                .sign(&signing_bytes(&facts(), &commitment))
                 .to_bytes();
             historical["receipt"]["intent_commitment"] = serde_json::json!(commitment);
             historical["receipt"]["signature"] = serde_json::json!(signature.to_vec());
@@ -728,17 +716,14 @@ mod tests {
         {
             let left: Value = serde_json::from_str(r#"{"b":{"y":2,"x":1},"a":[1,2]}"#).unwrap();
             let right: Value = serde_json::from_str(r#"{"a":[1,2],"b":{"x":1,"y":2}}"#).unwrap();
-            assert_eq!(
-                intent_digest(&left).unwrap(),
-                intent_digest(&right).unwrap()
+            assert_eq!(intent_digest(&left), intent_digest(&right));
+            assert_ne!(
+                intent_digest(&serde_json::json!({})),
+                intent_digest(&serde_json::json!({"x":null}))
             );
             assert_ne!(
-                intent_digest(&serde_json::json!({})).unwrap(),
-                intent_digest(&serde_json::json!({"x":null})).unwrap()
-            );
-            assert_ne!(
-                intent_digest(&serde_json::json!([1, 2])).unwrap(),
-                intent_digest(&serde_json::json!([2, 1])).unwrap()
+                intent_digest(&serde_json::json!([1, 2])),
+                intent_digest(&serde_json::json!([2, 1]))
             );
             assert!(
                 serde_json::from_value::<VerifiedActor>(
@@ -863,15 +848,15 @@ mod tests {
             hasher.update(INTENT_DOMAIN);
             hasher.update(expected);
             assert_eq!(
-                intent_digest(&value).unwrap(),
+                intent_digest(&value),
                 *hasher.finalize().as_bytes(),
                 "row {name}"
             );
         }
         let nested: Value = serde_json::from_str(CANONICAL_JSON_CORPUS[0].1).unwrap();
-        assert_eq!(intent_digest(&nested).unwrap(), PINNED_NESTED_INTENT_DIGEST);
+        assert_eq!(intent_digest(&nested), PINNED_NESTED_INTENT_DIGEST);
 
-        let signed = signing_bytes(&facts(), &[0; 32]).unwrap();
+        let signed = signing_bytes(&facts(), &[0; 32]);
         assert_eq!(
             signed,
             [
