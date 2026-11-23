@@ -647,9 +647,11 @@ view feed(yt: YouTube) {
                                 if later.len() > 1 {
                                     text("{later.len()} videos, oldest first", role: .caption)
                                 }
-                                row(gap: .related, align: .center) {
-                                    ui.Button("Play all", icon: .play, role: .primary) {
-                                        on press: play_queue(yt)
+                                if let first = later.first() {
+                                    row(gap: .related, align: .center) {
+                                        ui.Button("Play all", icon: .play, role: .primary) {
+                                            on press: play_queue(yt).then(open(first))
+                                        }
                                     }
                                 }
                                 video_grid(later, "")
@@ -1036,10 +1038,10 @@ view playlist_page(p: Playlist) {
                 text(p.title, role: .title)
                 text(p.channel_name, role: .caption)
                 text("{p.video_count} videos", role: .caption)
-                if not videos.is_empty() {
+                if let first = videos.first() {
                     row(gap: .tight) {
                         ui.Button("Play all", icon: .play, role: .primary) {
-                            on press: play_playlist(p)
+                            on press: play_playlist(p).then(open(first))
                         }
                     }
                 }
