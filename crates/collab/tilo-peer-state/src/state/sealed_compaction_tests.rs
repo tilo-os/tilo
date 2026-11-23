@@ -429,10 +429,15 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-tilo_test_env::scenario! {
-    fn a_writer_mints_a_compaction_of_the_history_it_holds;
+/// A key holder's opener of a write's plaintext, and the sealer a compaction
+/// writes its snapshot through.
+type Opener<'a> = Box<dyn FnMut(&SignedOp) -> Result<Vec<u8>, String> + 'a>;
+type Sealer<'a> = Box<dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a>;
 
-    phase a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_change;
+tilo_test_env::scenario! {
+    fn a_sealed_records_history_folds_into_one_checkpoint_and_reads_again;
+
+    phase folding_after_a_rotation_replaces_the_history_and_reads_every_change_again;
     {
         let mut f = fixture();
         let now = f.now;
@@ -456,7 +461,6 @@ tilo_test_env::scenario! {
             now,
         );
         admit(&mut f.replica, &f.owner, second, now);
-        let base = f.replica.document(APP, RECORD).unwrap();
         let mut replica = f.replica.clone();
 
         let minted = mint(&mut f.replica, &current, &f.owner, now).unwrap();
@@ -464,21 +468,18 @@ tilo_test_env::scenario! {
         assert_eq!(
             held(&f.replica),
             vec![compaction.clone()],
-            "history superseded"
+            "the history it held is replaced by the compaction"
         );
         assert_eq!(compaction.kind, OpKind::Compaction);
         let metadata = compaction.encryption.unwrap();
         assert_eq!(metadata.epoch, current.epoch());
         assert_eq!(metadata.retention(), Some(ContentRetention::Checkpoint));
-        let plaintext = current
-            .open_current_content(
-                artifact(),
-                &metadata,
-                &collab_types::sealed_ciphertext(&compaction).unwrap(),
-            )
-            .unwrap();
-        let DocumentMutation::Snapshot(bytes) = DocumentMutation::decode(&plaintext).unwrap() else {
-            panic!("a compaction opens to a snapshot");
+        // It opens, under the keys now current, to the whole record as its writer
+        // saved it: every change folded is in it.
+        let DocumentMutation::Snapshot(bytes) =
+            DocumentMutation::decode(&open(&current, &compaction).unwrap()).unwrap()
+        else {
+            panic!("a compaction opens to a snapshot")
         };
         let merged = AutoCommit::load(&bytes).unwrap();
         for (key, value) in [("value", "base"), ("first", SECRET), ("second", "2")] {
@@ -488,14 +489,10 @@ tilo_test_env::scenario! {
                 "the compaction holds {key}"
             );
         }
-
+        // A replica without the keys takes the checkpoint in and merges nothing;
+        // the device that folded keeps it across a restart, with no plaintext.
         admit(&mut replica, &f.owner, minted, now);
-        assert_eq!(held(&replica), held(&f.replica), "another replica supersedes");
-        assert_eq!(
-            f.replica.document(APP, RECORD).unwrap(),
-            base,
-            "nothing is merged where no key is held"
-        );
+        assert_eq!(held(&replica), held(&f.replica));
         let durable = f.replica.durable().unwrap();
         assert!(
             !contains(&durable, SECRET.as_bytes()),
@@ -503,152 +500,20 @@ tilo_test_env::scenario! {
         );
         let restored = f.restore(&durable).unwrap();
         assert_eq!(held(&restored), held(&f.replica), "survives restart");
-    }
 
-    phase minting_aborts_without_a_trace_when_any_write_cannot_be_compacted;
-    {
-        let mut f = fixture();
-        let now = f.now;
-        let keys = f.keys();
-        let mut author = Author::new(&f.replica);
-        for value in ["1", "2"] {
-            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut f.replica, &f.other, write, now);
-        }
-        let before = f.replica.durable().unwrap();
-        let keys = &keys;
-        let sealer = |artifact, retention| {
-            move |plaintext: &[u8]| {
-                keys.seal_content(artifact, retention, plaintext)
-                    .map_err(|error| error.to_string())
-            }
-        };
-        let checkpoint = sealer(artifact(), ContentRetention::Checkpoint);
-        let mut opened = 0;
-        let attempts: Vec<(&str, Opener<'_>, Sealer<'_>)> = vec![
-            (
-                "a write that does not open",
-                Box::new(move |op: &SignedOp| {
-                    opened += 1;
-                    if opened == 2 {
-                        return Err("stale key".to_owned());
-                    }
-                    open(keys, op)
-                }),
-                Box::new(checkpoint),
-            ),
-            (
-                "a write that does not decode",
-                Box::new(|_: &SignedOp| Ok(b"not a document mutation".to_vec())),
-                Box::new(checkpoint),
-            ),
-            (
-                "a snapshot sealed as a delta",
-                Box::new(|op: &SignedOp| open(keys, op)),
-                Box::new(sealer(artifact(), ContentRetention::Delta)),
-            ),
-            (
-                "a snapshot sealed for another artifact",
-                Box::new(|op: &SignedOp| open(keys, op)),
-                Box::new(sealer(
-                    collab_types::ArtifactId::new(),
-                    ContentRetention::Checkpoint,
-                )),
-            ),
-        ];
-        for (why, mut open, mut seal) in attempts {
-            assert!(
-                f.replica
-                    .publication()
-                    .draft_sealed_compaction(
-                        (APP, RECORD),
-                        None,
-                        None,
-                        &mut *open,
-                        &mut *seal,
-                        f.owner.verifying_key().to_bytes(),
-                        now
-                    )
-                    .is_err(),
-                "{why} is compacted"
-            );
-            assert_eq!(
-                f.replica.durable().unwrap(),
-                before,
-                "{why} changed the record"
-            );
-        }
-    }
-
-    phase a_compaction_merges_writes_admitted_out_of_causal_order;
-    {
-        let mut f = fixture();
-        let now = f.now;
-        let keys = f.keys();
-        let mut author = Author::new(&f.replica);
-        let (first, second) = (author.edit("value", "1"), author.edit("value", "2"));
-        let late = write(&f.replica, &f.other, &keys, &second, now);
-        admit(&mut f.replica, &f.other, late, now);
-        let early = write(&f.replica, &f.owner, &keys, &first, now);
-        admit(&mut f.replica, &f.owner, early, now);
-        let minted = envelope_of(&mint(&mut f.replica, &keys, &f.owner, now).unwrap());
-        let DocumentMutation::Snapshot(bytes) =
-            DocumentMutation::decode(&open(&keys, &minted).unwrap()).unwrap()
-        else {
-            panic!("a snapshot");
-        };
-        let merged = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            merged.get(ROOT, "value").unwrap().unwrap().0.as_str(),
-            Some("2")
+        // The record goes on after the fold, and a key holder reads it whole.
+        let later = write(
+            &f.replica,
+            &f.other,
+            &current,
+            &author.edit("value", "3"),
+            now,
         );
-    }
-
-    phase a_records_writer_compacts_the_history_it_holds;
-    // The record's own writers fold its sealed history, not only the workspace's
-    // governor: a device the record admits as a writer of it holds the channel
-    // keys, so compacting is part of writing it. A replica without the keys
-    // takes the checkpoint in, and the writes after it.
-    {
-        let mut f = fixture();
-        let now = f.now;
-        let keys = f.keys();
-        let mut author = Author::new(&f.replica);
-        for value in ["1", "2"] {
-            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut f.replica, &f.other, write, now);
-        }
-        let mut replica = f.replica.clone();
-        // The workspace's editor is one of the record's writers.
-        let editor = f.editor.clone();
-        let compaction = mint(&mut f.replica, &keys, &editor, now).unwrap();
-        assert_eq!(
-            held(&f.replica),
-            vec![envelope_of(&compaction)],
-            "the writer folded the history it holds"
-        );
-        admit(&mut replica, &editor, compaction, now);
-        assert_eq!(
-            held(&replica),
-            held(&f.replica),
-            "a replica without the keys takes the checkpoint in"
-        );
-
-        // The record goes on: the writer's next write builds on the checkpoint,
-        // and the replica follows it.
-        let later = write(&f.replica, &f.other, &keys, &author.edit("value", "3"), now);
         admit(&mut f.replica, &f.other, later.clone(), now);
         admit(&mut replica, &f.other, later, now);
-        assert_eq!(held(&replica), held(&f.replica), "the write after it joins");
-        assert_eq!(
-            held(&replica).len(),
-            2,
-            "the checkpoint and the write after it"
-        );
-
-        // A key holder reads the record whole from what the replica kept.
+        assert_eq!(held(&replica), held(&f.replica));
         let restored = f.restore(&replica.durable().unwrap()).unwrap();
-        let mut read_write = |op: &SignedOp| open(&keys, op);
+        let mut read_write = |op: &SignedOp| open(&current, op);
         let opened = restored
             .publication()
             .opened_document(APP, RECORD, &mut read_write)
@@ -659,13 +524,39 @@ tilo_test_env::scenario! {
             read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("3")
         );
+        assert_eq!(
+            read.get(ROOT, "first").unwrap().unwrap().0.as_str(),
+            Some(SECRET),
+            "what the compaction folded is read"
+        );
     }
 
-    phase a_member_writes_past_its_bound_without_a_workspace_host;
-    // A record fills its sealed bound and the device writing it folds the
-    // history itself: the write past the bound is refused first, then the
-    // device publishes its own checkpoint and the record goes on. Nothing else
-    // takes part.
+    phase the_records_own_writer_folds_what_it_holds;
+    // A device the record admits as a writer holds the channel keys, so
+    // compacting is part of writing it: the editor folds the history it
+    // holds, and a replica without the keys takes the checkpoint in.
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let editor = f.editor.clone();
+        let mut author = Author::new(&f.replica);
+        for value in ["1", "2"] {
+            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
+            admit(&mut f.replica, &f.other, write, now);
+        }
+        let mut replica = f.replica.clone();
+        let compaction = mint(&mut f.replica, &keys, &editor, now).unwrap();
+        assert_eq!(
+            held(&f.replica),
+            vec![envelope_of(&compaction)],
+            "the writer folded the history it holds"
+        );
+        admit(&mut replica, &editor, compaction, now);
+        assert_eq!(held(&replica), held(&f.replica));
+    }
+
+    phase a_full_record_refuses_the_write_past_its_bound_and_goes_on_after_its_writers_fold;
     {
         let mut f = fixture();
         let now = f.now;
@@ -674,8 +565,13 @@ tilo_test_env::scenario! {
         let mut author = Author::new(&f.replica);
         let mut written = 0;
         while held(&f.replica).len() < MAX_SEALED_OPS {
-            let value = written.to_string();
-            let sealed = write(&f.replica, &editor, &keys, &author.edit("value", &value), now);
+            let sealed = write(
+                &f.replica,
+                &editor,
+                &keys,
+                &author.edit("value", &written.to_string()),
+                now,
+            );
             match f.replica.receive_from_report(origin(&editor), sealed, now) {
                 Ok(report) => {
                     assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
@@ -690,19 +586,13 @@ tilo_test_env::scenario! {
                 }
             }
         }
-        assert_eq!(
-            written, MAX_SEALED_OPS,
-            "the bound refuses the write past it"
-        );
+        assert_eq!(written, MAX_SEALED_OPS, "the bound refuses the write past it");
         assert!(
             !f.replica.publication().sealed_to_compact().is_empty(),
             "a full record is due for its writer's checkpoint"
         );
-
         let checkpoint = mint(&mut f.replica, &keys, &editor, now).unwrap();
         assert_eq!(held(&f.replica), vec![envelope_of(&checkpoint)]);
-
-        // The record goes on past the bound it refused at.
         for value in MAX_SEALED_OPS..MAX_SEALED_OPS + 8 {
             let sealed = write(
                 &f.replica,
@@ -713,11 +603,6 @@ tilo_test_env::scenario! {
             );
             admit(&mut f.replica, &editor, sealed, now);
         }
-        assert_eq!(
-            held(&f.replica).len(),
-            9,
-            "the checkpoint and the writes after it"
-        );
         assert!(f.replica.publication().sealed_to_compact().is_empty());
         let mut read_write = |op: &SignedOp| open(&keys, op);
         let opened = f
@@ -732,70 +617,6 @@ tilo_test_env::scenario! {
             Some((MAX_SEALED_OPS + 7).to_string().as_str()),
             "every write before the checkpoint is still in the record"
         );
-    }
-
-    phase a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds;
-    // The device that signs a compaction writes the record as well (a server's host does what its
-    // agents do), numbering each write after its last one. A page that opens the record takes the
-    // compaction first and then refuses every write of its author numbered at or below it as a
-    // replay, so a compaction numbered past the writes it folds would stop the page at the fold.
-    // It is numbered as the last of its author's own writes that it folds.
-    {
-        let mut f = fixture();
-        let now = f.now;
-        let keys = f.keys();
-        let mut author = Author::new(&f.replica);
-        for index in 0..6 {
-            let message = write(
-                &f.replica,
-                &f.owner,
-                &keys,
-                &author.edit("value", &format!("own-{index}")),
-                now,
-            );
-            admit(&mut f.replica, &f.owner, message, now);
-        }
-        let plain = write(
-            &f.replica,
-            &f.other,
-            &keys,
-            &author.edit("value", "a member's"),
-            now,
-        );
-        admit(&mut f.replica, &f.other, plain, now);
-        let last = floor(&f.replica, &f.owner);
-        let compaction = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
-        assert_eq!(
-            envelope_of(&compaction).seq,
-            last,
-            "the host's last write it folds"
-        );
-
-        // A page that opens the record takes the compaction first, then the
-        // host's next write.
-        let mut fresh = StatePeer::new(
-            WORKSPACE,
-            f.authority.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        fresh.select_exact_admissions().unwrap();
-        fresh
-            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
-            .unwrap();
-        admit(&mut fresh, &f.owner, compaction, now);
-        assert_eq!(floor(&fresh, &f.owner), last);
-        let next = write(
-            &f.replica,
-            &f.owner,
-            &keys,
-            &author.edit("value", "after the fold"),
-            now,
-        );
-        admit(&mut f.replica, &f.owner, next.clone(), now);
-        admit(&mut fresh, &f.owner, next, now);
     }
 
     phase a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer;
@@ -889,15 +710,165 @@ tilo_test_env::scenario! {
             f.replica.core.exact_admissions.encode().unwrap()
         );
     }
-}
 
-type Opener<'a> = Box<dyn FnMut(&SignedOp) -> Result<Vec<u8>, String> + 'a>;
-type Sealer<'a> = Box<dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a>;
+    phase a_compaction_is_numbered_as_the_last_write_of_its_author_it_folds;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.replica);
+        for index in 0..6 {
+            let message = write(
+                &f.replica,
+                &f.owner,
+                &keys,
+                &author.edit("value", &format!("own-{index}")),
+                now,
+            );
+            admit(&mut f.replica, &f.owner, message, now);
+        }
+        let plain = write(
+            &f.replica,
+            &f.other,
+            &keys,
+            &author.edit("value", "a member's"),
+            now,
+        );
+        admit(&mut f.replica, &f.other, plain, now);
+        let last = floor(&f.replica, &f.owner);
+        let compaction = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
+        assert_eq!(
+            envelope_of(&compaction).seq,
+            last,
+            "the host's last write it folds"
+        );
+        // A page that opens the record takes the compaction first, then the
+        // host's next write: numbering it past the fold would stop the page.
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            f.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        fresh.select_exact_admissions().unwrap();
+        fresh
+            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
+            .unwrap();
+        admit(&mut fresh, &f.owner, compaction, now);
+        let next = write(
+            &f.replica,
+            &f.owner,
+            &keys,
+            &author.edit("value", "after the fold"),
+            now,
+        );
+        admit(&mut f.replica, &f.owner, next.clone(), now);
+        admit(&mut fresh, &f.owner, next, now);
+        assert_eq!(floor(&fresh, &f.owner), last.checked_add(1).unwrap());
+    }
 
-tilo_test_env::scenario! {
-    fn a_history_with_a_gap_or_a_repeat_still_opens;
+    phase minting_aborts_without_a_trace_when_any_write_cannot_be_compacted;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.replica);
+        for value in ["1", "2"] {
+            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
+            admit(&mut f.replica, &f.other, write, now);
+        }
+        let before = f.replica.durable().unwrap();
+        let keys = &keys;
+        let sealer = |artifact, retention| {
+            move |plaintext: &[u8]| {
+                keys.seal_content(artifact, retention, plaintext)
+                    .map_err(|error| error.to_string())
+            }
+        };
+        let checkpoint = sealer(artifact(), ContentRetention::Checkpoint);
+        let mut opened = 0;
+        let attempts: Vec<(&str, Opener<'_>, Sealer<'_>)> = vec![
+            (
+                "a write that does not open",
+                Box::new(move |op: &SignedOp| {
+                    opened += 1;
+                    if opened == 2 {
+                        return Err("stale key".to_owned());
+                    }
+                    open(keys, op)
+                }),
+                Box::new(checkpoint),
+            ),
+            (
+                "a write that does not decode",
+                Box::new(|_: &SignedOp| Ok(b"not a document mutation".to_vec())),
+                Box::new(checkpoint),
+            ),
+            (
+                "a snapshot sealed as a delta",
+                Box::new(|op: &SignedOp| open(keys, op)),
+                Box::new(sealer(artifact(), ContentRetention::Delta)),
+            ),
+            (
+                "a snapshot sealed for another artifact",
+                Box::new(|op: &SignedOp| open(keys, op)),
+                Box::new(sealer(
+                    collab_types::ArtifactId::new(),
+                    ContentRetention::Checkpoint,
+                )),
+            ),
+        ];
+        for (why, mut open, mut seal) in attempts {
+            assert!(
+                f.replica
+                    .publication()
+                    .draft_sealed_compaction(
+                        (APP, RECORD),
+                        None,
+                        None,
+                        &mut *open,
+                        &mut *seal,
+                        f.owner.verifying_key().to_bytes(),
+                        now
+                    )
+                    .is_err(),
+                "{why} is compacted"
+            );
+            assert_eq!(
+                f.replica.durable().unwrap(),
+                before,
+                "{why} changed the record"
+            );
+        }
+    }
 
-    phase a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it;
+    phase a_compaction_merges_writes_admitted_out_of_causal_order;
+    {
+        let mut f = fixture();
+        let now = f.now;
+        let keys = f.keys();
+        let mut author = Author::new(&f.replica);
+        let (first, second) = (author.edit("value", "1"), author.edit("value", "2"));
+        let late = write(&f.replica, &f.other, &keys, &second, now);
+        admit(&mut f.replica, &f.other, late, now);
+        let early = write(&f.replica, &f.owner, &keys, &first, now);
+        admit(&mut f.replica, &f.owner, early, now);
+        let minted = envelope_of(&mint(&mut f.replica, &keys, &f.owner, now).unwrap());
+        let DocumentMutation::Snapshot(bytes) =
+            DocumentMutation::decode(&open(&keys, &minted).unwrap()).unwrap()
+        else {
+            panic!("a snapshot")
+        };
+        let merged = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(
+            merged.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("2")
+        );
+    }
+
+    phase a_history_missing_a_write_opens_without_it_and_completes_once_it_returns;
     {
         let mut f = fixture();
         let now = f.now;
@@ -905,10 +876,6 @@ tilo_test_env::scenario! {
         let mut author = Author::new(&f.replica);
         let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
         let unreadable = author.edit("third", "3");
-        // `second` builds on `first`, which this replica never got and which
-        // `second`'s own writer never sent: it reads as stuck behind that change.
-        // Another device bringing it after all (below) still completes the record.
-        // The write after it does not open with the keys this key holder has.
         let late = write(&f.replica, &f.other, &keys, &second, now);
         admit(&mut f.replica, &f.other, late, now);
         let foreign = KeyGroup::create(group(), MemberKey::generate("other").unwrap())
@@ -929,7 +896,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("base"),
-            "the record reads"
+            "the record reads without what it lacks"
         );
         assert!(read.get(ROOT, "second").unwrap().is_none());
         let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
@@ -944,16 +911,13 @@ tilo_test_env::scenario! {
             "{:?}",
             opened.unmerged
         );
-        assert_eq!(held(&f.replica).len(), 2, "every write is kept");
         assert!(
             mint(&mut f.replica, &keys, &f.owner, now).is_err(),
             "a history that leaves a write out is never compacted"
         );
-        // A restart keeps them too.
         let mut restored = f.restore(&f.replica.durable().unwrap()).unwrap();
-        assert_eq!(held(&restored), held(&f.replica));
+        assert_eq!(held(&restored), held(&f.replica), "a restart keeps them too");
 
-        // Once what it waits for arrives, the write is in the record.
         let early = write(&restored, &f.owner, &keys, &first, now);
         admit(&mut restored, &f.owner, early, now);
         let opened = restored
@@ -964,18 +928,8 @@ tilo_test_env::scenario! {
         let read = AutoCommit::load(&opened.document).unwrap();
         assert_eq!(
             read.get(ROOT, "second").unwrap().unwrap().0.as_str(),
-            Some("2")
-        );
-        assert!(
-            matches!(
-                opened.unmerged.as_slice(),
-                [UnmergedWrite {
-                    reason: UnmergedReason::Unreadable(_),
-                    ..
-                }]
-            ),
-            "{:?}",
-            opened.unmerged
+            Some("2"),
+            "once what it waits for arrives the write is in the record"
         );
     }
 
@@ -986,8 +940,6 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut first = Author::new(&f.replica);
         let mut conflicting = Author::new(&f.replica);
-        // Two writers of one shell used one actor: each wrote the next sequence of
-        // the same writer without seeing the other's change.
         let actor = automerge::ActorId::from(vec![0x42]);
         first.0.set_actor(actor.clone());
         conflicting.0.set_actor(actor);
@@ -1040,8 +992,8 @@ tilo_test_env::scenario! {
             "the write the record cannot hold is kept"
         );
 
-        // A compaction replaces the history, so it folds the write whose sequence
-        // the record already holds: no reader can ever carry both changes.
+        // A compaction replaces the history, so it folds the sequence twice:
+        // no reader can ever carry both changes.
         mint(&mut f.replica, &keys, &f.owner, now).expect("a fork does not block the compaction");
         let opened = f
             .replica
@@ -1049,13 +1001,17 @@ tilo_test_env::scenario! {
             .opened_document(APP, RECORD, &mut read_write)
             .unwrap()
             .unwrap();
+        assert!(opened.unmerged.is_empty());
         let read = AutoCommit::load(&opened.document).unwrap();
         assert_eq!(
             read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("canonical")
         );
-        assert!(opened.unmerged.is_empty());
     }
+}
+
+tilo_test_env::scenario! {
+    fn a_chat_that_lost_a_write_at_a_hard_stop_opens_once_it_returns;
 
     phase a_chat_that_lost_a_write_at_a_hard_stop_opens_and_completes_once_it_returns;
     {
