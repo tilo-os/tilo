@@ -20,6 +20,7 @@
 //! **Storage.** One directory per workspace and author, granted to the process at its start: it
 //! keeps the modules the process compiled, so a later start does not compile them again. The
 //! apps' resources are the store's, never the process's.
+#![cfg(unix)]
 
 pub mod connection;
 pub mod files;

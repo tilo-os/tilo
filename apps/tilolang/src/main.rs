@@ -9,7 +9,15 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "windows")]
+fn main() -> std::process::ExitCode {
+    // A session starts this binary with its package and hands it its workspace over a
+    // descriptor; neither the session nor the descriptor exists on Windows yet.
+    eprintln!("tilolang-app: the tilolang runtime does not run on Windows yet");
+    std::process::ExitCode::from(2)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))]
 fn main() -> std::process::ExitCode {
     // The system runs this app's connector for an outside service in a process of its own,
     // with no window and no package of its own: the app's instances in the tilolang host reach
@@ -42,7 +50,7 @@ fn main() -> std::process::ExitCode {
 /// Run the connector of the origin `origin` this process was started as
 /// (`TILO_TILOLANG_CONNECTOR`), on the API the launcher handed it, until the session closes
 /// the API: the origin's own connector, from the crate that implements it.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "windows")))]
 fn run_connector(origin: &str) -> Result<(), String> {
     match origin {
         "imap" => tilolang_mail::run_connector(origin),
