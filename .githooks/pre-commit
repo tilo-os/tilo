@@ -384,8 +384,7 @@ and commit again, or regenerate it with 'cargo run -p tilo-app-window --example 
           printf '%s %s\n' "$sources_id" "$catalogue_id" > "$verified_at"
         fi
       else
-        note "component catalogue: no generator could be run; \
-widget changes may need 'cargo run -p tilo-app-window --example component-catalogue > $catalogue'"
+        note "component catalogue: no generator could be run here; run 't fix ui-graph' and stage $catalogue"
       fi
     fi
   fi

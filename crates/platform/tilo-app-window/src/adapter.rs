@@ -1064,7 +1064,7 @@ mod tests {
             "crates/dev/ui-graph/components.json is stale: a widget's description changed after \
              it was last written, and tilolang and the tools read that file as the package `ui`. \
              Write it again and commit it:\n\
-             \x20   cargo run -p tilo-app-window --example component-catalogue > crates/dev/ui-graph/components.json"
+             \x20   t fix ui-graph"
         );
     }
 
