@@ -349,7 +349,6 @@ mod tests {
     fn fabric() -> std::sync::Arc<crate::platform::fabric::SessionFabric> {
         let (reach, _sent) = crate::platform::fabric::Reach::listened(
             [7; 32],
-            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
             crate::platform::fabric::Continuity::default(),
         );
         crate::platform::fabric::SessionFabric::new(

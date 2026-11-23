@@ -7,7 +7,6 @@ pub mod devices;
 pub mod link;
 mod model;
 pub mod notification;
-pub mod secrets;
 pub mod speaker_group;
 pub mod unlock;
 pub mod wake;

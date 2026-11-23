@@ -258,13 +258,10 @@ mod tests {
         fn new() -> Self {
             let local = DeviceId::new("device-this").expect("a device id");
             let phone = DeviceId::new("device-phone").expect("a device id");
-            let fabric = PersonDevices::new(
-                [
-                    device("device-this", "This laptop", true),
-                    device("device-phone", "Ada's phone", true),
-                ],
-                Vec::new(),
-            );
+            let fabric = PersonDevices::new([
+                device("device-this", "This laptop", true),
+                device("device-phone", "Ada's phone", true),
+            ]);
             let online = [local.clone(), phone].into_iter().collect();
             Self {
                 fabric,

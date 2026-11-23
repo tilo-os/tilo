@@ -22279,6 +22279,7 @@ dependencies = [
  "tilo-resource-store",
  "tilo-rt",
  "tilo-search",
+ "tilo-seal",
  "tilo-secrets",
  "tilo-server-client",
  "tilo-server-protocol",

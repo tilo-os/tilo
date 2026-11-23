@@ -307,10 +307,7 @@ fn the_persons_devices_read_their_screens_copies_and_speakers() {
     };
     tablet_device.clipboard = vec![clipboard("new", &tablet, 20)];
 
-    let devices = PersonDevices::new(
-        vec![laptop_device.clone(), tablet_device.clone()],
-        Vec::new(),
-    );
+    let devices = PersonDevices::new(vec![laptop_device.clone(), tablet_device.clone()]);
     let group = devices.speaker_group(group_id).unwrap();
     assert_eq!(
         devices.speaker_member_states(group),
@@ -353,7 +350,7 @@ fn the_persons_devices_read_their_screens_copies_and_speakers() {
         }],
         ..SpeakerFabricState::default()
     };
-    let devices = PersonDevices::new(vec![laptop_device.clone(), certified.clone()], Vec::new());
+    let devices = PersonDevices::new(vec![laptop_device.clone(), certified.clone()]);
     let group = devices.speaker_group(group_id).unwrap();
     assert_eq!(
         devices.speaker_member_states(group),
@@ -362,7 +359,7 @@ fn the_persons_devices_read_their_screens_copies_and_speakers() {
     assert_eq!(devices.admit_speaker_group(group), Ok(()));
 
     certified.online = true;
-    let devices = PersonDevices::new(vec![laptop_device, certified], Vec::new());
+    let devices = PersonDevices::new(vec![laptop_device, certified]);
     let group = devices.speaker_group(group_id).unwrap();
     assert_eq!(
         devices.speaker_member_states(group),

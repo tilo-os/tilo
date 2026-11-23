@@ -454,7 +454,6 @@ impl FabricLink for KnownDevices {
                 known.last_seen_unix_ms = 1;
                 known
             }),
-            Vec::new(),
         )
     }
 

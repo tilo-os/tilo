@@ -15,7 +15,6 @@ pub use tilo_network_actor::fabric::link::{
 pub use tilo_network_actor::fabric::notification::{
     ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
 };
-pub use tilo_network_actor::fabric::secrets::open_wifi_credential;
 pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
@@ -32,6 +31,6 @@ pub use tilo_network_actor::fabric::{
     MediaSourceLocator, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonDevice, PersonDevices,
     PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
-    ScrollUnit, WakeInterfaceKind, WakeOutcome, WakeRoute, WifiCredential,
+    ScrollUnit, WakeInterfaceKind, WakeOutcome, WakeRoute,
 };
 pub use tilo_network_actor::fabric::{clock, wake};

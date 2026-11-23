@@ -2,8 +2,7 @@
 //!
 //! What lasts is in the person's own store, each device's in its own part, which that device alone
 //! writes: what it is ([`DeviceAbout`]), the speaker groups it leads and joined
-//! ([`SpeakerFabricState`]), and its disk-unlock enrolments ([`UnlockFabricState`]). The Wi-Fi
-//! passphrases they share are the person's, sealed to each of their devices ([`WifiCredential`]).
+//! ([`SpeakerFabricState`]), and its disk-unlock enrolments ([`UnlockFabricState`]).
 //! What holds only while a device is there is said on its session with each of the others and kept
 //! nowhere: whether the person's session on it is locked, how it is woken and where its displays
 //! stand ([`DevicePresence`]), and what was copied on it.
@@ -23,7 +22,7 @@ use crate::fabric::unlock::UnlockFabricState;
 use crate::fabric::{
     ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, DisplayConnectorPlacement,
     DisplayOutputObservation, DisplayRect, FabricCapabilities, FabricError, MAX_WAKE_ROUTES,
-    OwnerSession, WakeRoute, WifiCredential,
+    OwnerSession, WakeRoute,
 };
 
 /// What a device says it is, in its own part of the person's store: the name the person knows it
@@ -205,22 +204,20 @@ impl PersonDevice {
     }
 }
 
-/// The person's devices as this one knows them, and the Wi-Fi passphrases they share.
+/// The person's devices as this one knows them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PersonDevices {
     devices: BTreeMap<DeviceId, PersonDevice>,
-    wifi: Vec<WifiCredential>,
 }
 
 impl PersonDevices {
     #[must_use]
-    pub fn new(devices: impl IntoIterator<Item = PersonDevice>, wifi: Vec<WifiCredential>) -> Self {
+    pub fn new(devices: impl IntoIterator<Item = PersonDevice>) -> Self {
         Self {
             devices: devices
                 .into_iter()
                 .map(|device| (device.device.clone(), device))
                 .collect(),
-            wifi,
         }
     }
 
@@ -246,13 +243,6 @@ impl PersonDevices {
 
     pub fn online_devices(&self) -> impl Iterator<Item = &PersonDevice> {
         self.devices.values().filter(|device| device.online)
-    }
-
-    /// The Wi-Fi passphrases the person's devices shared, each sealed to the devices that may
-    /// open it.
-    #[must_use]
-    pub fn wifi(&self) -> &[WifiCredential] {
-        &self.wifi
     }
 
     /// The person's devices and the outputs each says it shows, as the shared placement lays

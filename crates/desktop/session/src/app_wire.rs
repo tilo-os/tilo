@@ -1584,13 +1584,17 @@ fn broker_services(
         // Every app shows its live activity (a running timer, a stopwatch)
         // outside its windows on this one board.
         live_activities: BrokerService::served(live_activities),
-        // The network the person is on is the session's own service: Settings
-        // reads where this device can be woken, and shares a passphrase it
-        // learned with the person's other devices — or joins with one they
-        // shared — through the fabric this session runs on.
-        wifi_continuity: BrokerService::when(fabric.map(|fabric| {
-            std::sync::Arc::new(crate::wifi_continuity::WifiContinuity::new(fabric))
-                as std::sync::Arc<dyn WifiContinuityServices>
+        // Settings reads here where this computer's network can wake it, and shares a
+        // passphrase it learned with the person's other devices, or joins with one they shared:
+        // the passphrases are the person's, kept by the device's daemon.
+        wifi_continuity: BrokerService::when(daemon.clone().ok().and_then(|link| {
+            crate::wifi_continuity::WifiContinuity::new(
+                tilo_session_client::daemon_documents::DaemonShell::new(
+                    Ok(link),
+                    tilo_rt::app().handle().clone(),
+                ),
+            )
+            .map(|wifi| std::sync::Arc::new(wifi) as std::sync::Arc<dyn WifiContinuityServices>)
         })),
         // The session is the owner of the person's account secrets: Browser
         // resolves, lists and forgets its website sessions here, Settings seals
@@ -2036,7 +2040,7 @@ mod tests {
                 }],
                 ..SpeakerFabricState::default()
             };
-            let converged = PersonDevices::new([device], Vec::new());
+            let converged = PersonDevices::new([device]);
             Self { local, converged }
         }
     }

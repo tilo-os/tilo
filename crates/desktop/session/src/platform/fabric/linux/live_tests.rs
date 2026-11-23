@@ -43,7 +43,7 @@ impl Device {
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
         let id = DeviceId::new(hex::encode(cert.device_public_key)).expect("a device id");
         let endpoint = EndpointId::from_bytes(&cert.device_public_key).expect("an endpoint");
-        let (reach, sent) = Reach::listened(cert.user_public_key, key, Continuity::default());
+        let (reach, sent) = Reach::listened(cert.user_public_key, Continuity::default());
         let link = SessionFabric::new(id.clone(), label.to_owned(), None, reach);
         Self {
             cert,

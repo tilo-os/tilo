@@ -3,10 +3,8 @@
 //! Each device writes what lasts of it under its own key
 //! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`]),
 //! the speaker groups it leads and joined and the outputs it offers them ([`SPEAKERS`]), and its
-//! disk-unlock enrolments with the answers it gave ([`UNLOCK`]). The Wi-Fi passphrases any of them
-//! learned are the person's, one per network, each sealed to the devices that may open it. The
-//! workspace carries all of it between the person's devices, a device that comes up later
-//! included.
+//! disk-unlock enrolments with the answers it gave ([`UNLOCK`]). The workspace carries all of it
+//! between the person's devices, a device that comes up later included.
 //!
 //! Every value is the postcard bytes of its type, written only when it changed; a value that does
 //! not read, or does not hold for the device it is under, is left out, and so is a device whose
@@ -17,7 +15,7 @@ use serde::de::DeserializeOwned;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
-use super::{DeviceAbout, PersonDevice, SpeakerFabricState, UnlockFabricState, WifiCredential};
+use super::{DeviceAbout, PersonDevice, SpeakerFabricState, UnlockFabricState};
 use crate::PersonResources;
 use crate::platform::fabric::DeviceId;
 
@@ -65,44 +63,14 @@ pub(crate) fn keep_own<T: Serialize>(
     Ok(true)
 }
 
-/// Keep `credential` among the Wi-Fi passphrases the person's devices share, replacing what was
-/// kept for its network. Returns whether it changed.
-///
-/// # Errors
-///
-/// The credential does not encode.
-pub(crate) fn keep_wifi(
-    resources: &PersonResources,
-    credential: &WifiCredential,
-) -> Result<bool, String> {
-    let bytes = hex::encode(postcard::to_allocvec(credential).map_err(|error| error.to_string())?);
-    let network = hex::encode(credential.network_id);
-    let held = resources.read::<Devices>(DEVICES).is_some_and(|devices| {
-        devices
-            .wifi
-            .get(&tilo_resource::Id::from_raw(network.clone()))
-            .is_some_and(|kept| kept.credential == bytes)
-    });
-    if held {
-        return Ok(false);
-    }
-    resources.apply(DEVICES, move || {
-        Devices::KEEP_WIFI.with((network.clone(), bytes.clone()))
-    });
-    Ok(true)
-}
-
 /// What the person's devices keep of themselves: each device of `person` whose certificate holds,
-/// with what it said of itself, and the Wi-Fi passphrases they share.
-pub(crate) fn kept(
-    resources: &PersonResources,
-    person: &[u8; 32],
-) -> (Vec<PersonDevice>, Vec<WifiCredential>) {
+/// with what it said of itself.
+pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<PersonDevice> {
     let Some(state) = resources.read::<Devices>(DEVICES) else {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     };
     let now = tilo_clock::unix_now_ns();
-    let devices = state
+    state
         .devices
         .iter()
         .filter_map(|(_, kept)| {
@@ -133,14 +101,7 @@ pub(crate) fn kept(
                 .unwrap_or_default();
             Some(person_device)
         })
-        .collect();
-    let wifi = state
-        .wifi
-        .iter()
-        .filter_map(|(_, network)| decoded::<WifiCredential>(&network.credential))
-        .filter(|credential| credential.validate().is_ok())
-        .collect();
-    (devices, wifi)
+        .collect()
 }
 
 /// The value `hex` holds, postcard in hex, when it reads as a `T`.

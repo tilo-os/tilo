@@ -2221,10 +2221,6 @@ fn fabric_of(
     let reach = Reach {
         outgoing,
         user_public_key: identity.device_cert.user_public_key,
-        // Secrets the person's devices seal to this one open with its endpoint's key.
-        device_signing_key: ed25519_dalek::SigningKey::from_bytes(
-            &identity.signer.endpoint_secret()?,
-        ),
         continuity,
         lan,
     };

@@ -27,8 +27,6 @@ pub const MAX_DEVICES: usize = 64;
 pub const MAX_WAKE_ROUTES: usize = 8;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
-pub const MAX_WIFI_CREDENTIALS: usize = 256;
-pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
@@ -1302,40 +1300,6 @@ impl ClipboardHistory {
     }
 }
 
-/// Versioned per-recipient ciphertext envelopes. Plaintext credentials are
-/// intentionally impossible to represent in fabric state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WifiCredential {
-    pub network_id: [u8; 32],
-    pub ssid: String,
-    pub security: os_actions::WifiSecurity,
-    pub sealed_secret: Vec<u8>,
-    pub nonce: [u8; 24],
-    pub stamp: FabricStamp,
-}
-
-impl WifiCredential {
-    /// Whether this is a sealed passphrase of a network one could join.
-    /// # Errors
-    /// [`FabricError::InvalidWifiCredential`] for anything else.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        if self.ssid.is_empty()
-            || self.ssid.len() > 128
-            || matches!(
-                self.security,
-                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Unknown
-            )
-            || self.sealed_secret.is_empty()
-            || self.sealed_secret.len() > MAX_SEALED_SECRET_BYTES
-        {
-            return Err(FabricError::InvalidWifiCredential);
-        }
-        crate::fabric::secrets::validate_wifi_envelopes(&self.sealed_secret)
-            .map_err(|_| FabricError::InvalidWifiCredential)?;
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputLease {
     pub controller: DeviceId,
@@ -1546,8 +1510,6 @@ pub enum FabricError {
     ClipboardHashMismatch,
     #[error("clipboard history is full of pinned entries")]
     ClipboardHistoryFull,
-    #[error("invalid encrypted Wi-Fi credential")]
-    InvalidWifiCredential,
     #[error("invalid display placement")]
     InvalidDisplayPlacement,
     #[error("invalid input lease")]

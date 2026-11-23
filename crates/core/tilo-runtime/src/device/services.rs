@@ -1233,6 +1233,11 @@ impl Daemon {
             std::sync::Arc::new(workspaces.copies().clone()),
             tilo_rt::app().handle(),
         );
+        // The Wi-Fi passphrases the person's devices share are kept there too, sealed to each of
+        // them: Settings shares and joins with them through this daemon's broker, and a desktop
+        // session's broker through the device's dispatch.
+        let wifi = super::wifi::Wifi::new(personal.clone(), identity.key.clone());
+        wifi.register(&workspaces.copies().providers());
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
         // The person's devices, as the record of their own workspace holds them, each revocation
         // the root's own signature: what `tilo-identity` admits a device by, and the one copy of it.
@@ -1308,6 +1313,7 @@ impl Daemon {
                 creation: Arc::clone(&creation),
                 person: actor.clone(),
                 files: Arc::clone(&files_daemons),
+                wifi,
                 #[cfg(unix)]
                 shell_links: &shell_links,
                 #[cfg(unix)]
@@ -1806,6 +1812,8 @@ struct BrokerParts<'a> {
     person: String,
     /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
+    /// The Wi-Fi passphrases the person's devices share.
+    wifi: Arc<super::wifi::Wifi>,
     /// The links of the shells this daemon starts.
     #[cfg(unix)]
     shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
@@ -1991,6 +1999,11 @@ fn broker_services(
         // What an app publishes of what it holds, on its connection here: the device's one
         // search index keeps it after the app closes.
         search_index: parts.workspaces.search_publications(),
+        // Settings shares the passphrase of a network with the person's other devices, and joins
+        // with one they shared.
+        wifi_continuity: Some(
+            parts.wifi as Arc<dyn tilo_workspace_service::apps::services::WifiContinuityServices>,
+        ),
         ..ProcessServices::default()
     })
 }

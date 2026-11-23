@@ -24,6 +24,7 @@ use tilo_server_protocol::servers::person_workspace_id;
 use super::Workspaces;
 
 pub mod devices;
+pub mod wifi;
 
 /// The name the person's workspace is made with.
 pub const NAME: &str = "Servers";

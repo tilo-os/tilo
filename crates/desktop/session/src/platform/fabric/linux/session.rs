@@ -21,7 +21,7 @@ use super::{
     ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
     FabricLink, MediaSourceLocator, NearbySpoolOffer, OwnerSession, PersonDevices,
     PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink,
-    UnlockFabricState, WakeRoute, clock, open_wifi_credential,
+    UnlockFabricState, WakeRoute, clock,
 };
 use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
 /// Where this session's frames leave for the person's other devices.
@@ -34,7 +34,6 @@ type Outbox = crate::sync::HostOutbox;
 #[derive(Clone, Debug, Default)]
 pub struct Continuity {
     media: Arc<AtomicBool>,
-    wifi_settings: Arc<AtomicBool>,
     file_transfer: Arc<AtomicBool>,
     notifications: Arc<AtomicBool>,
     display_input: Arc<AtomicBool>,
@@ -56,7 +55,6 @@ impl Continuity {
         let enabled = on("enabled");
         for (switch, facet) in [
             (&self.media, ContinuityCapability::Media),
-            (&self.wifi_settings, ContinuityCapability::WifiSettings),
             (&self.file_transfer, ContinuityCapability::FileTransfer),
             (&self.notifications, ContinuityCapability::Notifications),
         ] {
@@ -74,10 +72,6 @@ impl Continuity {
 
     fn media_permitted(&self) -> bool {
         self.media.load(Ordering::Relaxed)
-    }
-
-    fn wifi_settings_permitted(&self) -> bool {
-        self.wifi_settings.load(Ordering::Relaxed)
     }
 
     fn notifications_permitted(&self) -> bool {
@@ -132,8 +126,6 @@ pub(crate) struct SessionFabric {
     outgoing: Outbox,
     /// The person's root key: a frame goes only to the devices that proved a certificate of it.
     user_public_key: [u8; 32],
-    /// This device's key: what a credential one of the person's devices sealed for it opens with.
-    device_signing_key: ed25519_dalek::SigningKey,
     continuity: Continuity,
     /// This session's Nearby Send, once the session made it: where the bytes of a transfer one of
     /// the person's devices offers or streams come in.
@@ -155,7 +147,6 @@ impl std::fmt::Debug for SessionFabric {
 pub(crate) struct Reach {
     pub(crate) outgoing: Outbox,
     pub(crate) user_public_key: [u8; 32],
-    pub(crate) device_signing_key: ed25519_dalek::SigningKey,
     pub(crate) continuity: Continuity,
     pub(crate) lan: tilo_endpoint_reachability::Nearby,
 }
@@ -166,14 +157,12 @@ impl Reach {
     /// what the link sent since the last.
     pub(crate) fn listened(
         user_public_key: [u8; 32],
-        device_signing_key: ed25519_dalek::SigningKey,
         continuity: Continuity,
     ) -> (Self, impl FnMut() -> Vec<PersonalFabricPayload>) {
         let (outgoing, mut frames) = tokio::sync::mpsc::unbounded_channel();
         let reach = Self {
             outgoing: Outbox::of(outgoing),
             user_public_key,
-            device_signing_key,
             continuity,
             lan: tilo_endpoint_reachability::Nearby::new(Arc::new(|| {})),
         };
@@ -213,7 +202,6 @@ impl SessionFabric {
             label,
             outgoing: reach.outgoing,
             user_public_key: reach.user_public_key,
-            device_signing_key: reach.device_signing_key,
             continuity: reach.continuity,
             nearby: Mutex::new(None),
             lan: reach.lan,
@@ -415,8 +403,8 @@ impl FabricLink for SessionFabric {
                 match cache.as_ref() {
                     Some((at, devices)) if *at == seen => devices.clone(),
                     _ => {
-                        let (devices, wifi) = store::kept(resources, &self.user_public_key);
-                        let devices = PersonDevices::new(devices, wifi);
+                        let devices =
+                            PersonDevices::new(store::kept(resources, &self.user_public_key));
                         *cache = Some((seen, devices.clone()));
                         devices
                     }
@@ -522,60 +510,8 @@ impl FabricLink for SessionFabric {
         Ok(())
     }
 
-    fn require_wifi_settings(&self) -> Result<(), String> {
-        self.continuity
-            .wifi_settings_permitted()
-            .then_some(())
-            .ok_or_else(|| "Wi-Fi continuity is turned off in this device's settings".to_owned())
-    }
-
     fn notifications_permitted(&self) -> bool {
         self.continuity.notifications_permitted()
-    }
-
-    fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {
-        if self.require_wifi_settings().is_err() || !security.supports_portable_passphrase() {
-            return None;
-        }
-        self.devices()
-            .wifi()
-            .iter()
-            .filter(|credential| credential.ssid == ssid && credential.security == security)
-            .find_map(|credential| open_wifi_credential(credential, &self.device_signing_key).ok())
-    }
-
-    fn share_wifi_password(
-        &self,
-        ssid: &str,
-        security: os_actions::WifiSecurity,
-        password: &str,
-    ) -> Result<(), String> {
-        self.require_wifi_settings()?;
-        let Some((resources, _)) = &self.personal else {
-            return Err("this session keeps nothing of the person's own".to_owned());
-        };
-        let local = self.live.lock_recover().local().clone();
-        // Sealed to every device of the person's their store holds, this one included: a device
-        // certified later opens it once a device that knows the passphrase shares it again.
-        let recipients = self
-            .devices()
-            .devices()
-            .keys()
-            .cloned()
-            .collect::<Vec<DeviceId>>();
-        let credential = tilo_network_actor::fabric::secrets::seal_wifi_credential(
-            ssid,
-            security,
-            password,
-            &local,
-            recipients,
-            FabricStamp {
-                counter: tilo_clock::unix_now_ms(),
-                device: local.clone(),
-            },
-        )
-        .map_err(|error| error.to_string())?;
-        store::keep_wifi(resources, &credential).map(drop)
     }
 
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {

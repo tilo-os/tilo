@@ -582,7 +582,7 @@ mod tests {
     }
 
     fn fabric(devices: Vec<PersonDevice>) -> PersonDevices {
-        PersonDevices::new(devices, Vec::new())
+        PersonDevices::new(devices)
     }
 
     #[test]

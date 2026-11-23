@@ -86,6 +86,7 @@ pub(crate) mod unclaimed;
 mod unclaimed_tests;
 #[cfg(unix)]
 mod vision;
+pub mod wifi;
 pub mod workspaces;
 
 use std::sync::Arc;

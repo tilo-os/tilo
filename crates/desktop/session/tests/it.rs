@@ -289,8 +289,6 @@ mod visual_alerts;
 mod vpn;
 #[path = "well_policy.rs"]
 mod well_policy;
-#[path = "wifi_continuity.rs"]
-mod wifi_continuity;
 #[path = "window_accent.rs"]
 mod window_accent;
 #[path = "window_bar_actions.rs"]
