@@ -13,7 +13,10 @@ a site consumes:
 
 A link between listed pages becomes the other page's site address: the page in
 this book when it lists the file, else the related book's, with its origin when
-that book is published on another site. A link to an API source in
+that book is published on another site. `export --at https://HOST/BASE/` publishes the book at
+that address instead of its manifest's, for a second site that carries the same pages: links
+into it are that site's, and links into related books keep their own sites. A link to an API
+source in
 `[api].sources` becomes the API reference. A link to any other file or
 directory becomes that path on the repository host, pinned to `--commit` when
 one is given. Links inside code are left alone.
@@ -50,6 +53,9 @@ INLINE_LINK = re.compile(
     r"\((?P<space>\s*)(?P<target><[^>\n]*>|[^)\s]+)(?P<title>\s+\"[^\"]*\")?\s*\)"
 )
 REFERENCE_LINK = re.compile(r"^(?P<lead> {0,3}\[[^\]]+\]:[ \t]*)(?P<target><[^>]*>|\S+)(?P<rest>.*)$")
+ADDRESS = re.compile(r"(https://[a-z0-9.-]+(?::[0-9]+)?)(/(?:[a-z0-9-]+/)*)")
+# Where `export --at` publishes a book instead of its manifest's address: path -> (origin, base).
+ADDRESSES: dict[str, tuple[str, str]] = {}
 EXTERNAL = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//)")
 
 
@@ -191,6 +197,7 @@ def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | 
     languages = data.get("examples", {}).get("languages", [])
     if not all(isinstance(language, str) and language for language in languages):
         raise DocsError(f"{manifest_path}: [examples].languages must be a list of language names")
+    origin, base = ADDRESSES.get(manifest_path, (origin, base))
     return Manifest(
         base=base,
         repository=data.get("repository", "").rstrip("/"),
@@ -545,8 +552,18 @@ def main(argv: list[str] | None = None) -> int:
         help="address links into a related book on this site (default), or at the repository "
              "when the site publishes only this book",
     )
+    export_parser.add_argument(
+        "--at", metavar="URL",
+        help="publish the book at this address (https://host/base/) instead of the manifest's",
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
+    ADDRESSES.clear()
+    if getattr(args, "at", None):
+        address = ADDRESS.fullmatch(args.at)
+        if not address:
+            parser.error(f"--at must be https://host/base/ with a trailing slash: {args.at!r}")
+        ADDRESSES[args.manifest] = (address.group(1), address.group(2))
     try:
         revision = getattr(args, "commit", None) or args.revision
         tree = SourceTree(root, args.git_dir, revision)

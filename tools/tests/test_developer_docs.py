@@ -306,6 +306,25 @@ class DeveloperDocsTests(unittest.TestCase):
         self.assertEqual(manifest["examples"], {"languages": ["python", "typescript"]})
         self.assertEqual(self.check(), 0)
 
+    def test_a_second_site_publishes_the_same_book_at_its_own_address(self) -> None:
+        self.other_site()
+        self.start("Hello\n")
+        self.write("docs/sh/index.md",
+                   "# Overview\n\n[Guide](../guide.md#notes) and [building apps](../developers/start.md)\n")
+        out = self.export_book("docs/sh/pages.toml", "--at", "https://docs.example/sh/")
+        page = (out / "pages/index.md").read_text()
+        self.assertIn("[Guide](/sh/guide/#notes)", page)
+        self.assertIn("[building apps](https://tilo.so/docs/developers/)", page)
+        manifest = json.loads((out / "manifest.json").read_text())
+        self.assertEqual((manifest["origin"], manifest["base"]), ("https://docs.example", "/sh/"))
+        self.assertEqual(manifest["sections"][1]["pages"][0]["url"], "/sh/guide/")
+        # The address is the export's alone: the book's own site still has it at its own.
+        page = (self.export_book("docs/sh/pages.toml") / "pages/index.md").read_text()
+        self.assertIn("[Guide](/docs/guide/#notes)", page)
+        with self.assertRaises(SystemExit):
+            self.run_tool("--root", str(self.root), "--manifest", "docs/sh/pages.toml",
+                          "export", "--out", str(out), "--at", "https://docs.example/sh")
+
     def generated_reference(self) -> None:
         self.other_site("""
             [[page]]

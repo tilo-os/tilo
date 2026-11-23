@@ -1,0 +1,97 @@
+# The tilolang and app-builder documentation, published at https://tilolang.dev/docs/ and,
+# from this same list, at https://docs.tilo.so/tilolang/.
+#
+# Same format as docs/developers/pages.toml (tools/docs/developer_docs.py): the pages stay
+# where they are in this repository, and this list chooses which of them are published, in
+# what order and under which address. A site that publishes the book somewhere else exports
+# it with `--at ORIGIN/BASE/`, so both sites carry the same pages from the same files.
+
+title = "tilolang docs"
+base = "/docs/"
+origin = "https://tilolang.dev"
+repository = "https://code.tilo.so/tilo/tilo"
+related_manifests = ["docs/developers/pages.toml"]
+
+[[page]]
+slug = ""
+source = "crates/lang/tilolang/README.md"
+section = "Language"
+nav = "Guide and reference"
+description = "A tilolang package from its first type to its views, actions, effects and tests, and the full syntax reference."
+
+[[page]]
+slug = "how-it-works"
+source = "docs/designs/app-language/README.md"
+section = "Language"
+nav = "How tilolang works"
+description = "Types, actions, views, effects and triggers: how a package becomes a collaborative, sandboxed app."
+
+[[page]]
+slug = "develop"
+source = "docs/tilolang-dev.md"
+section = "Language"
+nav = "The development loop"
+description = "Save a file and see the running app change in about 50 ms, with its state kept."
+
+[[page]]
+slug = "components"
+source = "docs/designs/app-language/components.md"
+section = "Views"
+nav = "Components"
+description = "The shared components a view is built from, and how an app composes its own."
+
+[[page]]
+slug = "layout"
+source = "docs/designs/app-language/layout.md"
+section = "Views"
+nav = "Layout"
+description = "How views size and place their parts on any screen."
+
+[[page]]
+slug = "i18n"
+source = "docs/designs/app-language/i18n.md"
+section = "Views"
+nav = "Translations"
+description = "Every string a view shows, translated through Fluent files the package ships."
+
+[[page]]
+slug = "interface-guidelines"
+source = "crates/ui/ui-core/HIG.md"
+section = "Views"
+nav = "Tilo UI guidelines"
+description = "Layout, navigation, text, chrome, system integration and the shared controls every app builds on."
+
+[[page]]
+slug = "agents"
+source = "docs/designs/app-language/agents.md"
+section = "Agents"
+nav = "Agents in apps"
+description = "Agents read and change an app's resources through the same actions people use."
+
+[[page]]
+slug = "workspace-sdk"
+source = "docs/developers/sdk.md"
+section = "Agents"
+nav = "Script a workspace"
+description = "Drive any workspace from Python, TypeScript, the command line or tilolang."
+
+[[page]]
+slug = "rust-apps"
+source = "docs/app-development.md"
+section = "Rust"
+nav = "Rust apps (tilo-app)"
+description = "Build an app in Rust with the tilo-app SDK: model it as resources and actions, test it, run it everywhere and publish it."
+
+[[page]]
+slug = "engines"
+source = "docs/tilolang-engines.md"
+section = "Runtime"
+nav = "Engines"
+description = "How compiled packages run: the tiered engine, wasmi, Cranelift and Winch."
+
+[[page]]
+slug = "publishing"
+source = "docs/designs/app-language/publishing.md"
+section = "Runtime"
+nav = "Publishing"
+description = "Iterating in a chat, publishing to a workspace or to everyone, and using an app without installing it."
