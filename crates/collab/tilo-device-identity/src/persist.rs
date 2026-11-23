@@ -733,7 +733,6 @@ fn signing_key_from_open_file(
 ///
 /// As [`read_device_key`] for the file's admission, or
 /// [`PersistError::Io`] with `InvalidData` when it holds more than `limit`.
-#[cfg(unix)]
 pub fn read_private_record(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, PersistError> {
     protect_secret_process()?;
     let file = open_regular_without_symlinks(path).map_err(|error| {

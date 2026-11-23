@@ -7,15 +7,12 @@
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationEntry, verify_device_cert_at};
 
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 mod store;
 #[cfg(test)]
-#[cfg(unix)]
 pub(crate) use store::loads_on_this_thread;
-#[cfg(unix)]
+#[cfg(not(target_family = "wasm"))]
 pub use store::{DeviceFleetStore, FleetStamps};
-#[cfg(unix)]
-pub(crate) use store::{FileStamp, SETTLE};
 
 pub(crate) const FLEET_SCHEMA_VERSION: u32 = 1;
 
@@ -37,7 +34,7 @@ impl DeviceFleet {
     ///
     /// Returns an error when the schema version or identity id is another,
     /// or a stored record does not verify.
-    #[cfg(unix)]
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn check(&self, identity_id: &str) -> std::io::Result<()> {
         if self.schema_version != FLEET_SCHEMA_VERSION || self.identity_id != identity_id {
             return Err(std::io::Error::new(

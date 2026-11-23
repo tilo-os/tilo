@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
+
+use tilo_files::native::FileStamp;
 
 use tilo_device_identity::IdentityPaths;
 use tilo_user_identity::{
@@ -719,52 +720,6 @@ impl FleetStamps {
     }
 }
 
-/// How old a file's modification time must be before a later write, which
-/// stamps the current time, can no longer share it.
-pub(crate) const SETTLE: Duration = Duration::from_secs(2);
-
-/// Identity of one file's contents, as far as a writer can change it: a
-/// rename gives a new inode, an in-place rewrite a new length or time, and a
-/// permission change or a reset modification time a new status-change time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct FileStamp {
-    dev: u64,
-    ino: u64,
-    len: u64,
-    modified: SystemTime,
-    changed: (i64, i64),
-}
-
-impl FileStamp {
-    /// `Ok(None)` for a missing file; an error when it can't be examined.
-    pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
-        match fs::metadata(path) {
-            Ok(meta) => Ok(Some(Self {
-                dev: meta.dev(),
-                ino: meta.ino(),
-                len: meta.len(),
-                modified: meta.modified()?,
-                changed: (meta.ctime(), meta.ctime_nsec()),
-            })),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Old enough that a later write, which stamps the current time, cannot
-    /// share its modification time.
-    pub(crate) fn settled(self) -> bool {
-        SystemTime::now()
-            .duration_since(self.modified)
-            .is_ok_and(|age| age >= SETTLE)
-    }
-
-    /// When it is [`Self::settled`].
-    pub(crate) fn settles_at(self) -> SystemTime {
-        self.modified.checked_add(SETTLE).unwrap_or(self.modified)
-    }
-}
-
 fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
     if value.len() != 64 {
         return Err(io::Error::new(
@@ -786,6 +741,7 @@ fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

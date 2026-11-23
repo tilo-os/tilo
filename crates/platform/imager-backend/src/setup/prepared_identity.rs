@@ -24,14 +24,7 @@ pub use unavailable::PreparedIdentity;
 
 /// Provider selection remains a backend decision.
 pub fn storage_for_session() -> tilo_identity::provisioning::IdentityStorage {
-    #[cfg(unix)]
-    {
-        tilo_identity::provisioning::IdentityStorage::for_session()
-    }
-    #[cfg(not(unix))]
-    {
-        tilo_identity::provisioning::IdentityStorage::Platform
-    }
+    tilo_identity::provisioning::IdentityStorage::for_session()
 }
 
 #[cfg(not(unix))]

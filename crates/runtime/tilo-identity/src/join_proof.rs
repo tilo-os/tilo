@@ -8,15 +8,16 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::DeviceKeyOwnership;
 use tilo_user_identity::{DeviceCert, StatementSigner};
 
-use crate::device_fleet::{DeviceFleetStore, FileStamp, FleetStamps};
-use crate::store::{DirStamp, IdentityRegistryStore};
+use crate::device_fleet::{DeviceFleetStore, FleetStamps};
+use crate::store::IdentityRegistryStore;
+use tilo_files::native::FileStamp;
 
 /// This device's certificate and its signed join proof for one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,16 +58,16 @@ impl CurrentDeviceStamp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct RegistryStamp {
     /// `None` while there is no identity directory at all.
-    dir: Option<DirStamp>,
+    dir: Option<FileStamp>,
 }
 
 impl RegistryStamp {
     fn settled(&self) -> bool {
-        self.dir.is_none_or(DirStamp::settled)
+        self.dir.is_none_or(FileStamp::settled)
     }
 
     fn settles_at(&self) -> Option<std::time::SystemTime> {
-        self.dir.map(DirStamp::settles_at)
+        self.dir.map(FileStamp::settles_at)
     }
 }
 
@@ -165,7 +166,7 @@ impl Files {
 
     fn registry_stamp(&self) -> Option<RegistryStamp> {
         Some(RegistryStamp {
-            dir: dir_stamp(self.registry.identity_dir()).ok()?,
+            dir: FileStamp::of(self.registry.identity_dir()).ok()?,
         })
     }
 
@@ -199,17 +200,6 @@ impl Files {
                 user_public_key: profile.user_public_key,
             }),
         )
-    }
-}
-
-/// `Ok(None)` for a missing directory, an error when it can't be examined.
-fn dir_stamp(path: &Path) -> io::Result<Option<DirStamp>> {
-    match std::fs::metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-        Ok(_) => DirStamp::of(path)
-            .map(Some)
-            .ok_or_else(|| io::Error::other("identity directory has no stamp")),
     }
 }
 

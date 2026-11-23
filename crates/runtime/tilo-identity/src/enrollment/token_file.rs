@@ -8,7 +8,6 @@
 //! applies the same rules to it.
 
 use std::io::{self, Write as _};
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 /// The token at `path` is never longer than this; a longer file is not one.
@@ -27,7 +26,7 @@ pub fn given_token(path: &Path) -> io::Result<Option<String>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+    if !metadata.file_type().is_file() {
         return Err(refused(format!(
             "refusing an enrollment token that is not one file: {}",
             path.display()
@@ -46,10 +45,11 @@ pub fn given_token(path: &Path) -> io::Result<Option<String>> {
     if text.is_empty() || text.starts_with('#') {
         return Ok(None);
     }
-    let mode = metadata.mode() & 0o777;
-    if mode != 0o600 {
+    // A real token must be its owner's alone and singly linked: the same
+    // checks every private file passes.
+    if let Err(error) = tilo_files::native::private::read(path) {
         return Err(refused(format!(
-            "enrollment token must be mode 0600: {} is {mode:03o}",
+            "enrollment token must be readable by its owner alone: {}: {error}",
             path.display()
         )));
     }

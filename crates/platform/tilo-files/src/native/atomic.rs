@@ -272,8 +272,8 @@ pub fn write_streaming(
 }
 
 /// Publishes `bytes` only if nothing exists there yet, never replacing a concurrently created file: the
-/// complete, synced temp file is hard-linked into place, and `false` comes back when another writer
-/// owns the name.
+/// complete, synced temp file is moved or linked into place only while the name is free, and `false`
+/// comes back when another writer owns the name.
 pub fn create_with_temp_opener(
     path: &Path,
     bytes: &[u8],
@@ -395,7 +395,7 @@ pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Publish {
     Replace,
-    /// Hard-link into place only while `path` is still absent.
+    /// Put into place only while `path` is still absent.
     CreateNew,
     /// Rename over `path` without syncing the file or its directory.
     ReplaceUnsynced,
@@ -430,11 +430,11 @@ pub(super) fn publish_with(
 
     let published = match how {
         Publish::Replace | Publish::ReplaceUnsynced => fs::rename(&tmp, path),
-        Publish::CreateNew => fs::hard_link(&tmp, path),
+        Publish::CreateNew => place_new(&tmp, path),
     };
     if how == Publish::CreateNew || published.is_err() {
         // Never leave litter beside the target: after a hard link the temp name is a second link, and
-        // after a failed rename it is orphaned.
+        // after a failed rename it is orphaned; after a rename it is gone already.
         let _ = fs::remove_file(&tmp);
     }
     if let Err(error) = published {
@@ -450,6 +450,22 @@ pub(super) fn publish_with(
         sync_directory(parent_or_current(path))?;
     }
     Ok(true)
+}
+
+/// Give the complete temp file the name `path` only while nothing has it. Linux renames it with
+/// `RENAME_NOREPLACE`, which also works where hard links do not (FAT); a filesystem without that flag,
+/// and every other system, links it there, which keeps the same promise.
+fn place_new(tmp: &Path, path: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use rustix::io::Errno;
+        match renameat_with(CWD, tmp, CWD, path, RenameFlags::NOREPLACE) {
+            Err(Errno::NOSYS | Errno::INVAL | Errno::OPNOTSUPP) => {}
+            renamed => return renamed.map_err(io::Error::from),
+        }
+    }
+    fs::hard_link(tmp, path)
 }
 
 fn parent_or_current(path: &Path) -> &Path {

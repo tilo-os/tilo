@@ -7,9 +7,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
 use crate::store::IdentityRecord;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
@@ -771,27 +768,7 @@ fn validate_throwaway_identity_paths(paths: &IdentityPaths) -> io::Result<()> {
 /// operation prevents the journal preflight and the identity writer from
 /// disagreeing about directory permissions.
 pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(identity_dir)?;
-    let metadata = fs::symlink_metadata(identity_dir)?;
-    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity directory must be a real directory",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        if metadata.uid() != rustix::process::geteuid().as_raw() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity directory must be owned by this user",
-            ));
-        }
-        let mut permissions = metadata.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(identity_dir, permissions)?;
-    }
-    Ok(())
+    tilo_files::native::private::directory(identity_dir)
 }
 
 /// This device's certificate, when it verifies but the clock's reading at
@@ -950,10 +927,17 @@ fn prove_local_person(
     signer: &crate::store::SigningIdentity,
     paths: &IdentityPaths,
 ) {
-    let uid = rustix::process::geteuid().as_raw();
-    if let Err(error) = crate::local_person::ensure_proof(identity_dir, signer, paths, uid) {
-        tracing::warn!(%error, "could not prove this account is the device's person");
+    // Device services that run as root find the device's person by uid. On
+    // Windows no such service runs: the daemon runs as the person's account.
+    #[cfg(unix)]
+    {
+        let uid = rustix::process::geteuid().as_raw();
+        if let Err(error) = crate::local_person::ensure_proof(identity_dir, signer, paths, uid) {
+            tracing::warn!(%error, "could not prove this account is the device's person");
+        }
     }
+    #[cfg(not(unix))]
+    let _ = (identity_dir, signer, paths);
 }
 
 /// Atomically elect the legacy system-facing identity owner.
@@ -1247,22 +1231,20 @@ pub fn verify_collaboration_identity(
     // reported missing.
     let primary_path = crate::store::resolve_active_identity(identity_dir)
         .unwrap_or_else(|| identity_dir.join(PRIMARY_IDENTITY_FILE));
-    #[cfg(unix)]
-    {
-        let dir_metadata = fs::metadata(identity_dir)?;
-        if !dir_metadata.is_dir() || dir_metadata.permissions().mode() & 0o077 != 0 {
+    let dir_metadata = fs::metadata(identity_dir)?;
+    if !dir_metadata.is_dir() || !tilo_files::native::private::is_owner_only(&dir_metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "personal identity directory must not be accessible by group or other users",
+        ));
+    }
+    match tilo_files::native::private::read(&primary_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(error),
+        Err(_) => {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "personal identity directory must not be accessible by group or other users",
-            ));
-        }
-        let primary_metadata = fs::symlink_metadata(&primary_path)?;
-        if !primary_metadata.file_type().is_file()
-            || primary_metadata.permissions().mode() & 0o777 != 0o600
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "primary identity must be a regular file with mode 0600",
+                "primary identity must be this user's own private regular file",
             ));
         }
     }
@@ -1453,8 +1435,10 @@ fn machine_label(root: &Path) -> Option<String> {
 mod one_cert_tests;
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     const FILES: IdentityStorage = IdentityStorage::Files;
 

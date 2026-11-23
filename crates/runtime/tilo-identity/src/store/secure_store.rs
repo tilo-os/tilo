@@ -12,9 +12,8 @@
 //! `SecretProvider` is the hardware-backed boundary. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use tilo_secrets::{PutOptions, SecretError, SecretStore};
@@ -236,13 +235,7 @@ impl SecretProvider for BrokerFileProvider {
     fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
         self.ensure_root()?;
         let path = self.path(locator)?;
-        let mut file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&path)
-        {
+        let mut file = match tilo_files::native::private::create_new(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let current = self.load(locator)?;
@@ -263,17 +256,7 @@ impl SecretProvider for BrokerFileProvider {
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
         self.check_root()?;
         let path = self.path(locator)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        let meta = file.metadata()?;
-        if !meta.file_type().is_file() || !tilo_files::native::private::private_to_me(&meta) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity key fallback must be a private regular file",
-            ));
-        }
+        let file = tilo_files::native::private::read(&path)?;
         let mut bytes = Zeroizing::new(Vec::new());
         file.take(MAX_IDENTITY_SECRET_BYTES + 1)
             .read_to_end(&mut bytes)?;
@@ -323,8 +306,9 @@ pub(crate) fn provider_for<'a>(
 
 /// Whether a session without an answering system store keeps new identity
 /// secrets in the broker file. The login Keychain is always there on macOS,
-/// so a failing one fails the operation instead.
-pub(crate) const FILE_FALLBACK: bool = !cfg!(target_os = "macos");
+/// and the Credential Manager on Windows, so a failing one fails the
+/// operation instead.
+pub(crate) const FILE_FALLBACK: bool = !cfg!(any(target_os = "macos", windows));
 /// Set to anything, it keeps every identity secret of the session in private
 /// files instead of the login Keychain or Secret Service: for tests, and for a
 /// locally built release.

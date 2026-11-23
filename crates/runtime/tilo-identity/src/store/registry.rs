@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use tilo_user_identity::DeviceCert;
 
 mod store;
-pub(crate) use store::DirStamp;
 pub use store::{
     IdentityRegistryStore, identity_for_workspace, selected_actor_id_prompt, selected_identity_path,
 };
