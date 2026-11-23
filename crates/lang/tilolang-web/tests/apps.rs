@@ -314,6 +314,73 @@ fn a_hosted_canvas_follows_the_layout_its_host_reads() {
     );
 }
 
+/// The number (`data-p`) of the button named `label` inside the element holding `inside`.
+fn button_in(body: &str, inside: &str, label: &str) -> Option<u32> {
+    let from = body.find(inside)?;
+    let rest = body.get(from..)?;
+    let at = rest.find(&format!("aria-label=\"{label}\""))?;
+    let open = rest.get(rest.get(..at)?.rfind("<button")?..)?;
+    open.split('>')
+        .next()?
+        .split("data-p=\"")
+        .nth(1)?
+        .split('"')
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[test]
+fn a_hosted_windows_close_asks_its_host_to_close_the_place() {
+    let packages = std::rc::Rc::new(tilolang_web::Packages::new(
+        std::rc::Rc::new(tilolang_tilo::shell::compile().expect("the shell compiles")),
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages"),
+    ));
+    let origin = std::rc::Rc::new(std::cell::RefCell::new(
+        tilolang_tilo::shell::LayoutOrigin::default(),
+    ));
+    origin.borrow_mut().read(layout((600, 120)));
+    let mut page = tilolang_web::window::AppPage::hosted(
+        tilolang_tilo::shell::SHELL_APP,
+        &packages,
+        tilolang_web::window::Hosting {
+            root: "layout",
+            view: "strips",
+            origin: std::rc::Rc::clone(&origin) as tilolang_tilo::origin::SharedOrigin,
+            me: ("ada", "Ada"),
+            viewport: (1280, 800),
+            dark: false,
+            link_home: None,
+        },
+    )
+    .expect("the strips open");
+    let body = page.render();
+    assert_eq!(
+        body.matches("data-w=\"WindowFrame\"").count(),
+        2,
+        "each strip is a window: {body}"
+    );
+    let close = button_in(&body, "Tasks", "Close").unwrap_or_else(|| panic!("{body}"));
+    page.act(close, None, &ui::a11y::Action::Activate)
+        .expect("the press is acted on");
+    let asked = page.take_asked();
+    let closes: Vec<String> = asked
+        .iter()
+        .filter_map(|invocation| match invocation {
+            tilolang_tilo::runtime::delegate::Invocation::Action {
+                app, name, target, ..
+            } if app.as_str() == tilolang_tilo::platform_apps::SESSION_APP && name == "close" => {
+                target
+                    .as_ref()
+                    .map(tilolang_tilo::runtime::ResourceRef::id_string)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closes, ["shell:place:t2"], "{asked:?}");
+    assert!(page.take_asked().is_empty(), "each ask is handed over once");
+}
+
 #[test]
 fn an_edit_that_breaks_a_file_is_reported_in_that_file() {
     let mut files = app_files();

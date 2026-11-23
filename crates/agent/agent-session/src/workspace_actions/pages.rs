@@ -8,8 +8,7 @@
 
 use std::fmt::Write as _;
 
-mod desktop;
-use desktop::{DESKTOP_PAGE, DesktopPage};
+use super::canvas::{CanvasPage, DESKTOP_PAGE};
 
 use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
@@ -89,10 +88,7 @@ pub(super) enum HeldPage {
     /// The workspace's front page: its canvas, the layout every member shares
     /// with each window where it stands, beside the people and the apps a
     /// member opens here. The canvas follows the layout as others change it.
-    Home {
-        workspace_id: WorkspaceId,
-        canvas: Box<super::canvas::Canvas>,
-    },
+    Home(CanvasPage),
     /// The workspace's search: what its apps, their actions and their records
     /// hold for what the person typed. The caller is kept: each keystroke is
     /// a question asked as them, answered with what they may read.
@@ -118,7 +114,7 @@ pub(super) enum HeldPage {
         card: Option<Card>,
     },
     /// The workspace's desktop: the windows open on its shared layout.
-    Desktop(DesktopPage),
+    Desktop(CanvasPage),
 }
 
 /// What one of the host's own actions opened on the search page, under the
@@ -282,20 +278,28 @@ impl Pages {
                 Some(HeldPage::App { who, .. }) => Some(&who.caller),
                 Some(HeldPage::Search { caller, .. }) => Some(caller),
                 Some(HeldPage::Desktop(desktop)) => Some(&desktop.caller),
-                Some(HeldPage::Home { .. }) | None => None,
+                Some(HeldPage::Home(_)) | None => None,
             },
         }
     }
 
+    /// The canvas the page `page` shows, the front page's or the desktop's.
+    pub(super) fn canvas_mut(&mut self, page: u64) -> Option<&mut CanvasPage> {
+        match self.held.get_mut(&page)? {
+            HeldPage::Home(held) | HeldPage::Desktop(held) => Some(held),
+            _ => None,
+        }
+    }
+
     /// Hold `page` under a number of its own: what the person's acts name it by.
-    fn add(&mut self, page: HeldPage) -> u64 {
+    pub(super) fn add(&mut self, page: HeldPage) -> u64 {
         self.next = self.next.wrapping_add(1);
         self.held.insert(self.next, page);
         self.next
     }
 }
 
-fn unavailable(error: impl std::fmt::Display) -> PageRefusal {
+pub(super) fn unavailable(error: impl std::fmt::Display) -> PageRefusal {
     PageRefusal::Unavailable(error.to_string())
 }
 
@@ -308,7 +312,7 @@ fn not_shown(error: crate::apps::AppError) -> PageRefusal {
     }
 }
 
-fn refused(error: ActionCallError) -> PageRefusal {
+pub(super) fn refused(error: ActionCallError) -> PageRefusal {
     match error {
         ActionCallError::NotPermitted => PageRefusal::NotMember,
         error => unavailable(format!("{error:?}")),
@@ -434,7 +438,7 @@ impl Worker {
             PageJob::Act { page, .. } => match self.pages.held.get(page) {
                 Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
                 Some(HeldPage::Desktop(_)) => layout(),
-                Some(HeldPage::Home { .. } | HeldPage::Search { .. }) | None => {
+                Some(HeldPage::Home(_) | HeldPage::Search { .. }) | None => {
                     super::keys::Keys::Joined
                 }
             },
@@ -659,55 +663,16 @@ impl Worker {
             );
         }
         body.push_str("</ul></aside><main class=\"tilo-home-canvas-view\">");
-        let (layout, wells) = self.canvas_layout(workspace_id);
-        let me = caller
-            .user_public_key()
-            .map(hex::encode)
-            .unwrap_or_default();
-        let (canvas, css, shown) =
-            super::canvas::Canvas::open(layout, wells, (&me, "")).map_err(unavailable)?;
+        let (held, css, shown) = self.open_canvas(workspace_id, caller, "frames")?;
         body.push_str(&shown);
         body.push_str("</main></div>");
-        self.pages.next = self.pages.next.wrapping_add(1);
-        let page = self.pages.next;
-        self.pages.held.insert(
-            page,
-            HeldPage::Home {
-                workspace_id,
-                canvas: Box::new(canvas),
-            },
-        );
+        let page = self.pages.add(HeldPage::Home(held));
         Ok(OpenedPage {
             page,
             title: "Tilo".to_owned(),
             css: css + HOME_CSS,
             body,
         })
-    }
-
-    /// What the person did on the front page's canvas, or with nothing done, what moved on it
-    /// since: others' changes to the layout, read again.
-    fn act_on_home(
-        &mut self,
-        workspace_id: WorkspaceId,
-        page: u64,
-        act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Result<Vec<PagePatch>, PageRefusal> {
-        self.refresh(workspace_id, Needs::Workspace)
-            .map_err(refused)?;
-        let (layout, wells) = self.canvas_layout(workspace_id);
-        let Some(HeldPage::Home { canvas, .. }) = self.pages.held.get_mut(&page) else {
-            return Err(unavailable("the page was closed"));
-        };
-        let mut patches = canvas.follow(layout, wells);
-        if let Some((id, target, action)) = act {
-            patches.extend(
-                canvas
-                    .act(id, target.as_deref(), &action)
-                    .map_err(unavailable)?,
-            );
-        }
-        Ok(patches)
     }
 
     /// The workspace's search page: a field and what the system's search
@@ -1455,28 +1420,26 @@ impl Worker {
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Option<Result<Vec<PagePatch>, PageRefusal>> {
         // What the page holds, taken by value so the workspace is read next.
-        let (home, app, search) = match self.pages.held.get(&page) {
+        let (app, search) = match self.pages.held.get(&page) {
             Some(HeldPage::App {
                 workspace_id,
                 who,
                 route,
             }) => (
-                None,
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
                 None,
             ),
-            Some(HeldPage::Home { workspace_id, .. }) => (Some(*workspace_id), None, None),
+            // A canvas reads the layout again and answers what moved on it, and what the person
+            // does on it is acted on the shell's view.
+            Some(HeldPage::Home(_) | HeldPage::Desktop(_)) => {
+                return Some(self.act_on_canvas(page, act));
+            }
             Some(HeldPage::Search {
                 workspace_id,
                 caller,
                 needle,
                 ..
-            }) => (
-                None,
-                None,
-                Some((*workspace_id, caller.clone(), needle.clone())),
-            ),
-            Some(HeldPage::Desktop(_)) => return Some(self.act_on_desktop(page, act.as_ref())),
+            }) => (None, Some((*workspace_id, caller.clone(), needle.clone()))),
             None => {
                 tracing::warn!(page, "a page's act found no page held here");
                 return Some(Err(unavailable("the page was closed")));
@@ -1486,13 +1449,6 @@ impl Worker {
         // answer is what the page shows next.
         if let Some(search) = search {
             return Some(self.act_on_search(page, search, act));
-        }
-        // The workspace's front page shows its canvas: a pass reads the
-        // layout again and answers what moved on it, and what the person does
-        // on it is acted on the shell's view. It is read again first, so a
-        // workspace no longer readable here is refused.
-        if let Some(workspace_id) = home {
-            return Some(self.act_on_home(workspace_id, page, act));
         }
         let Some((workspace_id, who, route)) = app else {
             return Some(Err(unavailable("the page was closed")));

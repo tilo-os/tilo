@@ -7,6 +7,7 @@
 //! This is the window `tilolang layout-check` lays out, and the page a server renders for a
 //! browser: one composition, one HTML writer, one set of semantic actions.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -14,6 +15,7 @@ use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::resources::{LocalPort, ResourceStore};
+use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
 use ui::headless::FrameHarness;
 
@@ -55,6 +57,19 @@ pub struct AppPage {
     harness: FrameHarness,
     page: Page,
     theme: ui::Theme,
+    /// What the view asked of apps the page does not run, for its host to carry out.
+    asked: Rc<RefCell<Vec<Invocation>>>,
+}
+
+/// What a hosted page's view asks of apps it does not run (a window's Close asks the session to
+/// close its place): kept for the page's host, which carries each out where those apps' state is.
+struct Asked(Rc<RefCell<Vec<Invocation>>>);
+
+impl Invoker for Asked {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        Invoked::Sent
+    }
 }
 
 /// How a host shows an app's view of the workspace's own state on a page ([`AppPage::hosted`]).
@@ -167,6 +182,7 @@ impl AppPage {
             names,
             Box::new(app_end),
         );
+        let hosted = start.origin.is_some();
         if let Some(origin) = start.origin {
             instance.add_origin(origin);
         }
@@ -174,7 +190,13 @@ impl AppPage {
         instance.settle_pending();
         // The package's own roots, every layer it has, are made with what each starts with, as a
         // session makes them when it loads the package.
+        let asked = Rc::new(RefCell::new(Vec::new()));
         if let Some(host) = instance.host() {
+            // A hosted view's calls to the apps whose state the host keeps (the session's
+            // arranging actions on the layout) are the host's to carry out.
+            if hosted {
+                host.runtime().set_foreign_invoker(Asked(Rc::clone(&asked)));
+            }
             let meta = host.package(app).map(|package| package.meta);
             let roots = meta.iter().flat_map(|meta| {
                 meta.roots
@@ -213,9 +235,17 @@ impl AppPage {
             harness,
             page: Page::new(),
             theme,
+            asked,
         };
         page.exchange();
         Ok(page)
+    }
+
+    /// What the view asked of apps the page does not run since this was last called, oldest
+    /// first: the host carries each out, and what that changes comes back as its origin's next
+    /// reading ([`Self::follow`]).
+    pub fn take_asked(&mut self) -> Vec<Invocation> {
+        std::mem::take(&mut *self.asked.borrow_mut())
     }
 
     /// What the host shows in each of the page's wells, by place ([`Page::wells`]): what stands

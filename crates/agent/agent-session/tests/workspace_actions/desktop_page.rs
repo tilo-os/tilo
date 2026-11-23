@@ -1,10 +1,10 @@
 //! The workspace's desktop in a browser: the windows its people have open on any device, read
 //! from the workspace's shared layout and acted on there.
 //!
-//! A person's computer has Tasks open. Their browser's desktop page lists that window, as a link
-//! to the Tasks page: the window continues on the web. Closing it on the page closes it on the
-//! layout, which the computer follows; an app opened from the page opens as a window the computer
-//! shows.
+//! A person's computer has Tasks open. Their browser's desktop page is the shell's own view of
+//! the layout, its windows strip by strip, and Tasks' window leads to the Tasks page: the window
+//! continues on the web. Closing it on the page closes it on the layout, which the computer
+//! follows.
 use super::*;
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch};
 
@@ -19,25 +19,21 @@ fn answered<T>(pending: tilo_actions::remote::Pending<T>) -> T {
         .expect("the page answers")
 }
 
-/// The number of the button whose label is `label`.
-fn button_labelled(html: &str, label: &str) -> Option<u32> {
-    let at = html.find(&format!("aria-label=\"{label}\""))?;
-    let open = html.get(html.get(..at)?.rfind("<button")?..)?;
-    let open = open.split('>').next()?;
-    open.split("data-p=\"")
-        .nth(1)?
-        .split('"')
-        .next()?
-        .parse()
-        .ok()
+/// The window frames the shell's view writes, each from its opening tag to the next one's.
+fn windows(html: &str) -> Vec<&str> {
+    html.split("data-w=\"WindowFrame\"").skip(1).collect()
 }
 
-/// The number of the button saying `words`.
-fn button_saying(html: &str, words: &str) -> Option<u32> {
-    let at = html.find(&format!("<span>{words}</span></button>"))?;
-    let open = html.get(html.get(..at)?.rfind("<button")?..)?;
-    let open = open.split('>').next()?;
-    open.split("data-p=\"")
+/// The number of the button labelled `label` in the window holding `words`.
+fn button_in_window(html: &str, words: &str, label: &str) -> Option<u32> {
+    let window = windows(html)
+        .into_iter()
+        .find(|window| window.contains(words))?;
+    let at = window.find(&format!("aria-label=\"{label}\""))?;
+    let open = window.get(window.get(..at)?.rfind("<button")?..)?;
+    open.split('>')
+        .next()?
+        .split("data-p=\"")
         .nth(1)?
         .split('"')
         .next()?
@@ -86,11 +82,12 @@ async fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_ther
         app: "desktop".into(),
         show: None,
     };
+    let tasks_page = format!("href=\"/w/{workspace}/tasks");
     let deadline = tilo_test_env::hang_deadline();
     let opened: OpenedPage = loop {
         let opened = answered(actions.open_page(workspace_id, &caller, address.clone()))
             .expect("a member's desktop opens");
-        if opened.body.contains("Close Tasks") {
+        if opened.body.contains(&tasks_page) {
             break opened;
         }
         actions.close_page(workspace_id, opened.page);
@@ -102,18 +99,20 @@ async fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_ther
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(opened.title, "Desktop");
+
+    // The page is the shell's view written by its widgets, not markup of its own: the window
+    // is the shell's window frame, its link stands in the frame's well, and its Close is the
+    // frame's own button.
+    let shown = windows(&opened.body);
+    assert_eq!(shown.len(), 1, "one window, one frame: {}", opened.body);
     assert!(
-        opened
-            .body
-            .contains(&format!("href=\"/w/{workspace}/tasks\"")),
-        "the window continues on its record's page: {}",
+        shown[0].contains("data-well=") && shown[0].contains(&tasks_page),
+        "the window's well leads to its page: {}",
         opened.body
     );
     assert!(
-        opened.body.contains(&format!(
-            "href=\"/w/{workspace}/desktop\" aria-current=\"page\""
-        )),
-        "the workspace shown is the one the switcher marks: {}",
+        !opened.body.contains("tilo-desktop"),
+        "no markup of the page's own: {}",
         opened.body
     );
 
@@ -122,8 +121,9 @@ async fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_ther
         answered(actions.act_on_page(workspace_id, opened.page, None)).expect("a pass is answered");
     assert!(unchanged.is_empty(), "{unchanged:?}");
 
-    // She closes it on the page: the page shows it gone, and her computer's layout loses it.
-    let close = button_labelled(&opened.body, "Close Tasks").expect("a Close button");
+    // She closes it on the page: her computer's layout loses it, and the page shows it gone.
+    let close = button_in_window(&opened.body, "Tasks", "Close")
+        .unwrap_or_else(|| panic!("the window's Close button: {}", opened.body));
     let patches = answered(actions.act_on_page(
         workspace_id,
         opened.page,
@@ -131,9 +131,10 @@ async fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_ther
     ))
     .expect("the close is acted on");
     assert!(
-        patches
-            .iter()
-            .any(|patch| patch.html.contains("Nothing is open")),
+        !patches.is_empty()
+            && patches
+                .iter()
+                .all(|patch| !patch.html.contains(&tasks_page)),
         "the page shows the window gone: {patches:?}"
     );
     desk.until(|desk| {
@@ -145,31 +146,17 @@ async fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_ther
         }
     })
     .await;
-
-    // She opens Tasks again from the page: her computer's layout shows its window.
-    let open = button_saying(&opened.body, "Tasks").expect("an Open button for Tasks");
-    let patches = answered(actions.act_on_page(
-        workspace_id,
-        opened.page,
-        Some((open, None, PageAction::Activate)),
-    ))
-    .expect("the open is acted on");
+    let again = answered(actions.open_page(workspace_id, &caller, address))
+        .expect("the desktop opens again");
     assert!(
-        patches
+        windows(&again.body)
             .iter()
-            .any(|patch| patch.html.contains("Close Tasks")),
-        "the page shows the window it opened: {patches:?}"
+            .all(|window| !window.contains(&tasks_page)),
+        "the closed window stays closed: {}",
+        again.body
     );
-    desk.until(|desk| {
-        let apps = window_apps(desk.layout().as_ref());
-        if apps == [TASKS] {
-            Ok(())
-        } else {
-            Err(format!("the computer shows {apps:?}"))
-        }
-    })
-    .await;
 
+    actions.close_page(workspace_id, again.page);
     actions.close_page(workspace_id, opened.page);
     desk.peer.close();
     hosted.agents.shutdown();
