@@ -94,7 +94,7 @@ pub fn build_mime_from(
     // The date it leaves is written from the wall clock this app reads, not
     // the platform's: a page has no platform clock to read, and a message
     // built there is checked before it is sent.
-    let sent_at = ui::time::unix_now();
+    let sent_at = tilo_clock::unix_now();
     let mut builder = MessageBuilder::new()
         .from((from.display(), from.email.clone()))
         .subject(draft.subject.clone())

@@ -443,19 +443,21 @@ pub fn spawn_waking(
 ) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
     let (req_tx, req_rx) = std::sync::mpsc::channel::<EngineRequest>();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel::<EngineEvent>();
-    ui::rt::spawn_thread("mail-engine", move || {
-        while let Ok(req) = req_rx.recv() {
-            let kind = req.kind();
-            let request_id = req.request_id();
-            backend.handle(req, &evt_tx);
-            // `MailEngine::handle` is synchronous from the worker's point
-            // of view (the live backend blocks on each request), so
-            // this terminal acknowledgement cannot overtake its result.
-            let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
-            wake();
-        }
-    })
-    .expect("spawn mail engine worker");
+    std::thread::Builder::new()
+        .name("mail-engine".into())
+        .spawn(move || {
+            while let Ok(req) = req_rx.recv() {
+                let kind = req.kind();
+                let request_id = req.request_id();
+                backend.handle(req, &evt_tx);
+                // `MailEngine::handle` is synchronous from the worker's point
+                // of view (the live backend blocks on each request), so
+                // this terminal acknowledgement cannot overtake its result.
+                let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
+                wake();
+            }
+        })
+        .expect("spawn mail engine worker");
     (req_tx, evt_rx)
 }
 
@@ -1615,11 +1617,11 @@ mod tests {
             };
             tx.send(EngineRequest::send(account, Box::new(draft), Vec::new()))
                 .unwrap();
-            let evt = rx.recv_timeout(ui::testing::hang_bound()).unwrap();
+            let evt = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, message, .. }
                 if context == "send" && message.contains("validated") && message.contains("did not send")));
             assert!(matches!(
-                rx.recv_timeout(ui::testing::hang_bound()).unwrap(),
+                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
                 EngineEvent::Completed {
                     kind: EngineRequestKind::Send,
                     ..
@@ -1634,10 +1636,10 @@ mod tests {
                 ..Default::default()
             }))
             .unwrap();
-            let evt = rx.recv_timeout(ui::testing::hang_bound()).unwrap();
+            let evt = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert!(matches!(evt, EngineEvent::Error { context, .. } if context == "offline"));
             assert!(matches!(
-                rx.recv_timeout(ui::testing::hang_bound()).unwrap(),
+                rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
                 EngineEvent::Completed {
                     kind: EngineRequestKind::Connect,
                     ..

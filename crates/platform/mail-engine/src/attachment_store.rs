@@ -94,7 +94,7 @@ pub fn bounded(attachments: &[DraftAttachment]) -> Vec<DraftAttachment> {
 ///
 pub fn stage_file(
     content: &ContentStore,
-    source: ui::portal::OpenedFile,
+    source: tilo_dialogs::portal::OpenedFile,
 ) -> Result<DraftAttachment, String> {
     let display_name = source.display_name().to_owned();
     let file = source.into_file();
@@ -230,7 +230,7 @@ mod tests {
             let content = ContentStore::memory();
             let staged = stage_file(
                 &content,
-                ui::portal::OpenedFile::new(
+                tilo_dialogs::portal::OpenedFile::new(
                     std::fs::File::open(path.path()).unwrap(),
                     "../report.txt",
                 ),

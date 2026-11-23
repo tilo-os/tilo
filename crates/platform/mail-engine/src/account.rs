@@ -14,7 +14,7 @@
 use accounts::person::PersonAccounts;
 use accounts::{Account as StoredAccount, AccountId};
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{Id, Invoke};
+use tilo_resource::{Id, Invoke};
 
 use crate::model::AccountConfig;
 
@@ -160,7 +160,7 @@ mod tests {
             ..AccountConfig::default()
         };
         let account = Account::new(config);
-        let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
+        let mut replica = tilo_resource::Replica::<PersonAccounts>::new();
         replica
             .apply(PersonAccounts::saving(&account.to_stored()))
             .unwrap();
