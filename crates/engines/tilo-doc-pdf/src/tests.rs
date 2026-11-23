@@ -247,7 +247,15 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
     };
     let mut paragraph = block("paragraph", "Prepared for the steering group by the team.");
     paragraph.marks = vec![mark("strong", 17, 31), mark("em", 35, 44)];
-    let lines = wrap(&styled(&paragraph, Style::default()), TEXT_W, BODY_SIZE);
+    let lines: Vec<Vec<Run>> = wrap(
+        &styled(&paragraph, Style::default()),
+        TEXT_W,
+        BODY_SIZE,
+        true,
+    )
+    .into_iter()
+    .map(|line| line.runs)
+    .collect();
     let regular = Style::default();
     let italic = Style {
         bold: false,
@@ -263,13 +271,20 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
         ]]
     );
 
-    let narrow = wrap(&styled(&paragraph, Style::default()), 60.0, BODY_SIZE);
+    let narrow: Vec<Vec<Run>> = wrap(&styled(&paragraph, Style::default()), 60.0, BODY_SIZE, true)
+        .into_iter()
+        .map(|line| line.runs)
+        .collect();
     assert!(narrow.len() > 2, "{narrow:?}");
     let rejoined: Vec<String> = narrow
         .iter()
         .map(|line| line.iter().map(|(text, _)| text.as_str()).collect())
         .collect();
-    assert_eq!(rejoined.join(" "), paragraph.text);
+    assert_eq!(
+        rejoined.join(" ").replace('-', ""),
+        paragraph.text,
+        "every word is set; a hyphen is the setter's, not the source's"
+    );
     assert!(
         narrow
             .iter()
@@ -280,8 +295,12 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
 
     let mut heading = block_attr("heading", "Field notes", &[("level", AttrVal::Int(1))]);
     heading.marks = vec![mark("em", 6, 11)];
+    let heading_lines: Vec<Vec<Run>> = wrap(&styled(&heading, Style::BOLD), TEXT_W, 24.0, false)
+        .into_iter()
+        .map(|line| line.runs)
+        .collect();
     assert_eq!(
-        wrap(&styled(&heading, Style::BOLD), TEXT_W, 24.0),
+        heading_lines,
         [vec![
             ("Field ".to_owned(), Style::BOLD),
             (

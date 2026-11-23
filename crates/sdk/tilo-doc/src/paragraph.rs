@@ -579,6 +579,10 @@ mod tests {
         clippy::float_cmp,
         reason = "checks glue_scale actually moved away from the literal 1.0 sentinel; an epsilon comparison would let a barely-adjusted line slip through undetected"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each block is one former test's body, kept as it was when the cases were one test"
+    )]
     #[test]
     fn paragraph_composition_balances_lines_and_keeps_glue_valid() {
         {

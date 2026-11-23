@@ -400,5 +400,176 @@ impl<F: FnOnce() -> Vec<(f64, f64)>> LazyLines<F> {
     }
 }
 
+/// What a block is, as far as filling pages is concerned: flowing text splits between its
+/// lines with orphans and widows, a heading moves with the block after it rather than end a
+/// page, and anything else (a rule, a picture, a table row group) breaks where its producer
+/// says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Text,
+    Heading,
+    Other,
+}
+
+impl Kind {
+    /// The lines this kind of a block of `rows` rows may leave on either side of a break.
+    /// Short text and headings break anywhere: a heading never strands at the foot of a page
+    /// for want of a legal split below it.
+    #[must_use]
+    pub fn fragmentation(self, rows: usize) -> Fragmentation {
+        match self {
+            Self::Text if rows >= 4 => Fragmentation::default(),
+            Self::Heading | Self::Text | Self::Other => Fragmentation::ANYWHERE,
+        }
+    }
+
+    /// Whether the block moves to the next page with the one after it rather than end a page.
+    #[must_use]
+    pub fn keeps_with_next(self) -> bool {
+        matches!(self, Self::Heading)
+    }
+}
+
+/// One block as the page fill sees it: what it is, the space before it, its height, and the
+/// rows (lines, table rows) it may split between, each row's top and height below the
+/// block's top. A block with no rows goes whole.
+#[derive(Clone, Copy)]
+pub struct Piece<'a> {
+    pub kind: Kind,
+    /// Space above the block, dropped where the block begins a page.
+    pub space_before: f64,
+    pub height: f64,
+    pub rows: &'a [(f64, f64)],
+    /// Starts a fresh page, unless it would be the first thing on one.
+    pub break_before: bool,
+}
+
+/// Fills equal pages with blocks as they are set, recording where each page begins so a view
+/// can show the pages it already has. Work is in the flow's coordinates: everything is laid
+/// out as one column, and a break ends the page at the first row that no longer fits, so the
+/// flow's height is the bottom of what was placed.
+#[derive(Clone, Debug)]
+pub struct Paginator {
+    page_h: f64,
+    flow: PageFlow,
+    /// The top of each block handed over, in the flow's coordinates.
+    block_tops: Vec<f64>,
+    /// Where each page begins, in the flow's coordinates.
+    pages: Vec<f64>,
+    /// How many of `pages` were handed out.
+    handed: usize,
+}
+
+impl Paginator {
+    #[must_use]
+    pub fn new(page_h: f64) -> Self {
+        Self::resume(page_h, 0, 0.0, false)
+    }
+
+    /// A fill continuing `y` below the top of `page`; `placed` says whether anything is on
+    /// that page already. A resumed fill knows no page starts before it took over.
+    #[must_use]
+    pub fn resume(page_h: f64, page: usize, y: f64, placed: bool) -> Self {
+        Self {
+            page_h,
+            flow: PageFlow::resume(page_h, page, y, placed),
+            block_tops: Vec::new(),
+            pages: Vec::new(),
+            handed: 0,
+        }
+    }
+
+    /// The top of the next block's space before, in the flow's coordinates.
+    #[must_use]
+    pub fn cursor(&self) -> f64 {
+        self.pages.last().copied().unwrap_or(0.0) + self.flow.y()
+    }
+
+    /// The page the flow is on.
+    #[must_use]
+    pub fn page(&self) -> usize {
+        self.flow.page()
+    }
+
+    /// The bottom of what was placed, below the current page's top.
+    #[must_use]
+    pub fn y(&self) -> f64 {
+        self.flow.y()
+    }
+
+    pub fn set_y(&mut self, y: f64) {
+        self.flow.set_y(y);
+    }
+
+    pub fn skip(&mut self, amount: f64) {
+        self.flow.skip(amount);
+    }
+
+    /// Place a block, breaking pages as needed. The `Placed` says where it went; every page
+    /// whose beginning it decided is recorded.
+    pub fn push(&mut self, piece: &Piece<'_>) -> Placed {
+        if self.page_h <= 1.0 {
+            // A page with no room cannot break: everything is on the one page.
+            if self.pages.is_empty() {
+                self.pages.push(0.0);
+            }
+            self.flow.skip(piece.space_before + piece.height);
+            return Placed {
+                page: self.flow.page(),
+                top: self.flow.y(),
+                fragments: Vec::new(),
+                carry: None,
+            };
+        }
+        let top = self.cursor() + piece.space_before;
+        let block = Block::new(piece.height)
+            .with_lead(piece.space_before)
+            .breaking_before(piece.break_before)
+            .keeping_with_next(piece.kind.keeps_with_next())
+            .fragmented(piece.kind.fragmentation(piece.rows.len()));
+        self.block_tops.push(top);
+        let rows = piece.rows;
+        let placed = self.flow.place_lines(&block, || rows.to_vec());
+        if let Some(carry) = placed.carry
+            && let Some(&carried) = self.block_tops.get(carry.block)
+        {
+            self.start_page(carry.from_page.saturating_add(1), carried);
+        }
+        if placed.fragments.is_empty() {
+            self.start_page(placed.page, top);
+        }
+        for fragment in &placed.fragments {
+            if let Some(&(row, _)) = rows.get(fragment.lines.start) {
+                self.start_page(fragment.page, top + row);
+            }
+        }
+        placed
+    }
+
+    /// Page starts decided since the last call.
+    pub fn take_pages(&mut self) -> Vec<f64> {
+        let fresh = self.pages.get(self.handed..).unwrap_or_default().to_vec();
+        self.handed = self.pages.len();
+        fresh
+    }
+
+    /// Every page start not yet taken; a flow with nothing to break has the one page at the
+    /// top.
+    pub fn finish_pages(&mut self) -> Vec<f64> {
+        let pages = self.take_pages();
+        if self.handed == 0 && pages.is_empty() {
+            return vec![0.0];
+        }
+        pages
+    }
+
+    /// Record that page `page` starts at `y`, once.
+    fn start_page(&mut self, page: usize, y: f64) {
+        if page >= self.pages.len() {
+            self.pages.push(y);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

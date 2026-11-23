@@ -9,7 +9,7 @@
 //! [`TextRenderer`] is available) and is cached per [`LayoutKey`]; it only
 //! recomputes when the chapter, content width, or a typography setting changes.
 
-use ui::text_render::paging::{Block as PageBlock, Fragmentation, PageFlow};
+use ui::text_render::paging::{Kind as PageKind, Paginator, Piece};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::{
     ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks,
@@ -1261,7 +1261,6 @@ pub struct ChapterLayouter<'a> {
     body: f32,
     base_mono: bool,
     next: usize,
-    y: f32,
     paginator: Paginator,
 }
 
@@ -1281,8 +1280,7 @@ impl<'a> ChapterLayouter<'a> {
             body: request.settings.body_size_with(request.font_multiplier),
             base_mono: matches!(request.base_family, FontChoice::Monospace),
             next: 0,
-            y: 0.0,
-            paginator: Paginator::new(request.content_height),
+            paginator: Paginator::new(f64::from(request.content_height)),
         }
     }
 
@@ -1291,12 +1289,20 @@ impl<'a> ChapterLayouter<'a> {
     }
 
     /// The flow's height so far: the bottom of the last block set.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a page offset within one chapter, far inside f32's range"
+    )]
     pub fn height(&self) -> f32 {
-        self.y
+        self.paginator.cursor() as f32
     }
 
     /// Set the next block, or `None` once the chapter is done. The text
     /// renderer must be at the text scale this layouter was made for.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a page offset within one chapter, far inside f32's range"
+    )]
     pub fn next_block(&mut self, tr: &mut TextRenderer) -> Option<LaidBlock> {
         let index = self.next;
         let block = self.request.blocks.get(index)?;
@@ -1304,32 +1310,52 @@ impl<'a> ChapterLayouter<'a> {
         let _phase = tilo_resource::profiling::Phase::start(LAY_BLOCK_PHASE);
         self.next += 1;
         let laid = self.lay_block(tr, index, block);
-        self.y = laid.bottom.max(self.y);
-        self.paginator.push(&laid);
+        let rows = block_rows(&laid);
+        self.paginator.push(&block_piece(
+            &laid,
+            laid.top - self.paginator.cursor() as f32,
+            &rows,
+        ));
         Some(laid)
     }
 
     /// Page starts decided since the last call.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a page offset within one chapter, far inside f32's range"
+    )]
     pub fn take_pages(&mut self) -> Vec<f32> {
-        self.paginator.take_decided()
+        self.paginator
+            .take_pages()
+            .into_iter()
+            .map(|y| y as f32)
+            .collect()
     }
 
     /// Every page start not yet taken, once the chapter is done; a chapter
     /// with nothing to break has the one page at the top.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a page offset within one chapter, far inside f32's range"
+    )]
     pub fn finish_pages(&mut self) -> Vec<f32> {
-        let pages = self.paginator.take_decided();
-        if self.paginator.handed == 0 && pages.is_empty() {
-            return vec![0.0];
-        }
-        pages
+        self.paginator
+            .finish_pages()
+            .into_iter()
+            .map(|y| y as f32)
+            .collect()
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a page offset within one chapter, far inside f32's range"
+    )]
     fn lay_block(&self, tr: &mut TextRenderer, index: usize, block: &Block) -> LaidBlock {
         let request = self.request;
         let settings = request.settings;
         let text_scale = self.text_scale;
         let st = style_for(block, self.body, text_scale);
-        let y = self.y + st.space_before;
+        let y = self.paginator.cursor() as f32 + st.space_before;
 
         if let Block::Math { expr, source, .. } = block {
             return laid_math_block(
@@ -1399,111 +1425,59 @@ impl<'a> ChapterLayouter<'a> {
     }
 }
 
-/// Slices the flow into page-start offsets at line boundaries as its blocks
-/// arrive in order, with the shared page-breaking rules. A break is decided
-/// once the block that overflows the page is known and never revisited, so a
-/// break taken early is the one the whole chapter would take.
-struct Paginator {
-    page_h: f32,
-    flow: PageFlow,
-    /// The first row of every block handed to `flow`, in its order: where a
-    /// page starts when a heading moves down to it.
-    block_tops: Vec<f32>,
-    pages: Vec<f32>,
-    /// How many of `pages` were handed out.
-    handed: usize,
+/// The kind of page fill a block asks for.
+fn page_kind(kind: LayoutKind) -> PageKind {
+    match kind {
+        LayoutKind::Heading => PageKind::Heading,
+        LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::Verse { .. } | LayoutKind::List => {
+            PageKind::Text
+        }
+        LayoutKind::Math | LayoutKind::Separator => PageKind::Other,
+    }
 }
 
-impl Paginator {
-    fn new(page_h: f32) -> Self {
-        Self {
-            page_h,
-            flow: PageFlow::new(f64::from(page_h)),
-            block_tops: Vec::new(),
-            pages: Vec::new(),
-            handed: 0,
-        }
+/// The rows of a laid block, each line's top and height below the block's top. A separator is
+/// one row; math has none, so it goes whole.
+fn block_rows(block: &LaidBlock) -> Vec<(f64, f64)> {
+    if block.kind == LayoutKind::Separator {
+        return vec![(0.0, f64::from(block.bottom - block.top))];
     }
+    block
+        .lines
+        .iter()
+        .map(|line| (f64::from(line.y - block.top), f64::from(block.line_height)))
+        .collect()
+}
 
-    fn take_decided(&mut self) -> Vec<f32> {
-        let fresh = self.pages.get(self.handed..).unwrap_or_default().to_vec();
-        self.handed = self.pages.len();
-        fresh
-    }
-
-    fn push(&mut self, b: &LaidBlock) {
-        if self.page_h <= 1.0 {
-            if self.pages.is_empty() {
-                self.pages.push(0.0);
-            }
-            return;
-        }
-        // Rows: a separator whole, a text block line by line.
-        let rows: Vec<(f32, f32)> = if b.kind == LayoutKind::Separator {
-            vec![(b.top, b.bottom - b.top)]
-        } else {
-            b.lines.iter().map(|l| (l.y, b.line_height)).collect()
-        };
-        let (Some(&(first, _)), Some(&(last, last_h))) = (rows.first(), rows.last()) else {
-            return;
-        };
-        if self.pages.is_empty() {
-            self.pages.push(first);
-        }
-        let page_start = self.pages.last().copied().unwrap_or(first);
-        // Ordinary text keeps two lines on either side of a break once it has
-        // four; shorter text and headings break anywhere, so a heading never
-        // strands at the foot of a page for want of a legal split below it.
-        let fragmentation = if matches!(
-            b.kind,
-            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::Verse { .. } | LayoutKind::List
-        ) && rows.len() >= 4
-        {
-            Fragmentation::default()
-        } else {
-            Fragmentation::ANYWHERE
-        };
-        let block = PageBlock::new(f64::from(last + last_h - first))
-            .with_lead(f64::from(first - page_start) - self.flow.y())
-            .keeping_with_next(b.kind == LayoutKind::Heading)
-            .fragmented(fragmentation);
-        self.block_tops.push(first);
-        let placed = self.flow.place_lines(&block, || {
-            rows.iter()
-                .map(|&(y, h)| (f64::from(y - first), f64::from(h)))
-                .collect()
-        });
-        if let Some(carry) = placed.carry
-            && let Some(&top) = self.block_tops.get(carry.block)
-        {
-            self.start_page(carry.from_page.saturating_add(1), top);
-        }
-        if placed.fragments.is_empty() {
-            self.start_page(placed.page, first);
-        }
-        for fragment in &placed.fragments {
-            if let Some(&(y, _)) = rows.get(fragment.lines.start) {
-                self.start_page(fragment.page, y);
-            }
-        }
-    }
-
-    /// Record that page `page` starts at `y`, once.
-    fn start_page(&mut self, page: usize, y: f32) {
-        if page >= self.pages.len() {
-            self.pages.push(y);
-        }
+/// A laid block as the page fill takes it, its first line `space_before` below where the
+/// flow stands.
+fn block_piece<'a>(block: &LaidBlock, space_before: f32, rows: &'a [(f64, f64)]) -> Piece<'a> {
+    Piece {
+        kind: page_kind(block.kind),
+        space_before: f64::from(space_before),
+        height: f64::from(block.bottom - block.top),
+        rows,
+        break_before: false,
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a page offset within one chapter, far inside f32's range"
+)]
 fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
-    let mut paginator = Paginator::new(page_h);
+    let mut paginator = Paginator::new(f64::from(page_h));
     for block in blocks {
-        paginator.push(block);
+        let rows = block_rows(block);
+        let space_before = block.top - paginator.cursor() as f32;
+        paginator.push(&block_piece(block, space_before, &rows));
     }
-    let pages = paginator.take_decided();
-    if pages.is_empty() { vec![0.0] } else { pages }
+    paginator
+        .finish_pages()
+        .into_iter()
+        .map(|y| y as f32)
+        .collect()
 }
 
 /// Width of a single space at `size` in `family`, derived by differencing.

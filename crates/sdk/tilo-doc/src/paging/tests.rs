@@ -204,3 +204,65 @@ fn text_splits_between_lines_and_a_heading_moves_with_what_follows() {
         "the text starts below the heading it carried"
     );
 }
+
+/// The paginator's policy: heading keeps with what follows, flowing text splits at four lines
+/// with orphans and widows, anything else breaks where its producer says.
+#[test]
+fn what_a_block_is_decides_how_it_fills_a_page() {
+    assert_eq!(Kind::Text.fragmentation(4), Fragmentation::default());
+    assert_eq!(Kind::Text.fragmentation(3), Fragmentation::ANYWHERE);
+    assert_eq!(Kind::Heading.fragmentation(6), Fragmentation::ANYWHERE);
+    assert_eq!(Kind::Other.fragmentation(6), Fragmentation::ANYWHERE);
+    assert!(Kind::Heading.keeps_with_next());
+    assert!(!Kind::Text.keeps_with_next());
+    assert!(!Kind::Other.keeps_with_next());
+}
+
+/// Ten thousand pages of one fixed text: the fill service keeps up with a book, not just a
+/// chapter, without revisiting a break it already took.
+#[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a line index feeding a row's top; no real page approaches f64's precision limit"
+)]
+fn ten_thousand_pages_of_a_fixed_text() {
+    use std::time::{Duration, Instant};
+
+    // The text each of the book's paragraphs sets: the same paragraph over and over, at five
+    // words a line.
+    const TEXT: &str = "It was the best of times, it was the worst of times, it was the age \
+                        of wisdom, it was the age of foolishness, it was the epoch of belief, \
+                        it was the epoch of incredulity, it was the season of Light, it was \
+                        the season of Darkness, it was the spring of hope, it was the winter \
+                        of despair.";
+    let line_h = 14.0_f64;
+    let per_line = 5;
+    let line_count = TEXT.split_whitespace().count().div_ceil(per_line);
+    let rows: Vec<(f64, f64)> = (0..line_count)
+        .map(|line| (line as f64 * line_h, line_h))
+        .collect();
+    let height = line_count as f64 * line_h;
+
+    let mut paginator = Paginator::new(48.0 * line_h);
+    let started = Instant::now();
+    let mut pages = 0_usize;
+    let mut blocks = 0_usize;
+    while pages < 10_000 {
+        paginator.push(&Piece {
+            kind: Kind::Text,
+            space_before: line_h * 0.5,
+            height,
+            rows: &rows,
+            break_before: false,
+        });
+        pages = pages.saturating_add(paginator.take_pages().len());
+        blocks = blocks.saturating_add(1);
+    }
+    let elapsed = started.elapsed();
+    assert!(pages >= 10_000, "the book is ten thousand pages long: {pages}");
+    assert!(blocks > 1_000, "a book's paragraphs: {blocks}");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "ten thousand pages took {elapsed:?}: filling a page must stay linear in its lines"
+    );
+}

@@ -18646,6 +18646,8 @@ name = "tilo-doc"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "hypher",
+ "icu_segmenter",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -18656,6 +18658,8 @@ dependencies = [
  "tilo-resource",
  "tilo-sort",
  "tracing",
+ "unic-langid",
+ "unicode-linebreak",
  "workspace-hack",
 ]
 

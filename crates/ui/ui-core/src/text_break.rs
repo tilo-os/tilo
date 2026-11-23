@@ -3,82 +3,14 @@
 //! build matching row metadata or return individually clamped lines use this module
 //! instead of guessing at ASCII spaces.
 
-use std::sync::LazyLock;
 use tilo_sort::CompactSort as _;
 
-/// Whether a UAX #14 opportunity permits or requires a break.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LineBreakKind {
-    Allowed,
-    Mandatory,
-}
-
-/// Iterate byte offsets where a line may or must end according to Unicode Standard Annex
-/// #14.
-pub fn line_break_opportunities(text: &str) -> std::vec::IntoIter<(usize, LineBreakKind)> {
-    use std::collections::BTreeMap;
-
-    use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
-    // The auto model adds dictionary/LSTM boundaries for Khmer, Lao, Myanmar, and Thai.
-    #[cfg(not(target_arch = "wasm32"))]
-    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
-        LazyLock::new(|| LineSegmenter::new_auto(Default::default()));
-    #[cfg(target_arch = "wasm32")]
-    static SEGMENTER: LazyLock<LineSegmenterBorrowed<'static>> =
-        LazyLock::new(|| LineSegmenter::new_for_non_complex_scripts(Default::default()));
-
-    let mut breaks = BTreeMap::new();
-    for (byte, kind) in unicode_linebreak::linebreaks(text) {
-        let kind = match kind {
-            unicode_linebreak::BreakOpportunity::Allowed => LineBreakKind::Allowed,
-            unicode_linebreak::BreakOpportunity::Mandatory => LineBreakKind::Mandatory,
-        };
-        breaks.insert(byte, kind);
-    }
-    for byte in SEGMENTER.segment_str(text).filter(|&byte| byte > 0) {
-        breaks.entry(byte).or_insert(LineBreakKind::Allowed);
-    }
-    breaks.into_iter().collect::<Vec<_>>().into_iter()
-}
-
-/// UTF-8 byte offsets at which TeX/Liang patterns permit a discretionary hyphen for
-/// `language`. The source text is never modified; callers decide whether a chosen line
-/// break should paint the hyphen glyph.
-pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
-    let Ok(parsed) = language.parse::<unic_langid::LanguageIdentifier>() else {
-        return Vec::new();
-    };
-    let code = parsed.language.as_str().as_bytes();
-    let Some(lang) = (match code {
-        [a, b] => hypher::Lang::from_iso([a.to_ascii_lowercase(), b.to_ascii_lowercase()]),
-        _ => None,
-    }) else {
-        return Vec::new();
-    };
-    let mut breaks = Vec::new();
-    for range in unicode_word_ranges(text) {
-        let Some(word) = text.get(range.clone()) else {
-            continue;
-        };
-        hyphenate(word, lang, &mut |end| {
-            breaks.push(range.start.saturating_add(end));
-        });
-    }
-    breaks
-}
-
-/// Calls `out` with the byte offset in `word` after each of its syllables but the last, by
-/// `lang`'s TeX/Liang patterns, as hypher embeds them.
-fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
-    let mut end = 0_usize;
-    let mut syllables = hypher::hyphenate(word, lang).peekable();
-    while let Some(syllable) = syllables.next() {
-        end = end.saturating_add(syllable.len());
-        if syllables.peek().is_some() {
-            out(end);
-        }
-    }
-}
+// What may break between and where a word may be hyphenated is the document engine's, so the
+// word processor, PDF export and the reader take it from one place.
+pub use tilo_doc::breaks::{
+    LineBreakKind, discretionary_hyphen_breaks, hyphenate, line_break_opportunities,
+    unicode_word_ranges,
+};
 
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
 
@@ -433,33 +365,6 @@ pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
 /// Extended grapheme clusters (UAX #29) of `text`, in order.
 pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
     grapheme_indices(text).map(|(_, cluster)| cluster)
-}
-
-/// Return Unicode word-like spans in original UTF-8 byte coordinates.
-pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
-    use icu_segmenter::{WordSegmenter, WordSegmenterBorrowed};
-    #[cfg(not(target_arch = "wasm32"))]
-    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
-        LazyLock::new(|| WordSegmenter::new_auto(Default::default()));
-    #[cfg(target_arch = "wasm32")]
-    static SEGMENTER: LazyLock<WordSegmenterBorrowed<'static>> =
-        LazyLock::new(|| WordSegmenter::new_for_non_complex_scripts(Default::default()));
-    let boundaries: Vec<_> = SEGMENTER.segment_str(text).iter_with_word_type().collect();
-    boundaries
-        .windows(2)
-        .filter_map(|window| {
-            let [first, second] = window else {
-                return None;
-            };
-            let range = first.0..second.0;
-            let word_like = second.1.is_word_like()
-                || text
-                    .get(range.clone())
-                    .is_some_and(|word| word.chars().any(char::is_alphanumeric));
-            word_like.then_some(range)
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
 }
 
 #[cfg(test)]

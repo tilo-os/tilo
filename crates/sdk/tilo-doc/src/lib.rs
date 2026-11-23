@@ -8,12 +8,14 @@
 //! the caller's `tilo_content` store; file formats are the job of
 //! `tilo-doc-codecs`.
 
+pub mod breaks;
 pub mod diff;
 pub mod document;
 pub mod export;
 pub mod inline_time;
 pub mod model;
 pub mod paging;
+pub mod paragraph;
 pub mod reconcile;
 pub mod restore;
 pub mod schema;

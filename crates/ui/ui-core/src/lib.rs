@@ -246,7 +246,6 @@ pub mod offscreen;
 pub mod outside_paint;
 pub mod overlay;
 pub mod paint;
-pub mod paragraph;
 pub mod part_paint;
 pub mod passcode_keyboard;
 pub mod pen;
@@ -435,7 +434,8 @@ pub use local_state::{
     TaskCompletion,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
-pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
+// Paragraph composition is the document engine's, so the reader, the word processor and PDF
+// export lay text out by one policy.
 #[cfg(feature = "native")]
 pub use pictures::lend_content;
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
@@ -472,6 +472,7 @@ pub use theme::{
     AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
     workspace_hue,
 };
+pub use tilo_doc::paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 /// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
 /// the web.
 pub use tilo_image_codec as image_codec;

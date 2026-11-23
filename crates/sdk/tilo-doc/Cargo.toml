@@ -32,6 +32,13 @@ tracing.workspace = true
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # The anchor a change's text is named by, which an action's step carries.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# Line-break opportunities and hyphenation, shared by every setter of text into a measure
+# (the reader's pages and PDF export).
+unicode-linebreak = "0.1.5"
+icu_segmenter = "2.3"
+unic-langid.workspace = true
+# TeX/Liang hyphenation; the common languages here, every language natively (below).
+hypher = { version = "0.1.7", default-features = false, features = ["alloc", "english", "german"] }
 
 [[test]]
 name = "it"
@@ -41,5 +48,8 @@ path = "tests/it.rs"
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Hyphenation patterns for every language. The browser build carries English and German only:
+# the rest would add about 1 MB to the browser before anything runs.
+hypher = { version = "0.1.7", features = ["full"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

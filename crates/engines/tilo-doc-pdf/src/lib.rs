@@ -3,16 +3,22 @@
 //! valid PDF 1.7 file. The crate exposes only [`render_pdf`].
 //!
 //! The writer (`pdf`) is hand-rolled, so pagination and image embedding stay
-//! under control and the lockfile stable. Text uses the base-14 Helvetica
-//! family with AFM advance widths (`metrics`) for word-wrap; images are decoded
-//! with the `image` crate and embedded as `/DeviceRGB` `Image` `XObjects`.
+//! under control and the lockfile stable. Text is measured with the base-14
+//! Helvetica family's AFM advance widths (`metrics`) and set by the shared
+//! paragraph composer, so a page's text is justified and hyphenated the way the
+//! reader and the word processor set theirs. Pages fill through the shared
+//! paginator: headings ride with their text and space before a block drops at
+//! the top of a page. Images are decoded with the `image` crate and embedded as
+//! `/DeviceRGB` `Image` `XObjects`.
 
 mod metrics;
 mod pdf;
 
 use std::fmt;
+use tilo_doc::breaks::discretionary_hyphen_breaks;
 use tilo_doc::export::{BlockKind, ExportBlock, TablePlan};
-use tilo_doc::paging::{Block as PageBlock, Fragmentation, PageFlow, Placed};
+use tilo_doc::paging::{Kind, Paginator, Piece, Placed};
+use tilo_doc::paragraph::{ParagraphBox, ParagraphOptions, compose_paragraph};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot};
 
@@ -198,6 +204,10 @@ enum Op {
         size: f32,
         style: Style,
         text: String,
+        /// Extra advance after each space, from the line's justification.
+        word_spacing: f32,
+        /// Horizontal glyph scale, from the line's justification.
+        glyph_scale: f32,
     },
     Line {
         x1: f32,
@@ -254,7 +264,7 @@ struct Layout {
     writer: PdfWriter,
     first_page: Page,
     later_pages: Vec<Page>,
-    flow: PageFlow,
+    paginator: Paginator,
     /// Each placed block's page and first op there, in placement order, so a
     /// heading carried to the next page with its text can follow it.
     block_ops: Vec<(usize, usize)>,
@@ -267,7 +277,7 @@ impl Layout {
             writer: PdfWriter::new(),
             first_page: Page::new(),
             later_pages: Vec::new(),
-            flow: PageFlow::new(f64::from(CONTENT_TOP - CONTENT_BOTTOM)),
+            paginator: Paginator::new(f64::from(CONTENT_TOP - CONTENT_BOTTOM)),
             block_ops: Vec::new(),
             next_img: 0,
         }
@@ -286,15 +296,23 @@ impl Layout {
         }
     }
 
-    /// Place a block that splits between `lines` (each line's top and
-    /// height below the block's top), or that cannot split when `lines` is
-    /// empty.
-    fn place(&mut self, block: &PageBlock, lines: &[(f64, f64)]) -> Placed {
-        let placed = if lines.is_empty() {
-            self.flow.place(block)
-        } else {
-            self.flow.place_lines(block, || lines.to_vec())
-        };
+    /// Place a block of `height`, which splits between `rows` (each row's top
+    /// and height below the block's top) unless `rows` is empty.
+    fn place(
+        &mut self,
+        kind: Kind,
+        space_before: f32,
+        height: f32,
+        break_before: bool,
+        rows: &[(f64, f64)],
+    ) -> Placed {
+        let placed = self.paginator.push(&Piece {
+            kind,
+            space_before: f64::from(space_before),
+            height: f64::from(height),
+            rows,
+            break_before,
+        });
         if let Some(carry) = placed.carry
             && let Some(&(page, first_op)) = self.block_ops.get(carry.block)
         {
@@ -320,30 +338,53 @@ impl Layout {
         placed
     }
 
-    fn lines(&mut self, block: &PageBlock, lines: &[Vec<Run>], text: TextSet) -> Placed {
+    fn lines(
+        &mut self,
+        text: TextSet,
+        lines: &[Wrapped],
+        space_before: f32,
+        kind: Kind,
+        break_before: bool,
+    ) -> Placed {
         let TextSet { x, size, leading } = text;
         let boxes = line_boxes(lines.len(), f64::from(leading));
-        let placed = self.place(block, &boxes);
-        for (index, runs) in lines.iter().enumerate() {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a line count feeding a height; no real block approaches f32's precision limit"
+        )]
+        let height = lines.len() as f32 * leading;
+        let placed = self.place(kind, space_before, height, break_before, &boxes);
+        for (index, line) in lines.iter().enumerate() {
             let (page, top) = placed.locate(&boxes, index);
             let baseline = pdf_y(top) - size * 0.8;
             let mut x = x;
-            for (text, style) in runs {
+            for (text, style) in &line.runs {
+                // Justification widens the spaces of a line and may stretch its glyphs a
+                // little; both are text-state settings, so a run keeps its own ink.
+                let word_spacing = style.width(" ", size) * (line.glue_scale - 1.0);
                 self.page(page).ops.push(Op::Text {
                     x,
                     y: baseline,
                     size,
                     style: *style,
                     text: text.clone(),
+                    word_spacing,
+                    glyph_scale: line.glyph_scale,
                 });
-                x += style.width(text, size);
+                let spaces = text.bytes().filter(|&byte| byte == b' ').count();
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "a space count within one line; no real line approaches f32's precision limit"
+                )]
+                let extra = spaces as f32 * word_spacing;
+                x += style.width(text, size) * line.glyph_scale + extra;
             }
         }
         placed
     }
 
     fn gap(&mut self, amount: f32) {
-        self.flow.skip(f64::from(amount));
+        self.paginator.skip(f64::from(amount));
     }
 }
 
@@ -370,15 +411,6 @@ fn line_boxes(count: usize, height: f64) -> Vec<(f64, f64)> {
             Some(line)
         })
         .collect()
-}
-
-fn text_block(block: &BlockView, lines: usize, leading: f32) -> PageBlock {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a line count feeding a height; no real block approaches f64's precision limit"
-    )]
-    let height = lines as f64 * f64::from(leading);
-    PageBlock::new(height).breaking_before(breaks_before(block))
 }
 
 fn breaks_before(block: &BlockView) -> bool {
@@ -432,18 +464,17 @@ fn render_heading(layout: &mut Layout, block: &BlockView) {
     let level = ExportBlock::new(block).heading_level();
     let size = heading_size(level);
     let leading = size * 1.25;
-    let lines = wrap(&styled(block, Style::BOLD), TEXT_W, size);
-    let page_block = text_block(block, lines.len(), leading)
-        .with_lead(f64::from(PARA_GAP))
-        .keeping_with_next(true);
+    let lines = wrap(&styled(block, Style::BOLD), TEXT_W, size, false);
     layout.lines(
-        &page_block,
-        &lines,
         TextSet {
             x: MARGIN,
             size,
             leading,
         },
+        &lines,
+        PARA_GAP,
+        Kind::Heading,
+        breaks_before(block),
     );
     layout.gap(PARA_GAP);
 }
@@ -451,19 +482,20 @@ fn render_heading(layout: &mut Layout, block: &BlockView) {
 fn render_paragraph(layout: &mut Layout, block: &BlockView) {
     if block.text.is_empty() {
         // Blank paragraph → one empty line (as in the doc).
-        layout.place(&text_block(block, 1, BODY_LEADING), &[]);
+        layout.place(Kind::Text, 0.0, BODY_LEADING, breaks_before(block), &[]);
         return;
     }
-    let lines = wrap(&styled(block, Style::default()), TEXT_W, BODY_SIZE);
-    let page_block = text_block(block, lines.len(), BODY_LEADING);
+    let lines = wrap(&styled(block, Style::default()), TEXT_W, BODY_SIZE, true);
     layout.lines(
-        &page_block,
-        &lines,
         TextSet {
             x: MARGIN,
             size: BODY_SIZE,
             leading: BODY_LEADING,
         },
+        &lines,
+        0.0,
+        Kind::Text,
+        breaks_before(block),
     );
     layout.gap(PARA_GAP);
 }
@@ -490,18 +522,24 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
         metrics::text_width(&metrics::HELVETICA, &pdf::to_winansi(&marker), BODY_SIZE) + 4.0;
     let text_indent = indent + marker_w;
     let avail = (MARGIN + TEXT_W) - text_indent;
-    let lines = wrap(&styled(block, Style::default()), avail.max(40.0), BODY_SIZE);
-
     // Even an empty item takes a line for its marker.
-    let page_block = text_block(block, lines.len().max(1), BODY_LEADING);
+    let lines = wrap(
+        &styled(block, Style::default()),
+        avail.max(40.0),
+        BODY_SIZE,
+        true,
+    );
+
     let placed = layout.lines(
-        &page_block,
-        &lines,
         TextSet {
             x: text_indent,
             size: BODY_SIZE,
             leading: BODY_LEADING,
         },
+        &lines,
+        0.0,
+        Kind::Text,
+        breaks_before(block),
     );
     let (page, top) = placed.locate(&line_boxes(1, f64::from(BODY_LEADING)), 0);
     layout.page(page).ops.push(Op::Text {
@@ -510,6 +548,8 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
         size: BODY_SIZE,
         style: Style::default(),
         text: marker,
+        word_spacing: 0.0,
+        glyph_scale: 1.0,
     });
 }
 
@@ -556,18 +596,19 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         clippy::cast_precision_loss,
         reason = "a row count feeding a height; no real table approaches f64's precision limit"
     )]
-    let page_block = PageBlock::new(plan.rows().len() as f64 * f64::from(row_h))
-        .with_lead(f64::from(PARA_GAP))
-        .breaking_before(
-            breaks_before(block)
-                || plan
-                    .rows()
-                    .first()
-                    .and_then(|row| row.first())
-                    .is_some_and(|cell| breaks_before(cell)),
-        )
-        .fragmented(Fragmentation::ANYWHERE);
-    let placed = layout.place(&page_block, &boxes);
+    let height = plan.rows().len() as f32 * row_h;
+    let placed = layout.place(
+        Kind::Other,
+        PARA_GAP,
+        height,
+        breaks_before(block)
+            || plan
+                .rows()
+                .first()
+                .and_then(|row| row.first())
+                .is_some_and(|cell| breaks_before(cell)),
+        &boxes,
+    );
     for (ri, row) in plan.rows().iter().enumerate() {
         let (page, offset) = placed.locate(&boxes, ri);
         let top = pdf_y(offset);
@@ -593,6 +634,8 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
                 size: BODY_SIZE,
                 style: Style::default(),
                 text,
+                word_spacing: 0.0,
+                glyph_scale: 1.0,
             });
         }
         for ci in row.len()..ncols {
@@ -643,7 +686,7 @@ fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
     if h > max_h {
         h = max_h;
     }
-    let placed = layout.place(&figure_block(block, h), &[]);
+    let placed = layout.place(Kind::Other, PARA_GAP, h, breaks_before(block), &[]);
     let top = pdf_y(placed.top);
     let bottom = top - h;
 
@@ -668,15 +711,9 @@ fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
     layout.gap(PARA_GAP);
 }
 
-fn figure_block(block: &BlockView, h: f32) -> PageBlock {
-    PageBlock::new(f64::from(h))
-        .with_lead(f64::from(PARA_GAP))
-        .breaking_before(breaks_before(block))
-}
-
 fn placeholder(layout: &mut Layout, block: &BlockView, label: &str) {
     let h = 120.0;
-    let placed = layout.place(&figure_block(block, h), &[]);
+    let placed = layout.place(Kind::Other, PARA_GAP, h, breaks_before(block), &[]);
     let top = pdf_y(placed.top);
     let bottom = top - h;
     let page = layout.page(placed.page);
@@ -706,6 +743,8 @@ fn placeholder(layout: &mut Layout, block: &BlockView, label: &str) {
         size: BODY_SIZE,
         style: Style::default(),
         text: label,
+        word_spacing: 0.0,
+        glyph_scale: 1.0,
     });
     layout.gap(PARA_GAP);
 }
@@ -756,66 +795,192 @@ fn runs(chars: &[Styled]) -> Vec<Run> {
     runs
 }
 
-/// Word-wrap styled characters to `max_w` points at `size`pt, as lines of
-/// runs. Hard newlines in the source split lines; over-long single words
-/// are hard-broken so they never overflow the text column.
-fn wrap(chars: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Run>> {
-    let mut out: Vec<Vec<Styled>> = Vec::new();
+/// One line of set text: its runs, and how far justification stretched its spaces and glyphs.
+struct Wrapped {
+    runs: Vec<Run>,
+    glue_scale: f32,
+    glyph_scale: f32,
+}
+
+/// A word, or a piece of one between two discretionary hyphens, and the space before it.
+struct PieceBox {
+    chars: Vec<Styled>,
+    /// The space characters between the previous box and this one.
+    glue: Vec<Styled>,
+    /// The line may end right before this box, painting a hyphen when it does.
+    hyphen: bool,
+    width: f32,
+    glue_width: f32,
+}
+
+/// Set styled characters into `max_w` points at `size`pt by the shared paragraph composer:
+/// hard newlines split paragraphs, TeX/Liang patterns hyphenate with the measure, and
+/// `justify` stretches every line but a paragraph's last to the full measure. Words longer
+/// than the measure are hard-broken so they never overflow the column.
+fn wrap(chars: &[Styled], max_w: f32, size: f32, justify: bool) -> Vec<Wrapped> {
+    let mut out = Vec::new();
     for source in chars.split(|&(ch, _)| ch == '\n') {
-        if source.is_empty() {
-            out.push(Vec::new());
-            continue;
-        }
-        let mut line: Vec<Styled> = Vec::new();
-        for piece in source.split_inclusive(|&(ch, _)| ch == ' ') {
-            let word = match piece.split_last() {
-                Some((&(' ', _), word)) => word,
-                _ => piece,
-            };
-            if styled_width(&line, size) + styled_width(word, size) <= max_w {
-                line.extend_from_slice(piece);
-                continue;
-            }
-            if !line.is_empty() {
-                out.push(trimmed(std::mem::take(&mut line)));
-            }
-            if styled_width(word, size) <= max_w {
-                line.extend_from_slice(piece);
-            } else {
-                out.extend(hard_break(word, max_w, size));
-            }
-        }
-        if !line.is_empty() {
-            out.push(trimmed(line));
-        }
+        out.extend(wrap_paragraph(source, max_w, size, justify));
     }
     if out.is_empty() {
-        out.push(Vec::new());
+        out.push(Wrapped {
+            runs: Vec::new(),
+            glue_scale: 1.0,
+            glyph_scale: 1.0,
+        });
     }
-    out.iter().map(|line| runs(line)).collect()
+    out
 }
 
-fn trimmed(mut line: Vec<Styled>) -> Vec<Styled> {
-    while line.last().is_some_and(|&(ch, _)| ch == ' ') {
-        line.pop();
+/// [`wrap`] of one paragraph: no hard newlines inside it.
+fn wrap_paragraph(source: &[Styled], max_w: f32, size: f32, justify: bool) -> Vec<Wrapped> {
+    let boxes = word_boxes(source, max_w, size);
+    if boxes.is_empty() {
+        return Vec::new();
     }
-    line
+    let mut boxes_of = Vec::with_capacity(boxes.len());
+    for piece in &boxes {
+        let mut item = ParagraphBox::word(piece.width, piece.glue_width);
+        item.break_before = true;
+        item.stretch_before = piece.glue_width * 0.5;
+        item.shrink_before = piece.glue_width / 3.0;
+        if piece.hyphen {
+            // A line ending here paints a hyphen that is not in the source.
+            item.flagged_break = true;
+            item.break_penalty = 50;
+            item.break_width = Style::default().width("-", size);
+        }
+        boxes_of.push(item);
+    }
+    let options = ParagraphOptions {
+        justify,
+        ..ParagraphOptions::new(max_w)
+    };
+    let mut lines = Vec::new();
+    for line in compose_paragraph(&boxes_of, options) {
+        let mut chars = Vec::new();
+        for (index, piece) in boxes.iter().enumerate().take(line.end).skip(line.start) {
+            if index != line.start {
+                chars.extend_from_slice(&piece.glue);
+            }
+            chars.extend_from_slice(&piece.chars);
+        }
+        if let Some(next) = boxes.get(line.end)
+            && next.hyphen
+        {
+            chars.push((
+                '-',
+                chars.last().map_or(Style::default(), |&(_, style)| style),
+            ));
+        }
+        lines.push(Wrapped {
+            runs: runs(&chars),
+            glue_scale: line.glue_scale,
+            glyph_scale: line.glyph_scale,
+        });
+    }
+    lines
 }
 
-fn hard_break(word: &[Styled], max_w: f32, size: f32) -> Vec<Vec<Styled>> {
-    let mut chunks = Vec::new();
-    let mut cur: Vec<Styled> = Vec::new();
-    for &styled in word {
-        cur.push(styled);
-        if styled_width(&cur, size) > max_w && cur.len() > 1 {
-            cur.pop();
-            chunks.push(std::mem::replace(&mut cur, vec![styled]));
+/// The boxes of one paragraph, in order: a space run before each word, a word split at every
+/// discretionary hyphen, and an over-long word hard-broken into pieces that fit.
+fn word_boxes(source: &[Styled], max_w: f32, size: f32) -> Vec<PieceBox> {
+    let mut boxes = Vec::new();
+    let mut glue: Vec<Styled> = Vec::new();
+    let mut at = 0;
+    while at < source.len() {
+        if source.get(at).is_some_and(|&(ch, _)| ch == ' ') {
+            if let Some(&space) = source.get(at) {
+                glue.push(space);
+            }
+            at = at.saturating_add(1);
+            continue;
+        }
+        let start = at;
+        while source.get(at).is_some_and(|&(ch, _)| ch != ' ') {
+            at = at.saturating_add(1);
+        }
+        let word = source.get(start..at).unwrap_or_default();
+        let word_text: String = word.iter().map(|&(ch, _)| ch).collect();
+        let mut cuts: Vec<usize> = discretionary_hyphen_breaks(&word_text, "en")
+            .into_iter()
+            .filter_map(|byte| {
+                let chars = word_text.get(..byte)?.chars().count();
+                (chars > 0 && chars < word.len()).then_some(chars)
+            })
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut from = 0;
+        let mut first = true;
+        for cut in cuts.into_iter().chain(std::iter::once(word.len())) {
+            let piece = word.get(from..cut).unwrap_or_default();
+            if piece.is_empty() {
+                continue;
+            }
+            let piece_glue = if first {
+                std::mem::take(&mut glue)
+            } else {
+                Vec::new()
+            };
+            first = false;
+            push_piece(&mut boxes, piece, piece_glue, from != 0, max_w, size);
+            from = cut;
         }
     }
-    if !cur.is_empty() {
-        chunks.push(cur);
+    boxes
+}
+
+/// Push `piece` as one box, or as several when it alone is wider than the measure: an
+/// over-long word is broken so it never overflows the column.
+fn push_piece(
+    boxes: &mut Vec<PieceBox>,
+    piece: &[Styled],
+    glue: Vec<Styled>,
+    hyphen: bool,
+    max_w: f32,
+    size: f32,
+) {
+    let width = styled_width(piece, size);
+    if width <= max_w {
+        boxes.push(PieceBox {
+            chars: piece.to_vec(),
+            glue_width: styled_width(&glue, size),
+            glue,
+            hyphen,
+            width,
+        });
+        return;
     }
-    chunks
+    let mut glue = Some(glue);
+    let mut current: Vec<Styled> = Vec::new();
+    for &styled in piece {
+        current.push(styled);
+        if styled_width(&current, size) > max_w && current.len() > 1 {
+            current.pop();
+            let chunk_glue = glue.take().unwrap_or_default();
+            let width = styled_width(&current, size);
+            boxes.push(PieceBox {
+                chars: std::mem::take(&mut current),
+                glue_width: styled_width(&chunk_glue, size),
+                glue: chunk_glue,
+                hyphen,
+                width,
+            });
+            current.push(styled);
+        }
+    }
+    if !current.is_empty() {
+        let chunk_glue = glue.take().unwrap_or_default();
+        let width = styled_width(&current, size);
+        boxes.push(PieceBox {
+            chars: current,
+            glue_width: styled_width(&chunk_glue, size),
+            glue: chunk_glue,
+            hyphen: false,
+            width,
+        });
+    }
 }
 
 fn clip_to_width(text: &str, max_w: f32, size: f32) -> String {
@@ -919,9 +1084,18 @@ fn serialize_ops(ops: &[Op]) -> Vec<u8> {
                 size,
                 style,
                 text,
+                word_spacing,
+                glyph_scale,
             } => {
                 let font = style.font();
-                let _ = write!(s, "BT /{font} {size} Tf {x:.2} {y:.2} Td (");
+                let _ = write!(s, "BT /{font} {size} Tf");
+                if (*glyph_scale - 1.0).abs() > 0.000_5 {
+                    let _ = write!(s, " {:.3} Tz", glyph_scale * 100.0);
+                }
+                if word_spacing.abs() > 0.005 {
+                    let _ = write!(s, " {word_spacing:.3} Tw");
+                }
+                let _ = write!(s, " {x:.2} {y:.2} Td (");
                 s.extend_from_slice(&escape_pdf_text(text));
                 let _ = writeln!(s, ") Tj ET");
             }
