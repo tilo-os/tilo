@@ -4,10 +4,13 @@
 
 use crate::common::{addr, device, localhost_endpoint};
 
+use automerge::transaction::CommitOptions;
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use std::collections::BTreeMap;
 use std::time::Duration;
+use tilo_actions::{ActionContext, ActionInvoker, Did, EditOp, FieldEdit, PathStep};
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
@@ -403,4 +406,94 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     .await
     .expect("A answers B's write");
     assert_eq!(answered.kept, Kept::Durable);
+}
+
+/// A checkpoint its owner's device publishes commits its coverage into the
+/// workspace's own document, and that change reaches a linked device live:
+/// the record is in the other device's replica before it asks for anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_checkpoints_coverage_reaches_a_linked_device_live() {
+    let root = SigningKey::from_bytes(&[0x31; 32]);
+    let (a_key, a_cert) = device(&root, 0x32);
+    let (b_key, b_cert) = device(&root, 0x33);
+    let roster = vec![a_cert.clone(), b_cert];
+    let now = SystemTime::now();
+    let mut governor = StatePeer::new(
+        WORKSPACE,
+        a_cert.clone(),
+        roster.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    governor.select_exact_admissions().unwrap();
+    governor
+        .install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
+                documents: Vec::new(),
+            },
+            &a_key,
+            now,
+        )
+        .unwrap();
+    let a = DirectSync::new(governor, a_key.clone());
+    let b_peer = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
+    let b = DirectSync::new(b_peer, b_key.clone());
+
+    let a_endpoint = localhost_endpoint(&a_key).await;
+    let host_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(DIRECT_ALPN, a.clone())
+        .spawn();
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let mut caught_up = b.caught_up();
+    let dialing = tokio::spawn({
+        let b = b.clone();
+        let b_endpoint = b_endpoint.clone();
+        let target = addr(&a_endpoint);
+        async move { b.connect(&b_endpoint, target).await }
+    });
+    tokio::time::timeout(Duration::from_secs(30), caught_up.wait_for(|up| *up))
+        .await
+        .expect("the other device catches up")
+        .expect("the link is up");
+
+    // The governor's device publishes a record as a checkpoint: the coverage
+    // row it commits to the workspace's own document goes with it.
+    let record = "tab:7";
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "checkpoint").unwrap();
+    let context = ActionContext {
+        what: Some(Did::Edit(FieldEdit {
+            ty: "fixture".into(),
+            field: "value".into(),
+            path: vec![PathStep::Field("value".into())],
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: BTreeMap::new(),
+        })),
+        invoker: Some(ActionInvoker::person(hex::encode(a_cert.user_public_key))),
+        ..ActionContext::for_resource("fixture", "fixture", "Fixture")
+    };
+    let mut options = CommitOptions::default();
+    if let Some(message) = context.change_message() {
+        options.set_message(message);
+    }
+    document.commit_with(options);
+    a.publish(|peer| {
+        peer.publication_mut()
+            .publish_document(APP, record, document.save(), &a_key, now)
+    })
+    .expect("the governor publishes its checkpoint");
+    let written = a.read(|peer| peer.document_heads(APP, record));
+    assert!(written.is_some(), "the publisher holds what it wrote");
+    until(&b, "the linked device takes the checkpoint in", |peer| {
+        peer.document_heads(APP, record) == written
+    })
+    .await;
+
+    dialing.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(10), host_router.shutdown()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), b_endpoint.close()).await;
 }
