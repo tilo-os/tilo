@@ -35,7 +35,6 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-actions = { path = "../../collab/actions" }
 # A report's authenticated transport and the signed receipt an agent's
 # member answers for.
-tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
@@ -61,7 +60,6 @@ model-providers = { path = "../../../apps/model-providers" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 passwords = { path = "../../../apps/passwords" }
 pdf-viewer = { path = "../../../apps/pdf-viewer" }
-photos = { path = "../../../apps/photos" }
 poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
 settings = { path = "../../../apps/settings", default-features = false, features = [] }
