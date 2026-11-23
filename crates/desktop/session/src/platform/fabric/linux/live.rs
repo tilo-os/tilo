@@ -98,7 +98,9 @@ impl Live {
             (entry.user_public_key, entry.revoked_device_public_key)
                 == (cert.user_public_key, cert.device_public_key)
         }) {
-            self.siblings.remove(&device);
+            if self.siblings.remove(&device).is_some() {
+                tilo_workspace_service::workspaces::presence_changed();
+            }
             return None;
         }
         let sibling = self.siblings.entry(device.clone()).or_default();
@@ -119,6 +121,7 @@ impl Live {
                 sibling.present = false;
                 sibling.presence = None;
                 sibling.clipboard.clear();
+                tilo_workspace_service::workspaces::presence_changed();
             }
         }
     }
@@ -134,7 +137,12 @@ impl Live {
         presence.validate()?;
         let sibling = self.heard(peer)?;
         let changed = sibling.presence.as_ref() != Some(&presence);
+        // A device is online once it said itself: the first word it says brings it.
+        let arrived = sibling.presence.is_none();
         sibling.presence = Some(presence);
+        if arrived {
+            tilo_workspace_service::workspaces::presence_changed();
+        }
         Ok(changed)
     }
 

@@ -167,7 +167,7 @@ pub mod machine_secrets;
 mod record_reads;
 pub use record_reads::RecordReads;
 mod personal;
-pub use personal::{PresentDevices, present_on};
+pub use personal::{PresentDevices, presence_changed, present_on};
 mod weak;
 pub use weak::WeakWorkspaces;
 mod publication;

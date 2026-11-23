@@ -741,10 +741,34 @@ fn ordered(directory: &WorkspaceDirectory) -> Vec<WorkspaceMeta> {
 /// Who is present on which device, as one source of presence on this device hears it: what who
 /// is here ([`tilo_actions::remote::Here`]) carries beyond a workspace's roster, and nothing else
 /// reads.
+///
+/// A source tells [`presence_changed`] whenever what it attaches may have changed.
 pub trait PresentDevices: Send + Sync {
     /// Add the devices present in `workspace` now to who is `here`: a person present on a device
     /// and missing from `here` is added.
     fn attach(&self, workspace: &str, here: &mut Vec<tilo_actions::remote::Here>);
+}
+
+/// The held reads of who is here, waiting on the next [`presence_changed`]: one list every read
+/// shares, so a held read costs an entry here and nothing runs until presence moves.
+static PRESENCE_WAITING: std::sync::Mutex<Vec<tilo_actions::remote::ResourceWake>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Who is present on which device may have changed: a link into a workspace opened or ended, or
+/// a device of the person's came onto or left a live session with this one. Wakes every held
+/// read of who is here, once.
+pub fn presence_changed() {
+    let waiting = std::mem::take(&mut *PRESENCE_WAITING.lock_recover());
+    for wake in waiting {
+        wake.wake();
+    }
+}
+
+/// Wake `wake` on the next [`presence_changed`].
+pub(crate) fn on_presence_change(wake: &tilo_actions::remote::ResourceWake) {
+    let mut waiting = PRESENCE_WAITING.lock_recover();
+    waiting.retain(tilo_actions::remote::ResourceWake::waiting);
+    waiting.push(wake.clone());
 }
 
 /// Mark `person` (hex) present on `device` (hex) in `here`, adding them when they are missing.

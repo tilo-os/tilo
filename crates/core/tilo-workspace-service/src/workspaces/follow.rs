@@ -854,6 +854,7 @@ impl Workspaces {
             .entry(workspace_id)
             .or_default()
             .insert(remote);
+        super::presence_changed();
         // A device that reached its workspace is online from here: its
         // person's record of their keys says so, and when it was last.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -1019,6 +1020,8 @@ impl Workspaces {
                 }
             }
         }
+        // A link this pass ended or opened again moves who is present.
+        super::presence_changed();
     }
 }
 

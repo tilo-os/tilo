@@ -12,7 +12,8 @@
 //!
 //! Who is in a workspace ([`PRESENCE`]) is read here too, as the resource it is: what the
 //! workspace's roster names, with the devices each is present on as presence on this device hears
-//! them. It is never stored, so a held read of it looks again every [`PRESENCE_LOOK`].
+//! them. It is never stored: a held read of it wakes when presence moves
+//! ([`super::presence_changed`]) or the roster does.
 
 use std::sync::Arc;
 
@@ -20,10 +21,6 @@ use tilo_actions::remote::{
     ActionCallError, Caller, PRESENCE, RESOURCE_READ_REFUSED, ResourceAddress, ResourceCopy,
     ResourceReadRequest, ResourceReads, ResourceWake,
 };
-
-/// How often a held read of who is here looks again: presence is heard, not written, so no write
-/// wakes it.
-const PRESENCE_LOOK: std::time::Duration = std::time::Duration::from_secs(2);
 
 use super::{WeakWorkspaces, Workspaces};
 
@@ -262,14 +259,19 @@ impl ResourceReads for RecordReads {
     ) -> Result<(), ActionCallError> {
         let route = self.route(caller, address)?;
         if address.app == PRESENCE && !matches!(route, Route::Served(_)) {
-            // Nothing is written when someone comes or goes: the read looks again shortly.
-            let wake = wake.clone();
-            let _ = std::thread::Builder::new()
-                .name("presence-look".into())
-                .spawn(move || {
-                    std::thread::sleep(PRESENCE_LOOK);
-                    wake.wake();
-                });
+            // Nothing is written when someone comes or goes: presence says when it moves, and the
+            // roster when its membership does.
+            super::personal::on_presence_change(wake);
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            if let Route::Inside(broker) = route
+                && let Some(changed) = broker.changed(
+                    &caller.clone().in_workspace(&address.workspace),
+                    tilo_actions::remote::WatchScope::Here,
+                )
+            {
+                let wake = wake.clone();
+                changed.then(move |_| wake.wake());
+            }
             return Ok(());
         }
         let workspaces = match route {
