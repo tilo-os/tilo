@@ -711,7 +711,13 @@ The copies:
   `app-launch` and the `launcher` sandbox when an action is called or a view
   is shown, one per workspace and app, serving every window, page viewer and
   windowless call of that app, and stopped when idle. It is how the system
-  runs app code, not an app being open. `app-keeper` stays only for programs that are not Tilo
+  runs app code, not an app being open. Idle means no call or window for a
+  while, not the last window closing, and a spare sandbox started ahead
+  becomes the next app's process, so an open starts no process. A window
+  runs no app code: one window process per workspace, started with the
+  session, draws every hosted app's windows, and the compositor names a
+  window's app from the instance the session gave it, never from the
+  process. `app-keeper` stays only for programs that are not Tilo
   apps.
 - **One undo boundary and one executor, in the app SDK**: `LocalDispatch`.
   The UI library's widgets take plain closures; an app's state changes only
