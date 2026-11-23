@@ -12,14 +12,10 @@
 
 use super::api::{ISSUER, Mcp};
 use super::api_on_server::{api_on_server_shelled, approved_key, headers, json_of};
-use super::api_unattended::{Key, Person, Sheet, asked, backend, beside, waiting, workspace};
+use super::api_unattended::{Key, answer, backend, page_in, waiting, workspace};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tilo_server_client::MemberApprover;
-use tilo_server_client::questions::{MemberQuestions, answer_questions};
-use tilo_server_protocol::certify::ConfirmationAnswer;
-use tokio::sync::mpsc;
 
 /// `key` runs `action` on `path` in `workspace` with `args`, as a step of the
 /// run its client calls `title`: its answer.
@@ -292,28 +288,10 @@ async fn every_run_listed() {
     assert_eq!(titled(&listed, "Backend's postscript")["undoable"], true);
 
     // A command the person must allow reads as waiting, then as ended.
-    let host = MemberApprover::new(on_server.server_host());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let ada_at_page = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&ada_at_page.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &host,
-        root: &ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
-    let (status, ran) = beside(&mut page, agent.run(&ws, "echo listed-while-waiting")).await;
+    let mut ada_at_page = page_in(&on_server, &ada, &ws).await;
+    let (status, ran) = agent.run(&ws, "echo listed-while-waiting").await;
     let command = waiting(status, &ran).unwrap_or_else(|| panic!("asked: {status} {ran}"));
-    asked(&mut page, &ada_at_page, 1).await;
-    let listed = beside(&mut page, invocations(&reviewer, &ws, &json!({}))).await;
+    let listed = invocations(&reviewer, &ws, &json!({})).await;
     let waits = with_id(&listed, &command);
     assert_eq!(waits["status"], "waiting", "{waits}");
     assert!(
@@ -325,26 +303,24 @@ async fn every_run_listed() {
     );
     assert_eq!(waits["recorded"], false, "it changed nothing yet: {waits}");
     assert!(listed["waiting"].as_u64().unwrap() >= 1, "{listed}");
-    ada_at_page.answer(ConfirmationAnswer::AllowOnce);
-    let (status, followed) = beside(&mut page, agent.follow(&ws, &command)).await;
+    answer(&mut ada_at_page, &command, "approve").await;
+    let (status, followed) = agent.follow(&ws, &command).await;
     assert_eq!(status, 200, "{followed}");
-    let listed = beside(&mut page, invocations(&reviewer, &ws, &json!({}))).await;
+    let listed = invocations(&reviewer, &ws, &json!({})).await;
     let ended = with_id(&listed, &command);
     assert_eq!(ended["status"], "ended", "{ended}");
     assert!(ended["ended_ms"].is_i64(), "{ended}");
     assert_eq!(listed["waiting"], 0, "{listed}");
     if ended["recorded"] != true {
-        let (_, history) = beside(
-            &mut page,
-            agent.post(
+        let (_, history) = agent
+            .post(
                 &format!("/v1/workspaces/{ws}/resources/terminal/actions/history"),
                 &json!({"last": 20}),
-            ),
-        )
-        .await;
+            )
+            .await;
         panic!("the command's run is in the terminal's history: {ended} {history}");
     }
-    host.close().await;
+    ada_at_page.peer.close();
 
     // The person's key takes its run back: it reads as undone.
     let backends = &ids[2];

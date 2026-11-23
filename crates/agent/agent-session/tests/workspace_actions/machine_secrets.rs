@@ -149,7 +149,14 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         ["Claude Code".to_owned()],
         crate::harness::hosted::Unlisted::Deny,
     )
-    .spawn(&hosted.server, root.clone(), &laptop_device);
+    .spawn(
+        &hosted.server,
+        &server_device,
+        root.clone(),
+        &laptop_device,
+        &crate::support::WORKSPACE,
+    )
+    .await;
     let mut page = Browser::open(&hosted, &browser_device, &server_device).await;
     let agent = Browser::open(&hosted, &computer, &server_device).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;

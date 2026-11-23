@@ -17,15 +17,13 @@
 )]
 
 use super::*;
-use std::sync::Mutex;
 use tilo_action_policy::{Answer as PolicyAnswer, KindSet, Rule, TreePath};
 use tilo_actions::remote::{Caller, CataloguePage, CatalogueQuery};
 use tilo_actions::{ActionKind, RiskLevel};
 use tilo_app_package::{Manifest, SigningIdentity, pack, tapp};
 use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
-use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+
 use ui::tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
@@ -222,29 +220,6 @@ fn catalogue(
         } => page,
         other => panic!("a catalogue page: {other:?}"),
     }
-}
-
-/// What the person's device was asked.
-#[derive(Clone, Default)]
-struct Seen {
-    asked: Arc<Mutex<Vec<PendingConfirmation>>>,
-}
-
-/// The person at their device, allowing every question once.
-struct ApproveOnce {
-    seen: Seen,
-    answers: tokio::sync::mpsc::UnboundedSender<Answered>,
-}
-
-impl QuestionSheet for ApproveOnce {
-    fn ask(&mut self, question: &PendingConfirmation) {
-        self.seen.asked.lock().unwrap().push(question.clone());
-        let _ = self
-            .answers
-            .send((question.id, ConfirmationAnswer::AllowOnce));
-    }
-
-    fn withdraw(&mut self, _: [u8; 32]) {}
 }
 
 #[test]
@@ -636,26 +611,6 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         ActionAddress::new(TRACKER, "delete-area"),
         InvokeArgument::Json(delete),
     );
-    let seen = Seen::default();
-    let (answered, mut answers) = tokio::sync::mpsc::unbounded_channel();
-    let mut sheet = ApproveOnce {
-        seen: seen.clone(),
-        answers: answered,
-    };
-    let approver = tilo_server_client::MemberApprover::new(tilo_server_client::ServerAddress::at(
-        server.node_addr(),
-    ));
-    let mut member = MemberQuestions {
-        server: &approver,
-        root: &root,
-        device: None,
-    };
-    let mut session = Box::pin(answer_questions(
-        &mut member,
-        &mut sheet,
-        &mut answers,
-        || tokio::time::sleep(Duration::from_millis(20)),
-    ));
     let mut running = {
         let actions = actions.clone();
         let asking = asking.clone();
@@ -663,23 +618,21 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         let workspace_id = created.workspace_id;
         tokio::task::spawn_blocking(move || settled(&actions, workspace_id, &asking, &request))
     };
-    let status = tokio::select! {
-        status = &mut running => status.unwrap(),
-        error = &mut session => panic!("the page's session with the server ended: {error}"),
-    };
+    // The person's own device lists the question and answers it, as the shell's asking view does.
+    let ada = enrol(&root, "Ada's browser", DeviceCapabilities::member());
+    let mut person = Browser::open_at(&server, &ada, &server_device, &created.workspace).await;
+    let question = person.asked_about(asking_request.invocation).await;
+    assert!(question.destructive, "{question:?}");
+    assert_eq!(question.name, "delete-area", "{question:?}");
+    person
+        .resolve(&question, "approve", None)
+        .await
+        .expect("the person allows it");
+    let status = running.await.unwrap();
     assert!(
         matches!(status, ReceiptStatus::Completed { .. }),
         "the approved action applies: {status:?}"
     );
-    let question = seen
-        .asked
-        .lock()
-        .unwrap()
-        .first()
-        .cloned()
-        .expect("the person's device was asked");
-    assert_eq!(question.risk, "destructive");
-    assert_eq!(question.action_label, "delete-area");
     let done = workspaces
         .resource_document(&created.workspace, TASKS, "")
         .await

@@ -12,10 +12,6 @@ use super::api_v1::{Holder, own_workspace};
 use super::*;
 use serde_json::{Value, json};
 use std::sync::Mutex;
-use tilo_server_client::MemberApprover;
-use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tokio::sync::mpsc;
 
 /// A person at their page, answering what their computer's agent asks them: allowing it, or
 /// refusing the next one when told to, and noting what each question asked for.
@@ -26,27 +22,22 @@ struct AtTheirPage {
 }
 
 impl AtTheirPage {
-    /// `root`'s page, answering the server's questions until the test ends.
-    fn of(on_server: &OnServer, root: &SigningKey) -> Self {
+    /// `root`'s page in `workspace`, answering the questions that wait for them until the test
+    /// ends.
+    async fn of(on_server: &OnServer, root: &SigningKey, workspace: &str) -> Self {
         let person = Self::default();
-        let approver = MemberApprover::new(on_server.server_host());
-        let (root, mut sheet) = (root.clone(), person.clone());
+        let mut page = super::api_unattended::page_in(on_server, root, workspace).await;
+        let theirs = person.clone();
         tokio::spawn(async move {
-            let mut page = MemberQuestions {
-                server: &approver,
-                root: &root,
-                device: None,
-            };
-            let (answered, mut answers) = mpsc::unbounded_channel();
-            let mut sheet = Sheet {
-                person: &mut sheet,
-                answered,
-            };
-            let ended = answer_questions(&mut page, &mut sheet, &mut answers, || {
-                tokio::time::sleep(Duration::from_millis(50))
-            })
-            .await;
-            panic!("the page's session with the server ended: {ended}");
+            loop {
+                for asked in page.asks().await {
+                    theirs.asked.lock().unwrap().push(asked.name.clone());
+                    let refuse = std::mem::take(&mut *theirs.refuse_next.lock().unwrap());
+                    let resolution = if refuse { "decline" } else { "approve" };
+                    let _ = page.resolve(&asked, resolution, None).await;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         });
         person
     }
@@ -62,29 +53,31 @@ impl AtTheirPage {
     }
 }
 
-/// The page's sheet of questions, answered as [`AtTheirPage`] says.
-struct Sheet<'a> {
-    person: &'a mut AtTheirPage,
-    answered: mpsc::UnboundedSender<Answered>,
-}
-
-impl QuestionSheet for Sheet<'_> {
-    fn ask(&mut self, question: &PendingConfirmation) {
-        self.person
-            .asked
-            .lock()
-            .unwrap()
-            .push(question.action_label.clone());
-        let refuse = std::mem::take(&mut *self.person.refuse_next.lock().unwrap());
-        let answer = if refuse {
-            ConfirmationAnswer::Deny
-        } else {
-            ConfirmationAnswer::AllowOnce
-        };
-        let _ = self.answered.send((question.id, answer));
+/// `holder`'s computer posts `body` to `path` in `workspace`, followed to its end when it waits
+/// for the person: what it answered, or why it stopped.
+async fn posted(
+    holder: &Holder,
+    workspace: &str,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let command = holder.command();
+    let answer = command
+        .post(path, body)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    if answer["status"] != "pending" {
+        return Ok(answer);
     }
-
-    fn withdraw(&mut self, _id: [u8; 32]) {}
+    let invocation = answer["invocation"]
+        .as_str()
+        .ok_or_else(|| format!("a pending call names its invocation: {answer}"))?;
+    command
+        .get(&format!(
+            "/v1/workspaces/{workspace}/invocations/{invocation}?wait=30"
+        ))
+        .await
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// The member row of `person` (hex) in an answer of `workspace/members`, if they are in it: the
@@ -146,17 +139,17 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
 
     // Ada's computer makes Grace and Hal administrators, by their keys. It is her agent's: it asks
     // her first, on her page, and her own device signs each change once she allowed it.
-    let ada_at_page = AtTheirPage::of(&on_server, &ada);
+    let ada_at_page = AtTheirPage::of(&on_server, &ada, &workspace).await;
     let ada_mac = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
     for (person, name) in [(&grace_hex, "Grace Hopper"), (&hal_hex, "Hal")] {
-        let added = ada_mac
-            .command()
-            .post(
-                &add,
-                &json!({"person": person, "role": "administrator", "name": name}),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("Ada makes {name} an administrator: {error:#}"));
+        let added = posted(
+            &ada_mac,
+            &workspace,
+            &add,
+            &json!({"person": person, "role": "administrator", "name": name}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("Ada makes {name} an administrator: {error:#}"));
         let made = row(&added, person).unwrap_or_else(|| panic!("{name} is listed: {added}"));
         assert_eq!(made["administrator"], true, "{added}");
         assert_eq!(made["name"], name, "{added}");
@@ -164,31 +157,37 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
 
     // Grace's own computer: an administrator, not the owner. Unmaking another administrator and
     // handing the workspace on are not hers to sign, and the workspace refuses them.
-    let grace_at_page = AtTheirPage::of(&on_server, &grace);
+    let grace_at_page = AtTheirPage::of(&on_server, &grace, &workspace).await;
     let grace_mac = Holder::start(&on_server, &grace, &workspace, "Claude Code").await;
-    let removing = grace_mac
-        .command()
-        .post(&person(&workspace, &hal_hex, "remove"), &json!({}))
-        .await
-        .expect_err("an administrator does not remove another");
+    let removing = posted(
+        &grace_mac,
+        &workspace,
+        &person(&workspace, &hal_hex, "remove"),
+        &json!({}),
+    )
+    .await
+    .expect_err("an administrator does not remove another");
     assert!(
         format!("{removing:#}").contains("refused"),
         "the workspace says it refused: {removing:#}"
     );
-    let demoting = grace_mac
-        .command()
-        .post(
-            &person(&workspace, &hal_hex, "role"),
-            &json!({"role": "viewer"}),
-        )
-        .await
-        .expect_err("an administrator does not demote another");
+    let demoting = posted(
+        &grace_mac,
+        &workspace,
+        &person(&workspace, &hal_hex, "role"),
+        &json!({"role": "viewer"}),
+    )
+    .await
+    .expect_err("an administrator does not demote another");
     assert!(format!("{demoting:#}").contains("refused"), "{demoting:#}");
-    let taking = grace_mac
-        .command()
-        .post(&add, &json!({"person": grace_hex, "role": "owner"}))
-        .await
-        .expect_err("an administrator does not take the workspace");
+    let taking = posted(
+        &grace_mac,
+        &workspace,
+        &add,
+        &json!({"person": grace_hex, "role": "owner"}),
+    )
+    .await
+    .expect_err("an administrator does not take the workspace");
     assert!(format!("{taking:#}").contains("refused"), "{taking:#}");
 
     // A key Ada approved acts for her through the host, which signs what it carries out: it may
@@ -228,11 +227,14 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
 
     // Ada refuses her agent the removal it asks for: nothing changes.
     ada_at_page.refuse_next();
-    let refused = ada_mac
-        .command()
-        .post(&person(&workspace, &hal_hex, "remove"), &json!({}))
-        .await
-        .expect_err("what Ada refuses her agent is not done");
+    let refused = posted(
+        &ada_mac,
+        &workspace,
+        &person(&workspace, &hal_hex, "remove"),
+        &json!({}),
+    )
+    .await
+    .expect_err("what Ada refuses her agent is not done");
     assert!(
         format!("{refused:#}").contains("did not allow"),
         "{refused:#}"
@@ -241,30 +243,36 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     assert!(row(&listed, &hal_hex).is_some(), "Hal stays: {listed}");
 
     // Ada's computer removes Hal and moves Grace to a role: her own device signs both.
-    let removed = ada_mac
-        .command()
-        .post(&person(&workspace, &hal_hex, "remove"), &json!({}))
-        .await
-        .expect("the owner removes an administrator");
+    let removed = posted(
+        &ada_mac,
+        &workspace,
+        &person(&workspace, &hal_hex, "remove"),
+        &json!({}),
+    )
+    .await
+    .expect("the owner removes an administrator");
     assert!(row(&removed, &hal_hex).is_none(), "Hal is gone: {removed}");
-    let demoted = ada_mac
-        .command()
-        .post(
-            &person(&workspace, &grace_hex, "role"),
-            &json!({"role": "editor"}),
-        )
-        .await
-        .expect("the owner moves an administrator to a role");
+    let demoted = posted(
+        &ada_mac,
+        &workspace,
+        &person(&workspace, &grace_hex, "role"),
+        &json!({"role": "editor"}),
+    )
+    .await
+    .expect("the owner moves an administrator to a role");
     let grace_row = row(&demoted, &grace_hex).expect("Grace stays");
     assert_eq!(grace_row["administrator"], false, "{demoted}");
     assert_eq!(grace_row["role"], "editor", "{demoted}");
 
     // And hands the workspace to Grace: she owns it, and Ada stays as an administrator.
-    let handed = ada_mac
-        .command()
-        .post(&add, &json!({"person": grace_hex, "role": "owner"}))
-        .await
-        .expect("the owner hands the workspace on");
+    let handed = posted(
+        &ada_mac,
+        &workspace,
+        &add,
+        &json!({"person": grace_hex, "role": "owner"}),
+    )
+    .await
+    .expect("the owner hands the workspace on");
     assert_eq!(
         row(&handed, &grace_hex).map(|row| row["owner"].clone()),
         Some(json!(true)),
@@ -275,14 +283,14 @@ async fn an_owner_unmakes_administrators_and_hands_the_workspace_on_from_their_c
     assert_eq!(ada_row["administrator"], true, "{handed}");
 
     // Now Grace is its owner, and her computer unmakes Ada's administration.
-    let unmade = grace_mac
-        .command()
-        .post(
-            &person(&workspace, &ada_hex, "role"),
-            &json!({"role": "editor"}),
-        )
-        .await
-        .expect("the new owner unmakes the old one's administration");
+    let unmade = posted(
+        &grace_mac,
+        &workspace,
+        &person(&workspace, &ada_hex, "role"),
+        &json!({"role": "editor"}),
+    )
+    .await
+    .expect("the new owner unmakes the old one's administration");
     assert_eq!(
         row(&unmade, &ada_hex).map(|row| row["administrator"].clone()),
         Some(json!(false)),

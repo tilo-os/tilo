@@ -263,7 +263,14 @@ impl OwnAgent {
                 ["Claude Code".to_owned()],
                 crate::harness::hosted::Unlisted::Deny,
             )
-            .spawn(running.server(), root.clone(), &laptop)
+            .spawn(
+                running.server(),
+                &host,
+                root.clone(),
+                &laptop,
+                &crate::support::WORKSPACE,
+            )
+            .await
         });
         Self {
             person: hex::encode(root.verifying_key().to_bytes()),

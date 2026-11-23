@@ -28,6 +28,7 @@ use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
     ActionCallError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
     InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    asked,
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -572,6 +573,70 @@ impl Page {
             ReceiptStatus::Completed { output } => Ok(output),
             other => Err(format!("{other:?}")),
         }
+    }
+
+    /// Every question waiting for this page's person, as `tilo.asking`'s `waiting#list` answers
+    /// them: the asked records the host keeps for them, oldest first.
+    pub async fn asks(&mut self) -> Vec<asked::Asked> {
+        let listed = self
+            .invoke_on(
+                asked::PROVIDER,
+                ActionAddress::new(asked::WAITING, asked::LIST),
+                InvokeArgument::None,
+            )
+            .await
+            .expect("the host answers the person's waiting list")
+            .value
+            .unwrap_or_default();
+        serde_json::from_value::<asked::AskedList>(listed)
+            .expect("a list of asked records")
+            .questions
+    }
+
+    /// The asked record about `invocation`, once it waits for the person: what a page reading the
+    /// asking view shows.
+    pub async fn asked_about(&mut self, invocation: InvocationId) -> asked::Asked {
+        let wanted = invocation.0.to_string();
+        let deadline = Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .expect("the bound fits in an Instant");
+        loop {
+            if let Some(found) = self
+                .asks()
+                .await
+                .into_iter()
+                .find(|found| found.record.record == wanted)
+            {
+                return found;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the person was never asked about {wanted}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Answer the asked record `asked` as the person with `resolution` (`approve`,
+    /// `approve_and_grant` or `decline`), picking choice `choice` where the question offers
+    /// choices: what pressing one of the asking view's buttons does.
+    pub async fn resolve(
+        &mut self,
+        asked: &asked::Asked,
+        resolution: &str,
+        choice: Option<usize>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("resolution".into(), resolution.into());
+        if let Some(choice) = choice {
+            arguments.insert("choice".into(), choice.into());
+        }
+        self.invoke_on(
+            tilo_actions::remote::workspace_invocations::PROVIDER,
+            ActionAddress::new(asked.record.record.clone(), "resolve"),
+            InvokeArgument::Json(arguments),
+        )
+        .await
     }
 
     /// Wait until everything this page published is durable on the host.

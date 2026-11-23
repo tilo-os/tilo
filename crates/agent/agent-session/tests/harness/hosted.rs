@@ -14,11 +14,10 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_agent_session::{AgentService, AppCatalogue, FeedbackReviewer};
-use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
+use tilo_server::certify::{ApproverDecision, ApproverReply};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server_client::Approver;
-use tilo_server_protocol::certify::PendingConfirmation;
 use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert};
 
 use crate::support::Device;
@@ -340,12 +339,13 @@ pub async fn serving_documents(
 }
 
 /// The laptop: a root holder answering every agent request with the agent's
-/// certificate and the delegation of exactly what was proposed.
+/// certificate and the delegation of exactly what was proposed, and the person
+/// at a page of theirs answering the questions that wait for them.
 ///
-/// A question an agent puts to its person is answered with `unlisted` unless
-/// the agent is one of `confirming` (a scenario's `may_confirm`), which is
-/// allowed once. `Unlisted::Pending` leaves every question for the test to
-/// answer, and is what a scenario about the person's own answer uses.
+/// A question an agent puts to its person is allowed with one answer unless
+/// the agent is one of `confirming` (a scenario's `may_confirm`). `Unlisted::Pending`
+/// leaves every question for the test to answer, and is what a scenario about the
+/// person's own answer uses.
 pub struct Laptop {
     confirming: BTreeSet<String>,
     unlisted: Unlisted,
@@ -370,16 +370,19 @@ impl Laptop {
         }
     }
 
-    /// Spawn it against `server`.
-    pub fn spawn(
+    /// Spawn it against `server`, at a page in `workspace` on `host`'s host.
+    pub async fn spawn(
         self,
         server: &Server,
+        host: &Device,
         root: SigningKey,
         laptop: &Device,
+        workspace: &str,
     ) -> tokio::task::JoinHandle<()> {
         let addr = server.node_addr();
         let cert = laptop.cert.clone();
         let key = laptop.key.clone();
+        let mut page = crate::harness::page::Page::open_at(server, laptop, host, workspace).await;
         tokio::spawn(async move {
             let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
                 .bind()
@@ -440,32 +443,21 @@ impl Laptop {
                     assert_eq!(decided, ApproverReply::Decided);
                 }
                 if self.unlisted != Unlisted::Pending {
-                    let Ok(questions) = approver.list_confirmations().await else {
-                        return;
-                    };
-                    for question in questions {
-                        let answer = self.answer(&question);
-                        eprintln!(
-                            "{} asked to {}: {answer:?}",
-                            question.agent_label, question.action_label
-                        );
-                        let _ = approver.answer(question.id, answer).await;
+                    for asked in page.asks().await {
+                        let allow = match &asked.by {
+                            tilo_actions::remote::asked::AskedBy::Agent(who) => {
+                                self.confirming.contains(&who.id)
+                                    || self.confirming.contains(&who.name)
+                            }
+                            _ => false,
+                        };
+                        let resolution = if allow { "approve" } else { "decline" };
+                        let _ = page.resolve(&asked, resolution, None).await;
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-    }
-
-    fn answer(&self, question: &PendingConfirmation) -> ConfirmationAnswer {
-        if self.confirming.contains(&question.agent_id)
-            || self.confirming.contains(&question.agent_label)
-        {
-            return ConfirmationAnswer::AllowOnce;
-        }
-        match self.unlisted {
-            Unlisted::Deny | Unlisted::Pending => ConfirmationAnswer::Deny,
-        }
     }
 }
 

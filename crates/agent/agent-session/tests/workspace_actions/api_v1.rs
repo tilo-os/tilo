@@ -1112,35 +1112,12 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     );
 }
 
-/// The person at their approving devices, answering every question the server puts to them
-/// with what they last chose, and what they were asked.
-struct Approver {
-    allows: std::sync::atomic::AtomicBool,
-    asked: std::sync::Mutex<Vec<tilo_server_protocol::certify::PendingConfirmation>>,
-}
-
-impl tilo_server::workspaces::AsksPeople for Approver {
-    fn ask(
-        &self,
-        _person: [u8; 32],
-        question: tilo_server_protocol::certify::PendingConfirmation,
-    ) -> tilo_server::workspaces::PersonAnswer {
-        use tilo_server_protocol::certify::ConfirmationAnswer;
-        self.asked.lock().unwrap().push(question);
-        let answer = if self.allows.load(std::sync::atomic::Ordering::SeqCst) {
-            ConfirmationAnswer::AllowOnce
-        } else {
-            ConfirmationAnswer::Deny
-        };
-        Box::pin(async move { Ok(answer) })
-    }
-}
-
 /// The computer's agent, over the session its holder keeps, reads a workspace's people as any
 /// key of its person's does, and what it changes there is decided by the grants naming it: its
 /// person is asked first, and their answer stands, until they allow it outright.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
+    use super::api_unattended::{answer, page_in};
     use tilo_action_policy::agent_answers::AnswerScope;
     use tilo_actions::remote::{WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER};
     let on_server = api_on_server(ISSUER).await;
@@ -1148,13 +1125,7 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
     let workspace = own_workspace(&on_server, &ada, &page).await;
     let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
-    let person = Arc::new(Approver {
-        allows: std::sync::atomic::AtomicBool::new(true),
-        asked: std::sync::Mutex::default(),
-    });
-    let workspaces = on_server.hosted.server.workspaces().unwrap();
-    workspaces.ask_people(person.clone());
-    let questions = || person.asked.lock().unwrap().len();
+    let mut ada_at_page = page_in(&on_server, &ada, &workspace).await;
 
     // `tilo workspace people ls`: reading who is in asks nobody.
     let listed = holder
@@ -1182,38 +1153,69 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
         read.get("error").is_none() && read.to_string().contains(&ada_key),
         "{read}"
     );
-    assert_eq!(questions(), 0, "reading asks nobody");
+    assert!(ada_at_page.asks().await.is_empty(), "reading asks nobody");
 
-    // Inviting someone asks Ada first: allowed, the link comes back.
+    // Inviting someone asks Ada first: her approve at her page lets it through.
     let invitations =
         format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite");
     let invite = json!({"role": "editor"});
-    let invited = holder
+    let asked = holder
         .command()
         .post(&invitations, &invite)
         .await
-        .expect("allowed, the agent invites");
+        .expect("the agent asks Ada");
+    assert_eq!(asked["status"], "pending", "{asked}");
+    let invocation = asked["invocation"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Ada is asked: {asked}"))
+        .to_owned();
+    let question = ada_at_page
+        .asked_about(invocation.parse().expect("an invocation id"))
+        .await;
+    let tilo_actions::remote::asked::AskedBy::Agent(who) = &question.by else {
+        panic!("an agent asks: {question:?}");
+    };
+    assert_eq!(who.name, "Claude Code", "{question:?}");
+    assert_eq!(question.workspace_name, workspace, "{question:?}");
+    answer(&mut ada_at_page, &invocation, "approve").await;
+    let invited = holder
+        .command()
+        .get(&format!(
+            "/v1/workspaces/{workspace}/invocations/{invocation}?wait=30"
+        ))
+        .await
+        .expect("the invite's answer");
     assert!(invited.to_string().contains("http"), "{invited}");
-    assert_eq!(questions(), 1, "Ada is asked once");
-    let question = person.asked.lock().unwrap()[0].clone();
-    assert_eq!(question.agent_label, "Claude Code", "{question:?}");
-    assert_eq!(question.workspace, workspace, "{question:?}");
+
     // Her no stands.
-    person
-        .allows
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    let refused = holder.command().post(&invitations, &invite).await;
+    let asked = holder
+        .command()
+        .post(&invitations, &invite)
+        .await
+        .expect("the agent asks Ada again");
+    assert_eq!(asked["status"], "pending", "{asked}");
+    let invocation = asked["invocation"].as_str().unwrap().to_owned();
+    answer(&mut ada_at_page, &invocation, "decline").await;
+    let refused = holder
+        .command()
+        .get(&format!(
+            "/v1/workspaces/{workspace}/invocations/{invocation}?wait=30"
+        ))
+        .await;
     assert!(
         refused
             .as_ref()
-            .is_err_and(|error| format!("{error:#}").contains("did not allow")),
+            .is_err_and(|error| format!("{error:#}").contains("did not allow"))
+            || refused
+                .as_ref()
+                .is_ok_and(|refused| refused.to_string().contains("did not allow")),
         "{refused:?}"
     );
-    assert_eq!(questions(), 2);
 
     // Allowed in the workspace's settings, under Agents, it goes unasked: Ada's laptop sets the
     // agent's bound in the workspace's list of its agents, as her settings do, and the server
     // decides the agent's calls by it.
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
     let invite_node = AnswerScope::action(
         WORKSPACE_GOVERNANCE_PROVIDER,
         WORKSPACE_GOVERNANCE_KIND,
@@ -1223,12 +1225,16 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     let agent =
         tilo_actions::remote::device_agent_id(&holder.laptop.cert.user_public_key, "Claude Code");
     allow_on_list(workspaces, &holder, (&workspace, &agent), &invite_node).await;
-    holder
+    let invited = holder
         .command()
         .post(&invitations, &invite)
         .await
         .expect("allowed outright, the agent invites");
-    assert_eq!(questions(), 2, "allowed outright, nobody is asked");
+    assert!(invited.to_string().contains("http"), "{invited}");
+    assert!(
+        ada_at_page.asks().await.is_empty(),
+        "allowed outright, nobody is asked"
+    );
     assert!(holder.device.is_live());
 }
 

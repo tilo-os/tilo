@@ -9,22 +9,16 @@
 //! command is asked. A branch starts with its source's setting, and goes on
 //! apart from it; a key for one workspace neither turns on nor uses another's.
 //!
-//! The person is a tilo.sh tab holding their root: the page's approver session
-//! ([`tilo_server_client::questions`]) shows each question the server asks them,
-//! and the test answers it there, as they would.
+//! The person is a page of their own in the workspace: the questions that wait for them are
+//! asked records they read there, and their answer is the record's `resolve`.
 
 use super::api::ISSUER;
 use super::api_on_server::{OnServer, api_on_server_shelled, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tilo_actions::remote::asked::AskedBy;
 use tilo_api::Server;
-use tilo_server_client::MemberApprover;
-use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tokio::sync::mpsc;
 
 /// A key's calls of `/v1`.
 pub(super) struct Key<'a> {
@@ -123,66 +117,32 @@ impl Key<'_> {
     }
 }
 
-/// What the page's sheet shows: every question the server put to the person.
-pub(super) struct Sheet {
-    pub(super) asked: Arc<Mutex<Vec<PendingConfirmation>>>,
+/// The person `root`'s own page in `workspace`, on `on_server`'s host.
+pub(super) async fn page_in(on_server: &OnServer, root: &SigningKey, workspace: &str) -> Browser {
+    let device = enrol(root, "Ada's browser", DeviceCapabilities::member());
+    Browser::open_at(
+        &on_server.hosted.server,
+        &device,
+        &on_server.host,
+        workspace,
+    )
+    .await
 }
 
-impl QuestionSheet for Sheet {
-    fn ask(&mut self, question: &PendingConfirmation) {
-        self.asked.lock().unwrap().push(question.clone());
-    }
-
-    fn withdraw(&mut self, _id: [u8; 32]) {}
+/// The person answers the question the invocation `invocation` waits in at `page`, with
+/// `resolution`: `approve`, `approve_and_grant` or `decline`.
+pub(super) async fn answer(page: &mut Browser, invocation: &str, resolution: &str) {
+    let asked = page
+        .asked_about(invocation.parse().expect("an invocation id"))
+        .await;
+    page.resolve(&asked, resolution, None)
+        .await
+        .unwrap_or_else(|why| panic!("the person answers {invocation}: {why}"));
 }
 
-/// The person at their page: what it was asked, and where their answers go.
-pub(super) struct Person {
-    pub(super) asked: Arc<Mutex<Vec<PendingConfirmation>>>,
-    pub(super) answers: mpsc::UnboundedSender<Answered>,
-}
-
-impl Person {
-    pub(super) fn questions(&self) -> usize {
-        self.asked.lock().unwrap().len()
-    }
-
-    pub(super) fn last(&self) -> PendingConfirmation {
-        self.asked.lock().unwrap().last().cloned().unwrap()
-    }
-
-    /// Answer the last question asked with `answer`.
-    pub(super) fn answer(&self, answer: ConfirmationAnswer) {
-        self.answers.send((self.last().id, answer)).unwrap();
-    }
-}
-
-/// `call`, while the person's page keeps its session with the server.
-pub(super) async fn beside<T>(
-    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
-    call: impl Future<Output = T>,
-) -> T {
-    tokio::select! {
-        out = call => out,
-        error = page.as_mut() => panic!("the page's session with the server ended: {error}"),
-    }
-}
-
-/// Wait, beside the page, until it was asked `count` questions in all.
-pub(super) async fn asked(
-    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
-    person: &Person,
-    count: usize,
-) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while person.questions() < count {
-        assert!(
-            Instant::now() < deadline,
-            "the page saw {} questions, not {count}",
-            person.questions()
-        );
-        beside(page, tokio::time::sleep(Duration::from_millis(50))).await;
-    }
+/// Whether nothing waits for the person, as `page` lists their questions.
+pub(super) async fn nothing_waits(page: &mut Browser) -> bool {
+    page.asks().await.is_empty()
 }
 
 /// A person on `on_server` with their page and a key reaching all their
@@ -232,94 +192,72 @@ async fn own_key_runs_unasked_only_while_let() {
         token: backend.mint(&ws, "Jane Doe's agent").await,
     };
 
-    // Ada's tab holds her root: it is her approver at the server.
-    let host = MemberApprover::new(on_server.server_host());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let person = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&person.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &host,
-        root: &ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
+    let mut person = page_in(&on_server, &ada, &ws).await;
 
     // Off, as every workspace starts: the workspace's own key's command is put
     // to the person.
-    assert!(!beside(&mut page, agent.listed_unattended(&ws)).await);
-    let (status, ran) = beside(&mut page, agent.run(&ws, "echo asked-while-off")).await;
-    assert!(
-        waiting(status, &ran).is_some(),
-        "asked while off: {status} {ran}"
-    );
-    asked(&mut page, &person, 1).await;
-    person.answer(ConfirmationAnswer::Deny);
+    assert!(!agent.listed_unattended(&ws).await);
+    let (status, ran) = agent.run(&ws, "echo asked-while-off").await;
+    let asked = waiting(status, &ran).unwrap_or_else(|| panic!("asked while off: {status} {ran}"));
+    answer(&mut person, &asked, "decline").await;
 
-    // The key asks to run unattended: pending while the person decides, and
-    // the question names the workspace and its branches.
-    let (status, asking) = beside(&mut page, agent.unattended(&ws, true)).await;
+    // The key asks to run unattended: it waits for the person, and the question
+    // names the workspace and the action.
+    let (status, asking) = agent.unattended(&ws, true).await;
     let run = waiting(status, &asking).unwrap_or_else(|| panic!("pending: {status} {asking}"));
     assert!(asking["ask"].is_object(), "an ask the SDKs raise: {asking}");
-    asked(&mut page, &person, 2).await;
-    let question = person.last();
-    assert_eq!(question.agent_label, "Jane Doe's agent", "{question:?}");
-    assert_eq!(question.workspace, "Applicant: Jane Doe", "{question:?}");
+    let question = person
+        .asked_about(run.parse().expect("an invocation id"))
+        .await;
+    let AskedBy::Agent(who) = &question.by else {
+        panic!("an agent asks: {question:?}");
+    };
+    assert_eq!(who.name, "Jane Doe's agent", "{question:?}");
+    assert_eq!(
+        question.workspace_name, "Applicant: Jane Doe",
+        "{question:?}"
+    );
     assert!(
-        question.resource_label.contains("branches made from it")
-            && question
-                .action_label
-                .contains("run commands in its Linux machine without asking you each time"),
+        question
+            .name
+            .contains("run commands in its Linux machine without asking you each time"),
         "{question:?}"
     );
     // Denied, it stays off, and the next command is asked.
-    person.answer(ConfirmationAnswer::Deny);
-    let (status, denied) = beside(&mut page, agent.follow(&ws, &run)).await;
+    answer(&mut person, &run, "decline").await;
+    let (status, denied) = agent.follow(&ws, &run).await;
     assert!(
         status >= 400 && denied.to_string().contains("did not allow"),
         "denied: {status} {denied}"
     );
-    assert!(!beside(&mut page, agent.listed_unattended(&ws)).await);
-    let (status, ran) = beside(&mut page, agent.run(&ws, "echo asked-after-denial")).await;
-    assert!(
-        waiting(status, &ran).is_some(),
-        "asked after the denial: {status} {ran}"
-    );
-    asked(&mut page, &person, 3).await;
-    person.answer(ConfirmationAnswer::Deny);
+    assert!(!agent.listed_unattended(&ws).await);
+    let (status, ran) = agent.run(&ws, "echo asked-after-denial").await;
+    let asked =
+        waiting(status, &ran).unwrap_or_else(|| panic!("asked after the denial: {status} {ran}"));
+    answer(&mut person, &asked, "decline").await;
 
     // Asked again and allowed: on.
-    let (status, asking) = beside(&mut page, agent.unattended(&ws, true)).await;
+    let (status, asking) = agent.unattended(&ws, true).await;
     let run = waiting(status, &asking).unwrap_or_else(|| panic!("pending: {status} {asking}"));
-    asked(&mut page, &person, 4).await;
-    person.answer(ConfirmationAnswer::AllowOnce);
-    let (status, allowed) = beside(&mut page, agent.follow(&ws, &run)).await;
+    answer(&mut person, &run, "approve").await;
+    let (status, allowed) = agent.follow(&ws, &run).await;
     assert_eq!(status, 200, "{allowed}");
     assert_eq!(allowed["result"]["unattended"], true, "{allowed}");
-    assert!(beside(&mut page, agent.listed_unattended(&ws)).await);
-    assert!(beside(&mut page, backend.listed_unattended(&ws)).await);
+    assert!(agent.listed_unattended(&ws).await);
+    assert!(backend.listed_unattended(&ws).await);
 
     // On: the workspace's own key's command runs, nobody asked, and History
     // keeps it as that key's run.
-    let (status, ran) = beside(&mut page, agent.run(&ws, "echo ran-unattended")).await;
+    let (status, ran) = agent.run(&ws, "echo ran-unattended").await;
     assert_eq!(status, 200, "ran unasked: {ran}");
     assert!(ran.to_string().contains("ran-unattended"), "{ran}");
-    assert_eq!(person.questions(), 4, "nobody was asked");
-    let (status, history) = beside(
-        &mut page,
-        agent.post(
+    assert!(nothing_waits(&mut person).await, "nobody was asked");
+    let (status, history) = agent
+        .post(
             &format!("/v1/workspaces/{ws}/resources/terminal/actions/history"),
             &json!({"last": 100}),
-        ),
-    )
-    .await;
+        )
+        .await;
     assert_eq!(status, 200, "{history}");
     let by_key = history["result"]["versions"]
         .as_array()
@@ -333,64 +271,50 @@ async fn own_key_runs_unasked_only_while_let() {
     assert!(by_key > 0, "History names the run the key's: {history}");
 
     // The key reaching all the person's workspaces is still asked there.
-    let (status, ran) = beside(&mut page, backend.run(&ws, "echo backend-asked")).await;
-    assert!(
-        waiting(status, &ran).is_some(),
-        "the backend's key is asked: {status} {ran}"
-    );
-    asked(&mut page, &person, 5).await;
-    person.answer(ConfirmationAnswer::Deny);
+    let (status, ran) = backend.run(&ws, "echo backend-asked").await;
+    let asked = waiting(status, &ran)
+        .unwrap_or_else(|| panic!("the backend's key is asked: {status} {ran}"));
+    answer(&mut person, &asked, "decline").await;
 
     // Another action of the key's that reaches outside the records still
     // asks: running a recorded command again goes to the session's pane,
     // which need not be the workspace's machine.
-    let recorded = recorded_command(&mut page, &agent, &ws).await;
-    let (status, rerun) = beside(
-        &mut page,
-        agent.post(
+    let recorded = recorded_command(&agent, &ws).await;
+    let (status, rerun) = agent
+        .post(
             &format!("/v1/workspaces/{ws}/resources/{}/actions/rerun", recorded.0),
             &json!({"command": recorded.1}),
-        ),
-    )
-    .await;
-    assert!(
-        waiting(status, &rerun).is_some(),
-        "a rerun is asked: {status} {rerun}"
-    );
-    asked(&mut page, &person, 6).await;
-    person.answer(ConfirmationAnswer::Deny);
+        )
+        .await;
+    let asked =
+        waiting(status, &rerun).unwrap_or_else(|| panic!("a rerun is asked: {status} {rerun}"));
+    answer(&mut person, &asked, "decline").await;
 
     // Off again, at once, asking nobody; the next command is asked.
-    let (status, off) = beside(&mut page, agent.unattended(&ws, false)).await;
+    let (status, off) = agent.unattended(&ws, false).await;
     assert_eq!(status, 200, "{off}");
     assert_eq!(off["result"]["unattended"], false, "{off}");
-    assert_eq!(person.questions(), 6, "turning it off asks nobody");
-    assert!(!beside(&mut page, agent.listed_unattended(&ws)).await);
-    let (status, ran) = beside(&mut page, agent.run(&ws, "echo asked-again")).await;
     assert!(
-        waiting(status, &ran).is_some(),
-        "asked once off again: {status} {ran}"
+        nothing_waits(&mut person).await,
+        "turning it off asks nobody"
     );
-    asked(&mut page, &person, 7).await;
-    person.answer(ConfirmationAnswer::Deny);
-    beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
-    host.close().await;
+    assert!(!agent.listed_unattended(&ws).await);
+    let (status, ran) = agent.run(&ws, "echo asked-again").await;
+    let asked =
+        waiting(status, &ran).unwrap_or_else(|| panic!("asked once off again: {status} {ran}"));
+    answer(&mut person, &asked, "decline").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    person.peer.close();
 }
 
 /// The Terminal session of `workspace` and the id of a command it ran, as
 /// `key` reads them.
-async fn recorded_command(
-    page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
-    key: &Key<'_>,
-    workspace: &str,
-) -> (String, String) {
-    let (status, listed) = beside(
-        page,
-        key.get(&format!(
+async fn recorded_command(key: &Key<'_>, workspace: &str) -> (String, String) {
+    let (status, listed) = key
+        .get(&format!(
             "/v1/workspaces/{workspace}/resources?path=terminal"
-        )),
-    )
-    .await;
+        ))
+        .await;
     assert_eq!(status, 200, "{listed}");
     for row in listed["rows"].as_array().into_iter().flatten() {
         let Some(path) = row["path"].as_str() else {
@@ -401,11 +325,9 @@ async fn recorded_command(
             .map(|segment| segment.replace(' ', "%20"))
             .collect::<Vec<_>>()
             .join("/");
-        let (status, read) = beside(
-            page,
-            key.get(&format!("/v1/workspaces/{workspace}/resources/{encoded}")),
-        )
-        .await;
+        let (status, read) = key
+            .get(&format!("/v1/workspaces/{workspace}/resources/{encoded}"))
+            .await;
         assert_eq!(status, 200, "{read}");
         // A command's entry is its id, which is the run's.
         let command = read["fields"]["commands"]
@@ -441,64 +363,42 @@ async fn branch_runs_unasked_and_goes_on_apart() {
         token: backend.mint(&other, "Other's agent").await,
     };
 
-    let host = MemberApprover::new(on_server.server_host());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let person = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&person.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &host,
-        root: &ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
+    let mut person = page_in(&on_server, &ada, &template).await;
 
     // The person lets the template run its keys' commands unattended, asked
     // by the backend's key.
-    let (status, asking) = beside(&mut page, backend.unattended(&template, true)).await;
+    let (status, asking) = backend.unattended(&template, true).await;
     let run = waiting(status, &asking).unwrap_or_else(|| panic!("pending: {status} {asking}"));
-    asked(&mut page, &person, 1).await;
-    person.answer(ConfirmationAnswer::AllowOnce);
-    let (status, allowed) = beside(&mut page, backend.follow(&template, &run)).await;
+    answer(&mut person, &run, "approve").await;
+    let (status, allowed) = backend.follow(&template, &run).await;
     assert_eq!(status, 200, "{allowed}");
 
     // A key for another workspace neither turns it on there nor uses it here.
-    let (status, refused) = beside(&mut page, others.unattended(&template, true)).await;
+    let (status, refused) = others.unattended(&template, true).await;
     assert!(
         status >= 400,
         "a key for another workspace: {status} {refused}"
     );
-    let (status, refused) = beside(&mut page, others.run(&template, "echo not-mine")).await;
+    let (status, refused) = others.run(&template, "echo not-mine").await;
     assert!(
         status >= 400,
         "a key for another workspace runs nothing: {status} {refused}"
     );
-    let (status, ran) = beside(&mut page, others.run(&other, "echo asked-in-its-own")).await;
-    assert!(
-        waiting(status, &ran).is_some(),
-        "the other workspace's key is asked in its own: {status} {ran}"
-    );
-    asked(&mut page, &person, 2).await;
-    person.answer(ConfirmationAnswer::Deny);
-    assert!(!beside(&mut page, others.listed_unattended(&other)).await);
+    let (status, ran) = others.run(&other, "echo asked-in-its-own").await;
+    let asked = waiting(status, &ran)
+        .unwrap_or_else(|| panic!("the other workspace's key is asked in its own: {status} {ran}"));
+    let mut at_other = page_in(&on_server, &ada, &other).await;
+    answer(&mut at_other, &asked, "decline").await;
+    assert!(!others.listed_unattended(&other).await);
 
     // A branch of the template starts with it on: a key minted for the
     // branch runs its commands there unasked.
-    let (status, branched) = beside(
-        &mut page,
-        backend.post(
+    let (status, branched) = backend
+        .post(
             "/v1/resources/account/workspaces/actions/branch",
             &json!({"workspace": template, "name": "Applicant: Jane Doe"}),
-        ),
-    )
-    .await;
+        )
+        .await;
     assert_eq!(status, 200, "{branched}");
     let branched = &branched["result"]["workspace"];
     let branch = branched["id"].as_str().unwrap().to_owned();
@@ -507,38 +407,38 @@ async fn branch_runs_unasked_and_goes_on_apart() {
         api: &api,
         token: backend.mint(&branch, "Jane Doe's agent").await,
     };
-    assert!(beside(&mut page, branchs.listed_unattended(&branch)).await);
-    let (status, ran) = beside(&mut page, branchs.run(&branch, "echo branch-unasked")).await;
+    assert!(branchs.listed_unattended(&branch).await);
+    let (status, ran) = branchs.run(&branch, "echo branch-unasked").await;
     assert_eq!(status, 200, "the branch's key runs unasked: {ran}");
     assert!(ran.to_string().contains("branch-unasked"), "{ran}");
-    assert_eq!(person.questions(), 2, "nobody was asked");
+    assert!(nothing_waits(&mut person).await, "nobody was asked");
 
     // The template's key does not reach the branch.
-    let (status, refused) = beside(&mut page, templates.run(&branch, "echo not-mine")).await;
+    let (status, refused) = templates.run(&branch, "echo not-mine").await;
     assert!(
         status >= 400,
         "the template's key runs nothing in the branch: {status} {refused}"
     );
 
     // Off in the branch, which asks again; the template's stays on.
-    let (status, off) = beside(&mut page, branchs.unattended(&branch, false)).await;
+    let (status, off) = branchs.unattended(&branch, false).await;
     assert_eq!(status, 200, "{off}");
-    let (status, ran) = beside(&mut page, branchs.run(&branch, "echo branch-asked")).await;
-    assert!(
-        waiting(status, &ran).is_some(),
-        "asked in the branch: {status} {ran}"
-    );
-    asked(&mut page, &person, 3).await;
-    person.answer(ConfirmationAnswer::Deny);
-    assert!(beside(&mut page, templates.listed_unattended(&template)).await);
-    let (status, ran) = beside(&mut page, templates.run(&template, "echo template-unasked")).await;
+    let (status, ran) = branchs.run(&branch, "echo branch-asked").await;
+    let asked =
+        waiting(status, &ran).unwrap_or_else(|| panic!("asked in the branch: {status} {ran}"));
+    let mut at_branch = page_in(&on_server, &ada, &branch).await;
+    answer(&mut at_branch, &asked, "decline").await;
+    assert!(templates.listed_unattended(&template).await);
+    let (status, ran) = templates.run(&template, "echo template-unasked").await;
     assert_eq!(
         status, 200,
         "the template's own key still runs unasked: {ran}"
     );
-    assert_eq!(person.questions(), 3);
-    beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
-    host.close().await;
+    assert!(nothing_waits(&mut person).await);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for mut page in [person, at_other, at_branch] {
+        page.peer.close();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -559,24 +459,7 @@ async fn terminal_open_is_asked_once() {
         api: &api,
         token: backend.mint(&ws, "Jane Doe's agent").await,
     };
-    let host = MemberApprover::new(on_server.server_host());
-    let (answers, mut answered) = mpsc::unbounded_channel();
-    let person = Person {
-        asked: Arc::default(),
-        answers,
-    };
-    let mut sheet = Sheet {
-        asked: Arc::clone(&person.asked),
-    };
-    let mut questions = MemberQuestions {
-        server: &host,
-        root: &ada,
-        device: None,
-    };
-    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(page);
+    let mut person = page_in(&on_server, &ada, &ws).await;
     let (path, body) = (
         format!("/v1/workspaces/{ws}/resources/terminal/actions/open-terminal"),
         json!({"cols": 100, "rows": 30}),
@@ -584,11 +467,10 @@ async fn terminal_open_is_asked_once() {
     let open = || agent.post(&path, &body);
 
     // Asked first, as a command of the key's is; allowed, it opens.
-    let (status, asking) = beside(&mut page, open()).await;
+    let (status, asking) = open().await;
     let opening = waiting(status, &asking).unwrap_or_else(|| panic!("asked: {status} {asking}"));
-    asked(&mut page, &person, 1).await;
-    person.answer(ConfirmationAnswer::AllowOnce);
-    let (status, opened) = beside(&mut page, agent.follow(&ws, &opening)).await;
+    answer(&mut person, &opening, "approve").await;
+    let (status, opened) = agent.follow(&ws, &opening).await;
     assert_eq!(status, 200, "{opened}");
     let is_id = |id: &Value| {
         id.as_str()
@@ -605,16 +487,13 @@ async fn terminal_open_is_asked_once() {
     let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&phone.key.to_bytes())).await;
     let server = on_server.hosted.server.node_addr();
     let stream = opened["result"]["stream"].as_str().unwrap().to_owned();
-    let welcome = beside(
-        &mut page,
-        tokio::task::spawn_blocking(move || {
-            use ush::environment_terminals::{quic, wire};
-            let runtime = tokio::runtime::Handle::current();
-            let (_connection, mut to, mut from) = quic::dial(&endpoint, server, &runtime).unwrap();
-            wire::write_hello(&mut to, &wire::Hello { stream }).unwrap();
-            wire::read_welcome(&mut from).unwrap()
-        }),
-    )
+    let welcome = tokio::task::spawn_blocking(move || {
+        use ush::environment_terminals::{quic, wire};
+        let runtime = tokio::runtime::Handle::current();
+        let (_connection, mut to, mut from) = quic::dial(&endpoint, server, &runtime).unwrap();
+        wire::write_hello(&mut to, &wire::Hello { stream }).unwrap();
+        wire::read_welcome(&mut from).unwrap()
+    })
     .await
     .unwrap();
     assert_eq!(
@@ -626,13 +505,10 @@ async fn terminal_open_is_asked_once() {
     );
 
     // Each open is asked about: the allowed one let only itself through.
-    let (status, again) = beside(&mut page, open()).await;
-    assert!(
-        waiting(status, &again).is_some(),
-        "the next open is asked: {status} {again}"
-    );
-    asked(&mut page, &person, 2).await;
-    person.answer(ConfirmationAnswer::Deny);
-    beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
-    host.close().await;
+    let (status, again) = open().await;
+    let asked = waiting(status, &again)
+        .unwrap_or_else(|| panic!("the next open is asked: {status} {again}"));
+    answer(&mut person, &asked, "decline").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    person.peer.close();
 }

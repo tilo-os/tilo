@@ -183,7 +183,7 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
     // answers right here, so the command completes in one go.
     let logged_into = first_workspace(&on_server, &token).await;
     let mac = Holder::start(&on_server, &ada, &logged_into, "Claude Code").await;
-    let approving = approve_as_root(&on_server, &ada, &agent_of(&mac));
+    let approving = approve_as_root(&on_server, &ada, &logged_into, &agent_of(&mac)).await;
     let started = std::time::Instant::now();
     one_list(&on_server, &token, "the mac", &mac.command()).await;
     assert!(
@@ -250,26 +250,25 @@ fn agent_of(holder: &Holder) -> String {
     tilo_actions::remote::device_agent_id(&holder.laptop.cert.user_public_key, "Claude Code")
 }
 
-fn approve_as_root(on_server: &OnServer, root: &SigningKey, agent: &str) -> RootApproving {
-    use tilo_server_client::questions::QuestionServer as _;
+async fn approve_as_root(
+    on_server: &OnServer,
+    root: &SigningKey,
+    workspace: &str,
+    agent: &str,
+) -> RootApproving {
+    use tilo_actions::remote::asked::AskedBy;
     let stop = Arc::new(tokio::sync::Notify::new());
     let stopped = Arc::clone(&stop);
-    let (server, root, agent) = (on_server.server_host(), root.clone(), agent.to_owned());
+    let mut page = super::api_unattended::page_in(on_server, root, workspace).await;
+    let agent = agent.to_owned();
     let answered = tokio::spawn(async move {
-        let member = tilo_server_client::MemberApprover::new(server);
-        let mut questions = tilo_server_client::questions::MemberQuestions::of_root(&member, &root);
         let mut answered = 0;
         loop {
-            for question in questions.confirmations().await.unwrap_or_default() {
-                if question.agent_id == agent
-                    && questions
-                        .answer(
-                            question.id,
-                            tilo_server_protocol::certify::ConfirmationAnswer::AllowOnce,
-                        )
-                        .await
-                        .is_ok()
-                {
+            for asked in page.asks().await {
+                let AskedBy::Agent(who) = &asked.by else {
+                    continue;
+                };
+                if who.id == agent && page.resolve(&asked, "approve", None).await.is_ok() {
                     answered += 1;
                 }
             }
@@ -278,7 +277,6 @@ fn approve_as_root(on_server: &OnServer, root: &SigningKey, agent: &str) -> Root
                 () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
             }
         }
-        member.close().await;
         answered
     });
     RootApproving { stop, answered }
@@ -315,7 +313,7 @@ async fn a_computer_without_the_root_says_it_waits_for_the_persons_approval() {
     assert!(!said.contains("couldn't reach"), "{said}");
 
     // Ada allows it on a device holding her root: the workspace is made.
-    let approving = approve_as_root(&on_server, &ada, &agent_of(&mac));
+    let approving = approve_as_root(&on_server, &ada, &logged_into, &agent_of(&mac)).await;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let (_, listed) = as_key(&on_server, &token, hyper::Method::POST, LIST, &json!({})).await;

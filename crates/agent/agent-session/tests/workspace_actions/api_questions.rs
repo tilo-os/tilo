@@ -1,122 +1,33 @@
-//! What a person's agent asks them through the API server on a server, as a
-//! tilo.sh tab holding the person's root answers it: the page's approver
-//! session ([`tilo_server_client::questions`]), each command signed by the
-//! root, as the browser runtime runs it. Allowed, the agent's call runs;
-//! refused, it fails with the refusal; either way the question leaves the
-//! sheet once the host stops asking it.
+//! What an agent's call that asks first becomes, and how the person it waits for answers it.
+//!
+//! The call is kept as its own `tilo.invocations` record in status asked, listed for the person
+//! by `tilo.asking`'s `waiting#list` at a device of theirs and answered there with the record's
+//! `resolve`: approve runs the call the server kept, once, and decline refuses it. The answer
+//! lands on the call's own invocation, which the agent follows.
 use super::api::{ISSUER, Mcp};
-use super::api_on_server::{api_on_server, approved_key};
+use super::api_on_server::{OnServer, api_on_server, approved_key};
 use super::*;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
-use tilo_server_client::MemberApprover;
-use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tokio::sync::mpsc;
-
-/// What the page's sheet saw: each question asked, and each taken away.
-#[derive(Clone, Default)]
-struct Seen {
-    asked: Arc<Mutex<Vec<PendingConfirmation>>>,
-    withdrawn: Arc<Mutex<Vec<[u8; 32]>>>,
-}
-
-/// The person at the sheet, answering every question with `answer`.
-struct Person {
-    answer: ConfirmationAnswer,
-    answered: mpsc::UnboundedSender<Answered>,
-    seen: Seen,
-}
-
-impl QuestionSheet for Person {
-    fn ask(&mut self, question: &PendingConfirmation) {
-        self.seen.asked.lock().unwrap().push(question.clone());
-        let _ = self.answered.send((question.id, self.answer.clone()));
-    }
-
-    fn withdraw(&mut self, id: [u8; 32]) {
-        self.seen.withdrawn.lock().unwrap().push(id);
-    }
-}
+use tilo_actions::InvocationId;
 
 /// Removing a book from the library: Undo cannot give the reader back the
 /// book's file, so the action asks first.
 const REMOVE: &str = "ebook/1 book#remove-from-library";
 
-/// The run the agent's call is a step of, by the title it gives it.
-const RUN: &str = "Fill Jane Doe’s visa application";
-
-/// `tilo_do` of [`REMOVE`] as an agent that waits for the person: the reply.
-async fn asking(mcp: &mut Mcp<'_>) -> Value {
-    let (status, reply) = mcp
-        .post(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                     "params": {"name": "tilo_do",
-                                "arguments": {"path": REMOVE, "args": {"book": "book:dusk"}},
-                                "_meta": {"so.tilo.mcp": {"invocation": {"id": "visa-1",
-                                                                  "title": RUN}}}}}))
-        .await;
-    assert_eq!(status, 200, "{reply}");
-    reply
+/// The agent's call that asks first, and the person it waits for: the MCP session that made it,
+/// the workspace it acts in, and the person's own page there.
+pub(super) struct WithABook<'a> {
+    pub(super) agent: Mcp<'a>,
+    pub(super) page: Browser,
+    pub(super) workspace: String,
 }
 
-/// The agent's asks-first call, while the page holding `root`
-/// answers what the server at `host` asks with `answer`: the call's reply
-/// and what the sheet saw, once the host stopped asking.
-async fn answered_by_page(
-    mcp: &mut Mcp<'_>,
-    host: &MemberApprover,
-    root: &SigningKey,
-    answer: ConfirmationAnswer,
-) -> (Value, Seen) {
-    let page = MemberQuestions {
-        server: host,
-        root,
-        device: None,
-    };
-    Box::pin(answered_on(mcp, page, answer)).await
-}
-
-/// [`answered_by_page`], from wherever `host` reaches the person's questions:
-/// a page holding their root, a page or computer paired to them.
-async fn answered_on(
-    mcp: &mut Mcp<'_>,
-    mut host: impl tilo_server_client::questions::QuestionServer,
-    answer: ConfirmationAnswer,
-) -> (Value, Seen) {
-    let seen = Seen::default();
-    let (answered, mut answers) = mpsc::unbounded_channel();
-    let mut person = Person {
-        answer,
-        answered,
-        seen: seen.clone(),
-    };
-    let session = answer_questions(&mut host, &mut person, &mut answers, || {
-        tokio::time::sleep(Duration::from_millis(50))
-    });
-    tokio::pin!(session);
-    let reply = tokio::select! {
-        reply = asking(mcp) => reply,
-        error = &mut session => panic!("the page's session with the server ended: {error}"),
-    };
-    // The host stops asking a question once it is answered, and the sheet
-    // lets it go.
-    let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-    while seen.withdrawn.lock().unwrap().len() < seen.asked.lock().unwrap().len() {
-        assert!(Instant::now() < deadline, "the answered question stayed up");
-        tokio::select! {
-            error = &mut session => panic!("the page's session with the server ended: {error}"),
-            () = tokio::time::sleep(Duration::from_millis(50)) => {}
-        }
-    }
-    (reply, seen)
-}
-
-/// Ada's workspace for a customer, with one book on its shelf and the agent
-/// her backend minted a key for there: the agent's MCP session.
+/// Ada's workspace for a customer, with one book on its shelf, the agent her backend minted a
+/// key for there, and Ada at a page of her own in it.
 pub(super) async fn agent_with_a_book<'a>(
-    on_server: &'a super::api_on_server::OnServer,
+    on_server: &'a OnServer,
     ada: &SigningKey,
-) -> Mcp<'a> {
+) -> WithABook<'a> {
     let page = enrol(ada, "Ada's browser", DeviceCapabilities::member());
     let key = approved_key(on_server, ada, &page, "Visa backend").await;
     let mut account = Mcp {
@@ -155,119 +66,61 @@ pub(super) async fn agent_with_a_book<'a>(
     agent
         .did("ebook#shelve", shelved("dusk", "Dusk", "Visas"))
         .await;
-    agent
+    let page = Browser::open_at(&on_server.hosted.server, &page, &on_server.host, &workspace).await;
+    WithABook {
+        agent,
+        page,
+        workspace,
+    }
 }
 
-/// The person's root is in one tab, and they are elsewhere: on a phone paired
-/// to them, whose page holds only its own device key, and on a computer paired
-/// to them, whose session keeps an approver connection with the server. Each is
-/// asked what the agent waits on, and its answer is the person's.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
-    let on_server = api_on_server(ISSUER).await;
-    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let mut agent = agent_with_a_book(&on_server, &ada).await;
+/// `tilo_do` of [`REMOVE`] as the agent, which asks its person first: the invocation it waits in,
+/// and the reply that says so.
+async fn asking(agent: &mut Mcp<'_>) -> (InvocationId, Value) {
+    let (status, reply) = agent
+        .post(json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                   "params": {"name": "tilo_do",
+                              "arguments": {"path": REMOVE, "args": {"book": "book:dusk"}},
+                              "_meta": {"so.tilo.mcp": {"structured": true}}}}))
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    let asked = &reply["result"]["structuredContent"];
+    assert_eq!(
+        asked["status"], "asked",
+        "the call waits for its person: {reply}"
+    );
+    let invocation = asked["invocation_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the record it waits in: {reply}"))
+        .parse()
+        .expect("an invocation id");
+    (invocation, reply)
+}
 
-    // A phone paired to Ada: its page signs with its own key, as her device.
-    let phone = enrol(&ada, "Ada's phone", DeviceCapabilities::member());
-    let host = MemberApprover::new(on_server.server_host());
-    let on_phone = MemberQuestions {
-        server: &host,
-        root: &phone.key,
-        device: Some(&phone.cert),
+/// `invocation`'s answer once it stops waiting: how it ended, as the agent reads it.
+pub(super) async fn followed(agent: &mut Mcp<'_>, invocation: InvocationId) -> Value {
+    let answer = |reply: &Value| -> Option<Value> {
+        let status = reply["result"]["structuredContent"]["status"].as_str()?;
+        (status != "asked").then(|| reply["result"]["structuredContent"].clone())
     };
-    let (refused, seen) =
-        Box::pin(answered_on(&mut agent, on_phone, ConfirmationAnswer::Deny)).await;
-    assert!(
-        refused["result"]["isError"] == true && refused.to_string().contains("did not allow"),
-        "the phone's refusal fails the call: {refused}"
-    );
-    let asked = seen.asked.lock().unwrap().clone();
-    assert_eq!(asked.len(), 1, "the phone was asked once: {asked:?}");
-    assert_eq!(asked[0].action_label, "Remove from library");
-
-    // A computer paired to Ada, which cannot admit devices: its approver
-    // session lists and answers her questions.
-    let computer = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .unwrap();
-    let approver = tilo_server_client::Approver::connect(
-        &endpoint,
-        on_server.hosted.server.node_addr(),
-        computer.cert.clone(),
-        &computer.key,
-        &tilo_user_identity::RevocationList::new(),
-    )
-    .await
-    .expect("a paired computer opens an approver session for its person");
-    let (allowed, seen) = Box::pin(answered_on(
-        &mut agent,
-        approver,
-        ConfirmationAnswer::AllowOnce,
-    ))
-    .await;
-    assert_eq!(allowed["result"]["isError"], false, "it ran: {allowed}");
-    assert_eq!(seen.asked.lock().unwrap().len(), 1);
-    host.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_api() {
-    let on_server = api_on_server(ISSUER).await;
-    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let mut agent = agent_with_a_book(&on_server, &ada).await;
-
-    // Ada's tab holds her root: it is her approver at the server.
-    let host = MemberApprover::new(on_server.server_host());
-
-    // Refused, the agent's call fails with the refusal, and nothing ran.
-    let (refused, seen) = Box::pin(answered_by_page(
-        &mut agent,
-        &host,
-        &ada,
-        ConfirmationAnswer::Deny,
-    ))
-    .await;
-    assert!(
-        refused["result"]["isError"] == true && refused.to_string().contains("did not allow"),
-        "a refusal fails the call: {refused}"
-    );
-    let asked = seen.asked.lock().unwrap().clone();
-    assert_eq!(asked.len(), 1, "asked once: {asked:?}");
-    // The sheet says who asks (the agent by its key's name, as History
-    // names its changes), in which run, exactly what it would do as the app
-    // declares it, on which record and where.
-    let question = &asked[0];
-    assert_eq!(question.agent_label, "Jane Doe’s agent");
-    assert_eq!(question.title, RUN);
-    assert_eq!(question.action_label, "Remove from library");
-    assert_eq!(
-        question.resource_label, "1 book",
-        "the library by its name: named by the state it holds, one book on the shelf"
-    );
-    assert_eq!(
-        question.arguments,
-        [("Book".to_owned(), "book:dusk".to_owned())]
-    );
-    assert_eq!(question.workspace, "Applicant: Jane Doe");
-    assert_eq!(
-        (question.risk.as_str(), question.undoable),
-        ("destructive", false)
-    );
-
-    // Allowed, the same call runs.
-    let (allowed, seen) = Box::pin(answered_by_page(
-        &mut agent,
-        &host,
-        &ada,
-        ConfirmationAnswer::AllowOnce,
-    ))
-    .await;
-    assert_eq!(allowed["result"]["isError"], false, "it ran: {allowed}");
-    assert_eq!(seen.asked.lock().unwrap().len(), 1);
-    host.close().await;
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    loop {
+        let (status, reply) = agent
+            .post(json!({"jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                         "params": {"name": "tilo_status",
+                                    "arguments": {"invocation_id": invocation.0.to_string()},
+                                    "_meta": {"so.tilo.mcp": {"structured": true}}}}))
+            .await;
+        assert_eq!(status, 200, "{reply}");
+        if let Some(answer) = answer(&reply) {
+            return answer;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the invocation never stopped waiting: {reply}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 /// What shelving the book `book` under `title` takes, filed under `about`.
@@ -279,4 +132,60 @@ pub(super) fn shelved(book: &str, title: &str, about: &str) -> serde_json::Value
         "subject": about,
         "shared": false,
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_call_waits_for_its_person_and_their_answer_runs_it_once() {
+    let on_server = api_on_server(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let mut with = agent_with_a_book(&on_server, &ada).await;
+    let (invocation, _) = asking(&mut with.agent).await;
+
+    // The person's own device lists it among the questions that wait for them: who asks, what
+    // would be done, on which record and in which workspace, and that Undo cannot take it back.
+    let asked = with.page.asked_about(invocation).await;
+    let tilo_actions::remote::asked::AskedBy::Agent(who) = &asked.by else {
+        panic!("an agent asks: {asked:?}");
+    };
+    assert_eq!(who.name, "Jane Doe’s agent", "{asked:?}");
+    assert_eq!(asked.workspace_name, "Applicant: Jane Doe", "{asked:?}");
+    assert_eq!(asked.name, "Remove from library", "{asked:?}");
+    assert_eq!(
+        asked.on.as_deref(),
+        Some("1 book"),
+        "the library by its name: named by the state it holds, one book on the shelf: {asked:?}"
+    );
+    assert!(
+        asked.destructive,
+        "Undo cannot give the reader back the book's file: {asked:?}"
+    );
+    assert_eq!(
+        asked.facts,
+        [tilo_actions::remote::asked::Fact::new("Book", "book:dusk")]
+    );
+
+    // Declined, the call is refused and nothing ran.
+    with.page
+        .resolve(&asked, "decline", None)
+        .await
+        .expect("the person declines");
+    let refused = followed(&mut with.agent, invocation).await;
+    assert_eq!(refused["status"], "failed", "{refused}");
+    assert_eq!(refused["error"]["code"], "cancelled", "{refused}");
+    assert_eq!(refused["error"]["message"], "declined", "{refused}");
+    assert!(
+        with.page.asks().await.is_empty(),
+        "answered, it waits for nobody"
+    );
+
+    // Allowed, the same call runs.
+    let (invocation, _) = asking(&mut with.agent).await;
+    let asked = with.page.asked_about(invocation).await;
+    with.page
+        .resolve(&asked, "approve", None)
+        .await
+        .expect("the person approves");
+    let ran = followed(&mut with.agent, invocation).await;
+    assert_eq!(ran["status"], "ok", "it ran: {ran}");
+    with.page.peer.close();
 }

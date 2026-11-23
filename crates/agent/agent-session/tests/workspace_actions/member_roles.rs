@@ -6,10 +6,8 @@
 //! the fixture's to set; everything else is the host's own service.
 use super::*;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tilo_actions::remote::{
-    Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_actions::remote::{Caller, ContentPutAnswer, ContentPutStep};
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceDocumentsLink};
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::Outbox;
@@ -30,8 +28,6 @@ pub(super) struct Membership {
     /// Whether the next ask for the keys of the workspace's agents is answered as the device's
     /// key service answers while it takes part and holds no keys yet.
     keys_not_yet: AtomicBool,
-    answer: Mutex<Option<ConfirmationReply>>,
-    asked: AtomicUsize,
     content: tilo_content::ContentStore,
     /// Set by [`Self::hold`]: whether the next read of a member's access waits,
     /// and whether it began. It takes its time once it has, as a request that
@@ -66,8 +62,6 @@ impl Membership {
             role: Mutex::new(Some(Role::Viewer)),
             revoked: AtomicBool::new(false),
             keys_not_yet: AtomicBool::new(false),
-            answer: Mutex::new(None),
-            asked: AtomicUsize::new(0),
             content: tilo_content::ContentStore::in_dir(content),
             slow: Mutex::new((false, false)),
             began: std::sync::Condvar::new(),
@@ -204,21 +198,6 @@ impl WorkspaceDocumentsLink for Membership {
         self.member
             .runtime
             .block_on(self.workspaces.own_route_keys(route, create))
-    }
-    fn ask_person(
-        &self,
-        _workspace: WorkspaceId,
-        caller: &Caller,
-        _question: ConfirmationQuestion,
-    ) -> Option<Pending<Result<ConfirmationReply, ActionCallError>>> {
-        assert_eq!(
-            caller.user_public_key(),
-            Some(&self.person),
-            "the member is asked"
-        );
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        let answer = self.answer.lock().unwrap().clone()?;
-        Some(Pending::ready(Ok(answer)))
     }
 }
 
